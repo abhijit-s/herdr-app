@@ -398,6 +398,9 @@ pub struct Person {
     /// Terminal row height as a multiple of the font's own line height.
     #[serde(skip_serializing_if = "is_default_line_height")]
     pub line_height: f32,
+    /// Pixels added to (or, negative, taken from) the terminal cell width.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub letter_spacing: f32,
     /// macOS Option sends Alt shortcuts, or follows the keyboard layout.
     #[serde(skip_serializing_if = "OptionAsAlt::is_auto")]
     pub option_as_alt: OptionAsAlt,
@@ -462,6 +465,10 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
 impl Default for Person {
     fn default() -> Self {
         Person {
@@ -477,6 +484,7 @@ impl Default for Person {
             clipboard_write: true,
             minimum_contrast: 1.0,
             line_height: DEFAULT_LINE_HEIGHT,
+            letter_spacing: 0.0,
             option_as_alt: OptionAsAlt::Auto,
             appearance: Appearance::System,
             theme: None,
@@ -514,6 +522,7 @@ pub struct Settings {
     pub ligatures: bool,
     pub minimum_contrast: f32,
     pub line_height: f32,
+    pub letter_spacing: f32,
     pub option_as_alt: OptionAsAlt,
     pub sounds: Sounds,
 }
@@ -557,6 +566,7 @@ impl Default for Settings {
             ligatures: false,
             minimum_contrast: 1.0,
             line_height: DEFAULT_LINE_HEIGHT,
+            letter_spacing: 0.0,
             option_as_alt: OptionAsAlt::Auto,
             sounds: Sounds::default(),
         }
@@ -597,6 +607,7 @@ impl Settings {
             ligatures: person.ligatures,
             minimum_contrast: person.minimum_contrast,
             line_height: person.line_height,
+            letter_spacing: person.letter_spacing,
             option_as_alt: person.option_as_alt,
         }
     }
@@ -650,6 +661,9 @@ impl Settings {
         }
         if !(100..=900).contains(&self.font_weight) {
             out.push(format!("font_weight {} is outside 100..900", self.font_weight));
+        }
+        if !(-2.0..=10.0).contains(&self.letter_spacing) {
+            out.push(format!("letter_spacing {} is outside -2..10", self.letter_spacing));
         }
         if !(6.0..=72.0).contains(&self.font_size) {
             out.push(format!("font_size {} is outside 6..72", self.font_size));
@@ -943,6 +957,20 @@ mod tests {
         let person: Person = serde_json::from_value(serde_json::json!({"ligatures": true})).unwrap();
         assert!(Settings::compose(&person, &crate::layout::Look::default(), true).ligatures);
         assert_eq!(serde_json::to_value(person).unwrap()["ligatures"], serde_json::json!(true));
+        }
+    }
+
+    #[test]
+    fn letter_spacing_defaults_to_zero_and_validates_the_range() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.letter_spacing, 0.0);
+        assert!(serde_json::to_value(&default).unwrap().get("letter_spacing").is_none());
+        for spacing in [-2.0, -0.2, 0.0, 1.5, 10.0, -2.5, 10.5] {
+            let person: Person = serde_json::from_value(serde_json::json!({"letter_spacing": spacing})).unwrap();
+            let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
+            assert_eq!(settings.letter_spacing, spacing);
+            assert_eq!(settings.problems().is_empty(), (-2.0..=10.0).contains(&spacing));
+        }
     }
 
     #[test]
