@@ -1038,13 +1038,16 @@ pub fn cell_size(window: &Window) -> Size<Pixels> {
     let id = ts.resolve_font(&f);
     let fs = px(crate::settings::font_size());
     let advance = ts.advance(id, fs, 'M').map(|s| s.width).unwrap_or(fs * 0.6);
-    let spacing = crate::settings::z(crate::settings::get().letter_spacing.clamp(-2.0, 10.0));
-    let w = (advance + spacing).max(px(1.0));
     let h = ts.ascent(id, fs) + ts.descent(id, fs).abs();
-    // The width is the font's advance plus letter_spacing, not rounded: glyphs
-    // sit exactly on their cells (gpui-pre `apply_force_width_to_layout`), and
-    // boxes snap their edges instead (`snap_box`).
     let scale = window.scale_factor();
+    let s = crate::settings::get();
+    // Glyphs sit exactly on their cells (gpui-pre `apply_force_width_to_layout`),
+    // so any width works; boxes snap their edges (`snap_box`).
+    let advance = match s.cell_width {
+        crate::settings::CellWidth::Font => advance,
+        crate::settings::CellWidth::Pixel => px((f32::from(advance) * scale).floor().max(1.0) / scale),
+    };
+    let w = (advance + crate::settings::z(s.letter_spacing.clamp(-2.0, 10.0))).max(px(1.0));
     let line_height = crate::settings::get().line_height.clamp(1.0, 2.0);
     size(w, px((f32::from(h) * line_height * scale).ceil() / scale))
 }
