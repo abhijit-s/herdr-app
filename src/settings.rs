@@ -392,6 +392,9 @@ pub struct Person {
     /// Pixels added to (or, negative, taken from) the terminal cell width.
     #[serde(skip_serializing_if = "is_zero")]
     pub letter_spacing: f32,
+    /// Terminal cell width: the font's own advance, or rounded down to whole device pixels.
+    #[serde(skip_serializing_if = "CellWidth::is_font")]
+    pub cell_width: CellWidth,
     /// macOS Option sends Alt shortcuts, or follows the keyboard layout.
     #[serde(skip_serializing_if = "OptionAsAlt::is_auto")]
     pub option_as_alt: OptionAsAlt,
@@ -430,6 +433,20 @@ pub enum OptionAsAlt {
     Right,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CellWidth {
+    #[default]
+    Font,
+    Pixel,
+}
+
+impl CellWidth {
+    fn is_font(&self) -> bool {
+        *self == CellWidth::Font
+    }
+}
+
 impl OptionAsAlt {
     fn is_auto(&self) -> bool {
         *self == Self::Auto
@@ -457,6 +474,7 @@ impl Default for Person {
             clipboard_write: true,
             minimum_contrast: 1.0,
             letter_spacing: 0.0,
+            cell_width: CellWidth::Font,
             option_as_alt: OptionAsAlt::Auto,
             appearance: Appearance::System,
             theme: None,
@@ -492,6 +510,7 @@ pub struct Settings {
     pub clipboard_write: bool,
     pub minimum_contrast: f32,
     pub letter_spacing: f32,
+    pub cell_width: CellWidth,
     pub option_as_alt: OptionAsAlt,
     pub sounds: Sounds,
 }
@@ -533,6 +552,7 @@ impl Default for Settings {
             clipboard_write: true,
             minimum_contrast: 1.0,
             letter_spacing: 0.0,
+            cell_width: CellWidth::Font,
             option_as_alt: OptionAsAlt::Auto,
             sounds: Sounds::default(),
         }
@@ -571,6 +591,7 @@ impl Settings {
             clipboard_write: person.clipboard_write,
             minimum_contrast: person.minimum_contrast,
             letter_spacing: person.letter_spacing,
+            cell_width: person.cell_width,
             option_as_alt: person.option_as_alt,
         }
     }
@@ -891,6 +912,16 @@ mod tests {
             assert_eq!(settings.letter_spacing, spacing);
             assert_eq!(settings.problems().is_empty(), (-2.0..=10.0).contains(&spacing));
         }
+    }
+
+    #[test]
+    fn cell_width_defaults_to_the_font_advance() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.cell_width, CellWidth::Font);
+        assert!(serde_json::to_value(&default).unwrap().get("cell_width").is_none());
+        let person: Person = serde_json::from_value(serde_json::json!({"cell_width": "pixel"})).unwrap();
+        assert_eq!(Settings::compose(&person, &crate::layout::Look::default(), true).cell_width, CellWidth::Pixel);
+        assert!(serde_json::from_value::<Person>(serde_json::json!({"cell_width": "round"})).is_err());
     }
 
     #[test]
