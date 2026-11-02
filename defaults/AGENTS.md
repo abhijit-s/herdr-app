@@ -682,6 +682,10 @@ What's about the user, never a look:
   background; this is a threshold, not a guaranteed resulting ratio.
   Box/block, Powerline and sprite glyph colors are never adjusted.
   Changes apply immediately, including text already on screen.
+- `line_height`: terminal row height as a multiple of the font's own line
+  height (ascent plus descent), from `1` to `2` (default `1.15`). `1` matches
+  terminals that use the font's natural height, such as Ghostty. Rows round up
+  to whole device pixels. Changes apply immediately.
 - `clipboard_write`: `false` blocks terminal programs from writing the local
   clipboard (default `true`, including remote terminals attached in this window).
   OSC 52 accepts base64 UTF-8 text up to 1 MiB: `c` writes the system clipboard,
