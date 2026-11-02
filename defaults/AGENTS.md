@@ -686,6 +686,10 @@ What's about the user, never a look:
   height (ascent plus descent), from `1` to `2` (default `1.15`). `1` matches
   terminals that use the font's natural height, such as Ghostty. Rows round up
   to whole device pixels. Changes apply immediately.
+- `font_weight`: weight of normal terminal text, from `100` to `900`
+  (default `500`, Medium). The font's nearest face is used, so `400` picks
+  Regular and `300` Light where the family has them. Bold text uses `700`, or
+  `font_weight` when that is heavier. Changes apply immediately.
 - `clipboard_write`: `false` blocks terminal programs from writing the local
   clipboard (default `true`, including remote terminals attached in this window).
   OSC 52 accepts base64 UTF-8 text up to 1 MiB: `c` writes the system clipboard,
