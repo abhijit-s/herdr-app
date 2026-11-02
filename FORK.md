@@ -53,10 +53,10 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 ### Coding ligatures
 
-`feat/ligatures`: `ligatures` setting that turns the font's `calt` feature back on (one glyph per cell in coding fonts); `liga` and `dlig` stay off.
+`feat/ligatures`: `ligatures` in settings.json or a layout's look turns the font's `calt` feature on (one glyph per cell in coding fonts); `liga` and `dlig` stay off. `cell_features` holds the feature list, with a test.
 
-- Files: `src/settings.rs`, `src/terminal.rs` (`cell_font`), `defaults/AGENTS.md`
-- Upstream: issue #176, pull request not yet opened
+- Files: `src/settings.rs`, `src/layout.rs`, `src/terminal.rs` (`cell_features`, `cell_font`), `defaults/AGENTS.md`
+- Upstream: issue #176 is covered by pull request #244 (ruilopesm), which also breaks ligatures at the cursor and selection edges. Its macOS test needs the main thread; tested here and commented. Swap this branch for #244 once its checks pass.
 
 ### Cell width and letter spacing
 
