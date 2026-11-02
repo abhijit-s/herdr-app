@@ -690,6 +690,11 @@ What's about the user, never a look:
   (default `500`, Medium). The font's nearest face is used, so `400` picks
   Regular and `300` Light where the family has them. Bold text uses `700`, or
   `font_weight` when that is heavier. Changes apply immediately.
+- `ligatures`: `true` draws the terminal font's contextual alternates, the
+  coding ligatures of fonts such as JetBrains Mono, Fira Code and Cascadia Code
+  (`->` as an arrow). Default `false`. These fonts keep one glyph per cell, so
+  the grid holds; standard and discretionary ligatures stay off. Changes apply
+  immediately.
 - `clipboard_write`: `false` blocks terminal programs from writing the local
   clipboard (default `true`, including remote terminals attached in this window).
   OSC 52 accepts base64 UTF-8 text up to 1 MiB: `c` writes the system clipboard,
