@@ -64,3 +64,11 @@ This file is the inventory of what diverges. Update it in the same commit that a
 
 - Files: `src/settings.rs`, `src/terminal.rs` (`cell_size`), `vendor/gpui-pre/src/text_system/line_layout.rs`, `defaults/AGENTS.md`
 - Upstream: issue #171, pull request not yet opened
+
+### Variable font weights
+
+`fix/variable-font-weight`: draws a variable face at the requested weight. Herdr bundles JetBrains Mono as one variable file, so its family has a single face and every weight (Medium text, Bold, `font_weight`) drew at the default instance. A `HERDR:` change in `vendor/gpui-pre-macos/src/text_system.rs` (`at_weight`, `variation_weight`) copies the face at the asked weight on its `wght` axis and maps CoreText's runs back to that copy by PostScript name and weight. Desk-verified: bundled JetBrains Mono at 225 matches Rex's 225 (same grid, ink within 4%).
+
+- Files: `vendor/gpui-pre-macos/src/text_system.rs`
+- Upstream: no issue yet (affects the default font's Bold and #134), pull request not yet opened
+
