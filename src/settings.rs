@@ -384,6 +384,9 @@ pub struct Person {
     /// Anonymous usage data (telemetry.rs). On unless set to false.
     #[serde(skip_serializing_if = "is_true")]
     pub telemetry: bool,
+    /// Draw the terminal font's contextual alternates (coding ligatures such as ->).
+    #[serde(skip_serializing_if = "is_false")]
+    pub ligatures: bool,
     /// Allow terminal programs (including remote ones) to copy text locally.
     #[serde(skip_serializing_if = "is_true")]
     pub clipboard_write: bool,
@@ -437,6 +440,10 @@ fn is_true(b: &bool) -> bool {
     *b
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 impl Default for Person {
     fn default() -> Self {
         Person {
@@ -447,6 +454,7 @@ impl Default for Person {
             font_size: None,
             ui_font: None,
             telemetry: true,
+            ligatures: false,
             clipboard_write: true,
             minimum_contrast: 1.0,
             option_as_alt: OptionAsAlt::Auto,
@@ -482,6 +490,7 @@ pub struct Settings {
     /// 0..1: below 1, what's behind a terminal shows through.
     pub terminal_opacity: f32,
     pub clipboard_write: bool,
+    pub ligatures: bool,
     pub minimum_contrast: f32,
     pub option_as_alt: OptionAsAlt,
     pub sounds: Sounds,
@@ -522,6 +531,7 @@ impl Default for Settings {
             terminal_padding: [10.0, 6.0],
             terminal_opacity: 1.0,
             clipboard_write: true,
+            ligatures: false,
             minimum_contrast: 1.0,
             option_as_alt: OptionAsAlt::Auto,
             sounds: Sounds::default(),
@@ -559,6 +569,7 @@ impl Settings {
             terminal_opacity: look.terminal_opacity.unwrap_or(1.0).clamp(0.0, 1.0),
             sounds: person.sounds.clone(),
             clipboard_write: person.clipboard_write,
+            ligatures: person.ligatures,
             minimum_contrast: person.minimum_contrast,
             option_as_alt: person.option_as_alt,
         }
@@ -864,6 +875,16 @@ mod tests {
             assert_eq!(serde_json::to_value(settings).unwrap()["option_as_alt"], value);
         }
         assert!(serde_json::from_value::<Person>(serde_json::json!({"option_as_alt": "invalid"})).is_err());
+    }
+
+    #[test]
+    fn ligatures_default_off_and_reach_settings() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert!(!default.ligatures && !Settings::default().ligatures);
+        assert!(serde_json::to_value(&default).unwrap().get("ligatures").is_none());
+        let person: Person = serde_json::from_value(serde_json::json!({"ligatures": true})).unwrap();
+        assert!(Settings::compose(&person, &crate::layout::Look::default(), true).ligatures);
+        assert_eq!(serde_json::to_value(person).unwrap()["ligatures"], serde_json::json!(true));
     }
 
     #[test]

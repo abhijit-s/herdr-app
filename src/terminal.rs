@@ -1022,7 +1022,10 @@ fn map_key(key: &str) -> Option<(GhosttyKey, bool, Option<char>)> {
 fn cell_font(bold: bool, italic: bool) -> Font {
     let mut f = font(crate::settings::terminal_font());
     // Ligatures merge several cells into one glyph, which breaks the grid.
-    f.features = FontFeatures(std::sync::Arc::new(vec![("calt".into(), 0), ("liga".into(), 0), ("dlig".into(), 0)]));
+    // Coding fonts draw theirs as contextual alternates instead, one glyph
+    // per cell, so `ligatures` turns on calt only.
+    let calt = crate::settings::get().ligatures as u32;
+    f.features = FontFeatures(std::sync::Arc::new(vec![("calt".into(), calt), ("liga".into(), 0), ("dlig".into(), 0)]));
     f.weight = if bold { FontWeight::BOLD } else { FontWeight::MEDIUM };
     f.style = if italic { FontStyle::Italic } else { FontStyle::Normal };
     f
