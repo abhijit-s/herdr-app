@@ -58,9 +58,9 @@ This file is the inventory of what diverges. Update it in the same commit that a
 - Files: `src/settings.rs`, `src/terminal.rs` (`cell_font`), `defaults/AGENTS.md`
 - Upstream: issue #176, pull request not yet opened
 
-### Letter spacing
+### Cell width and letter spacing
 
-`feat/letter-spacing`: `letter_spacing` setting, pixels added to the cell width (-2 to 10, default 0). Needs a `HERDR:` change in `vendor/gpui-pre/src/text_system/line_layout.rs` (`apply_force_width_to_layout`): base glyphs always sit on their cells, where a 1px tolerance made text creep then jump whenever the cell width differs from the font's advance. gpui-pre's own tests don't build in this checkout, so the placement rule was checked with a standalone copy of the function.
+`feat/letter-spacing`: `cell_width` setting (`"font"`, default, or `"pixel"`: the advance rounded down to whole device pixels, as Ghostty does) and `letter_spacing`, pixels added after it (-2 to 10, default 0). Needs a `HERDR:` change in `vendor/gpui-pre/src/text_system/line_layout.rs` (`apply_force_width_to_layout`): base glyphs always sit on their cells, where a 1px tolerance made text creep then jump whenever the cell width differs from the font's advance. gpui-pre's own tests don't build in this checkout, so the placement rule was checked with a standalone copy of the function.
 
 - Files: `src/settings.rs`, `src/terminal.rs` (`cell_size`), `vendor/gpui-pre/src/text_system/line_layout.rs`, `defaults/AGENTS.md`
 - Upstream: issue #171, pull request not yet opened
