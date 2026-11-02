@@ -328,6 +328,11 @@ layout's look and a block can differ:
   folder (or the home's `fonts/`) load at start and on the next look change,
   so a layout and its mod folder travel together (Herdr 98's do: its pixel
   fonts are in `mods/win98/fonts/`).
+- `ligatures`: `true` turns on the terminals' contextual alternates (`calt`),
+  which draw the coding ligatures of JetBrains Mono, Fira Code, Cascadia Code
+  and Iosevka (`->` as an arrow). Default `false`. Those fonts keep one glyph
+  per cell, so the grid holds; other fonts may not. Standard and
+  discretionary ligatures (`liga`, `dlig`) stay off.
 - `terminal_opacity` (0..1): below 1, the background behind a terminal
   (a pane frame's, the layout's gradient) shows through its text.
 - Switching layouts switches the look. The theme menu changes the shown
@@ -625,7 +630,7 @@ What's about the user, never a look:
 - `core`: the herdr-core binary to use, when it isn't where Herdr looks
   (PATH, the login shell's PATH, `~/.local/bin`, Homebrew, mise, Nix,
   cargo). Read at start.
-- `font`, `font_size`, `ui_font`: used where the layout doesn't set its
+- `font`, `font_size`, `ligatures`, `ui_font`: used where the layout doesn't set its
   own. Herdr (main) leaves these unset. Bigger panels: `zoom`.
 - `theme`: a theme name or `{light, dark}`; used where the layout sets none.
   The theme picker overrides any layout and stays on that layout.
@@ -682,11 +687,6 @@ What's about the user, never a look:
   background; this is a threshold, not a guaranteed resulting ratio.
   Box/block, Powerline and sprite glyph colors are never adjusted.
   Changes apply immediately, including text already on screen.
-- `ligatures`: `true` draws the terminal font's contextual alternates, the
-  coding ligatures of fonts such as JetBrains Mono, Fira Code and Cascadia Code
-  (`->` as an arrow). Default `false`. These fonts keep one glyph per cell, so
-  the grid holds; standard and discretionary ligatures stay off. Changes apply
-  immediately.
 - `clipboard_write`: `false` blocks terminal programs from writing the local
   clipboard (default `true`, including remote terminals attached in this window).
   OSC 52 accepts base64 UTF-8 text up to 1 MiB: `c` writes the system clipboard,
