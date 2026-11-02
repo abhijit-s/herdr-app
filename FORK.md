@@ -35,7 +35,7 @@ This file is the inventory of what diverges. Update it in the same commit that a
 `fix/build-without-xcode`: passes `-Demit-xcframework=false` to Ghostty's lib-vt build. Ghostty builds the xcframework whenever `xcodebuild` is on PATH, and with only the Command Line Tools `/usr/bin/xcodebuild` is a stub that fails.
 
 - Files: `crates/ghostty-sys/build.rs`, `THIRD-PARTY-NOTICES`
-- Upstream: not yet proposed
+- Upstream: pull request #331
 
 ### Terminal line height
 
