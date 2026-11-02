@@ -957,7 +957,6 @@ mod tests {
         let person: Person = serde_json::from_value(serde_json::json!({"ligatures": true})).unwrap();
         assert!(Settings::compose(&person, &crate::layout::Look::default(), true).ligatures);
         assert_eq!(serde_json::to_value(person).unwrap()["ligatures"], serde_json::json!(true));
-        }
     }
 
     #[test]
