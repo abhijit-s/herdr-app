@@ -20,12 +20,13 @@ This file is the inventory of what diverges. Update it in the same commit that a
 ## Workflow
 
 1. Start a change: `git switch -c feat/<slug> upstream/master`.
-2. Make it, gated behind a setting wherever practical, then `mise exec -- just check`.
-3. Try it: `git switch master && git merge --no-ff feat/<slug> && mise exec -- just install`, then restart Herdr.
-4. Push the branch: `git push -u origin feat/<slug>`. Bigger changes get an upstream issue first (upstream `CONTRIBUTING.md`).
-5. Open the pull request: `gh pr create -R herdrdev/herdr-app --head abhijit-s:feat/<slug>`.
-6. Keep it current when upstream moves: `git rebase upstream/master feat/<slug> && git push -f origin feat/<slug>`.
-7. Sync and reinstall: `scripts/fork-sync`. It lists branches whose commits are not yet upstream. Once a change lands upstream, delete its branch and its entry below.
+2. Make it, gated behind a setting wherever practical, and commit.
+3. Merge and check it on `master`, which has the Xcode build fix branches lack: `git switch master && git merge --no-ff feat/<slug> && mise exec -- just check`. Upstream's code is not `cargo fmt` clean, so match the surrounding style rather than running `cargo fmt`.
+4. Try it: `mise exec -- just install`, then restart Herdr.
+5. Push the branch: `git push -u origin feat/<slug>`. Bigger changes get an upstream issue first (upstream `CONTRIBUTING.md`).
+6. Open the pull request: `gh pr create -R herdrdev/herdr-app --head abhijit-s:feat/<slug>`.
+7. Keep it current when upstream moves: `git rebase upstream/master feat/<slug> && git push -f origin feat/<slug>`.
+8. Sync and reinstall: `scripts/fork-sync`. It lists branches whose commits are not yet upstream. Once a change lands upstream, delete its branch and its entry below.
 
 ## Changes
 
@@ -35,3 +36,24 @@ This file is the inventory of what diverges. Update it in the same commit that a
 
 - Files: `crates/ghostty-sys/build.rs`, `THIRD-PARTY-NOTICES`
 - Upstream: not yet proposed
+
+### Terminal line height
+
+`feat/line-height`: `line_height` setting, the row height as a multiple of the font's ascent plus descent (1 to 2, default 1.15, the value upstream hard-codes).
+
+- Files: `src/settings.rs`, `src/terminal.rs` (`cell_size`), `defaults/AGENTS.md`
+- Upstream: issue #66, pull request not yet opened
+
+### Terminal font weight
+
+`feat/font-weight`: `font_weight` setting for normal terminal text (100 to 900, default 500, the Medium upstream hard-codes); bold stays at least 700.
+
+- Files: `src/settings.rs`, `src/terminal.rs` (`cell_font`), `defaults/AGENTS.md`
+- Upstream: issue #134, pull request not yet opened
+
+### Coding ligatures
+
+`feat/ligatures`: `ligatures` setting that turns the font's `calt` feature back on (one glyph per cell in coding fonts); `liga` and `dlig` stay off.
+
+- Files: `src/settings.rs`, `src/terminal.rs` (`cell_font`), `defaults/AGENTS.md`
+- Upstream: issue #176, pull request not yet opened
