@@ -1046,12 +1046,25 @@ pub fn cell_size(window: &Window) -> Size<Pixels> {
     let s = crate::settings::get();
     // Glyphs sit exactly on their cells (gpui-pre `apply_force_width_to_layout`),
     // so any width works; boxes snap their edges (`snap_box`).
-    let advance = match s.cell_width {
-        crate::settings::CellWidth::Font => advance,
-        crate::settings::CellWidth::Pixel => px((f32::from(advance) * scale).floor().max(1.0) / scale),
+    let w = spaced_width(advance, crate::settings::z(s.letter_spacing));
+    let w = match s.cell_width {
+        crate::settings::CellWidth::Font => w,
+        crate::settings::CellWidth::Pixel => whole_pixels(w, scale),
     };
-    let w = (advance + crate::settings::z(s.letter_spacing.clamp(-2.0, 10.0))).max(px(1.0));
     size(w, px((f32::from(h) * s.line_height * scale).ceil() / scale))
+}
+
+/// The font's advance plus letter_spacing, kept within half to one and a half
+/// advances. gpui-pre's force-width pass takes a glyph less than half a cell
+/// past the previous letter for a combining mark, so cells twice the advance
+/// would draw every other letter off the grid.
+fn spaced_width(advance: Pixels, spacing: Pixels) -> Pixels {
+    (advance + spacing).max(advance * 0.5).min(advance * 1.5)
+}
+
+/// Rounded down to whole device pixels, as Ghostty does, and at least one.
+fn whole_pixels(width: Pixels, scale: f32) -> Pixels {
+    px((f32::from(width) * scale).floor().max(1.0) / scale)
 }
 
 /// One piece of a row's drawing, in cells from the row's start.
@@ -1567,6 +1580,26 @@ mod tests {
         let tags = |on| super::cell_features(on).tag_value_list().to_vec();
         assert_eq!(tags(false), vec![("calt".into(), 0), ("liga".into(), 0), ("dlig".into(), 0)]);
         assert_eq!(tags(true), vec![("calt".into(), 1), ("liga".into(), 0), ("dlig".into(), 0)]);
+    }
+
+    #[test]
+    fn letter_spacing_keeps_cells_within_half_to_one_and_a_half_advances() {
+        use gpui::px;
+        let advance = px(8.);
+        assert_eq!(super::spaced_width(advance, px(0.)), advance);
+        assert_eq!(super::spaced_width(advance, px(-0.25)), px(7.75));
+        assert_eq!(super::spaced_width(advance, px(2.)), px(10.));
+        assert_eq!(super::spaced_width(advance, px(10.)), px(12.));
+        assert_eq!(super::spaced_width(advance, px(-10.)), px(4.));
+    }
+
+    #[test]
+    fn pixel_cell_width_rounds_after_letter_spacing() {
+        use gpui::px;
+        assert_eq!(super::whole_pixels(px(7.5), 1.), px(7.));
+        assert_eq!(super::whole_pixels(px(7.2), 2.), px(7.));
+        assert_eq!(super::whole_pixels(px(7.75), 2.), px(7.5));
+        assert_eq!(super::whole_pixels(px(0.2), 1.), px(1.));
     }
 
     #[test]
