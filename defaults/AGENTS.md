@@ -333,6 +333,11 @@ layout's look and a block can differ:
 - `font_weight` (100..900): the terminals' text weight. Default 500
   (Medium); 400 is Regular, 300 Light, using the family's nearest face.
   Bold text uses 700, or `font_weight` when that is heavier.
+- `ligatures`: `true` turns on the terminals' contextual alternates (`calt`),
+  which draw the coding ligatures of JetBrains Mono, Fira Code, Cascadia Code
+  and Iosevka (`->` as an arrow). Default `false`. Those fonts keep one glyph
+  per cell, so the grid holds; other fonts may not. Standard and
+  discretionary ligatures (`liga`, `dlig`) stay off.
 - `terminal_opacity` (0..1): below 1, the background behind a terminal
   (a pane frame's, the layout's gradient) shows through its text.
 - Switching layouts switches the look. The theme menu changes the shown
@@ -630,7 +635,7 @@ What's about the user, never a look:
 - `core`: the herdr-core binary to use, when it isn't where Herdr looks
   (PATH, the login shell's PATH, `~/.local/bin`, Homebrew, mise, Nix,
   cargo). Read at start.
-- `font`, `font_size`, `line_height`, `font_weight`, `ui_font`: used where the layout doesn't set its
+- `font`, `font_size`, `line_height`, `font_weight`, `ligatures`, `ui_font`: used where the layout doesn't set its
   own. Herdr (main) leaves these unset. Bigger panels: `zoom`.
 - `theme`: a theme name or `{light, dark}`; used where the layout sets none.
   The theme picker overrides any layout and stays on that layout.
@@ -687,11 +692,6 @@ What's about the user, never a look:
   background; this is a threshold, not a guaranteed resulting ratio.
   Box/block, Powerline and sprite glyph colors are never adjusted.
   Changes apply immediately, including text already on screen.
-- `ligatures`: `true` draws the terminal font's contextual alternates, the
-  coding ligatures of fonts such as JetBrains Mono, Fira Code and Cascadia Code
-  (`->` as an arrow). Default `false`. These fonts keep one glyph per cell, so
-  the grid holds; standard and discretionary ligatures stay off. Changes apply
-  immediately.
 - `cell_width`: `"font"` (default) keeps the terminal font's own advance as
   the cell width; `"pixel"` rounds it down to whole device pixels, as Ghostty
   does (JetBrains Mono at 12 on a Retina display: 14.4 to 14 device pixels).

@@ -1019,13 +1019,16 @@ fn map_key(key: &str) -> Option<(GhosttyKey, bool, Option<char>)> {
     Some((code, shifted, Some(base)))
 }
 
+/// Ligatures merge several cells into one glyph, which breaks the grid, so
+/// `liga` and `dlig` stay off. Coding fonts draw theirs as contextual
+/// alternates instead, one glyph per cell, so `ligatures` turns on `calt` only.
+fn cell_features(ligatures: bool) -> FontFeatures {
+    FontFeatures(std::sync::Arc::new(vec![("calt".into(), ligatures as u32), ("liga".into(), 0), ("dlig".into(), 0)]))
+}
+
 fn cell_font(bold: bool, italic: bool) -> Font {
     let mut f = font(crate::settings::terminal_font());
-    // Ligatures merge several cells into one glyph, which breaks the grid.
-    // Coding fonts draw theirs as contextual alternates instead, one glyph
-    // per cell, so `ligatures` turns on calt only.
-    let calt = crate::settings::get().ligatures as u32;
-    f.features = FontFeatures(std::sync::Arc::new(vec![("calt".into(), calt), ("liga".into(), 0), ("dlig".into(), 0)]));
+    f.features = cell_features(crate::settings::get().ligatures);
     let weight = crate::settings::get().font_weight.clamp(100, 900);
     f.weight = FontWeight(if bold { weight.max(700) } else { weight } as f32);
     f.style = if italic { FontStyle::Italic } else { FontStyle::Normal };
@@ -1214,7 +1217,7 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, w
     // Each row's drawing is built once and painted again while the row is the
     // same (`Vt::frame` keeps a row libghostty didn't change): an agent's spinner
     // line rebuilds one row, not the whole screen.
-    // The whole cell font, so a weight or feature change redraws kept rows too.
+    // The whole cell font, so a feature change redraws kept rows too.
     let with = (crate::settings::font_size().to_bits(), cell, cell_font(false, false), crate::settings::fonts_added());
     // When every row changed (output scrolling), nothing is kept: the next
     // frame would find none of them the same.
@@ -1559,6 +1562,13 @@ impl Focusable for TerminalView {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ligatures_turn_on_contextual_alternates_only() {
+        let tags = |on| super::cell_features(on).tag_value_list().to_vec();
+        assert_eq!(tags(false), vec![("calt".into(), 0), ("liga".into(), 0), ("dlig".into(), 0)]);
+        assert_eq!(tags(true), vec![("calt".into(), 1), ("liga".into(), 0), ("dlig".into(), 0)]);
+    }
+
     #[test]
     fn mouse_buttons_only_follow_the_pane_that_took_each_press() {
         use super::*;

@@ -390,9 +390,9 @@ pub struct Person {
     /// Anonymous usage data (telemetry.rs). On unless set to false.
     #[serde(skip_serializing_if = "is_true")]
     pub telemetry: bool,
-    /// Draw the terminal font's contextual alternates (coding ligatures such as ->).
-    #[serde(skip_serializing_if = "is_false")]
-    pub ligatures: bool,
+    /// The terminals' contextual alternates (coding ligatures such as ->).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ligatures: Option<bool>,
     /// Allow terminal programs (including remote ones) to copy text locally.
     #[serde(skip_serializing_if = "is_true")]
     pub clipboard_write: bool,
@@ -466,10 +466,6 @@ fn is_true(b: &bool) -> bool {
     *b
 }
 
-fn is_false(b: &bool) -> bool {
-    !*b
-}
-
 fn is_zero(v: &f32) -> bool {
     *v == 0.0
 }
@@ -486,7 +482,7 @@ impl Default for Person {
             font_weight: None,
             ui_font: None,
             telemetry: true,
-            ligatures: false,
+            ligatures: None,
             clipboard_write: true,
             minimum_contrast: 1.0,
             letter_spacing: 0.0,
@@ -615,7 +611,7 @@ impl Settings {
             terminal_opacity: look.terminal_opacity.unwrap_or(1.0).clamp(0.0, 1.0),
             sounds: person.sounds.clone(),
             clipboard_write: person.clipboard_write,
-            ligatures: person.ligatures,
+            ligatures: look.ligatures.or(person.ligatures).unwrap_or(d.ligatures),
             minimum_contrast: person.minimum_contrast,
             letter_spacing: person.letter_spacing,
             cell_width: person.cell_width,
@@ -953,13 +949,15 @@ mod tests {
     }
 
     #[test]
-    fn ligatures_default_off_and_reach_settings() {
+    fn ligatures_default_off_and_a_layout_can_turn_them_on() {
         let default: Person = serde_json::from_str("{}").unwrap();
-        assert!(!default.ligatures && !Settings::default().ligatures);
+        assert!(!Settings::compose(&default, &crate::layout::Look::default(), true).ligatures);
         assert!(serde_json::to_value(&default).unwrap().get("ligatures").is_none());
         let person: Person = serde_json::from_value(serde_json::json!({"ligatures": true})).unwrap();
         assert!(Settings::compose(&person, &crate::layout::Look::default(), true).ligatures);
-        assert_eq!(serde_json::to_value(person).unwrap()["ligatures"], serde_json::json!(true));
+        assert_eq!(serde_json::to_value(&person).unwrap()["ligatures"], serde_json::json!(true));
+        let off = crate::layout::Look { ligatures: Some(false), ..Default::default() };
+        assert!(!Settings::compose(&person, &off, true).ligatures);
     }
 
     #[test]
