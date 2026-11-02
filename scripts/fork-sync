@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Merge upstream into the fork's master, push it, then rebuild and install Herdr.
+#   scripts/fork-sync [--no-install]
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+git diff --quiet && git diff --cached --quiet || { echo "Commit or stash first." >&2; exit 1; }
+git fetch upstream
+git switch -q master
+git merge --no-edit upstream/master
+git submodule update --init --recursive
+git push -q origin master
+
+echo "Feature branches not yet in upstream:"
+git for-each-ref --format='%(refname:short)' refs/heads/feat refs/heads/fix |
+  while read -r b; do
+    git merge-base --is-ancestor "$b" upstream/master || echo "  $b ($(git rev-list --count upstream/master.."$b") commits)"
+  done
+
+[[ ${1:-} == --no-install ]] || mise exec -- just install
