@@ -46,10 +46,10 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 ### Terminal font weight
 
-`feat/font-weight`: `font_weight` setting for normal terminal text (100 to 900, default 500, the Medium upstream hard-codes); bold stays at least 700.
+`feat/font-weight`: `font_weight` in settings.json or a layout's look (100 to 900, default 500, the Medium upstream hard-codes); bold stays at least 700. Rows kept from earlier frames are keyed on the whole cell font, so a weight change redraws them.
 
-- Files: `src/settings.rs`, `src/terminal.rs` (`cell_font`), `defaults/AGENTS.md`
-- Upstream: issue #134, pull request not yet opened
+- Files: `src/settings.rs`, `src/layout.rs`, `src/terminal.rs` (`cell_font`, `paint_grid`), `defaults/AGENTS.md`
+- Upstream: issue #134, pull request #332
 
 ### Coding ligatures
 
