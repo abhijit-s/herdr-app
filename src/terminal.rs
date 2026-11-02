@@ -1048,8 +1048,7 @@ pub fn cell_size(window: &Window) -> Size<Pixels> {
         crate::settings::CellWidth::Pixel => px((f32::from(advance) * scale).floor().max(1.0) / scale),
     };
     let w = (advance + crate::settings::z(s.letter_spacing.clamp(-2.0, 10.0))).max(px(1.0));
-    let line_height = s.line_height.clamp(1.0, 2.0);
-    size(w, px((f32::from(h) * line_height * scale).ceil() / scale))
+    size(w, px((f32::from(h) * s.line_height * scale).ceil() / scale))
 }
 
 /// One piece of a row's drawing, in cells from the row's start.

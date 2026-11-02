@@ -39,10 +39,10 @@ This file is the inventory of what diverges. Update it in the same commit that a
 
 ### Terminal line height
 
-`feat/line-height`: `line_height` setting, the row height as a multiple of the font's ascent plus descent (1 to 2, default 1.15, the value upstream hard-codes).
+Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as is: `line_height` in settings.json or a layout's look, the row height as a multiple of the font's height (0.8 to 2, default 1.15). It replaced this fork's own `feat/line-height`, which supported settings.json only.
 
-- Files: `src/settings.rs`, `src/terminal.rs` (`cell_size`), `defaults/AGENTS.md`
-- Upstream: issue #66, pull request not yet opened
+- Files: `src/settings.rs`, `src/layout.rs`, `src/terminal.rs` (`cell_size`), `defaults/AGENTS.md`
+- Upstream: pull request #67 (not ours), awaiting review
 
 ### Terminal font weight
 
