@@ -1034,11 +1034,16 @@ pub fn cell_size(window: &Window) -> Size<Pixels> {
     let id = ts.resolve_font(&f);
     let fs = px(crate::settings::font_size());
     let advance = ts.advance(id, fs, 'M').map(|s| s.width).unwrap_or(fs * 0.6);
-    let w = spaced_width(advance, crate::settings::z(crate::settings::get().letter_spacing));
     let h = ts.ascent(id, fs) + ts.descent(id, fs).abs();
-    // The width is not rounded: glyphs sit exactly on their cells (gpui-pre
-    // `apply_force_width_to_layout`), and boxes snap their edges (`snap_box`).
     let scale = window.scale_factor();
+    let s = crate::settings::get();
+    // Glyphs sit exactly on their cells (gpui-pre `apply_force_width_to_layout`),
+    // so any width works; boxes snap their edges (`snap_box`).
+    let w = spaced_width(advance, crate::settings::z(s.letter_spacing));
+    let w = match s.cell_width {
+        crate::settings::CellWidth::Font => w,
+        crate::settings::CellWidth::Pixel => whole_pixels(w, scale),
+    };
     size(w, px((f32::from(h) * 1.15 * scale).ceil() / scale))
 }
 
@@ -1048,6 +1053,11 @@ pub fn cell_size(window: &Window) -> Size<Pixels> {
 /// would draw every other letter off the grid.
 fn spaced_width(advance: Pixels, spacing: Pixels) -> Pixels {
     (advance + spacing).max(advance * 0.5).min(advance * 1.5)
+}
+
+/// Rounded down to whole device pixels, as Ghostty does, and at least one.
+fn whole_pixels(width: Pixels, scale: f32) -> Pixels {
+    px((f32::from(width) * scale).floor().max(1.0) / scale)
 }
 
 /// One piece of a row's drawing, in cells from the row's start.
@@ -1566,6 +1576,15 @@ mod tests {
         assert_eq!(super::spaced_width(advance, px(2.)), px(10.));
         assert_eq!(super::spaced_width(advance, px(10.)), px(12.));
         assert_eq!(super::spaced_width(advance, px(-10.)), px(4.));
+    }
+
+    #[test]
+    fn pixel_cell_width_rounds_after_letter_spacing() {
+        use gpui::px;
+        assert_eq!(super::whole_pixels(px(7.5), 1.), px(7.));
+        assert_eq!(super::whole_pixels(px(7.2), 2.), px(7.));
+        assert_eq!(super::whole_pixels(px(7.75), 2.), px(7.5));
+        assert_eq!(super::whole_pixels(px(0.2), 1.), px(1.));
     }
 
     #[test]

@@ -682,6 +682,10 @@ What's about the user, never a look:
   background; this is a threshold, not a guaranteed resulting ratio.
   Box/block, Powerline and sprite glyph colors are never adjusted.
   Changes apply immediately, including text already on screen.
+- `cell_width`: `"font"` (default) keeps the terminal cell width unrounded;
+  `"pixel"` rounds it down to whole device pixels after `letter_spacing`, as
+  Ghostty does (JetBrains Mono at 12 on a Retina display: 14.4 to 14 device
+  pixels). Changes apply immediately.
 - `letter_spacing`: px (at zoom 1, like `font_size`) added to the terminal
   cell width, from `-2` to `10` (default `0`, the font's own advance).
   Negative values tighten the grid: JetBrains Mono at 12 is 7.2px wide, so
