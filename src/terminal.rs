@@ -75,8 +75,9 @@ struct Grid {
     cursor_at: Option<Bounds<Pixels>>,
     /// Each row's drawing, kept while the row is the same `Rc`, wherever it moved.
     painted: Vec<PaintedRow>,
-    /// Font size, cell size, cell font, loaded fonts and ligature setting used to draw.
-    painted_with: (u32, Size<Pixels>, Font, u64, bool),
+    /// Font size, cell size, cell font, loaded fonts, ligature and thickening
+    /// settings used to draw.
+    painted_with: (u32, Size<Pixels>, Font, u64, bool, Option<u8>),
 }
 
 pub struct TerminalView {
@@ -210,7 +211,7 @@ impl TerminalView {
                 marked: None,
                 cursor_at: None,
                 painted: Vec::new(),
-                painted_with: (0, Size::default(), font(""), 0, false),
+                painted_with: (0, Size::default(), font(""), 0, false, None),
             })),
             focus: cx.focus_handle(),
             was_focused: false,
@@ -1281,6 +1282,14 @@ fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, cursor: Option<usize>, window: 
     ops
 }
 
+/// font_thicken's strength, when on: the terminal's glyphs thicken alike
+/// whatever their color, as Ghostty's do, where macOS otherwise thickens
+/// light text on dark more than dark text on light.
+fn glyph_thicken() -> Option<u8> {
+    let s = crate::settings::get();
+    s.font_thicken.then(|| s.font_thicken_strength.min(255) as u8)
+}
+
 fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, window: &mut Window, cx: &mut App) {
     crate::bench::count(&crate::bench::GRID);
     let mut g = grid.borrow_mut();
@@ -1347,7 +1356,7 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, w
     let ligatures = crate::settings::get().font_ligatures;
     let cursor = frame.cursor_cell.filter(|_| ligatures);
     // The whole cell font, so a weight change redraws kept rows too.
-    let with = (crate::settings::font_size().to_bits(), cell, cell_font(false, false), crate::settings::fonts_added(), ligatures);
+    let with = (crate::settings::font_size().to_bits(), cell, cell_font(false, false), crate::settings::fonts_added(), ligatures, glyph_thicken());
     let mut last = std::mem::take(&mut grid.borrow_mut().painted);
     if grid.borrow().painted_with != with {
         last.clear();
@@ -1603,7 +1612,7 @@ impl Render for TerminalView {
                         }
                     },
                     move |bounds, _, window, cx| {
-                        paint_grid(bounds, &grid_paint, focused, window, cx);
+                        window.with_glyph_thicken(glyph_thicken(), |window| paint_grid(bounds, &grid_paint, focused, window, cx));
                         let view = selection_view.clone();
                         window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
                             if phase == DispatchPhase::Capture {
