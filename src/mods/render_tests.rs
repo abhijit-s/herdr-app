@@ -354,7 +354,7 @@ fn font_pickers_contain_scroll_on_the_wrapper(cx: &mut TestAppContext) {
     let staged = Staged::new();
     for which in ["font", "ui_font"] {
         let mut p = props();
-        p["section"] = json!("look");
+        p["section"] = json!("text");
         let tree = describe(
             cx, &staged, "frame/settings", true, p, updates("current", "current"),
             Some(&format!("this.picking = '{which}';")),
@@ -371,7 +371,7 @@ fn terminal_text_rows_show_whose_value_is_in_use(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut p = props();
-    p["section"] = json!("look");
+    p["section"] = json!("text");
     let layout = "This layout sets its own; yours shows in the others.";
     for (person, overridden) in [("{}", 0), ("{font_weight: 300, line_height: 1.4, letter_spacing: 1}", 3)] {
         let setup = format!("this.load = async () => {{}}; this.person = {person};");
@@ -388,7 +388,7 @@ fn interface_zoom_and_text_size_rows_show_their_percent(cx: &mut TestAppContext)
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut p = props();
-    p["section"] = json!("look");
+    p["section"] = json!("text");
     for ((ui_zoom, ui_text_scale), (zoom_shown, text_shown)) in [((1.0, 1.0), ("100%", "100%")), ((1.2, 1.1), ("120%", "110%"))] {
         let mut values = fixture(true, p.clone(), updates("current", "current"));
         values.get_mut("settings").unwrap()["ui_zoom"] = json!(ui_zoom);
@@ -514,10 +514,11 @@ fn settings_sections_and_updates(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let start = Instant::now();
     let staged = Staged::new();
-    for section in ["look", "alerts", "privacy", "updates"] {
+    for section in ["look", "text", "alerts", "privacy", "updates"] {
         let mut p = props();
         p["section"] = json!(section);
-        describe(cx, &staged, "frame/settings", true, p, updates("current", "current"), None).unwrap();
+        let tree = describe(cx, &staged, "frame/settings", true, p, updates("current", "current"), None).unwrap();
+        assert_eq!(tree.contains("Terminal text"), section == "text", "{section}: {tree}");
     }
     for app in ["source", "current", "ready"] {
         for core in ["current", "ready", "error", "managed", "updating"] {
