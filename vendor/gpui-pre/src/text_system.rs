@@ -32,7 +32,7 @@ use std::{
     ops::{Deref, DerefMut, Range},
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU32, AtomicUsize, Ordering},
     },
 };
 
@@ -609,6 +609,9 @@ impl TextSystem {
 #[derive(Deref)]
 pub struct WindowTextSystem {
     line_layout_cache: LineLayoutCache,
+    // HERDR: added to every run's weight as it is shaped (f32 bits), so
+    // explicit weights keep their distance from the default.
+    weight_shift: AtomicU32,
     #[deref]
     text_system: Arc<TextSystem>,
 }
@@ -621,8 +624,26 @@ impl WindowTextSystem {
                 text_system.platform_text_system.clone(),
                 text_system.font_generation.clone(),
             ),
+            weight_shift: AtomicU32::new(0f32.to_bits()),
             text_system,
         }
+    }
+
+    /// HERDR: the weight every run shaped from here on is shifted by
+    /// (`Window::set_font_weight_shift`). The old shift.
+    pub fn replace_weight_shift(&self, shift: f32) -> f32 {
+        f32::from_bits(self.weight_shift.swap(shift.to_bits(), Ordering::Relaxed))
+    }
+
+    /// HERDR: `font` as shaped: its weight shifted, within 100 to 900.
+    fn resolve_run_font(&self, font: &Font) -> FontId {
+        let shift = f32::from_bits(self.weight_shift.load(Ordering::Relaxed));
+        if shift == 0.0 {
+            return self.resolve_font(font);
+        }
+        let mut font = font.clone();
+        font.weight = FontWeight((font.weight.0 + shift).clamp(100.0, 900.0));
+        self.resolve_font(&font)
     }
 
     pub(crate) fn layout_index(&self) -> LineLayoutIndex {
@@ -802,7 +823,7 @@ impl WindowTextSystem {
                     true
                 };
 
-                let font_id = self.resolve_font(&run.font);
+                let font_id = self.resolve_run_font(&run.font);
                 if let Some(font_run) = font_runs.last_mut()
                     && font_id == font_run.font_id
                     && !decoration_changed
@@ -916,7 +937,7 @@ impl WindowTextSystem {
                 true
             };
 
-            let font_id = self.resolve_font(&run.font);
+            let font_id = self.resolve_run_font(&run.font);
             if let Some(font_run) = font_runs.last_mut()
                 && font_id == font_run.font_id
                 && !decoration_changed
@@ -998,7 +1019,7 @@ impl WindowTextSystem {
                 true
             };
 
-            let font_id = self.resolve_font(&run.font);
+            let font_id = self.resolve_run_font(&run.font);
             if let Some(font_run) = font_runs.last_mut()
                 && font_id == font_run.font_id
                 && !decoration_changed
@@ -1060,7 +1081,7 @@ impl WindowTextSystem {
                 true
             };
 
-            let font_id = self.resolve_font(&run.font);
+            let font_id = self.resolve_run_font(&run.font);
             if let Some(font_run) = font_runs.last_mut()
                 && font_id == font_run.font_id
                 && !decoration_changed
