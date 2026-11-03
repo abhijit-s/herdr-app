@@ -172,6 +172,18 @@ test("the interface thicken toggle adds ui_font_thicken, then removes it, apart 
   expect(click({ ui_font_thicken: true }, {}, "st-font_thicken")).toEqual({ ui_font_thicken: true, font_thicken: true });
 });
 
+test("contrast steps by 0.1 within 0 to 1, terminal and interface apart", () => {
+  expect(click({}, {}, "st-text_contrast-plus")).toEqual({ text_contrast: 0.1 });
+  expect(click({ text_contrast: 0.3 }, {}, "st-text_contrast-plus")).toEqual({ text_contrast: 0.4 });
+  expect(click({ text_contrast: 1 }, {}, "st-text_contrast-plus")).toEqual({ text_contrast: 1 });
+  expect(click({ text_contrast: 7 }, {}, "st-text_contrast-minus")).toEqual({ text_contrast: 0.9 });
+  // Back at 0, the key leaves settings.json.
+  expect(click({ text_contrast: 0.1 }, {}, "st-text_contrast-minus")).toEqual({});
+  expect(click({}, {}, "st-text_contrast-minus")).toEqual({});
+  expect(click({ text_contrast: 0.5 }, {}, "st-ui_text_contrast-plus")).toEqual({ text_contrast: 0.5, ui_text_contrast: 0.1 });
+  expect(click({ ui_text_contrast: 0.2, text_contrast: 0.5 }, {}, "st-ui_text_contrast-minus")).toEqual({ ui_text_contrast: 0.1, text_contrast: 0.5 });
+});
+
 test("interface thicken strength shows only while it's on, and steps by 16 within 0 to 255", () => {
   expect(() => click({}, {}, "st-ui_font_thicken_strength-minus")).toThrow();
   expect(() => click({ font_thicken: true }, {}, "st-ui_font_thicken_strength-minus")).toThrow();
