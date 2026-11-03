@@ -49,7 +49,8 @@ fn toast_height(notification: &Value) -> f32 {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
         Some(Value::Number(n)) => n.as_f64().is_some_and(|n| n != 0.0),
-        Some(Value::String(s)) => !s.trim().is_empty(),
+        // JavaScript's trim() also takes the byte-order mark; Rust's doesn't.
+        Some(Value::String(s)) => !s.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}').is_empty(),
         Some(Value::Array(_) | Value::Object(_)) => true,
     };
     if body { TOAST_HEIGHT_WITH_BODY } else { TOAST_HEIGHT }
@@ -923,6 +924,10 @@ impl AppWindow {
             mods::note_fonts(cx);
         }
         let s = settings::Settings::compose(&self.person, &self.chrome.look, self.system_dark);
+        // A new command gets its own say about why it fails.
+        if s.alert_command != settings::get().alert_command {
+            self.alert_command_errors.clear();
+        }
         let problems = s.problems();
         if !problems.is_empty() {
             self.report_layout(&problems.join("; "));
@@ -2144,16 +2149,28 @@ impl AppWindow {
         });
         let note = crate::alert::Note { address: addr.to_owned(), alert, prev, app, name, place };
         if crate::alert::should_notify(settings.system_notifications, self.window_active, looking) {
-            let sent = crate::alert::send(&note, settings.alert_command.as_ref(), cx);
-            if sent.posted() {
-                self.notified.insert(addr.to_owned());
-            }
-            // Said once per reason, not on every alert.
-            if let crate::alert::Sent::Fallback(why) = sent
-                && self.alert_command_errors.insert(why.clone())
-            {
-                let failed = json!({ "title": "alert_command failed", "body": why, "level": "error" });
-                self.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": failed }), window, cx);
+            match crate::alert::send(&note, settings.alert_command.as_ref(), cx) {
+                crate::alert::Sent::Posted => {
+                    self.notified.insert(addr.to_owned());
+                }
+                crate::alert::Sent::Fallback(why) => {
+                    self.notified.insert(addr.to_owned());
+                    self.alert_command_failed(why, window, cx);
+                }
+                // It may have shown something before failing: the system
+                // notification goes too, late, but no second toast for the alert.
+                crate::alert::Sent::Ran(failed) => {
+                    let note = note.clone();
+                    cx.spawn_in(window, async move |this, cx| {
+                        let Ok(why) = failed.recv().await else { return };
+                        let _ = this.update_in(cx, |this, window, cx| {
+                            cx.show_system_notification(crate::alert::system_notification(&note));
+                            this.notified.insert(note.address.clone());
+                            this.alert_command_failed(why, window, cx);
+                        });
+                    })
+                    .detach();
+                }
             }
         }
         if alert == model::Alert::Blocked && settings.dock_bounce && !self.window_active {
@@ -2165,6 +2182,15 @@ impl AppWindow {
             "action": { "name": "agent.focus", "args": { "terminal": addr } },
         });
         self.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": notification }), window, cx);
+    }
+
+    /// The error toast for an `alert_command` that didn't start or failed:
+    /// said once per reason, not on every alert.
+    fn alert_command_failed(&mut self, why: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.alert_command_errors.insert(why.clone()) {
+            let failed = json!({ "title": "alert_command failed", "body": why, "level": "error" });
+            self.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": failed }), window, cx);
+        }
     }
 
     /// Keeps the model true to core, on every listing: drops panes whose terminal
@@ -5448,6 +5474,7 @@ mod tests {
             (json!(null), false),
             (json!(""), false),
             (json!("  \n "), false),
+            (json!("\u{feff} "), false),
             (json!(false), false),
             (json!(0), false),
             (json!("to the clipboard"), true),
@@ -5632,6 +5659,75 @@ export default class Scale extends View {
         let (view, cx) = cx.add_window_view(|window, cx| super::AppWindow::new(core, requests, window, cx));
         assert_eq!(view.update(cx, |this, _| this.layout_name.clone()), "test");
         (view, cx)
+    }
+
+    #[test]
+    fn a_script_toggling_follows_mouse_over_a_broken_settings_json_gets_an_error() {
+        in_own_process("toggle_broken");
+    }
+
+    #[gpui::test]
+    fn toggle_broken(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("toggle_broken") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
+        std::fs::write(crate::settings::path(), "{ \"focus_follows_mouse\": ").unwrap();
+        let reply = cx.update(|window, cx| view.update(cx, |this, cx| this.run_as("focus.toggle_follows_mouse", json!({}), false, window, cx)));
+        assert_eq!(reply["error"], "Focus follows mouse: on (not saved: settings.json has errors)", "{reply}");
+        assert_eq!(std::fs::read_to_string(crate::settings::path()).unwrap(), "{ \"focus_follows_mouse\": ", "left as it was");
+    }
+
+    #[test]
+    fn a_failing_alert_command_says_why_once_and_posts_the_notification() {
+        in_own_process("alert_errors");
+    }
+
+    /// Each reason one error toast however many alerts hit it, for a program
+    /// that doesn't start and for a shell line that exits 127 later; a new
+    /// `alert_command` gets its own say.
+    #[gpui::test]
+    fn alert_errors(cx: &mut gpui::TestAppContext) {
+        use crate::settings::{AlertCommand, SystemNotifications};
+        use serde_json::json;
+        if !running_alone("alert_errors") {
+            return;
+        }
+        cx.update(|cx| cx.set_app_identity("dev.herdr.test", "Herdr"));
+        // The shell's exit comes back from the reaper's own thread.
+        cx.executor().allow_parking();
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
+        let toasts = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.overlays.iter().filter(|o| o.kind == super::OverlayKind::Toast).count());
+        let alert_with = |command: AlertCommand, cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                this.person.sounds.enabled = false;
+                this.person.system_notifications = SystemNotifications::Always;
+                this.person.alert_command = Some(command);
+                this.apply_look(window, cx);
+                for _ in 0..2 {
+                    this.alert("t1", crate::model::Alert::Done, None, false, window, cx);
+                }
+            }));
+        };
+        alert_with(AlertCommand::Argv(vec!["/nonexistent/herdr-notify".into()]), cx);
+        assert_eq!(toasts(cx), 3, "two alert toasts and one error toast");
+        assert_eq!(cx.shown_system_notifications().len(), 2, "both fell back");
+
+        alert_with(AlertCommand::Shell("/nonexistent/herdr-notify -s done".into()), cx);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while cx.shown_system_notifications().len() < 4 {
+            assert!(std::time::Instant::now() < deadline, "the shell's exit 127 never came back");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            cx.run_until_parked();
+        }
+        cx.run_until_parked();
+        assert_eq!(toasts(cx), 6, "two more alert toasts, one more error toast for the new command");
+        view.update(cx, |this, _| {
+            assert!(this.alert_command_errors.iter().any(|why| why.contains("command not found (exit 127)")), "{:?}", this.alert_command_errors);
+            assert_eq!(this.alert_command_errors.len(), 1, "cleared when alert_command changed");
+            assert!(this.notified.contains("t1"));
+        });
     }
 
     #[test]
