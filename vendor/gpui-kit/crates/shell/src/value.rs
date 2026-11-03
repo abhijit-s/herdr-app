@@ -22,6 +22,19 @@ pub(crate) fn scaled_px(value: f32) -> Pixels {
     px(value * f32::from_bits(PIXEL_SCALE.load(Ordering::Relaxed)))
 }
 
+// HERDR: a second scale for text sizes only (`text_size`, an editor's
+// `font_size`), on top of the pixel scale, so text can grow without spacing.
+static TEXT_SCALE: AtomicU32 = AtomicU32::new(0x3f80_0000); // 1.0
+
+/// Sets the scale applied to script text sizes on top of the pixel scale.
+pub fn set_text_scale(scale: f32) {
+    TEXT_SCALE.store(scale.to_bits(), Ordering::Relaxed);
+}
+
+pub(crate) fn scaled_text_px(value: f32) -> Pixels {
+    scaled_px(value * f32::from_bits(TEXT_SCALE.load(Ordering::Relaxed)))
+}
+
 /// A script argument after bridging, stored in the spec arena.
 ///
 /// Engines convert their own values into this; everything above `engine/` only
