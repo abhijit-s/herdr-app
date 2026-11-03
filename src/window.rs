@@ -5095,6 +5095,7 @@ impl Render for AppWindow {
         crate::bench::frame_start();
         crate::terminal::next_frame();
         window.set_rem_size(settings::ui_rem());
+        window.set_glyph_thicken(settings::get().ui_glyph_thicken());
         // A terminal the person clicked into becomes the focused pane.
         let clicked = self
             .terms

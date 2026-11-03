@@ -416,6 +416,13 @@ pub struct Person {
     /// How much `font_thicken` thickens, 0 to 255.
     #[serde(skip_serializing_if = "is_full_strength")]
     pub font_thicken_strength: u16,
+    /// Thicken the panels' text (every mod, tab, popup and toast) the same
+    /// way, apart from the terminals' `font_thicken` (macOS).
+    #[serde(skip_serializing_if = "is_false")]
+    pub ui_font_thicken: bool,
+    /// How much `ui_font_thicken` thickens, 0 to 255.
+    #[serde(skip_serializing_if = "is_full_strength")]
+    pub ui_font_thicken_strength: u16,
     /// The panels' font (their sizes follow zoom).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_font: Option<String>,
@@ -577,6 +584,8 @@ impl Default for Person {
             font_ligatures: false,
             font_thicken: false,
             font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
+            ui_font_thicken: false,
+            ui_font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
             ui_font: None,
             telemetry: true,
             clipboard_write: true,
@@ -605,6 +614,8 @@ pub struct Settings {
     pub font_ligatures: bool,
     pub font_thicken: bool,
     pub font_thicken_strength: u16,
+    pub ui_font_thicken: bool,
+    pub ui_font_thicken_strength: u16,
     pub ui_font_family: String,
     pub ui_font_size: f32,
     /// How big the whole app is drawn (1 = as designed). The zoom keys change it.
@@ -670,6 +681,8 @@ impl Default for Settings {
             font_ligatures: false,
             font_thicken: false,
             font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
+            ui_font_thicken: false,
+            ui_font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
             ui_font_family: "Geist".into(),
             ui_font_size: 13.0,
             zoom: 1.0,
@@ -719,6 +732,8 @@ impl Settings {
             font_ligatures: person.font_ligatures,
             font_thicken: person.font_thicken,
             font_thicken_strength: person.font_thicken_strength,
+            ui_font_thicken: person.ui_font_thicken,
+            ui_font_thicken_strength: person.ui_font_thicken_strength,
             ui_font_family: look.ui_font.clone().or(person.ui_font.clone()).unwrap_or(d.ui_font_family),
             ui_font_size: d.ui_font_size,
             zoom: person.zoom,
@@ -790,6 +805,9 @@ impl Settings {
         }
         if self.font_thicken_strength > 255 {
             out.push(format!("font_thicken_strength {} is outside 0..255", self.font_thicken_strength));
+        }
+        if self.ui_font_thicken_strength > 255 {
+            out.push(format!("ui_font_thicken_strength {} is outside 0..255", self.ui_font_thicken_strength));
         }
         if !(100..=900).contains(&self.font_weight) {
             out.push(format!("font_weight {} is outside 100..900", self.font_weight));
@@ -979,6 +997,12 @@ pub fn text_rems(rems: f32) -> Pixels {
 /// Sizes at these settings. Terminals (text, cells, padding) follow `zoom`
 /// only; everything else follows `ui_scale`, and text also `ui_text_scale`.
 impl Settings {
+    /// `ui_font_thicken`'s strength when on, for every glyph outside the
+    /// terminals' grids.
+    pub fn ui_glyph_thicken(&self) -> Option<u8> {
+        self.ui_font_thicken.then(|| self.ui_font_thicken_strength.min(255) as u8)
+    }
+
     /// At most the largest `zoom`: a big zoom and a big `ui_zoom` don't compound past it.
     pub fn ui_scale(&self) -> f32 {
         (self.zoom * self.ui_zoom).min(ZOOM_MAX)
@@ -1223,6 +1247,27 @@ mod tests {
     }
 
     #[test]
+    fn ui_font_thicken_defaults_off_at_full_strength_apart_from_the_terminals() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert!(!default.ui_font_thicken);
+        assert_eq!(default.ui_font_thicken_strength, 255);
+        assert_eq!(serde_json::to_value(&default).unwrap().get("ui_font_thicken"), None);
+        assert_eq!(serde_json::to_value(&default).unwrap().get("ui_font_thicken_strength"), None);
+        let d = Settings::compose(&default, &crate::layout::Look::default(), true);
+        assert_eq!((d.ui_font_thicken, d.ui_glyph_thicken()), (false, None));
+        for strength in [0, 30, 255, 256] {
+            let person: Person = serde_json::from_value(serde_json::json!({"ui_font_thicken": true, "ui_font_thicken_strength": strength})).unwrap();
+            let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
+            assert!(settings.ui_font_thicken && !settings.font_thicken);
+            assert_eq!(settings.ui_font_thicken_strength, strength);
+            assert_eq!(settings.ui_glyph_thicken(), Some(strength.min(255) as u8));
+            assert_eq!(settings.problems().is_empty(), strength <= 255, "strength {strength}");
+        }
+        let terminal: Person = serde_json::from_value(serde_json::json!({"font_thicken": true})).unwrap();
+        assert_eq!(Settings::compose(&terminal, &crate::layout::Look::default(), true).ui_glyph_thicken(), None);
+    }
+
+    #[test]
     fn minimum_contrast_defaults_off_and_validates_the_ratio() {
         let default: Person = serde_json::from_str("{}").unwrap();
         assert_eq!(default.minimum_contrast, 1.0);
@@ -1407,7 +1452,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_thicken: true, font_thicken_strength: 30, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_thicken: true, font_thicken_strength: 30, ui_font_thicken: true, ui_font_thicken_strength: 30, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

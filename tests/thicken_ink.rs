@@ -2,6 +2,9 @@
 //! Real CoreText rasterising and GPU readback: font_thicken's strength
 //! thickens dark text on light as much as light text on dark (Ghostty's
 //! `font-thicken`), where macOS's own smoothing thickens by text color.
+//! The window's own strength (`set_glyph_thicken`, ui_font_thicken) thickens
+//! the panels' dark text on light, while a `with_glyph_thicken` inside it (the
+//! terminal grid's, here with font_thicken off) keeps its own.
 //! Prints each case's ink: the mean of (pixel - background) / (text -
 //! background) over the text's box, so both polarities compare directly.
 use gpui::{prelude::*, *};
@@ -49,6 +52,55 @@ impl Render for Scene {
         )
         .size_full()
     }
+}
+
+// The panels, then a terminal grid inside them, both dark text on light.
+const UI_ROWS: usize = 2;
+
+struct UiScene {
+    font_size: f32,
+    ui_thicken: Option<u8>,
+}
+
+impl Render for UiScene {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        window.set_glyph_thicken(self.ui_thicken);
+        let font_size = self.font_size;
+        canvas(
+            |_, _, _| {},
+            move |_, _, window, cx| {
+                for i in 0..UI_ROWS {
+                    let top = point(px(0.), px(ROW * i as f32));
+                    window.paint_quad(fill(Bounds::new(top, size(px(WIDTH), px(ROW))), rgb(LIGHT)));
+                    let run = TextRun { len: TEXT.len(), font: font("JetBrains Mono"), color: rgb(DARK).into(), background_color: None, underline: None, strikethrough: None };
+                    let line = window.text_system().shape_line(TEXT.into(), px(font_size), &[run], None);
+                    let at = top + point(px(2.), px(0.));
+                    if i == 0 {
+                        line.paint(at, px(ROW), TextAlign::Left, None, window, cx).unwrap();
+                    } else {
+                        window.with_glyph_thicken(None, |window| line.paint(at, px(ROW), TextAlign::Left, None, window, cx).unwrap());
+                    }
+                }
+            },
+        )
+        .size_full()
+    }
+}
+
+/// (interface ink, terminal ink) at this window strength.
+fn ui_inks(window: &mut Window, cx: &mut App, ui_thicken: Option<u8>) -> (f32, f32) {
+    let _ = window.draw(cx);
+    let image = window.render_to_image().expect("real GPU screenshot");
+    let scale = window.scale_factor();
+    let (ui, terminal) = (ink(&image, scale, 0, DARK, LIGHT), ink(&image, scale, 1, DARK, LIGHT));
+    println!("scale {scale} ui_font_thicken {ui_thicken:?} dark on light: interface ink {ui:.4}, terminal ink {terminal:.4}");
+    (ui, terminal)
+}
+
+fn check_ui(off: (f32, f32), on: (f32, f32)) {
+    assert!(on.0 > off.0 * 1.05, "ui_font_thicken thickens the panels' dark text: {} to {}", off.0, on.0);
+    assert!((on.1 - off.1).abs() < off.1 * 0.001, "the terminal grid keeps its own: {} vs {}", off.1, on.1);
+    assert!((off.0 - off.1).abs() < off.1 * 0.001, "off, both draw as GPUI does: {} vs {}", off.0, off.1);
 }
 
 fn ink(image: &image::RgbaImage, scale: f32, i: usize, fg: u32, bg: u32) -> f32 {
@@ -101,22 +153,30 @@ fn headless() {
     // as on a 1x display.
     let window = cx.open_window(size(px(WIDTH), px(ROW * CASES.len() as f32)), |_, cx| cx.new(|_| Scene { font_size: 6. })).unwrap();
     cx.update_window(window.into(), |_, window, cx| check(window, cx)).unwrap();
+    let [off, on] = [None, Some(255)].map(|ui_thicken| {
+        let window = cx.open_window(size(px(WIDTH), px(ROW * UI_ROWS as f32)), |_, cx| cx.new(|_| UiScene { font_size: 6., ui_thicken })).unwrap();
+        cx.update_window(window.into(), |_, window, cx| ui_inks(window, cx, ui_thicken)).unwrap()
+    });
+    check_ui(off, on);
 }
 
 #[cfg(target_os = "macos")]
 fn native() {
     gpui_platform::application().run(|cx| {
         add_font(cx);
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::new(point(px(0.), px(0.)), size(px(WIDTH), px(ROW * CASES.len() as f32))))),
+        let options = |rows: usize| WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::new(point(px(0.), px(0.)), size(px(WIDTH), px(ROW * rows as f32))))),
             show: false,
             focus: false,
             titlebar: None,
             ..Default::default()
         };
-        let window = cx.open_window(options, |_, cx| cx.new(|_| Scene { font_size: 12. })).unwrap();
+        let window = cx.open_window(options(CASES.len()), |_, cx| cx.new(|_| Scene { font_size: 12. })).unwrap();
+        let ui = [None, Some(255)].map(|ui_thicken| (ui_thicken, cx.open_window(options(UI_ROWS), |_, cx| cx.new(|_| UiScene { font_size: 12., ui_thicken })).unwrap()));
         cx.spawn(async move |cx| {
             cx.update_window(window.into(), |_, window, cx| check(window, cx)).unwrap();
+            let [off, on] = ui.map(|(ui_thicken, w)| cx.update_window(w.into(), |_, window, cx| ui_inks(window, cx, ui_thicken)).unwrap());
+            check_ui(off, on);
             cx.update(|cx| cx.quit());
         })
         .detach();

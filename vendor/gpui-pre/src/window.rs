@@ -1205,6 +1205,8 @@ pub struct Window {
     spin_step_scheduled: bool,
     // HERDR: the thickening strength `paint_glyph` uses (`with_glyph_thicken`).
     glyph_thicken: Option<u8>,
+    // HERDR: the strength each frame's paint starts at (`set_glyph_thicken`).
+    base_glyph_thicken: Option<u8>,
     #[cfg(any(test, feature = "test-support"))]
     presents: usize,
     pub(crate) next_frame: Frame,
@@ -2104,6 +2106,7 @@ impl Window {
             presents_spinners: false,
             spin_step_scheduled: false,
             glyph_thicken: None,
+            base_glyph_thicken: None,
             #[cfg(any(test, feature = "test-support"))]
             presents: 0,
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
@@ -3725,6 +3728,9 @@ impl Window {
 
         // Now actually paint the elements.
         self.invalidator.set_phase(DrawPhase::Paint);
+        // HERDR: every glyph painted this frame, deferred ones and tooltips
+        // too, starts at the window's strength; `with_glyph_thicken` nests.
+        self.glyph_thicken = self.base_glyph_thicken;
         root_element.paint(self, cx);
 
         #[cfg(any(feature = "inspector", debug_assertions))]
@@ -4127,6 +4133,13 @@ impl Window {
             .tooltip_requests
             .push(Some(TooltipRequest { id, tooltip }));
         id
+    }
+
+    /// HERDR: the thickening strength (as `with_glyph_thicken`) of the
+    /// glyphs a frame paints outside any `with_glyph_thicken`. Set it while
+    /// rendering, as `set_rem_size`.
+    pub fn set_glyph_thicken(&mut self, strength: Option<u8>) {
+        self.base_glyph_thicken = strength;
     }
 
     /// HERDR: paints the monochrome glyphs in `f` thickened at `strength`
