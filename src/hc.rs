@@ -77,6 +77,15 @@ impl EventLines {
         json!({ "terminals": live })
     }
 
+    /// Finished terminals still on record, and their exit codes (null after a signal).
+    pub fn ended(&self) -> HashMap<String, Value> {
+        self.terminals
+            .iter()
+            .filter(|t| t["state"] == "finished")
+            .filter_map(|t| Some((t["address"].as_str()?.to_owned(), t["exit_code"].clone())))
+            .collect()
+    }
+
     pub fn push(&mut self, bytes: &[u8]) -> Pushed {
         self.pending.extend_from_slice(bytes);
         let mut consumed = 0;
@@ -393,12 +402,18 @@ impl Core {
     /// Starts a program in a new core terminal and returns its address (`tN`).
     /// Starts a terminal, here or on another machine (`on`: its name in `hc machine ls`).
     pub fn run(&self, argv: Vec<String>, cwd: Option<String>, labels: Value, on: Option<&str>, size: Option<(u16, u16)>) -> Result<String> {
-        let env = json!({"TERM": "xterm-256color", "COLORTERM": "truecolor", "TERM_PROGRAM": "herdr"});
-        let mut params = json!({"argv": argv, "cwd": cwd, "env": env, "labels": labels, "on": on, "keep": true});
+        let mut params = json!({"argv": argv, "cwd": cwd, "labels": labels, "on": on, "keep": true});
         // Released cores ignore unknown parameters, including when forwarding to another machine.
         if let Some((cols, rows)) = size {
             params["size"] = json!({"cols": cols, "rows": rows});
         }
+        self.start(params)
+    }
+
+    /// `terminal.run` with the terminal identity every Herdr terminal gets
+    /// (TERM and friends); returns its address.
+    pub fn start(&self, mut params: Value) -> Result<String> {
+        params["env"] = json!({"TERM": "xterm-256color", "COLORTERM": "truecolor", "TERM_PROGRAM": "herdr"});
         let r = self.call("terminal.run", params)?;
         r.get("address")
             .and_then(Value::as_str)
@@ -507,6 +522,35 @@ pub fn offline() -> Arc<Core> {
         child: Mutex::new(child),
         lost,
     })
+}
+
+/// A core that answers each call with `answer(method, params)` and keeps
+/// every call it was sent, for tests that need a core that does something.
+#[cfg(test)]
+pub fn answering(answer: impl Fn(&str, &Value) -> Result<Value, Value> + Send + 'static) -> (Arc<Core>, Arc<Mutex<Vec<(String, Value)>>>) {
+    let (writer, frames) = mpsc::channel::<Vec<u8>>();
+    let (lost_tx, lost) = async_channel::bounded(1);
+    std::mem::forget(lost_tx);
+    let child = std::process::Command::new(std::env::current_exe().unwrap()).arg("--help").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let routes = Arc::new(Mutex::new(Routes::default()));
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let (replies, sent) = (routes.clone(), calls.clone());
+    std::thread::spawn(move || {
+        for frame in frames {
+            if frame[4] != DATA || frame[..4] != [0; 4] {
+                continue;
+            }
+            let request: Value = serde_json::from_slice(&frame[HEADER..]).unwrap_or_default();
+            let method = request["method"].as_str().unwrap_or_default();
+            sent.lock().unwrap().push((method.to_owned(), request["params"].clone()));
+            let reply = answer(method, &request["params"]);
+            if let Some(tx) = request["id"].as_u64().and_then(|id| replies.lock().unwrap().replies.remove(&id)) {
+                let _ = tx.send(reply);
+            }
+        }
+    });
+    let core = Arc::new(Core { hello: Value::Null, writer, routes, next_id: AtomicU64::new(1), child: Mutex::new(child), lost });
+    (core, calls)
 }
 
 #[cfg(test)]

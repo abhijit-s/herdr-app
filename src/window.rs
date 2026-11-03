@@ -120,6 +120,30 @@ pub fn shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
 }
 
+/// Whether a `terminal.popup`'s ✕ ends its program (true) or only hides the
+/// popup, leaving the program running (false: `hc ls`, `hc kill <t>`; a
+/// `--wait` keeps waiting). Esc always only hides it.
+const POPUP_CLOSE_ENDS_PROGRAM: bool = false;
+
+/// A `terminal.popup {wait}` terminal: who waits on it, and how it ended.
+#[derive(Default)]
+struct Waiting {
+    /// Listed live at least once: missing from a later listing means it's gone.
+    seen: bool,
+    ended: Option<Value>,
+    replies: Vec<std::sync::mpsc::Sender<Value>>,
+}
+
+/// `terminal.popup {hold}`: the program, then its exit status until a key.
+/// Ctrl-C reaches the program but not the wrapper, so the status still shows.
+fn popup_hold_argv(argv: Vec<String>) -> Result<Vec<String>, String> {
+    if cfg!(windows) {
+        return Err("terminal.popup hold needs sh, which Windows lacks".into());
+    }
+    let script = r#"trap : INT; "$@"; code=$?; printf "\n[exit %s] press a key to close" "$code"; read -rn1 _; exit "$code""#;
+    Ok(["sh", "-c", script, "popup"].into_iter().map(str::to_owned).chain(argv).collect())
+}
+
 fn unix_agent_argv(sh: String, cmd: Vec<String>, login: bool) -> Vec<String> {
     let fish = std::path::Path::new(&sh).file_name().and_then(|s| s.to_str()) == Some("fish");
     let script = match (fish, login) {
@@ -423,6 +447,8 @@ pub struct AppWindow {
     folders_checked: HashMap<String, FolderCheck>,
     /// When Herdr started each terminal: a listing already in flight can't know them yet.
     born: RefCell<HashMap<String, Instant>>,
+    /// `terminal.popup {wait}` terminals, until a waiter has their exit code.
+    waits: HashMap<String, Waiting>,
     /// Connection epoch: ignore replies from an old connection.
     core_generation: u64,
     checking_closed: bool,
@@ -512,6 +538,7 @@ impl AppWindow {
             cwds: HashMap::new(),
             folders_checked: HashMap::new(),
             born: RefCell::new(HashMap::new()),
+            waits: HashMap::new(),
             core_generation: 0,
             checking_closed: false,
             documents_watching: false,
@@ -674,7 +701,7 @@ impl AppWindow {
                     // A stream that ended is subscribed to again, with a fresh snapshot.
                     if closed { sub = None; }
                     let machines = if ask_machines || terminals { core.call("machine.list", json!({})).ok() } else { None };
-                    let listed = terminals.then(|| event_lines.live());
+                    let listed = terminals.then(|| (event_lines.live(), event_lines.ended()));
                     (sub, machines, refresh, listed, event_lines)
                 }).await;
                 let watching = sub.is_some();
@@ -694,7 +721,10 @@ impl AppWindow {
                     if watching { this.documents.entry(String::new()).or_default().connection(true, None, None); }
                     let changed = this.documents_updated(machines, vec![], window, cx);
                     match listed {
-                        Some(v) => this.terminals_listed(v, window, cx),
+                        Some((live, ended)) => {
+                            this.terminals_listed(live, window, cx);
+                            this.settle_waits(&ended, cx);
+                        }
                         None => this.tend_terminals(false, window, cx),
                     }
                     if changed { this.sync(window, cx); }
@@ -3041,6 +3071,10 @@ impl AppWindow {
                 }
                 self.kill(&[t.to_owned()], cx);
             }
+            "terminal.popup" => {
+                let r = self.popup(a, window, cx);
+                self.answer(r);
+            }
             "terminal.peek" => {
                 let t = Self::arg(a, "terminal").unwrap_or_default();
                 if !self.live.contains_key(t) {
@@ -3544,19 +3578,102 @@ impl AppWindow {
     }
 
     fn peek_terminal(&mut self, address: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_peek(address, (0.8, 0.8), false, window, cx);
+    }
+
+    /// The peek overlay: `close_ends_program` makes its ✕ end the program too.
+    fn open_peek(&mut self, address: &str, (width, height): (f64, f64), close_ends_program: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.close_overlay("terminal-peek", window, cx);
         self.open_overlay("terminal-peek".into(), json!({
             "kind": "dialog",
-            "width": 0.8,
-            "height": 0.8,
+            "width": width,
+            "height": height,
             "layout": {
                 "type": "column",
                 "children": [
-                    { "type": "block", "size": { "px": 34 }, "content": { "mod": "peek", "props": { "terminal": address } } },
+                    { "type": "block", "size": { "px": 34 }, "content": { "mod": "peek", "props": { "terminal": address, "close_ends_program": close_ends_program } } },
                     { "type": "block", "content": { "terminal": address } }
                 ]
             }
         }), window, cx);
+    }
+
+    /// `terminal.popup`: a program on this computer, as `hc run --bg --no-parent`
+    /// starts one (`--rm` unless `wait`), shown in the peek overlay at once.
+    fn popup(&mut self, a: &Value, window: &mut Window, cx: &mut Context<Self>) -> Result<Value, String> {
+        let argv = Self::argv(a).filter(|v| !v.is_empty()).ok_or("terminal.popup argv is the program and its arguments, as a list")?;
+        let flag = |k: &str| a.get(k).and_then(Value::as_bool).unwrap_or(false);
+        let (hold, wait) = (flag("hold"), flag("wait"));
+        let argv = if hold { popup_hold_argv(argv)? } else { argv };
+        let size = |k: &str| match a.get(k) {
+            None | Some(Value::Null) => Ok(0.8),
+            Some(v) => v.as_f64().filter(|n| *n > 0.0).ok_or(format!("terminal.popup {k} is a positive number")),
+        };
+        let size = (size("width")?, size("height")?);
+        let cwd = Self::owned(a, "cwd").unwrap_or_else(home);
+        let params = json!({ "argv": argv, "cwd": cwd, "no_parent": true, "rm": !wait });
+        let address = self.core.start(params).map_err(|e| format!("cannot start a terminal: {e:#}"))?;
+        if wait {
+            self.waits.insert(address.clone(), Waiting::default());
+        }
+        self.open_peek(&address, size, POPUP_CLOSE_ENDS_PROGRAM, window, cx);
+        Ok(json!({ "terminal": address }))
+    }
+
+    /// `{"wait": terminal}` on the control socket: answered with its exit code
+    /// once it ends, now if it already has.
+    fn wait_for(&mut self, address: &str, reply: std::sync::mpsc::Sender<Value>) {
+        let Some(w) = self.waits.get_mut(address) else {
+            let _ = reply.send(json!({ "error": format!("nothing waits on {address:?}: only terminal.popup with wait does") }));
+            return;
+        };
+        match &w.ended {
+            Some(ended) => {
+                let _ = reply.send(ended.clone());
+                self.waits.remove(address);
+            }
+            None => w.replies.push(reply),
+        }
+    }
+
+    /// After the core's events: waited-on popups that finished (`ended`: their
+    /// exit codes) or went without one (removed by someone else) answer their
+    /// waiters, and the terminal is removed.
+    fn settle_waits(&mut self, ended: &HashMap<String, Value>, cx: &mut Context<Self>) {
+        let mut done = Vec::new();
+        for (address, w) in self.waits.iter_mut().filter(|(_, w)| w.ended.is_none()) {
+            let code = match ended.get(address) {
+                Some(code) => code.clone(),
+                None if self.live.contains_key(address) => {
+                    w.seen = true;
+                    continue;
+                }
+                None if w.seen => Value::Null,
+                // Not listed yet: it started after this listing began.
+                None => continue,
+            };
+            let answer = json!({ "terminal": address, "exit_code": code });
+            let answered = !w.replies.is_empty();
+            for reply in w.replies.drain(..) {
+                let _ = reply.send(answer.clone());
+            }
+            w.ended = Some(answer);
+            done.push((address.clone(), answered));
+        }
+        for (address, answered) in done {
+            // Unanswered, it keeps the exit code for a waiter still on its way.
+            if answered {
+                self.waits.remove(&address);
+            }
+            let core = self.core.clone();
+            cx.background_executor()
+                .spawn(async move {
+                    if let Err(e) = core.call("terminal.rm", json!({ "terminal": address })) {
+                        tracing::warn!("popup terminal.rm: {e:#}");
+                    }
+                })
+                .detach();
+        }
     }
 
     /// Which copies are on screen, for `<mod>.<command>` (`mods::send_command`).
@@ -3628,9 +3745,12 @@ impl AppWindow {
             Request::OpenOverlay { id, spec } => self.open_overlay(id, spec, window, cx),
             Request::CloseOverlay { id } => self.close_overlay(&id, window, cx),
             Request::Refresh => self.refresh_mods(cx),
-            Request::Control { cmd, reply } => {
-                let _ = reply.send(self.control(cmd, window, cx));
-            }
+            Request::Control { cmd, reply } => match cmd.get("wait").and_then(Value::as_str) {
+                Some(address) => self.wait_for(address, reply),
+                None => {
+                    let _ = reply.send(self.control(cmd, window, cx));
+                }
+            },
         }
     }
 
@@ -5212,6 +5332,11 @@ mod tests {
     /// shipped ones run programs on threads of their own, which the test
     /// executor refuses.
     fn open_window<'a>(cx: &'a mut gpui::TestAppContext, mod_name: &str, main_js: &str, layout: serde_json::Value) -> (gpui::Entity<super::AppWindow>, &'a mut gpui::VisualTestContext) {
+        open_window_on(crate::hc::offline(), cx, mod_name, main_js, layout)
+    }
+
+    /// `open_window` on a given core (`hc::answering`).
+    fn open_window_on<'a>(core: std::sync::Arc<crate::hc::Core>, cx: &'a mut gpui::TestAppContext, mod_name: &str, main_js: &str, layout: serde_json::Value) -> (gpui::Entity<super::AppWindow>, &'a mut gpui::VisualTestContext) {
         use serde_json::json;
         let home = crate::mods::app_dir();
         crate::mods::write_workspace().unwrap();
@@ -5225,7 +5350,7 @@ mod tests {
         let requests = crate::mods::install_policy();
         crate::mods::set_shared("layout".into(), json!("test"));
         crate::mods::set_shared("frame.welcomed".into(), json!("test"));
-        let (view, cx) = cx.add_window_view(|window, cx| super::AppWindow::new(crate::hc::offline(), requests, window, cx));
+        let (view, cx) = cx.add_window_view(|window, cx| super::AppWindow::new(core, requests, window, cx));
         assert_eq!(view.update(cx, |this, _| this.layout_name.clone()), "test");
         (view, cx)
     }
@@ -5305,6 +5430,92 @@ export default class Probe extends View {
             cx.deactivate_window();
             assert_eq!(seen(cx), Some(json!(false)), "blurred: {:?}", crate::mods::shared("probe.seen"));
         }
+    }
+
+    /// `terminal.popup` starts the program as `hc run --bg --no-parent` would
+    /// (`--rm` unless it waits), peeks at it at once, and a waiter gets its
+    /// exit code when it finishes, after which the terminal is removed.
+    #[test]
+    fn a_popup_runs_its_program_and_peeks_at_it() {
+        in_own_process("popup_peeks");
+    }
+
+    #[gpui::test]
+    fn popup_peeks(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        use std::collections::HashMap;
+        if !running_alone("popup_peeks") {
+            return;
+        }
+        let next = std::sync::atomic::AtomicU32::new(8);
+        let (core, calls) = crate::hc::answering(move |method, _| match method {
+            "terminal.run" => Ok(json!({ "address": format!("t{}", next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) })),
+            "terminal.rm" => Ok(json!({})),
+            _ => Err(json!({ "message": "not in this test" })),
+        });
+        let (view, cx) = open_window_on(core, cx, "unused", "", json!({ "id": "root", "type": "block", "content": { "mod": "unused" } }));
+        let called = |method: &str| calls.lock().unwrap().iter().filter(|(m, _)| m == method).map(|(_, p)| p.clone()).collect::<Vec<_>>();
+        let peeked = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| {
+            let peek = this.overlays.iter().find(|o| o.id == "terminal-peek").expect("the peek overlay");
+            (serde_json::to_value(peek.layout.as_ref().expect("its layout")).unwrap(), peek.size.width)
+        });
+        let popup = |args: serde_json::Value, cx: &mut gpui::VisualTestContext| cx.update(|window, cx| view.update(cx, |this, cx| this.run_as("terminal.popup", args, false, window, cx)));
+
+        assert_eq!(popup(json!({ "argv": ["htop"], "cwd": "/tmp" }), cx), json!({ "terminal": "t8" }));
+        let run = called("terminal.run").pop().unwrap();
+        assert_eq!((&run["argv"], &run["cwd"], &run["no_parent"], &run["rm"]), (&json!(["htop"]), &json!("/tmp"), &json!(true), &json!(true)));
+        let (layout, width) = peeked(cx);
+        let blocks = layout.to_string();
+        assert!(blocks.contains(r#"{"terminal":"t8"}"#), "{blocks}");
+        assert!(blocks.contains(r#""close_ends_program":false"#), "the ✕ only hides it: {blocks}");
+        assert_eq!(width, 0.8);
+        assert!(view.update(cx, |this, _| this.waits.is_empty()), "nothing waits without wait");
+
+        // Waiting: kept for the exit code, held output, the size asked for.
+        assert_eq!(popup(json!({ "argv": ["sh", "-c", "exit 7"], "wait": true, "hold": true, "width": 600 }), cx), json!({ "terminal": "t9" }));
+        let run = called("terminal.run").pop().unwrap();
+        assert_eq!(run["rm"], json!(false));
+        let argv = run["argv"].as_array().unwrap();
+        assert_eq!(argv[..2], [json!("sh"), json!("-c")]);
+        assert_eq!(argv[3..], [json!("popup"), json!("sh"), json!("-c"), json!("exit 7")]);
+        assert_eq!(run["cwd"], json!(super::home()));
+        let (layout, width) = peeked(cx);
+        assert!(layout.to_string().contains(r#"{"terminal":"t9"}"#), "the new popup replaces the last");
+        assert_eq!(width, 600.0);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        view.update(cx, |this, cx| {
+            this.wait_for("t9", tx);
+            // Live, then finished with its code.
+            this.live.insert("t9".into(), json!({}));
+            this.settle_waits(&HashMap::new(), cx);
+            this.live.clear();
+            this.settle_waits(&HashMap::from([("t9".to_owned(), json!(7))]), cx);
+        });
+        assert_eq!(rx.try_recv().unwrap(), json!({ "terminal": "t9", "exit_code": 7 }));
+        cx.run_until_parked();
+        assert_eq!(called("terminal.rm"), [json!({ "terminal": "t9" })]);
+        assert!(view.update(cx, |this, _| this.waits.is_empty()));
+
+        // One that ends before anyone asks keeps its code for the waiter; one
+        // removed without finishing answers null; unknown ones are an error.
+        popup(json!({ "argv": ["true"], "wait": true }), cx);
+        popup(json!({ "argv": ["sleep", "9"], "wait": true }), cx);
+        view.update(cx, |this, cx| {
+            this.live.insert("t11".into(), json!({}));
+            this.settle_waits(&HashMap::from([("t10".to_owned(), json!(0))]), cx);
+            this.live.clear();
+            this.settle_waits(&HashMap::new(), cx);
+        });
+        let answer = |address: &str, cx: &mut gpui::VisualTestContext| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            view.update(cx, |this, _| this.wait_for(address, tx));
+            rx.try_recv().unwrap()
+        };
+        assert_eq!(answer("t10", cx)["exit_code"], json!(0));
+        assert_eq!(answer("t11", cx)["exit_code"], json!(null));
+        assert!(answer("t10", cx)["error"].is_string(), "answered once");
+        assert!(popup(json!({ "argv": [] }), cx)["error"].is_string());
     }
 
     include!("window/pane_size_tests.rs");

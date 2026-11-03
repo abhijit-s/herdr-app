@@ -555,6 +555,11 @@ The main ones:
   starting directory for tabs and right/down splits, with or without `argv`), `terminal.kill {terminal}`,
   `terminal.keep {terminal, place?}`, `terminal.park {terminal}`,
   `terminal.peek {terminal}` (peek over the tab, with keep-as-tab and close),
+  `terminal.popup {argv, cwd?, hold?, wait?, width?, height?}` (start a program on
+  this computer without a parent and peek at it in one step; the terminal is removed
+  when it ends unless `wait`, which keeps it until `{"wait": terminal}` on the
+  control socket returns its `exit_code`; `hold` keeps the popup up until a key;
+  ✕ hides the popup and the program keeps running; `herdr-app popup` wraps it),
   `terminal.show {terminal?, pane?}`, `terminal.copy`, `terminal.paste` (copied
   files, such as Finder's or a clipboard manager's image, as if dropped; an image
   alone as `terminal.paste_image` pastes it), `terminal.paste_image` (Ctrl+V: an
@@ -609,6 +614,7 @@ herdr-app do pane.split:right
 herdr-app ls          # spaces, their tabs and terminals (sub-agents under their parent)
 herdr-app status      # what's on screen: layout, focus, overlays, zoom, errors from files and mods
 herdr-app commands    # every command and its arguments
+herdr-app popup --wait -- make test   # a command in a popup; exits with its exit code
 ```
 
 `herdr-app do` prints what the command made (`{ "space", "tab",

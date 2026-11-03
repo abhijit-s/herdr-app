@@ -78,3 +78,10 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 - Files: `src/window.rs` (`toast_height`, `open_overlay`, `render_overlays`, test `toast_sizes`), `defaults/AGENTS.md`
 - Upstream: none yet
+
+### Popup command
+
+`feat/popup-command` (branched from `master`, fork only): `terminal.popup {argv, cwd?, hold?, wait?, width?, height?}` starts a program on this computer as `hc run --bg --no-parent` does (`rm` unless `wait`) and opens the `terminal.peek` overlay for it in the same step, so there is no retry while the window learns about the terminal. `herdr-app popup [--cwd DIR] [--hold] [--wait] [--size WxH] [--] cmd args…` drives it over the control socket; with `--wait` it sends `{"wait": terminal}`, which the window answers from the core's events once the terminal finishes, then removes the terminal, and the CLI exits with its exit code (1 if unknown, the window is not open or the popup failed). The popup's ✕ only hides it and the program keeps running: `POPUP_CLOSE_ENDS_PROGRAM` in `src/window.rs` flips that, through the peek bar's `close_ends_program` prop. It replaces the logic of the `herdr-popup` shell script in dotfiles, which is now a wrapper.
+
+- Files: `src/commands.rs`, `src/window.rs` (`popup`, `open_peek`, `wait_for`, `settle_waits`, `popup_hold_argv`, test `popup_peeks`), `src/control.rs` (`popup`, `parse_popup`, `serve`), `src/hc.rs` (`Core::start`, `EventLines::ended`, test core `answering`), `src/main.rs`, `defaults/mods/peek/main.js`, `defaults/AGENTS.md`, `docs/commands.md`
+- Upstream: none yet
