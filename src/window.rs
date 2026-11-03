@@ -3500,7 +3500,11 @@ impl AppWindow {
             if (fit || kind == OverlayKind::Toast)
                 && let Some(root) = &copy.root
             {
-                root.update(cx, |r, cx| r.set_fit_content(true, cx));
+                root.update(cx, |r, cx| {
+                    r.set_fit_content(true, cx);
+                    // As wide as its text, but a toast's box can be wider (its minimum) and is as tall as set.
+                    r.set_fill_fitted(kind == OverlayKind::Toast, cx);
+                });
             }
             self.copies.insert(slot.clone(), copy);
         }
@@ -5144,7 +5148,11 @@ mod tests {
         if !running_alone("toast_sizes") {
             return;
         }
-        let (view, cx) = open_window(cx, "toast", include_str!("../defaults/mods/toast/main.js"), json!({"id": "root", "type": "block"}));
+        // The shipped mod, its root and text column keyed per toast so their bounds can be read.
+        let shipped = include_str!("../defaults/mods/toast/main.js");
+        let keyed = shipped.replace(r#".id("toast")"#, r#".id(`toast-${p.overlay}`)"#).replace("v_flex()\n          .flex_1()", "v_flex()\n          .id(`text-${p.overlay}`)\n          .flex_1()");
+        assert_eq!(keyed.matches("${p.overlay}").count(), 2, "the toast mod changed shape: key its root and text column again");
+        let (view, cx) = open_window(cx, "toast", &keyed, json!({"id": "root", "type": "block"}));
         let long = "A notification whose title goes on far longer than any toast is wide";
         let toasts = [
             ("short", json!({"title": "Copied"})),
@@ -5171,6 +5179,13 @@ mod tests {
         for pair in stack.windows(2) {
             assert_eq!(pair[1].bottom(), pair[0].top() - px(8.0), "{stack:?}");
             assert_eq!(pair[1].right(), pair[0].right());
+        }
+        // The mod fills its pill inside the border, the text centred top to bottom.
+        for (id, pill) in ["short", "medium", "long", "body", "tall"].iter().zip(stack) {
+            let content = cx.debug_bounds(format!("toast-{id}").leak()).unwrap_or_else(|| panic!("no toast-{id}"));
+            let text = cx.debug_bounds(format!("text-{id}").leak()).unwrap_or_else(|| panic!("no text-{id}"));
+            assert_eq!(content, pill.inset(px(1.0)), "{id}: the content fills the pill inside its border");
+            assert!((text.center().y - pill.center().y).abs() < px(0.5), "{id}: text centred: text {text:?}, pill {pill:?}");
         }
     }
 

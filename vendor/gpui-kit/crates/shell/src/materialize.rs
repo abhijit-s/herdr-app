@@ -2171,6 +2171,12 @@ fn flex_element(
     let focus = tracked_focus(runtime, &behavior, "div");
     let identity = element_id(id, behavior.key.clone());
     let stateful = element.id(identity.clone());
+    // HERDR: a keyed element's bounds, for tests (`debug_bounds("<id>")`); a
+    // no-op outside debug test-support builds.
+    let stateful = match &behavior.key {
+        Some(key) => stateful.debug_selector(|| key.to_string()),
+        None => stateful,
+    };
     let stateful = with_gpui_focus(stateful, &behavior, focus.as_ref());
     let stateful = with_input_handlers(stateful, &behavior, runtime);
     let stateful = components::dock::with_commands(stateful, &behavior, runtime, cx);
