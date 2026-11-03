@@ -2149,7 +2149,7 @@ impl AppWindow {
     fn alert(&mut self, addr: &str, alert: model::Alert, prev: Option<String>, looking: bool, window: &mut Window, cx: &mut Context<Self>) {
         let settings = settings::get();
         if settings.sounds.enabled {
-            crate::sound::play(if alert == model::Alert::Blocked { "blocked" } else { "done" });
+            crate::sound::play(if alert.needs_you() { "blocked" } else { "done" });
         }
         // Needing the person brings a settled tab back.
         if let Some(ctx) = self.model.pane_of(&self.root_agent(addr)).and_then(|p| self.model.tab_of(&p)).map(|c| c.id.clone())
@@ -2173,7 +2173,8 @@ impl AppWindow {
             let (p, c) = (self.model.space_of(&pane)?, self.model.tab_of(&pane)?);
             Some(format!("{} / {}", self.model.space_name(p, &self::home()), Model::tab_name(p, c)))
         });
-        let note = crate::alert::Note { address: addr.to_owned(), alert, prev, app, name, place };
+        let said = crate::alert::Said::of(rec.and_then(|r| r.get("report")));
+        let note = crate::alert::Note { address: addr.to_owned(), alert, prev, app, name, place, said };
         if crate::alert::should_notify(settings.system_notifications, self.window_active, looking) {
             match crate::alert::send(&note, settings.alert_command.as_ref(), cx) {
                 crate::alert::Sent::Posted => {
@@ -2199,10 +2200,10 @@ impl AppWindow {
                 }
             }
         }
-        if alert == model::Alert::Blocked && settings.dock_bounce && !self.window_active {
+        if alert.needs_you() && settings.dock_bounce && !self.window_active {
             window.request_attention();
         }
-        let level = if alert == model::Alert::Blocked { "error" } else { "info" };
+        let level = if alert.needs_you() { "error" } else { "info" };
         let notification = json!({
             "title": note.title(), "body": note.place, "level": level,
             "action": { "name": "agent.focus", "args": { "terminal": addr } },
@@ -5776,6 +5777,45 @@ export default class Scale extends View {
             assert_eq!(this.alert_command_errors.len(), 1, "cleared when alert_command changed");
             assert!(this.notified.contains("t1"));
         });
+    }
+
+    #[test]
+    fn an_alert_carries_the_agents_own_message_from_the_listing() {
+        in_own_process("alert_message");
+    }
+
+    /// The 7501 record in the core's listing reaches the notification: its
+    /// `msg` over "space / tab", and `error` told apart from `blocked`.
+    #[gpui::test]
+    fn alert_message(cx: &mut gpui::TestAppContext) {
+        use crate::settings::SystemNotifications;
+        use serde_json::json;
+        if !running_alone("alert_message") {
+            return;
+        }
+        cx.update(|cx| cx.set_app_identity("dev.herdr.test", "Herdr"));
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
+        view.update(cx, |this, _| this.model.add_space("p1", "api", "/src/api", crate::model::Tab::new("c1", "fix login", "x1", "t1")));
+        let list = |status: serde_json::Value, cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                this.person.sounds.enabled = false;
+                this.person.system_notifications = SystemNotifications::Always;
+                this.person.alert_command = None;
+                this.apply_look(window, cx);
+                this.window_active = false;
+                this.terminals_listed(json!({ "terminals": [{ "address": "t1", "name": "Claude", "status": status }] }), window, cx);
+            }));
+        };
+        list(json!({ "state": "working", "app": "claude-code" }), cx);
+        list(json!({ "state": "blocked", "kind": "permission", "app": "claude-code", "msg": "approve Bash: make" }), cx);
+        let shown = cx.shown_system_notifications();
+        let last = shown.last().expect("posted");
+        assert_eq!((last.title.as_ref(), last.body.lines().next()), ("Claude needs you", Some("approve Bash: make")));
+        list(json!({ "state": "working", "app": "claude-code" }), cx);
+        list(json!({ "state": "error", "app": "claude-code" }), cx);
+        let shown = cx.shown_system_notifications();
+        assert_eq!(shown.last().map(|n| n.title.to_string()), Some("Claude hit an error".into()));
+        assert!(!shown.last().unwrap().body.contains("approve"), "an old message doesn't linger");
     }
 
     #[test]
