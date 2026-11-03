@@ -101,7 +101,7 @@ pub mod view;
 pub(crate) mod watch;
 
 pub use anyhow;
-pub use value::set_pixel_scale;
+pub use value::{set_pixel_scale, set_text_scale};
 pub use assets::AppAssets;
 pub use capability::{Capabilities, ExecuteGrant, HttpRequestGrant, NetworkGrant};
 pub use component::ComponentArgs;

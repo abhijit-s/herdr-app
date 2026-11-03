@@ -369,6 +369,14 @@ fn resolve(p: &Palette, overrides: &BTreeMap<String, String>) -> Theme {
 pub struct Person {
     /// How big the whole app is drawn (1 = as designed). The zoom keys change it.
     pub zoom: f32,
+    /// How big the panels are drawn on top of `zoom` (chrome, mods, overlays;
+    /// not the terminals' text or cells). 0.75..1.5.
+    #[serde(skip_serializing_if = "is_one")]
+    pub ui_zoom: f32,
+    /// How big the panels' text is drawn on top of their zoom; spacing and
+    /// icons keep their size. 0.8..1.3.
+    #[serde(skip_serializing_if = "is_one")]
+    pub ui_text_scale: f32,
     pub sounds: Sounds,
     /// When an alert also goes to the system's notification center (alert.rs).
     #[serde(skip_serializing_if = "SystemNotifications::is_background")]
@@ -499,10 +507,24 @@ fn is_true(b: &bool) -> bool {
     *b
 }
 
+fn is_one(v: &f32) -> bool {
+    *v == 1.0
+}
+
+pub const UI_ZOOM_RANGE: (f32, f32) = (0.75, 1.5);
+pub const UI_TEXT_SCALE_RANGE: (f32, f32) = (0.8, 1.3);
+
+/// A person's scale, within `(lo, hi)`; anything unreadable is 1.
+fn clamp_scale(v: f32, (lo, hi): (f32, f32)) -> f32 {
+    if v.is_finite() { v.clamp(lo, hi) } else { 1.0 }
+}
+
 impl Default for Person {
     fn default() -> Self {
         Person {
             zoom: 1.0,
+            ui_zoom: 1.0,
+            ui_text_scale: 1.0,
             sounds: Sounds::default(),
             system_notifications: SystemNotifications::Background,
             dock_bounce: false,
@@ -543,6 +565,10 @@ pub struct Settings {
     pub ui_font_size: f32,
     /// How big the whole app is drawn (1 = as designed). The zoom keys change it.
     pub zoom: f32,
+    /// The panels' size on top of `zoom` (terminals' text and cells excluded).
+    pub ui_zoom: f32,
+    /// The panels' text size on top of their zoom.
+    pub ui_text_scale: f32,
     /// The theme showing: a preset or a file in themes/.
     pub theme: String,
     /// The layout's theme for each appearance (the same one twice when it names one).
@@ -597,6 +623,8 @@ impl Default for Settings {
             ui_font_family: "Geist".into(),
             ui_font_size: 13.0,
             zoom: 1.0,
+            ui_zoom: 1.0,
+            ui_text_scale: 1.0,
             theme: DEFAULT_DARK.into(),
             theme_light: DEFAULT_LIGHT.into(),
             theme_dark: DEFAULT_DARK.into(),
@@ -641,6 +669,8 @@ impl Settings {
             ui_font_family: look.ui_font.clone().or(person.ui_font.clone()).unwrap_or(d.ui_font_family),
             ui_font_size: d.ui_font_size,
             zoom: person.zoom,
+            ui_zoom: clamp_scale(person.ui_zoom, UI_ZOOM_RANGE),
+            ui_text_scale: clamp_scale(person.ui_text_scale, UI_TEXT_SCALE_RANGE),
             theme: if dark { theme_dark.clone() } else { theme_light.clone() },
             theme_light,
             theme_dark,
@@ -800,7 +830,9 @@ pub fn set(s: Settings) -> bool {
         if *c.borrow().0 == s && *c.borrow().1 == theme {
             return false;
         }
-        gpui_shell::set_pixel_scale(s.zoom);
+        let (pixels, text) = s.mod_scales();
+        gpui_shell::set_pixel_scale(pixels);
+        gpui_shell::set_text_scale(text);
         *c.borrow_mut() = (Rc::new(s), Rc::new(theme));
         true
     })
@@ -840,21 +872,67 @@ pub fn next_zoom(steps: i32) -> f32 {
     ((zoom() * 10.0).round() + steps as f32).clamp(ZOOM_MIN * 10.0, ZOOM_MAX * 10.0) / 10.0
 }
 
+/// The terminals' zoom: their text, cells and padding.
 pub fn zoom() -> f32 {
     get().zoom
 }
 
-/// A designed size in px, at the current zoom.
+/// The panels' zoom: `zoom` times `ui_zoom`. Every designed UI px uses it.
+pub fn ui_scale() -> f32 {
+    get().ui_scale()
+}
+
+/// A designed size in px, at the panels' zoom.
 pub fn z(v: f32) -> Pixels {
-    px(v * zoom())
+    px(get().ui_px(v))
+}
+
+/// A designed text size in px, at the panels' zoom and text scale.
+pub fn zt(v: f32) -> Pixels {
+    px(get().ui_text_px(v))
 }
 
 pub fn font_size() -> f32 {
-    get().font_size * zoom()
+    get().terminal_font_size()
 }
 
+/// The panels' base text size (the window's rem).
 pub fn ui_font_size() -> f32 {
-    get().ui_font_size * zoom()
+    get().ui_font_size_px()
+}
+
+/// Sizes at these settings. Terminals (text, cells, padding) follow `zoom`
+/// only; everything else follows `ui_scale`, and text also `ui_text_scale`.
+impl Settings {
+    pub fn ui_scale(&self) -> f32 {
+        self.zoom * self.ui_zoom
+    }
+
+    pub fn ui_px(&self, v: f32) -> f32 {
+        v * self.ui_scale()
+    }
+
+    pub fn ui_text_px(&self, v: f32) -> f32 {
+        self.ui_px(v) * self.ui_text_scale
+    }
+
+    pub fn ui_font_size_px(&self) -> f32 {
+        self.ui_text_px(self.ui_font_size)
+    }
+
+    pub fn terminal_font_size(&self) -> f32 {
+        self.font_size * self.zoom
+    }
+
+    /// The terminals' padding in px: [x, y].
+    pub fn terminal_padding_px(&self) -> (f32, f32) {
+        (self.terminal_padding[0] * self.zoom, self.terminal_padding[1] * self.zoom)
+    }
+
+    /// What mods' px are multiplied by: every px, and text sizes on top.
+    pub fn mod_scales(&self) -> (f32, f32) {
+        (self.ui_scale(), self.ui_text_scale)
+    }
 }
 
 /// Font families on this machine (the bundled ones and the home's included).
@@ -1084,11 +1162,72 @@ mod tests {
         assert_eq!(Settings::compose(&person, &win98.look, true).theme, "ink");
     }
 
+    fn scaled(zoom: f32, ui_zoom: f32, ui_text_scale: f32) -> Settings {
+        let person = Person { zoom, ui_zoom, ui_text_scale, ..Person::default() };
+        Settings::compose(&person, &crate::layout::Look::default(), true)
+    }
+
+    #[test]
+    fn ui_scales_default_to_one_and_stay_out_of_settings_json() {
+        let person = Person::default();
+        assert_eq!((person.ui_zoom, person.ui_text_scale), (1.0, 1.0));
+        let json = serde_json::to_value(&person).unwrap();
+        assert!(json.get("ui_zoom").is_none() && json.get("ui_text_scale").is_none(), "{json}");
+        let read: Person = serde_json::from_str(r#"{"zoom": 1.3}"#).unwrap();
+        assert_eq!((read.ui_zoom, read.ui_text_scale), (1.0, 1.0));
+    }
+
+    /// At 1 and 1, every size is the zoom-only one: `v * zoom`, bit for bit.
+    #[test]
+    fn ui_scales_at_one_draw_every_size_as_zoom_alone() {
+        for zoom in [0.5, 0.9, 1.0, 1.1, 1.3, 1.7, 2.0, 3.0] {
+            let s = scaled(zoom, 1.0, 1.0);
+            assert_eq!(s.ui_scale().to_bits(), zoom.to_bits());
+            for v in [0.5, 1.0, 6.5, 9.75, 12.5, 13.0, 16.0, 240.0] {
+                assert_eq!(s.ui_px(v).to_bits(), (v * zoom).to_bits(), "z({v}) at zoom {zoom}");
+                assert_eq!(s.ui_text_px(v).to_bits(), (v * zoom).to_bits(), "zt({v}) at zoom {zoom}");
+            }
+            assert_eq!(s.ui_font_size_px().to_bits(), (13.0 * zoom).to_bits());
+            assert_eq!(s.terminal_font_size().to_bits(), (14.0 * zoom).to_bits());
+            assert_eq!(s.terminal_padding_px(), (10.0 * zoom, 6.0 * zoom));
+            assert_eq!(s.mod_scales(), (zoom, 1.0));
+        }
+    }
+
+    #[test]
+    fn ui_zoom_scales_the_panels_but_not_the_terminals() {
+        let (plain, bigger) = (scaled(1.1, 1.0, 1.0), scaled(1.1, 1.2, 1.0));
+        assert_eq!(bigger.terminal_font_size(), plain.terminal_font_size());
+        assert_eq!(bigger.terminal_padding_px(), plain.terminal_padding_px());
+        assert!((bigger.ui_px(10.0) - 10.0 * 1.1 * 1.2).abs() < 1e-4);
+        assert!((bigger.ui_font_size_px() - 13.0 * 1.1 * 1.2).abs() < 1e-4);
+        assert!((bigger.mod_scales().0 - 1.1 * 1.2).abs() < 1e-6);
+        assert_eq!(bigger.mod_scales().1, 1.0);
+    }
+
+    #[test]
+    fn ui_text_scale_scales_text_only() {
+        let (plain, bigger) = (scaled(1.0, 1.2, 1.0), scaled(1.0, 1.2, 1.1));
+        assert_eq!(bigger.ui_px(10.0), plain.ui_px(10.0), "spacing keeps its size");
+        assert_eq!(bigger.terminal_font_size(), plain.terminal_font_size());
+        assert!((bigger.ui_text_px(12.0) - 12.0 * 1.2 * 1.1).abs() < 1e-4);
+        assert!((bigger.ui_font_size_px() - 13.0 * 1.2 * 1.1).abs() < 1e-4);
+        assert_eq!(bigger.mod_scales(), (plain.mod_scales().0, 1.1));
+    }
+
+    #[test]
+    fn ui_scales_are_clamped() {
+        for (asked, ui_zoom, text) in [(0.1, 0.75, 0.8), (9.0, 1.5, 1.3), (f32::NAN, 1.0, 1.0), (f32::INFINITY, 1.0, 1.0), (1.25, 1.25, 1.25)] {
+            let s = scaled(1.0, asked, asked);
+            assert_eq!((s.ui_zoom, s.ui_text_scale), (ui_zoom, text), "asked {asked}");
+        }
+    }
+
     /// The guide agents read (written to the home folder) explains every
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

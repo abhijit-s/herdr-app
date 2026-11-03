@@ -488,7 +488,7 @@ pub fn apply_param(
         "bg" => refinement.bg(color!()),
         "text_color" => refinement.text_color(color!()),
         "text_bg" => refinement.text_bg(color!()),
-        "text_size" => refinement.text_size(absolute!()),
+        "text_size" => refinement.text_size(text_length(&arg(args, 0, name)?, name)?),
         "font_family" => refinement.font_family(arg(args, 0, name)?.as_str()?.to_owned()),
         "font_weight" => refinement.font_weight(font_weight(number!(), name)?),
         // Line height is the one length whose bare number is a multiplier, not
@@ -662,6 +662,24 @@ fn absolute_length(value: &Bridged, method: &str) -> ShellResult<AbsoluteLength>
             "`{method}` expects an absolute length such as 8 or \"0.5rem\"; \
              percentages and \"auto\" are not allowed here"
         ))),
+    }
+}
+
+/// HERDR: a text size's pixels (a bare number or `"12px"`) also take the text
+/// scale; `"1rem"` already follows the window's rem, which the host scales.
+fn text_length(value: &Bridged, method: &str) -> ShellResult<AbsoluteLength> {
+    let pixels = match value {
+        Bridged::Number(number) => Some(*number as f32),
+        Bridged::Str(text) => text
+            .trim()
+            .strip_suffix("px")
+            .map(|number| parse_number(number, text, method))
+            .transpose()?,
+        _ => None,
+    };
+    match pixels {
+        Some(pixels) => Ok(crate::value::scaled_text_px(pixels).into()),
+        None => absolute_length(value, method),
     }
 }
 

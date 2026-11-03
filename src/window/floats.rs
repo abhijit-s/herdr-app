@@ -139,7 +139,7 @@ impl AppWindow {
             }
             (_, Some(Copy { error: Some(e), inst, .. }), _) => div()
                 .max_w(settings::z(360.0))
-                .p_2()
+                .p(settings::z(6.5))
                 .rounded(settings::z(8.0))
                 .bg(c("popover"))
                 .text_xs()

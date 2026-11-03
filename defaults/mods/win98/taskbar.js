@@ -445,7 +445,7 @@ export default class Taskbar {
   render(cx) {
     const u = unit();
     // Keep the bars whole Win98 pixels when the zoom or the scale changes.
-    const z = settings()?.zoom;
+    const z = `${settings()?.zoom} ${settings()?.ui_zoom}`;
     const sc = shared("win98.scale");
     if (z !== this.zoom || sc !== this.scale) {
       this.zoom = z;
