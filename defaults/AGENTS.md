@@ -655,10 +655,14 @@ What's about the user, never a look:
   person while Herdr is in the background. Off by default.
 - `focus_follows_mouse`: `true` focuses a terminal pane (a tab's, or a layout's
   terminal block) once the pointer rests on it for `focus_follows_mouse_delay_ms`
-  (0 to 2000, default 150), as a click would. Off by default;
-  `focus.toggle_follows_mouse` flips it. Only a real pointer move starts the wait:
+  (0 to 2000, default 150), as a click would: the delay counts from the
+  pointer's last move, so a pane it only crosses on the way somewhere else is
+  left alone; at 0 the first move onto a pane focuses it. Off by default;
+  `focus.toggle_follows_mouse` flips it. Only a real pointer move counts:
   content scrolling or panes moving under a still pointer never move the focus,
-  and a pane focused from the keyboard keeps it until the pointer moves again.
+  nor does a jitter under 1 px. After a key, or the focus moving some other way,
+  the pointer must first go more than 4 px from where it was, so a pane focused
+  from the keyboard keeps it while the hand rests on the mouse.
   Nothing happens while a mouse button is held, while a dialog, popup, peek, menu
   or window overlay is open (toasts don't count), or while Herdr isn't the active
   window. Mod blocks, the sidebar and the tab bar never take the focus this way.

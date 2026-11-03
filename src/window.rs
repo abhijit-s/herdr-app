@@ -893,18 +893,17 @@ impl AppWindow {
 
     // ---- config files ------------------------------------------------------
 
-    /// Changes settings.json from inside the app (the zoom keys). If the file
-    /// is broken mid-edit, the change applies for now without touching it.
-    fn write_person(&mut self, change: impl FnOnce(&mut settings::Person), window: &mut Window, cx: &mut Context<Self>) {
+    /// Changes settings.json from inside the app (the zoom keys, the focus
+    /// toggles). If the file is broken mid-edit, the change applies for now
+    /// without touching it. Whether it was saved.
+    fn write_person(&mut self, change: impl FnOnce(&mut settings::Person), window: &mut Window, cx: &mut Context<Self>) -> bool {
         let broken = settings::load_person().is_err();
-        change(&mut self.person);
+        let saved = change_person(&mut self.person, change, broken, settings::write_person);
         if !broken {
-            if let Err(e) = settings::write_person(&self.person) {
-                tracing::warn!("cannot write settings.json: {e}");
-            }
             self.watched.settings = mtime(&settings::path());
         }
         self.apply_look(window, cx);
+        saved
     }
 
     /// Runs with the shown layout's look (its root node) at the person's zoom.
@@ -4835,6 +4834,16 @@ fn pane_header_mod(n: &Node, name: &str, props: &Value) -> (String, Instance) {
 }
 
 /// Every node shown on screen (hidden ones and inactive stack children skipped).
+/// Applies `change` to `person`, then saves it with `save` unless settings.json
+/// is `broken`: whether it was saved (`AppWindow::write_person`).
+fn change_person(person: &mut settings::Person, change: impl FnOnce(&mut settings::Person), broken: bool, save: impl FnOnce(&settings::Person) -> std::io::Result<()>) -> bool {
+    change(person);
+    if broken {
+        return false;
+    }
+    save(person).inspect_err(|e| tracing::warn!("cannot write settings.json: {e}")).is_ok()
+}
+
 fn visible_nodes(n: &Node) -> Vec<&Node> {
     if n.hidden {
         return vec![];
@@ -5036,7 +5045,8 @@ impl Render for AppWindow {
                     }
                 }
             }))
-            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                this.follow_mouse_keys(window);
                 if ev.keystroke.key == "escape" && this.pane_drag.is_some() {
                     this.cancel_pane_drag(cx);
                     cx.stop_propagation();
@@ -5705,9 +5715,116 @@ export default class Scale extends View {
         view.update_in(cx, |this, window, cx| this.run_as("pane.focus", json!({ "terminal": "t2" }), false, window, cx));
         wait(cx, 300);
         assert_eq!(focused(cx), "right", "the still pointer took the focus back");
-        cx.simulate_mouse_move(nudge(left, 5.0), None, none);
+        // A move within 4 px of where the key found it is still the keyboard's.
+        cx.simulate_mouse_move(nudge(left, 6.0), None, none);
+        wait(cx, 300);
+        assert_eq!(focused(cx), "right", "a nudge after the key took the focus");
+        cx.simulate_mouse_move(nudge(left, 9.0), None, none);
         wait(cx, 200);
         assert_eq!(focused(cx), "left", "the next pointer move didn't focus");
+
+        // Only resting counts: moving on within the pane puts the wait off.
+        cx.simulate_mouse_move(right, None, none);
+        wait(cx, 100);
+        cx.simulate_mouse_move(nudge(right, 3.0), None, none);
+        wait(cx, 100);
+        assert_eq!(focused(cx), "left", "the wait counted from entering the pane");
+        wait(cx, 60);
+        assert_eq!(focused(cx), "right");
+
+        // At 0 ms, the first move onto a pane focuses it.
+        view.update(cx, |this, _| this.person.focus_follows_mouse_delay_ms = 0);
+        cx.simulate_mouse_move(left, None, none);
+        cx.run_until_parked();
+        assert_eq!(focused(cx), "left", "0 ms waited");
+    }
+
+    #[test]
+    fn focus_follows_the_pointer_only_into_panes_still_shown() {
+        in_own_process("follow_mouse_shown");
+    }
+
+    /// A tab's panes a | b | c and a second tab: the pointer rests on a, the
+    /// keyboard zooms b (or shows the other tab), the pointer moves to where c
+    /// is, the keyboard brings them back. Resting there focuses c; a, hidden
+    /// meanwhile with the pointer's last word on it, never.
+    #[gpui::test]
+    fn follow_mouse_shown(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use gpui::{Modifiers, point, px};
+        use serde_json::json;
+        use std::time::Duration;
+        if !running_alone("follow_mouse_shown") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        view.update_in(cx, |this, window, cx| {
+            window.activate_window();
+            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                this.close_overlay(&id, window, cx);
+            }
+            this.person.focus_follows_mouse = true;
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb"), pane("c", "tc")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.add_tab("s", Tab::new("u", "", "d", "td"));
+            this.model.select_tab("t");
+            this.run_as("pane.focus", json!({ "pane": "a" }), false, window, cx);
+        });
+        cx.run_until_parked();
+        let focused = |cx: &mut gpui::VisualTestContext| cx.update(|_, cx| view.update(cx, |this, _| this.focused_pane.clone().unwrap_or_default()));
+        let wait = |cx: &mut gpui::VisualTestContext, ms: u64| {
+            cx.executor().advance_clock(Duration::from_millis(ms));
+            cx.run_until_parked();
+        };
+        let keys = |cx: &mut gpui::VisualTestContext, command: &str, args: serde_json::Value| {
+            view.update_in(cx, |this, window, cx| this.run_as(command, args, false, window, cx));
+            cx.run_until_parked();
+        };
+        // Watches every step from here: a is never focused again.
+        let step = |cx: &mut gpui::VisualTestContext, what: &str| {
+            for _ in 0..4 {
+                wait(cx, 50);
+                assert_ne!(focused(cx), "a", "{what}: the hidden pane took the focus");
+            }
+        };
+        let (a, c) = view.update(cx, |this, _| {
+            let b = this.bounds.borrow();
+            (b["a"].center(), b["c"].center())
+        });
+        let nudge = |p: gpui::Point<gpui::Pixels>, d: f32| point(p.x + px(d), p.y + px(d));
+        let none = Modifiers::default();
+        assert_eq!(focused(cx), "a");
+
+        // Zoomed away.
+        cx.simulate_mouse_move(a, None, none);
+        cx.simulate_mouse_move(nudge(a, 2.0), None, none);
+        wait(cx, 200);
+        keys(cx, "pane.focus", json!({ "pane": "b" }));
+        keys(cx, "pane.zoom", json!({}));
+        cx.simulate_mouse_move(c, None, none);
+        step(cx, "over b zoomed");
+        keys(cx, "pane.zoom", json!({}));
+        cx.simulate_mouse_move(nudge(c, 6.0), None, none);
+        step(cx, "back from the zoom");
+        assert_eq!(focused(cx), "c");
+
+        // Another tab shown.
+        keys(cx, "pane.focus", json!({ "pane": "a" }));
+        cx.simulate_mouse_move(nudge(a, 6.0), None, none);
+        cx.simulate_mouse_move(nudge(a, 9.0), None, none);
+        wait(cx, 200);
+        keys(cx, "pane.focus", json!({ "pane": "b" }));
+        keys(cx, "tab.next", json!({}));
+        assert_eq!(focused(cx), "d");
+        cx.simulate_mouse_move(c, None, none);
+        step(cx, "over the other tab");
+        keys(cx, "tab.prev", json!({}));
+        assert_eq!(focused(cx), "b");
+        cx.simulate_mouse_move(nudge(c, 6.0), None, none);
+        step(cx, "back from the other tab");
+        assert_eq!(focused(cx), "c");
     }
 
     /// Mods see window().active follow the focus, losing it too: a probe mod
