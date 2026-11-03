@@ -144,6 +144,27 @@ struct Waiting {
     replies: Vec<std::sync::mpsc::Sender<Value>>,
 }
 
+/// The last terminal `terminal.popup` started: the next popup ends its
+/// program. Addresses come back (a core that restarts counts from the start
+/// again), so `created` (the core's `created_ms`) tells it from a later
+/// terminal at the same address.
+struct Popped {
+    address: String,
+    created: Option<u64>,
+    /// Listed live at least once: missing from a later listing means it's gone.
+    seen: bool,
+}
+
+impl Popped {
+    /// Whether a listed terminal record is this one (an unknown time can't tell).
+    fn is(&self, record: &Value) -> bool {
+        match (self.created, record["created_ms"].as_u64()) {
+            (Some(mine), Some(theirs)) => mine == theirs,
+            _ => true,
+        }
+    }
+}
+
 /// How long a finished `terminal.popup {wait}` keeps its exit code (and its
 /// terminal) for a waiter that hasn't asked yet.
 const WAIT_KEPT: Duration = Duration::from_secs(60);
@@ -467,8 +488,11 @@ pub struct AppWindow {
     born: RefCell<HashMap<String, Instant>>,
     /// `terminal.popup {wait}` terminals, until a waiter has their exit code.
     waits: HashMap<String, Waiting>,
-    /// The terminal the peek overlay shows, and whether `terminal.popup` started it.
-    peeked: Option<(String, bool)>,
+    /// The terminal the peek overlay shows (or last showed).
+    peeked: Option<String>,
+    /// The last terminal `terminal.popup` started, shown or hidden, until it is
+    /// ended or gone: the next popup ends its program.
+    popped: Option<Popped>,
     /// Connection epoch: ignore replies from an old connection.
     core_generation: u64,
     checking_closed: bool,
@@ -566,6 +590,7 @@ impl AppWindow {
             born: RefCell::new(HashMap::new()),
             waits: HashMap::new(),
             peeked: None,
+            popped: None,
             core_generation: 0,
             checking_closed: false,
             documents_watching: false,
@@ -2053,6 +2078,7 @@ impl AppWindow {
             }
         }
         self.live = live;
+        self.forget_gone_popped();
         self.closing_terminals.retain(|addr, completed| !*completed || self.live.contains_key(addr));
         // A new sub-agent changes only this list; mods that show teams need to redraw.
         let terminals_changed = mods::publish_terminals(list);
@@ -3677,22 +3703,41 @@ impl AppWindow {
     }
 
     fn peek_terminal(&mut self, address: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_peek(address, (0.8, 0.8), false, false, window, cx);
+        self.open_peek(address, (0.8, 0.8), false, window, cx);
+    }
+
+    /// A new popup ends the program of the last one `terminal.popup` started,
+    /// open or hidden, if that terminal is still the one at its address.
+    fn replace_popped(&mut self, new: Popped, cx: &mut Context<Self>) {
+        let Some(last) = self.popped.replace(new) else { return };
+        let reused = self.live.get(&last.address).is_some_and(|t| !last.is(t));
+        if reused || self.popped.as_ref().is_some_and(|p| p.address == last.address) {
+            return;
+        }
+        // A waited-on one is removed once its waiter has the exit code.
+        let rm = !self.waits.contains_key(&last.address);
+        self.end_terminal(last.address, rm, cx);
+    }
+
+    /// After a listing: the last popup's terminal finished, went, or another
+    /// took its address, so there is nothing left for the next popup to end.
+    fn forget_gone_popped(&mut self) {
+        let Some(p) = &mut self.popped else { return };
+        match self.live.get(&p.address) {
+            Some(t) if p.is(t) => p.seen = true,
+            Some(_) => self.popped = None,
+            None if p.seen => self.popped = None,
+            // Not listed yet: it started after this listing began.
+            None => {}
+        }
     }
 
     /// The peek overlay: `close_ends_program` makes its ✕ end the program too.
-    /// It replaces the one open. A new popup (`started`) over one that
-    /// `terminal.popup` started ends that program; a plain peek (a link
-    /// clicked in it) only hides it, as its ✕ and the backdrop do, to come
+    /// It replaces the one open; a plain peek (a link clicked in a popup)
+    /// ends nothing and only hides it, as its ✕ and the backdrop do, to come
     /// back to with `hc`.
-    fn open_peek(&mut self, address: &str, (width, height): (f64, f64), close_ends_program: bool, started: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let open = self.overlays.iter().any(|o| o.id == "terminal-peek");
-        if let Some((shown, true)) = self.peeked.take().filter(|(shown, _)| started && open && shown != address) {
-            // A waited-on one is removed once its waiter has the exit code.
-            let rm = !self.waits.contains_key(&shown);
-            self.end_terminal(shown, rm, cx);
-        }
-        self.peeked = Some((address.to_owned(), started));
+    fn open_peek(&mut self, address: &str, (width, height): (f64, f64), close_ends_program: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.peeked = Some(address.to_owned());
         self.close_overlay("terminal-peek", window, cx);
         self.open_overlay("terminal-peek".into(), json!({
             "kind": "dialog",
@@ -3722,11 +3767,13 @@ impl AppWindow {
         let size = (size("width")?, size("height")?);
         let cwd = Self::owned(a, "cwd").unwrap_or_else(home);
         let params = json!({ "argv": argv, "cwd": cwd, "no_parent": true, "rm": !wait });
-        let address = self.core.start(params).map_err(|e| format!("cannot start a terminal: {e:#}"))?;
+        let record = self.core.start_record(params).map_err(|e| format!("cannot start a terminal: {e:#}"))?;
+        let address = record["address"].as_str().unwrap_or_default().to_owned();
         if wait {
             self.waits.insert(address.clone(), Waiting::default());
         }
-        self.open_peek(&address, size, POPUP_CLOSE_ENDS_PROGRAM, true, window, cx);
+        self.replace_popped(Popped { address: address.clone(), created: record["created_ms"].as_u64(), seen: false }, cx);
+        self.open_peek(&address, size, POPUP_CLOSE_ENDS_PROGRAM, window, cx);
         Ok(json!({ "terminal": address }))
     }
 
@@ -3737,7 +3784,10 @@ impl AppWindow {
         if self.waits.remove(address).is_none() {
             return;
         }
-        if self.peeked.as_ref().is_some_and(|(shown, _)| shown == address) {
+        if self.popped.as_ref().is_some_and(|p| p.address == address) {
+            self.popped = None;
+        }
+        if self.peeked.as_deref() == Some(address) {
             self.peeked = None;
             self.close_overlay("terminal-peek", window, cx);
         }
@@ -3842,10 +3892,8 @@ impl AppWindow {
     /// A finished popup is done with: removed, and nothing left to end.
     fn settled(&mut self, address: String, cx: &mut Context<Self>) {
         self.waits.remove(&address);
-        if let Some((shown, started)) = &mut self.peeked
-            && *shown == address
-        {
-            *started = false;
+        if self.popped.as_ref().is_some_and(|p| p.address == address) {
+            self.popped = None;
         }
         self.rm_terminal(address, cx);
     }
@@ -6080,7 +6128,10 @@ export default class Probe extends View {
         }
         let next = std::sync::atomic::AtomicU32::new(8);
         let (core, calls) = crate::hc::answering(move |method, _| match method {
-            "terminal.run" => Ok(json!({ "address": format!("t{}", next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) })),
+                        "terminal.run" => {
+                let n = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(json!({ "address": format!("t{n}"), "created_ms": n }))
+            }
             "terminal.rm" | "terminal.kill" => Ok(json!({})),
             _ => Err(json!({ "message": "not in this test" })),
         });
@@ -6142,27 +6193,36 @@ export default class Probe extends View {
         assert_eq!(take("terminal.rm"), [json!("t9")]);
         assert!(view.update(cx, |this, _| this.waits.is_empty()));
 
-        // A peek of a terminal someone else started never ends it, nor does a
-        // popup closed (hidden) before the next one opens.
-        cx.update(|window, cx| view.update(cx, |this, cx| {
-            this.live.insert("t5".into(), json!({}));
-            this.peek_terminal("t5", window, cx);
-        }));
+        // A peek of a terminal someone else started never ends it; a popup
+        // closed (hidden) before the next one opens ends all the same.
+        let hide = |cx: &mut gpui::VisualTestContext| cx.update(|window, cx| view.update(cx, |this, cx| this.close_overlay("terminal-peek", window, cx)));
+        let peek_t5 = |cx: &mut gpui::VisualTestContext| cx.update(|window, cx| view.update(cx, |this, cx| this.peek_terminal("t5", window, cx)));
+        view.update(cx, |this, _| this.live.insert("t5".into(), json!({})));
+        peek_t5(cx);
         popup(json!({ "argv": ["true"] }), cx);
-        cx.update(|window, cx| view.update(cx, |this, cx| this.close_overlay("terminal-peek", window, cx)));
+        hide(cx);
         popup(json!({ "argv": ["true"] }), cx);
         cx.run_until_parked();
-        assert!(take("terminal.kill").is_empty(), "t9 had ended, t5 is a peek, t10 was hidden");
+        assert_eq!((take("terminal.kill"), take("terminal.rm")), (vec![json!("t10")], vec![json!("t10")]), "t9 had ended, t5 is a peek, hidden t10 ends");
+
+        // A plain peek after hiding one leaves it to the next popup to end.
+        hide(cx);
+        peek_t5(cx);
+        popup(json!({ "argv": ["true"], "wait": true }), cx);
+        cx.run_until_parked();
+        assert_eq!((take("terminal.kill"), take("terminal.rm")), (vec![json!("t11")], vec![json!("t11")]), "hidden t11 ends, the peeked t5 does not");
+
+        // A hidden wait popup replaced: its program ends, its terminal stays
+        // for the waiter.
+        hide(cx);
+        popup(json!({ "argv": ["sleep", "9"], "wait": true }), cx);
+        cx.run_until_parked();
+        assert_eq!((take("terminal.kill"), take("terminal.rm")), (vec![json!("t12")], vec![]), "t12 is kept for its waiter");
         take("terminal.run");
 
         // One that ends before anyone asks keeps its code (and terminal) for
         // the waiter; one removed without finishing answers null; unknown
         // ones are an error.
-        popup(json!({ "argv": ["true"], "wait": true }), cx);
-        popup(json!({ "argv": ["sleep", "9"], "wait": true }), cx);
-        cx.run_until_parked();
-        assert_eq!(take("terminal.kill"), [json!("t11"), json!("t12")], "the open popup each time");
-        take("terminal.rm");
         view.update(cx, |this, cx| {
             this.live.insert("t13".into(), json!({}));
             this.settle_waits(&HashMap::from([("t12".to_owned(), json!({ "exit_code": 0, "signal": null }))]), now, cx);
@@ -6216,12 +6276,39 @@ export default class Probe extends View {
         assert!(popup(json!({ "argv": [] }), cx)["error"].is_string());
 
         // A plain peek over an open popup (a link clicked in it) only hides
-        // it, and a popup over that peek ends neither.
+        // it, and a popup over that peek ends the hidden popup, not the peek.
         popup(json!({ "argv": ["htop"] }), cx);
-        cx.update(|window, cx| view.update(cx, |this, cx| this.peek_terminal("t5", window, cx)));
+        peek_t5(cx);
         popup(json!({ "argv": ["true"] }), cx);
         cx.run_until_parked();
-        assert!(take("terminal.kill").is_empty(), "t16 was hidden by the peek, t5 is a peek");
+        assert_eq!(take("terminal.kill"), [json!("t16")], "t16 was hidden by the peek, t5 is a peek");
+        take("terminal.rm");
+
+        // Addresses come back: a popup whose program ended on its own is
+        // forgotten, and a later terminal at its address is never ended.
+        let listed = |terminals: serde_json::Value, cx: &mut gpui::VisualTestContext| cx.update(|window, cx| view.update(cx, |this, cx| this.terminals_listed(json!({ "terminals": terminals }), window, cx)));
+        listed(json!([{ "address": "t17", "created_ms": 17 }]), cx);
+        listed(json!([]), cx);
+        listed(json!([{ "address": "t17", "created_ms": 900 }]), cx);
+        popup(json!({ "argv": ["true"] }), cx);
+        cx.run_until_parked();
+        assert!(take("terminal.kill").is_empty(), "t17 ended on its own; the t17 now is another terminal");
+
+        // Taken over between two listings (a core restart): told by its time.
+        listed(json!([{ "address": "t18", "created_ms": 18 }]), cx);
+        listed(json!([{ "address": "t18", "created_ms": 901 }]), cx);
+        popup(json!({ "argv": ["true"] }), cx);
+        // Or before any listing showed it.
+        view.update(cx, |this, _| this.live.insert("t19".into(), json!({ "address": "t19", "created_ms": 902 })));
+        popup(json!({ "argv": ["true"] }), cx);
+        cx.run_until_parked();
+        assert!(take("terminal.kill").is_empty(), "t18 and t19 are other terminals now");
+
+        // Still the same terminal: ended as before.
+        listed(json!([{ "address": "t20", "created_ms": 20 }]), cx);
+        popup(json!({ "argv": ["true"] }), cx);
+        cx.run_until_parked();
+        assert_eq!(take("terminal.kill"), [json!("t20")]);
     }
 
     include!("window/pane_size_tests.rs");

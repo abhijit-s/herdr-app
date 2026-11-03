@@ -413,13 +413,18 @@ impl Core {
 
     /// `terminal.run` with the terminal identity every Herdr terminal gets
     /// (TERM and friends); returns its address.
-    pub fn start(&self, mut params: Value) -> Result<String> {
+    pub fn start(&self, params: Value) -> Result<String> {
+        self.start_record(params).map(|r| r["address"].as_str().unwrap_or_default().to_owned())
+    }
+
+    /// `start`, with the new terminal's whole record (`address`, `created_ms`, …).
+    pub fn start_record(&self, mut params: Value) -> Result<Value> {
         params["env"] = json!({"TERM": "xterm-256color", "COLORTERM": "truecolor", "TERM_PROGRAM": "herdr"});
         let r = self.call("terminal.run", params)?;
-        r.get("address")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .ok_or_else(|| anyhow!("terminal.run returned no address: {r}"))
+        match r.get("address") {
+            Some(Value::String(_)) => Ok(r),
+            _ => Err(anyhow!("terminal.run returned no address: {r}")),
+        }
     }
 
     /// One subscription includes local and forwarded remote events.

@@ -140,7 +140,7 @@ Start a terminal: as a new tab (place "tab", default), or "right"/"down" of the 
 
 ## `terminal.popup`
 
-Run a program on this computer in a popup over the tab (terminal.peek's, with keep-as-tab and close), started without a parent. It closes when the program ends, and the terminal goes with it unless wait is true, which keeps it until `{"wait": terminal}` on the control socket (as `herdr-app popup` sends) has read its exit code and signal (unread for a minute, it goes too). cwd: where it starts (default: home); hold: keep it up after the program ends until a key (not on Windows); width, height: the popup's size (px, or a fraction of the window up to 1; default 0.8). ✕ hides the popup and the program keeps running; a new popup over an open one ends the program the open one started.
+Run a program on this computer in a popup over the tab (terminal.peek's, with keep-as-tab and close), started without a parent. It closes when the program ends, and the terminal goes with it unless wait is true, which keeps it until `{"wait": terminal}` on the control socket (as `herdr-app popup` sends) has read its exit code and signal (unread for a minute, it goes too). cwd: where it starts (default: home); hold: keep it up after the program ends until a key (not on Windows); width, height: the popup's size (px, or a fraction of the window up to 1; default 0.8). ✕ hides the popup and the program keeps running until the next popup, which ends the program the last popup started, open or hidden.
 
 | Argument | Required |
 |---|---|
