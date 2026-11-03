@@ -26,7 +26,7 @@ const values: Record<string, any> = {
   View: class {}, div: element, svg: element, v_flex: element, h_flex: element,
   Input: { new: element }, InputState: { new: () => ({ on() {}, focus() {} }) },
   agents: () => [], spaces: () => [], terminals: () => [], theme: () => ({}),
-  settings: () => ({ zoom: 1.2 }), props: () => ({}), shared: () => ({}),
+  settings: () => ({ zoom: 1.2, ui_scale: 1.2 }), props: () => ({}), shared: () => ({}),
   setShared() {}, closeOverlay() {}, openOverlay() {}, run(...args: unknown[]) { commands.push(args); }, hc() {},
 };
 const Picker = new Function(...Object.keys(values), source.replace(/^import .*;\n/gm, "").replace("export default class Picker", "return class Picker"))(...Object.values(values));

@@ -632,8 +632,8 @@ What's about the user, never a look:
 
 - `zoom` scales the whole app: terminals, mods, the layout's px sizes
   (0.5 to 3; the zoom keys change it). Write sizes as designed at zoom 1.
-- `ui_zoom` (0.75 to 1.5, default 1): the panels only, on top of `zoom`: the layout's px sizes, pane headers, tabs, overlays, popups, toasts and every mod's px (text, spacing, icons). Terminals keep their text, cells and padding (`zoom` alone). A mod's px are drawn at `zoom × ui_zoom`: divide a measured window px by both (`settings().zoom * settings().ui_zoom`).
-- `ui_text_scale` (0.8 to 1.3, default 1): the panels' text only, on top of their zoom: mods' `text_size(...)` and editor `font_size`, Herdr's own panel text and the window's rem. Spacing, icons, row heights and terminals keep their size, so a big scale can crowd a fixed-height row.
+- `ui_zoom` (0.75 to 1.5, default 1): the panels only, on top of `zoom`: the layout's px sizes, pane headers, tabs, overlays, popups, toasts and every mod's px (text, spacing, icons). Terminals keep their text, cells and padding (`zoom` alone). A mod's px are drawn at `zoom × ui_zoom` (at most 3): divide window px by `settings().ui_scale`, which is that product. `settings().ui_scale_ranges` has both ranges.
+- `ui_text_scale` (0.8 to 1.3, default 1): the panels' text only, on top of their zoom: mods' `text_size(...)` (px or `"1rem"`), px and rem `line_height`s, editor `font_size`, and Herdr's own panel text. The window's rem leaves it out, so rem spacing, icons, row heights and terminals keep their size, and a big scale can crowd a fixed-height row.
 - `sounds`: `{ "enabled": true, "done": "<file>", "blocked": "<file>" }`.
   When an agent needs the person, or finishes while they aren't looking at
   it, Herdr plays a sound and (unless they're looking) posts a toast that

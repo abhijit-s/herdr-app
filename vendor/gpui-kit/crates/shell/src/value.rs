@@ -31,8 +31,12 @@ pub fn set_text_scale(scale: f32) {
     TEXT_SCALE.store(scale.to_bits(), Ordering::Relaxed);
 }
 
+pub(crate) fn text_scale() -> f32 {
+    f32::from_bits(TEXT_SCALE.load(Ordering::Relaxed))
+}
+
 pub(crate) fn scaled_text_px(value: f32) -> Pixels {
-    scaled_px(value * f32::from_bits(TEXT_SCALE.load(Ordering::Relaxed)))
+    scaled_px(value * text_scale())
 }
 
 /// A script argument after bridging, stored in the spec arena.

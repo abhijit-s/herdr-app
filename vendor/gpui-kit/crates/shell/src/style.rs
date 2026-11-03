@@ -628,9 +628,14 @@ fn length(value: &Bridged, method: &str) -> ShellResult<Length> {
 }
 
 /// A bare number is a multiplier; anything else follows the length grammar.
+/// HERDR: px and rem line heights take the text scale, as text sizes do, so
+/// scaled text still fits its line; multipliers and percents follow the text.
 fn line_height(value: &Bridged, method: &str) -> ShellResult<DefiniteLength> {
     match value {
         Bridged::Number(multiplier) => Ok(relative(*multiplier as f32)),
+        Bridged::Str(text) if text.trim().ends_with("px") || text.trim().ends_with("rem") => {
+            Ok(text_length(value, method)?.into())
+        }
         other => definite_length(other, method),
     }
 }
@@ -665,21 +670,21 @@ fn absolute_length(value: &Bridged, method: &str) -> ShellResult<AbsoluteLength>
     }
 }
 
-/// HERDR: a text size's pixels (a bare number or `"12px"`) also take the text
-/// scale; `"1rem"` already follows the window's rem, which the host scales.
+/// HERDR: a text size (a bare number, `"12px"` or `"1rem"`) also takes the
+/// text scale. The window's rem leaves it out, so rem spacing keeps its size.
 fn text_length(value: &Bridged, method: &str) -> ShellResult<AbsoluteLength> {
-    let pixels = match value {
-        Bridged::Number(number) => Some(*number as f32),
-        Bridged::Str(text) => text
-            .trim()
-            .strip_suffix("px")
-            .map(|number| parse_number(number, text, method))
-            .transpose()?,
-        _ => None,
-    };
-    match pixels {
-        Some(pixels) => Ok(crate::value::scaled_text_px(pixels).into()),
-        None => absolute_length(value, method),
+    if let Bridged::Str(text) = value {
+        let text = text.trim();
+        if let Some(number) = text.strip_suffix("rem") {
+            return Ok(rems(parse_number(number, text, method)? * crate::value::text_scale()).into());
+        }
+        if let Some(number) = text.strip_suffix("px") {
+            return Ok(crate::value::scaled_text_px(parse_number(number, text, method)?).into());
+        }
+    }
+    match value {
+        Bridged::Number(number) => Ok(crate::value::scaled_text_px(*number as f32).into()),
+        _ => absolute_length(value, method),
     }
 }
 

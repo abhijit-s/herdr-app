@@ -324,7 +324,8 @@ export function feedbackClearImages(): null;
 export function sendFeedback(body: import("gpui-kit").HostValue, images?: string[]): Promise<string | null>;
 
 /** What the app runs with: the shown layout's look (theme name, fonts, sizes, terminal
- *  padding and opacity) with the person's zoom and sounds. */
+ *  padding and opacity) with the person's zoom and sounds. `ui_scale` is what a mod's px
+ *  are drawn at (zoom × ui_zoom): divide window px by it. */
 export function settings(): Record<string, unknown>;
 
 /** Every key binding: { section, keys, action }. */

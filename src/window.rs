@@ -4338,7 +4338,7 @@ impl AppWindow {
                 .id(SharedString::from(format!("err-{slot}")))
                 .size_full()
                 .p(settings::z(6.5))
-                .text_xs()
+                .text_size(settings::text_rems(0.75))
                 .text_color(c("blocked"))
                 .overflow_y_scroll()
                 .child(format!("{} did not load:\n\n{}\n\nFix the files; Herdr retries on save.", inst.name, error.as_deref().unwrap_or("?")))
@@ -4351,7 +4351,7 @@ impl AppWindow {
     fn builtin_tabs(&self, n: &Node, cx: &mut Context<Self>) -> AnyElement {
         let active = n.active_child().map(|c| c.id.clone());
         let stack = n.id.clone();
-        let mut row = div().size_full().flex().flex_row().bg(c("surface")).text_xs();
+        let mut row = div().size_full().flex().flex_row().bg(c("surface")).text_size(settings::text_rems(0.75));
         for (i, ch) in n.children().iter().enumerate() {
             let (s, id) = (stack.clone(), ch.id.clone());
             let on = active.as_deref() == Some(ch.id.as_str());
@@ -4968,7 +4968,7 @@ impl Render for AppWindow {
         let _timed = crate::bench::timed(&crate::bench::WINDOW_US);
         crate::bench::frame_start();
         crate::terminal::next_frame();
-        window.set_rem_size(px(settings::ui_font_size()));
+        window.set_rem_size(settings::ui_rem());
         // A terminal the person clicked into becomes the focused pane.
         let clicked = self
             .terms
@@ -5009,6 +5009,8 @@ impl Render for AppWindow {
             .bg(c("background"))
             .text_color(c("foreground"))
             .font_family(settings::get().ui_font_family.clone())
+            // The rem leaves the text scale out; the text under it takes it here.
+            .text_size(settings::text_rems(1.0))
             .on_action(cx.listener(|this, a: &ShellAction, w, cx| {
                 // Nothing selected: the copy chord goes to the program (#216).
                 if a.id() == "terminal.copy" {
@@ -5450,12 +5452,26 @@ export default class Scale extends View {
   render() {
     return div().flex().flex_col().items_start()
       .child(div().id("gap").w(40).h(10).flex_none())
-      .child(div().id("label").flex_none().text_size(20).line_height(1).child("Hg"));
+      .child(div().id("rem-gap").w("2rem").h(10).flex_none())
+      .child(div().id("label").flex_none().text_size(20).line_height(1).child("Hg"))
+      .child(div().id("px-line").flex_none().text_size(20).line_height("24px").child("Hg"))
+      .child(div().id("rem-text").flex_none().text_size("1rem").line_height(1).child("Hg"));
   }
 }"#;
         let (view, cx) = open_window(cx, "scale", main_js, json!({"id": "root", "type": "block", "content": {"mod": "scale"}}));
-        for (ui_zoom, ui_text_scale, spacing, text) in [(1.0, 1.0, 1.0, 1.0), (1.2, 1.0, 1.2, 1.2), (1.0, 1.1, 1.0, 1.1), (1.2, 1.1, 1.2, 1.32), (1.0, 1.0, 1.0, 1.0)] {
-            let person = crate::settings::Person { ui_zoom, ui_text_scale, ..crate::settings::Person::default() };
+        // (zoom, ui_zoom, ui_text_scale): px grow by `spacing`, text by `text`.
+        for ((zoom, ui_zoom, ui_text_scale), spacing, text) in [
+            ((1.0, 1.0, 1.0), 1.0, 1.0),
+            ((1.0, 1.2, 1.0), 1.2, 1.2),
+            ((1.0, 1.0, 1.1), 1.0, 1.1),
+            ((1.0, 1.2, 1.1), 1.2, 1.32),
+            ((1.5, 1.0, 1.0), 1.5, 1.5),
+            ((1.5, 1.2, 1.1), 1.8, 1.98),
+            // zoom × ui_zoom stops at the largest zoom.
+            ((3.0, 1.5, 1.0), 3.0, 3.0),
+            ((1.0, 1.0, 1.0), 1.0, 1.0),
+        ] {
+            let person = crate::settings::Person { zoom, ui_zoom, ui_text_scale, ..crate::settings::Person::default() };
             crate::settings::write_person(&person).unwrap();
             view.update_in(cx, |this, window, cx| {
                 this.watched.settings = None;
@@ -5463,12 +5479,16 @@ export default class Scale extends View {
             });
             cx.run_until_parked();
             let (gap, label) = (cx.debug_bounds("gap").expect("no gap"), cx.debug_bounds("label").expect("no label"));
-            let at = format!("ui_zoom {ui_zoom}, ui_text_scale {ui_text_scale}");
+            let at = format!("zoom {zoom}, ui_zoom {ui_zoom}, ui_text_scale {ui_text_scale}");
             // Layout rounds to device pixels (half px here).
-            assert!((gap.size.width - px(40.0 * spacing)).abs() <= px(0.25), "{at}: spacing {gap:?}");
-            assert!((gap.size.height - px(10.0 * spacing)).abs() <= px(0.25), "{at}: spacing {gap:?}");
-            assert!((label.size.height - px(20.0 * text)).abs() <= px(0.25), "{at}: text {label:?}");
-            assert_eq!(crate::settings::font_size(), 14.0, "{at}: terminal text stays at zoom");
+            let near = |id: &str, size: gpui::Pixels, want: f32| assert!((size - px(want)).abs() <= px(0.25), "{at}: {id} is {size:?}, not {want}");
+            near("gap width", gap.size.width, 40.0 * spacing);
+            near("gap height", gap.size.height, 10.0 * spacing);
+            near("2rem", cx.debug_bounds("rem-gap").unwrap().size.width, 26.0 * spacing);
+            near("text", label.size.height, 20.0 * text);
+            near("a 24px line", cx.debug_bounds("px-line").unwrap().size.height, 24.0 * text);
+            near("1rem text", cx.debug_bounds("rem-text").unwrap().size.height, 13.0 * text);
+            assert_eq!(crate::settings::font_size(), 14.0 * zoom, "{at}: terminal text stays at zoom");
         }
     }
 

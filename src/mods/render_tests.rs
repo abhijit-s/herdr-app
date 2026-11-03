@@ -80,7 +80,7 @@ fn fixture(populated: bool, props: Value, update: Value) -> BTreeMap<String, Val
         ("layout".into(), serde_json::from_str(include_str!("../../defaults/layouts/main.json")).unwrap()),
         ("layouts".into(), json!(crate::window::shipped_layouts())),
         ("theme".into(), serde_json::to_value(&*crate::settings::theme()).unwrap()),
-        ("settings".into(), serde_json::to_value(crate::settings::Settings::default()).unwrap()),
+        ("settings".into(), crate::settings::Settings::default().for_mods()),
         ("themes".into(), json!([{"name":"graphite", "colors": &*crate::settings::theme()}])),  ("fonts".into(), json!(["Monospace", "Sans"])),
         ("updates".into(), update),
         ("telemetry".into(), json!({"enabled":true,"setting":true,"sends":true,"off_because":null,"endpoint":"https://invalid.example", "draft":{},"queued":[],"last_sent":null})),
@@ -314,6 +314,7 @@ fn tabs_leave_room_for_macos_traffic_lights(cx: &mut TestAppContext) {
         values.insert("window".into(), json!({"platform":platform,"titlebar":titlebar,"fullscreen":fullscreen,"buttons":false}));
         values.get_mut("settings").unwrap()["zoom"] = json!(zoom);
         values.get_mut("settings").unwrap()["ui_zoom"] = json!(ui_zoom);
+        values.get_mut("settings").unwrap()["ui_scale"] = json!(zoom * ui_zoom);
         let layout = values.get_mut("layout").unwrap();
         layout["children"][0]["size"]["px"] = json!(width);
         if !lights {
@@ -396,9 +397,14 @@ fn interface_zoom_and_text_size_rows_show_their_percent(cx: &mut TestAppContext)
         for id in ["st-ui_zoom-minus", "st-ui_zoom-plus", "st-ui_text_scale-minus", "st-ui_text_scale-plus", "Interface zoom", "Interface text size"] {
             assert!(tree.contains(id), "missing {id}: {tree}");
         }
-        let row = |key: &str| tree.lines().skip_while(|l| !l.contains(&format!("st-{key}-minus"))).take(12).collect::<Vec<_>>().join("\n");
+        // The value shown between this row's own − and +.
+        let row = |key: &str| {
+            let lines = tree.lines().skip_while(|l| !l.contains(&format!("st-{key}-minus"))).skip(1);
+            lines.take_while(|l| !l.contains(&format!("st-{key}-plus"))).collect::<Vec<_>>().join("\n")
+        };
         assert!(row("ui_zoom").contains(zoom_shown), "ui_zoom {ui_zoom}: {}", row("ui_zoom"));
         assert!(row("ui_text_scale").contains(text_shown), "ui_text_scale {ui_text_scale}: {}", row("ui_text_scale"));
+        assert!(zoom_shown == text_shown || !row("ui_zoom").contains(text_shown), "one value per row: {}", row("ui_zoom"));
     }
 }
 
