@@ -37,6 +37,15 @@ const CELL_WIDTHS = [
   ["font", "Font"],
   ["pixel", "Whole pixels"],
 ];
+// Trial: subpixel smoothing (macOS, 1x displays; grayscale elsewhere).
+const TEXT_RENDERINGS = [
+  ["grayscale", "Grayscale"],
+  ["subpixel", "Subpixel"],
+];
+const SUBPIXEL_ORDERS = [
+  ["rgb", "RGB"],
+  ["bgr", "BGR"],
+];
 const SYSTEM_NOTIFICATIONS = [
   ["background", "When away"],
   ["always", "Always"],
@@ -587,6 +596,7 @@ export default class Settings extends View {
       .child(this.row(t, "Interface font weight", "Panels, tabs and popups. Bold text stays as much bolder; terminals keep theirs.", this.stepper(t, "st-ui_font_weight", `${uiWeight}`, (_e, cx) => uiWeightStep(-25, cx), (_e, cx) => uiWeightStep(25, cx))))
       .child(this.thicken(t, "ui_font_thicken", "Thicken interface text", "Panels, tabs and popups as heavy whatever their color. Terminals follow their own."))
       .child(this.contrast(t, "ui_text_contrast", "Interface contrast", "Crisper edges on the panels' text, at the same weight. Terminals follow their own."))
+      .child(this.row(t, "Interface text smoothing", "Trial. Subpixel colors each edge by your display's stripes, on 1x displays; others stay grayscale.", this.choicePicker(t, "st-uitr", "ui_text_rendering", TEXT_RENDERINGS)))
       .child(div().h(18))
       .child(this.heading(t, "Terminal text"))
       .child(fontRow("font", "font_size", "Font", s.font_family, DEFAULT_FONT, s.font_size))
@@ -600,6 +610,10 @@ export default class Settings extends View {
       )
       .child(this.thicken(t, "font_thicken", "Thicken", "Terminal text as heavy whatever its color, as Ghostty's font-thicken does."))
       .child(this.contrast(t, "text_contrast", "Contrast", "Crisper edges on terminal text, at the same weight."))
+      .child(this.row(t, "Text smoothing", "Trial. Subpixel colors each edge by your display's stripes, on 1x displays; others stay grayscale.", this.choicePicker(t, "st-tr", "text_rendering", TEXT_RENDERINGS)))
+      .when(this.person.text_rendering === "subpixel" || this.person.ui_text_rendering === "subpixel", (el) =>
+        el.child(this.row(t, "Subpixel order", "Your display's color stripes, left to right. Most are RGB.", this.choicePicker(t, "st-so", "subpixel_order", SUBPIXEL_ORDERS))),
+      )
       .child(
         this.row(
           t,

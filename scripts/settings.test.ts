@@ -55,17 +55,18 @@ function find(root: Element, id: string): Element {
 }
 
 /** Clicks `id` on the Text page with `person` in settings.json; what gets written. */
-function click(person: Record<string, any>, shown: Record<string, any>, id: string) {
+function click(person: Record<string, any>, shown: Record<string, any>, id: string, real: string[] = []) {
   composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, letter_spacing: 0, ui_scale_ranges: { ui_zoom: [0.75, 1.5], ui_text_scale: [0.8, 1.3] }, ...shown };
   const view = new Settings();
   view.person = person;
-  for (const part of ["layoutPicker", "themePicker", "choicePicker", "fontButton", "fontList"]) view[part] = element;
+  for (const part of ["layoutPicker", "themePicker", "choicePicker", "fontButton", "fontList"]) if (!real.includes(part)) view[part] = element;
   let written: Record<string, any> | undefined;
   view.change = (edit: (q: Record<string, any>) => void) => {
     written = structuredClone(person);
     edit(written);
   };
   const button = find(view.text(new Proxy({}, { get: () => "#000000" })), id);
+  if (real.includes("shown?")) return button;
   expect(button).toBeDefined();
   button.calls.on_click[0](null, {});
   return written;
@@ -205,4 +206,22 @@ test("interface font weight steps by 25 within 100 to 900, leaving 400 out of se
   expect(click({ ui_font_weight: 950 }, {}, "st-ui_font_weight-minus")).toEqual({ ui_font_weight: 875 });
   expect(click({ font_weight: 300 }, { font_weight: 300 }, "st-ui_font_weight-plus")).toEqual({ font_weight: 300, ui_font_weight: 425 });
   expect(click({ ui_font_weight: 600 }, {}, "st-font_weight-plus")).toEqual({ ui_font_weight: 600, font_weight: 525 });
+});
+
+test("text smoothing pickers write subpixel and leave grayscale out, terminal and interface apart", () => {
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"]);
+  expect(pick({}, "st-tr-Subpixel")).toEqual({ text_rendering: "subpixel" });
+  expect(pick({ text_rendering: "subpixel" }, "st-tr-Grayscale")).toEqual({});
+  expect(pick({}, "st-uitr-Subpixel")).toEqual({ ui_text_rendering: "subpixel" });
+  expect(pick({ ui_text_rendering: "subpixel", text_rendering: "subpixel" }, "st-uitr-Grayscale")).toEqual({ text_rendering: "subpixel" });
+});
+
+test("subpixel order shows only while either text is subpixel, and leaves rgb out", () => {
+  const shown = (person: Record<string, any>) => click(person, {}, "st-so-BGR", ["choicePicker", "shown?"]) !== undefined;
+  expect(shown({})).toBe(false);
+  expect(shown({ text_rendering: "subpixel" })).toBe(true);
+  expect(shown({ ui_text_rendering: "subpixel" })).toBe(true);
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"]);
+  expect(pick({ text_rendering: "subpixel" }, "st-so-BGR")).toEqual({ text_rendering: "subpixel", subpixel_order: "bgr" });
+  expect(pick({ text_rendering: "subpixel", subpixel_order: "bgr" }, "st-so-RGB")).toEqual({ text_rendering: "subpixel" });
 });
