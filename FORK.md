@@ -157,4 +157,4 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 `fix/feature-review` (branched from `master`, fork only): the Settings window's `change` reads settings.json, edits it and writes it back only if nobody changed it meanwhile (`writeTextFile`'s `expected`), up to three times. While settings.json doesn't parse (`broken`, set by `load`), it writes nothing and an error toast says "settings.json has errors: fix it first", so one toggle can't replace the file with `{}` plus that one setting. When all three writes fail, an error toast says so with the last error. settings.json that parses to something other than a plain object (null, an array, a number) counts as broken too, and when reading it or applying the edit throws, an error toast titled "Cannot read settings.json" gives the reason.
 
 - Files: `defaults/frame/settings/main.js` (`load`, `change`, `save`), `scripts/settings.test.ts`
-- Upstream: none yet
+- Upstream: pull request #411 (`fix/settings-broken-file`, cut from `upstream/master`; adds `scripts/settings.test.ts` there as a standalone test of `change()` and lists it in `just test`)
