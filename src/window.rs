@@ -492,6 +492,8 @@ pub struct AppWindow {
     window_active: bool,
     /// Agents with a system notification up (alert.rs), taken down once seen.
     notified: HashSet<String>,
+    /// Why `alert_command` didn't start, each said once in a toast.
+    alert_command_errors: HashSet<String>,
     /// The system's appearance; a layout with a light and a dark theme follows it.
     system_dark: bool,
     /// The OS tells us when files change (`files.rs`); else the disk is polled.
@@ -585,6 +587,7 @@ impl AppWindow {
             pane_history: Vec::new(),
             window_active: true,
             notified: HashSet::new(),
+            alert_command_errors: HashSet::new(),
             system_dark: is_dark(window.appearance()),
             file_events: crate::files::watch(&mods::app_dir()),
             polls: 0,
@@ -2140,10 +2143,18 @@ impl AppWindow {
             Some(format!("{} / {}", self.model.space_name(p, &self::home()), Model::tab_name(p, c)))
         });
         let note = crate::alert::Note { address: addr.to_owned(), alert, prev, app, name, place };
-        if crate::alert::should_notify(settings.system_notifications, self.window_active, looking)
-            && crate::alert::send(&note, settings.alert_command.as_ref(), cx)
-        {
-            self.notified.insert(addr.to_owned());
+        if crate::alert::should_notify(settings.system_notifications, self.window_active, looking) {
+            let sent = crate::alert::send(&note, settings.alert_command.as_ref(), cx);
+            if sent.posted() {
+                self.notified.insert(addr.to_owned());
+            }
+            // Said once per reason, not on every alert.
+            if let crate::alert::Sent::Fallback(why) = sent
+                && self.alert_command_errors.insert(why.clone())
+            {
+                let failed = json!({ "title": "alert_command failed", "body": why, "level": "error" });
+                self.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": failed }), window, cx);
+            }
         }
         if alert == model::Alert::Blocked && settings.dock_bounce && !self.window_active {
             window.request_attention();

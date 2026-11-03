@@ -57,6 +57,8 @@ gpui_linux = { package = "gpui-pre-linux", version = "=0.3.8", features = ["rend
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_macos = { package = "gpui-pre-macos", version = "=0.3.8", features = ["render-to-image"] }
+
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]

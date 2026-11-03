@@ -675,7 +675,10 @@ What's about the user, never a look:
   `HERDR_AGENT_ADDRESS`, `HERDR_AGENT_PLACE` ("space / tab") and
   `HERDR_ALERT_TITLE` (the toast's title). It runs with Herdr's
   environment, whose PATH may be short when Herdr was opened from the
-  Dock: give a full path.
+  Dock: give a full path. It starts in the home folder; one still running
+  after 30 s is killed with everything it started. One that doesn't start
+  gets the system notification instead, and a toast says why (once per
+  reason); a non-zero exit is only logged.
 - `core`: the herdr-core binary to use, when it isn't where Herdr looks
   (PATH, the login shell's PATH, `~/.local/bin`, Homebrew, mise, Nix,
   cargo). Read at start.

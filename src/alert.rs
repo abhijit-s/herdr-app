@@ -95,46 +95,87 @@ pub fn command_env(note: &Note) -> Vec<(&'static str, String)> {
     env
 }
 
-/// Sends the alert: the person's command when they set one, else the system
-/// notification. Returns whether a system notification was posted, so it can
-/// be dismissed later.
-pub fn send(note: &Note, command: Option<&AlertCommand>, cx: &App) -> bool {
-    match command {
-        Some(command) => {
-            run(command, note);
-            false
-        }
-        None => {
-            cx.show_system_notification(system_notification(note));
-            true
-        }
+/// What `send` did.
+#[derive(Debug, PartialEq)]
+pub enum Sent {
+    Posted,
+    Ran,
+    /// The command didn't start (why): the system notification went instead.
+    Fallback(String),
+}
+
+impl Sent {
+    /// Whether a system notification was posted, so it can be dismissed later.
+    pub fn posted(&self) -> bool {
+        !matches!(self, Sent::Ran)
     }
+}
+
+/// Sends the alert: the person's command when they set one, else (or when it
+/// doesn't start) the system notification.
+pub fn send(note: &Note, command: Option<&AlertCommand>, cx: &App) -> Sent {
+    let sent = match command.map(|c| run(c, note)) {
+        Some(Ok(())) => return Sent::Ran,
+        Some(Err(error)) => Sent::Fallback(error),
+        None => Sent::Posted,
+    };
+    cx.show_system_notification(system_notification(note));
+    sent
 }
 
 /// How long an `alert_command` may run before it is killed.
 const ALERT_COMMAND_LIMIT: Duration = Duration::from_secs(30);
 
 /// Fire and forget: a thread waits for the program so it leaves no zombie,
-/// and the window never waits for it.
-fn run(command: &AlertCommand, note: &Note) {
-    let Some(argv) = command_argv(command) else { return };
-    let spawned = Command::new(&argv[0])
-        .args(&argv[1..])
+/// and the window never waits for it. It starts in the home folder (Herdr's
+/// own is `/` when opened from the Finder), in its own process group, so a
+/// hung one is killed with everything it started. Why it didn't start, if not.
+fn run(command: &AlertCommand, note: &Note) -> Result<(), String> {
+    let Some(argv) = command_argv(command) else { return Ok(()) };
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..])
         .envs(command_env(note))
+        .current_dir(crate::mods::home())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-    match spawned {
+        .stderr(Stdio::null());
+    own_group(&mut cmd);
+    match cmd.spawn() {
         Ok(child) => {
-            std::thread::spawn(move || reap(child, ALERT_COMMAND_LIMIT));
+            let program = argv[0].clone();
+            std::thread::spawn(move || match reap(child, ALERT_COMMAND_LIMIT) {
+                Some(status) if !status.success() => tracing::warn!("alert_command {program:?} {status}"),
+                _ => {}
+            });
+            Ok(())
         }
-        Err(error) => tracing::warn!("alert_command {:?} did not start: {error}", argv[0]),
+        Err(error) => {
+            let error = format!("alert_command {:?} did not start: {error}", argv[0]);
+            tracing::warn!("{error}");
+            Err(error)
+        }
     }
 }
 
-/// Waits for `child` up to `limit`, then kills it: a hung command must not
-/// keep a thread (and the program) forever.
+fn own_group(cmd: &mut Command) {
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(cmd, 0);
+    #[cfg(not(unix))]
+    let _ = cmd;
+}
+
+/// Kills `child` and, on Unix, the process group it leads (`own_group`).
+fn kill(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    if let Ok(group) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: killpg takes plain integers; a group already gone is ESRCH.
+        unsafe { libc::killpg(group, libc::SIGKILL) };
+    }
+    let _ = child.kill();
+}
+
+/// Waits for `child` up to `limit`, then kills it with its group: a hung
+/// command must not keep a thread (and the programs) forever.
 fn reap(mut child: std::process::Child, limit: Duration) -> Option<std::process::ExitStatus> {
     let deadline = Instant::now() + limit;
     loop {
@@ -143,7 +184,7 @@ fn reap(mut child: std::process::Child, limit: Duration) -> Option<std::process:
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100).min(deadline.saturating_duration_since(Instant::now()))),
             Ok(None) => {
                 tracing::warn!("alert_command still running after {}s: killed", limit.as_secs());
-                let _ = child.kill();
+                kill(&mut child);
                 return child.wait().ok();
             }
             Err(_) => return None,
@@ -245,7 +286,7 @@ mod tests {
         let out = std::env::temp_dir().join(format!("herdr-alert-command-{}", std::process::id()));
         let _ = std::fs::remove_file(&out);
         let line = format!("printf '%s|%s|%s' \"$HERDR_AGENT_STATE\" \"$HERDR_AGENT_ADDRESS\" \"$HERDR_ALERT_TITLE\" > '{}'", out.display());
-        run(&AlertCommand::Shell(line), &note(Alert::Done));
+        run(&AlertCommand::Shell(line), &note(Alert::Done)).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !out.exists() || std::fs::read_to_string(&out).unwrap().is_empty() {
             assert!(std::time::Instant::now() < deadline, "the command never ran");
@@ -260,24 +301,45 @@ mod tests {
     fn send_posts_one_notification_per_agent_or_runs_the_command(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.set_app_identity("dev.herdr.test", "Herdr"));
         cx.update(|cx| {
-            assert!(send(&note(Alert::Done), None, cx));
-            assert!(send(&note(Alert::Blocked), None, cx));
+            assert_eq!(send(&note(Alert::Done), None, cx), Sent::Posted);
+            assert_eq!(send(&note(Alert::Blocked), None, cx), Sent::Posted);
         });
         assert_eq!(cx.delivered_system_notifications(), [system_notification(&note(Alert::Blocked))]);
-        cx.update(|cx| assert!(!send(&note(Alert::Done), Some(&AlertCommand::Argv(vec!["/usr/bin/true".into()])), cx)));
+        cx.update(|cx| assert_eq!(send(&note(Alert::Done), Some(&AlertCommand::Argv(vec!["/usr/bin/true".into()])), cx), Sent::Ran));
         assert_eq!(cx.shown_system_notifications().len(), 2);
+        // A command that doesn't start: the system notification instead, and why.
+        let missing = AlertCommand::Argv(vec!["/nonexistent/herdr-notify".into()]);
+        let sent = cx.update(|cx| send(&note(Alert::Done), Some(&missing), cx));
+        assert!(matches!(&sent, Sent::Fallback(why) if why.contains("/nonexistent/herdr-notify")), "{sent:?}");
+        assert!(sent.posted());
+        assert_eq!(cx.shown_system_notifications().len(), 3);
         cx.update(|cx| cx.dismiss_system_notification(&tag("local:t7")));
         assert!(cx.delivered_system_notifications().is_empty());
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_hung_alert_command_is_killed_after_its_limit() {
-        let child = Command::new("sleep").arg("30").spawn().unwrap();
+    fn a_hung_alert_command_is_killed_after_its_limit_with_what_it_started() {
+        use std::io::BufRead;
+        // A shell line, as `alert_command` runs one: the shell waits on its own child.
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "sleep 30 & echo $!; wait"]).stdout(Stdio::piped());
+        own_group(&mut cmd);
+        let mut child = cmd.spawn().unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        let sleep: libc::pid_t = line.trim().parse().unwrap();
         let started = Instant::now();
         let status = reap(child, Duration::from_millis(300)).expect("reaped");
         assert!(!status.success(), "killed, not finished");
         assert!(started.elapsed() < Duration::from_secs(5));
+        // SAFETY: signal 0 only asks whether the process is there.
+        let gone = || unsafe { libc::kill(sleep, 0) } != 0;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !gone() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(gone(), "the shell's child {sleep} outlived it");
         let quick = Command::new("true").spawn().unwrap();
         assert!(reap(quick, Duration::from_secs(5)).unwrap().success());
     }
