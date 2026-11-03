@@ -25,6 +25,11 @@ const CELL_WIDTHS = [
   ["font", "Font"],
   ["pixel", "Whole pixels"],
 ];
+const SYSTEM_NOTIFICATIONS = [
+  ["background", "When away"],
+  ["always", "Always"],
+  ["off", "Off"],
+];
 
 // What the app uses when settings.json names no font (settings.rs).
 const DEFAULT_FONT = "JetBrains Mono";
@@ -745,7 +750,31 @@ export default class Settings extends View {
       )
       .child(this.row(t, "An agent needs you", file(sounds.blocked), this.button(t, "st-play-blocked", "Play", () => playSound("blocked"))))
       .child(this.row(t, "An agent finished", file(sounds.done), this.button(t, "st-play-done", "Play", () => playSound("done"))))
-      .child(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("Want your own sounds? Ask your agent to set sounds.done and sounds.blocked in settings.json to an MP3."));
+      .child(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("Want your own sounds? Ask your agent to set sounds.done and sounds.blocked in settings.json to an MP3."))
+      .child(this.heading(t, "Notifications"))
+      .child(
+        this.row(
+          t,
+          "System notifications",
+          this.person.alert_command
+            ? "Your alert_command runs instead of a system notification."
+            : "When away: only while Herdr isn't the app in front. Never for the agent you're looking at.",
+          this.choicePicker(t, "st-sn", "system_notifications", SYSTEM_NOTIFICATIONS),
+        ),
+      )
+      .child(
+        this.row(
+          t,
+          "Bounce the Dock icon",
+          "When an agent needs you while Herdr is in the background.",
+          this.toggle(t, "st-dock_bounce", this.person.dock_bounce === true, (_e, cx) =>
+            this.change((p) => {
+              if (p.dock_bounce) delete p.dock_bounce;
+              else p.dock_bounce = true;
+            }, cx),
+          ),
+        ),
+      );
   }
 
   // Updates --------------------------------------------------------------

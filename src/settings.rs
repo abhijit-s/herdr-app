@@ -378,6 +378,15 @@ pub struct Person {
     #[serde(skip_serializing_if = "is_one")]
     pub ui_text_scale: f32,
     pub sounds: Sounds,
+    /// When an alert also goes to the system's notification center (alert.rs).
+    #[serde(skip_serializing_if = "SystemNotifications::is_background")]
+    pub system_notifications: SystemNotifications,
+    /// Bounce the Dock icon when an agent needs you while Herdr is in the background.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub dock_bounce: bool,
+    /// A program run for each alert instead of the system notification (alert.rs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alert_command: Option<AlertCommand>,
     /// The herdr-core to use, when it isn't where Herdr looks (core_bin.rs).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub core: Option<String>,
@@ -421,6 +430,31 @@ pub struct Person {
     pub theme: Option<crate::layout::ThemeChoice>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub colors: BTreeMap<String, String>,
+}
+
+/// `background`: only while Herdr isn't the app in front. `always`: also while
+/// it is, unless the person is looking at that agent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SystemNotifications {
+    #[default]
+    Background,
+    Always,
+    Off,
+}
+
+impl SystemNotifications {
+    fn is_background(&self) -> bool {
+        *self == SystemNotifications::Background
+    }
+}
+
+/// One string, run by `/bin/sh -c`, or a program and its arguments.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AlertCommand {
+    Shell(String),
+    Argv(Vec<String>),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -492,6 +526,9 @@ impl Default for Person {
             ui_zoom: 1.0,
             ui_text_scale: 1.0,
             sounds: Sounds::default(),
+            system_notifications: SystemNotifications::Background,
+            dock_bounce: false,
+            alert_command: None,
             core: None,
             font: None,
             font_size: None,
@@ -551,6 +588,9 @@ pub struct Settings {
     pub cell_width: CellWidth,
     pub option_as_alt: OptionAsAlt,
     pub sounds: Sounds,
+    pub system_notifications: SystemNotifications,
+    pub dock_bounce: bool,
+    pub alert_command: Option<AlertCommand>,
 }
 
 /// Attention sounds: when an agent needs you, and when one finished while you
@@ -598,6 +638,9 @@ impl Default for Settings {
             cell_width: CellWidth::Font,
             option_as_alt: OptionAsAlt::Auto,
             sounds: Sounds::default(),
+            system_notifications: SystemNotifications::Background,
+            dock_bounce: false,
+            alert_command: None,
         }
     }
 }
@@ -636,6 +679,9 @@ impl Settings {
             terminal_padding: look.terminal_padding.unwrap_or(d.terminal_padding),
             terminal_opacity: look.terminal_opacity.unwrap_or(1.0).clamp(0.0, 1.0),
             sounds: person.sounds.clone(),
+            system_notifications: person.system_notifications,
+            dock_bounce: person.dock_bounce,
+            alert_command: person.alert_command.clone(),
             clipboard_write: person.clipboard_write,
             minimum_contrast: person.minimum_contrast,
             letter_spacing: look.letter_spacing.or(person.letter_spacing).unwrap_or(d.letter_spacing),
@@ -1181,7 +1227,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();
