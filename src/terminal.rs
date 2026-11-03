@@ -1103,12 +1103,18 @@ pub fn cell_size(window: &Window) -> Size<Pixels> {
     let s = crate::settings::get();
     // Glyphs sit exactly on their cells (gpui-pre `apply_force_width_to_layout`),
     // so any width works; boxes snap their edges (`snap_box`).
-    let w = spaced_width(advance, crate::settings::z(s.letter_spacing));
-    let w = match s.cell_width {
+    let w = cell_width(advance, crate::settings::z(s.letter_spacing), s.cell_width, scale);
+    size(w, px((f32::from(h) * s.line_height * scale).ceil() / scale))
+}
+
+/// The font's advance plus letter_spacing, then, for `"pixel"`, rounded down
+/// to whole device pixels: spacing first, so the grid stays whole.
+fn cell_width(advance: Pixels, spacing: Pixels, choice: crate::settings::CellWidth, scale: f32) -> Pixels {
+    let w = spaced_width(advance, spacing);
+    match choice {
         crate::settings::CellWidth::Font => w,
         crate::settings::CellWidth::Pixel => whole_pixels(w, scale),
-    };
-    size(w, px((f32::from(h) * s.line_height * scale).ceil() / scale))
+    }
 }
 
 /// The font's advance plus letter_spacing, kept within half to one and a half
@@ -1703,6 +1709,10 @@ mod tests {
         assert_eq!(super::whole_pixels(px(7.2), 2.), px(7.));
         assert_eq!(super::whole_pixels(px(7.75), 2.), px(7.5));
         assert_eq!(super::whole_pixels(px(0.2), 1.), px(1.));
+        use crate::settings::CellWidth::{Font, Pixel};
+        assert_eq!(super::cell_width(px(7.5), px(0.25), Pixel, 1.), px(7.));
+        assert_eq!(super::cell_width(px(7.5), px(0.5), Pixel, 1.), px(8.));
+        assert_eq!(super::cell_width(px(7.5), px(0.25), Font, 1.), px(7.75));
     }
 
     #[test]
