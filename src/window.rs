@@ -5478,7 +5478,8 @@ export default class Scale extends View {
       .child(div().id("rem-gap").w("2rem").h(10).flex_none())
       .child(div().id("label").flex_none().text_size(20).line_height(1).child("Hg"))
       .child(div().id("px-line").flex_none().text_size(20).line_height("24px").child("Hg"))
-      .child(div().id("rem-text").flex_none().text_size("1rem").line_height(1).child("Hg"));
+      .child(div().id("rem-text").flex_none().text_size("1rem").line_height(1).child("Hg"))
+      .child(div().id("base-text").flex_none().text_base().line_height(1).child("Hg"));
   }
 }"#;
         let (view, cx) = open_window(cx, "scale", main_js, json!({"id": "root", "type": "block", "content": {"mod": "scale"}}));
@@ -5511,6 +5512,7 @@ export default class Scale extends View {
             near("text", label.size.height, 20.0 * text);
             near("a 24px line", cx.debug_bounds("px-line").unwrap().size.height, 24.0 * text);
             near("1rem text", cx.debug_bounds("rem-text").unwrap().size.height, 13.0 * text);
+            near("text_base()", cx.debug_bounds("base-text").unwrap().size.height, 13.0 * text);
             assert_eq!(crate::settings::font_size(), 14.0 * zoom, "{at}: terminal text stays at zoom");
         }
     }

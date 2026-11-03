@@ -6,7 +6,7 @@
 //! written as literals.
 
 use crate::error::{Result as ShellResult, ShellError};
-use gpui::{Hsla, Pixels, px, rgba};
+use gpui::{Hsla, Pixels, Rems, px, rems, rgba};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 // HERDR: one app-wide zoom applied to every pixel length a script writes, so
@@ -37,6 +37,12 @@ pub(crate) fn text_scale() -> f32 {
 
 pub(crate) fn scaled_text_px(value: f32) -> Pixels {
     scaled_px(value * text_scale())
+}
+
+/// A rem text size with the text scale applied. The window rem carries the
+/// pixel scale only, so every rem font size the shell sets goes through here.
+pub(crate) fn scaled_text_rems(value: f32) -> Rems {
+    rems(value * text_scale())
 }
 
 /// A script argument after bridging, stored in the spec arena.

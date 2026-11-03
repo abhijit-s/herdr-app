@@ -82,7 +82,7 @@ impl Render for TooltipLabel {
             .border_1()
             .border_color(colors.border)
             .rounded(radius.md)
-            .text_sm()
+            .text_size(crate::value::scaled_text_rems(0.875))
             .child(self.text.clone())
     }
 }
