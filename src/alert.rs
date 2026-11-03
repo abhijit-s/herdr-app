@@ -2,6 +2,7 @@
 //! `alert_command` in its place. The toast and the sounds stay in window.rs.
 
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use gpui::{App, SystemNotification};
 
@@ -110,6 +111,9 @@ pub fn send(note: &Note, command: Option<&AlertCommand>, cx: &App) -> bool {
     }
 }
 
+/// How long an `alert_command` may run before it is killed.
+const ALERT_COMMAND_LIMIT: Duration = Duration::from_secs(30);
+
 /// Fire and forget: a thread waits for the program so it leaves no zombie,
 /// and the window never waits for it.
 fn run(command: &AlertCommand, note: &Note) {
@@ -122,12 +126,28 @@ fn run(command: &AlertCommand, note: &Note) {
         .stderr(Stdio::null())
         .spawn();
     match spawned {
-        Ok(mut child) => {
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
+        Ok(child) => {
+            std::thread::spawn(move || reap(child, ALERT_COMMAND_LIMIT));
         }
         Err(error) => tracing::warn!("alert_command {:?} did not start: {error}", argv[0]),
+    }
+}
+
+/// Waits for `child` up to `limit`, then kills it: a hung command must not
+/// keep a thread (and the program) forever.
+fn reap(mut child: std::process::Child, limit: Duration) -> Option<std::process::ExitStatus> {
+    let deadline = Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100).min(deadline.saturating_duration_since(Instant::now()))),
+            Ok(None) => {
+                tracing::warn!("alert_command still running after {}s: killed", limit.as_secs());
+                let _ = child.kill();
+                return child.wait().ok();
+            }
+            Err(_) => return None,
+        }
     }
 }
 
@@ -248,5 +268,17 @@ mod tests {
         assert_eq!(cx.shown_system_notifications().len(), 2);
         cx.update(|cx| cx.dismiss_system_notification(&tag("local:t7")));
         assert!(cx.delivered_system_notifications().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_alert_command_is_killed_after_its_limit() {
+        let child = Command::new("sleep").arg("30").spawn().unwrap();
+        let started = Instant::now();
+        let status = reap(child, Duration::from_millis(300)).expect("reaped");
+        assert!(!status.success(), "killed, not finished");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let quick = Command::new("true").spawn().unwrap();
+        assert!(reap(quick, Duration::from_secs(5)).unwrap().success());
     }
 }

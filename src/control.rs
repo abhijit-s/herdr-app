@@ -36,6 +36,20 @@ pub fn listen(tx: async_channel::Sender<Request>) {
     });
 }
 
+/// How long a request may take the window to answer. `terminal.popup` starts
+/// its terminal on the UI thread, and that call alone may take the core's 10 s.
+fn answer_within(cmd: &Value) -> Duration {
+    if cmd.get("shot").is_some() {
+        Duration::from_secs(30)
+    } else if cmd.get("do").and_then(Value::as_str) == Some("terminal.popup") {
+        POPUP_ANSWER_WITHIN
+    } else {
+        Duration::from_secs(5)
+    }
+}
+
+const POPUP_ANSWER_WITHIN: Duration = Duration::from_secs(15);
+
 fn serve(stream: UnixStream, tx: async_channel::Sender<Request>) {
     let mut line = String::new();
     if BufReader::new(&stream).read_line(&mut line).is_err() {
@@ -43,17 +57,58 @@ fn serve(stream: UnixStream, tx: async_channel::Sender<Request>) {
     }
     let reply = match serde_json::from_str::<Value>(&line) {
         Ok(cmd) => {
-            let timeout = Duration::from_secs(if cmd.get("shot").is_some() { 30 } else { 5 });
             // `{"wait": terminal}` answers when that terminal ends, however long it runs.
-            let waits = cmd.get("wait").is_some();
+            let deadline = cmd.get("wait").is_none().then(|| std::time::Instant::now() + answer_within(&cmd));
             let (reply_tx, reply_rx) = std::sync::mpsc::channel();
             let _ = tx.send_blocking(Request::Control { cmd, reply: reply_tx });
-            let reply = if waits { reply_rx.recv().ok() } else { reply_rx.recv_timeout(timeout).ok() };
-            reply.unwrap_or_else(|| json!({ "error": "the window did not answer" }))
+            match await_reply(&stream, &reply_rx, deadline) {
+                Awaited::Answer(reply) => reply,
+                // Dropping `reply_rx` tells the window nobody took the answer.
+                Awaited::HungUp => return,
+                Awaited::TooLate => json!({ "error": "the window did not answer" }),
+            }
         }
         Err(e) => json!({ "error": format!("bad request: {e}") }),
     };
     let _ = (&stream).write_all(format!("{reply}\n").as_bytes());
+}
+
+enum Awaited {
+    Answer(Value),
+    HungUp,
+    TooLate,
+}
+
+/// The window's answer, unless the client hangs up (Ctrl-C) or the deadline passes first.
+fn await_reply(stream: &UnixStream, reply: &std::sync::mpsc::Receiver<Value>, deadline: Option<std::time::Instant>) -> Awaited {
+    use std::sync::mpsc::RecvTimeoutError;
+    loop {
+        let slice = deadline.map_or(HANG_UP_CHECK, |d| d.saturating_duration_since(std::time::Instant::now()).min(HANG_UP_CHECK));
+        match reply.recv_timeout(slice) {
+            Ok(answer) => return Awaited::Answer(answer),
+            Err(RecvTimeoutError::Disconnected) => return Awaited::TooLate,
+            Err(RecvTimeoutError::Timeout) if hung_up(stream) => return Awaited::HungUp,
+            Err(RecvTimeoutError::Timeout) if deadline.is_some_and(|d| std::time::Instant::now() >= d) => return Awaited::TooLate,
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
+const HANG_UP_CHECK: Duration = Duration::from_millis(500);
+
+/// A client sends one line, then only reads: anything readable now is its end of the stream.
+fn hung_up(stream: &UnixStream) -> bool {
+    use std::io::{ErrorKind, Read};
+    if stream.set_nonblocking(true).is_err() {
+        return false;
+    }
+    let mut reader = stream;
+    let gone = match reader.read(&mut [0u8; 1]) {
+        Ok(n) => n == 0,
+        Err(e) => !matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted),
+    };
+    let _ = stream.set_nonblocking(false);
+    gone
 }
 
 /// One Herdr per home: a second launch brings the running window to the
@@ -139,11 +194,16 @@ keeps running (`hc ls`, `hc kill <t>`).
   --cwd DIR    start in DIR (default: here)
   --hold       keep the popup up after the command ends, until a key
   --wait       wait for the command to end and exit with its exit code
-  --size WxH   the popup's size: px, or fractions of the window (0.6x0.5)
+  --size WxH   the popup's size: each side a fraction of the window up to 1
+               (0.6x0.5), or px from 50 (900x600); 1.5 is neither
   --           ends the options, for a command with its own flags
 
 Exits 2 for bad usage, 1 when the window is not open or the popup failed.
 ";
+
+/// Sides up to 1 are fractions of the window, larger ones px: between 1 and
+/// this, a side is more likely a mistyped fraction (1.5) than a tiny popup.
+const MIN_POPUP_PX: f64 = 50.0;
 
 #[derive(Debug, PartialEq)]
 struct Popup {
@@ -166,9 +226,9 @@ fn parse_popup(args: &[String]) -> Result<Option<Popup>, String> {
             "--cwd" => p.cwd = Some(it.next().ok_or("--cwd needs a folder")?.clone()),
             "--size" => {
                 let value = it.next().ok_or("--size needs WxH")?;
-                let number = |n: &str| n.parse::<f64>().ok().filter(|n| *n > 0.0);
-                let size = value.split_once('x').and_then(|(w, h)| Some((number(w)?, number(h)?)));
-                p.size = Some(size.ok_or_else(|| format!("--size is WxH with positive numbers, not {value:?}"))?);
+                let side = |n: &str| n.parse::<f64>().ok().filter(|n| *n > 0.0 && (*n <= 1.0 || *n >= MIN_POPUP_PX));
+                let size = value.split_once('x').and_then(|(w, h)| Some((side(w)?, side(h)?)));
+                p.size = Some(size.ok_or_else(|| format!("--size is WxH, each a fraction up to 1 or px from {MIN_POPUP_PX}, not {value:?}"))?);
             }
             "--" => {
                 p.argv = it.cloned().collect();
@@ -205,7 +265,8 @@ pub fn popup(args: &[String]) -> i32 {
     if let Some((width, height)) = p.size {
         (args["width"], args["height"]) = (json!(width), json!(height));
     }
-    let shown = match ask(&json!({ "do": "terminal.popup", "args": args }), Some(Duration::from_secs(35))) {
+    // Just past the server's limit, so its "did not answer" arrives first.
+    let shown = match ask(&json!({ "do": "terminal.popup", "args": args }), Some(POPUP_ANSWER_WITHIN + Duration::from_secs(2))) {
         Ok(reply) if reply.get("error").is_none() => reply,
         Ok(reply) => return popup_failed(reply["error"].as_str().unwrap_or("the popup failed")),
         Err(e) => return popup_failed(&e),
@@ -215,10 +276,16 @@ pub fn popup(args: &[String]) -> i32 {
     }
     let Some(terminal) = shown["terminal"].as_str() else { return popup_failed("the window named no terminal") };
     match ask(&json!({ "wait": terminal }), None) {
-        Ok(reply) if reply.get("error").is_none() => reply["exit_code"].as_i64().and_then(|c| i32::try_from(c).ok()).unwrap_or(1),
+        Ok(reply) if reply.get("error").is_none() => exit_status(&reply),
         Ok(reply) => popup_failed(reply["error"].as_str().unwrap_or("waiting failed")),
         Err(e) => popup_failed(&e),
     }
+}
+
+/// A shell's `$?`: the exit code, else 128 + the signal that killed it, else 1.
+fn exit_status(ended: &Value) -> i32 {
+    let code = ended["exit_code"].as_i64().or_else(|| ended["signal"].as_i64().map(|s| 128 + s));
+    code.and_then(|c| i32::try_from(c).ok()).unwrap_or(1)
 }
 
 fn popup_failed(message: &str) -> i32 {
@@ -304,11 +371,42 @@ mod tests {
             parse(&["--cwd", "/tmp", "--hold", "--wait", "--size", "900x0.5", "make", "test"]),
             Ok(Some(Popup { cwd: Some("/tmp".into()), hold: true, wait: true, size: Some((900.0, 0.5)), ..popup(&["make", "test"]) }))
         );
+        let size = |value: &str| parse(&["--size", value, "x"]).map(|p| p.unwrap().size);
+        assert_eq!(size("1x50"), Ok(Some((1.0, 50.0))), "the whole width, 50 px tall");
         assert_eq!(parse(&["-h"]), Ok(None));
         assert_eq!(parse(&["--wait", "--help", "x"]), Ok(None));
-        for bad in [&[][..], &["--wait"], &["--"], &["--nope", "x"], &["--cwd"], &["--size", "80", "x"], &["--size", "0x1", "x"], &["--size", "ax2", "x"]] {
+        for bad in [&[][..], &["--wait"], &["--"], &["--nope", "x"], &["--cwd"], &["--size", "80", "x"], &["--size", "0x1", "x"], &["--size", "ax2", "x"], &["--size", "1.5x0.5", "x"], &["--size", "0.5x49", "x"]] {
             assert!(parse(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_waited_popup_exits_as_a_shell_would() {
+        assert_eq!(exit_status(&json!({ "terminal": "t1", "exit_code": 7, "signal": null })), 7);
+        assert_eq!(exit_status(&json!({ "terminal": "t1", "exit_code": null, "signal": 15 })), 143, "SIGTERM");
+        assert_eq!(exit_status(&json!({ "terminal": "t1", "exit_code": null, "signal": null })), 1, "removed before it ended");
+    }
+
+    /// Ctrl-C on `herdr-app popup --wait` hangs up: the server stops waiting
+    /// and drops the reply channel, which tells the window nobody will take it.
+    #[test]
+    fn a_client_that_hangs_up_stops_the_wait() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let (tx, rx) = async_channel::unbounded();
+        let served = std::thread::spawn(move || serve(server, tx));
+        (&client).write_all(b"{\"wait\":\"t9\"}\n").unwrap();
+        let Ok(Request::Control { reply, .. }) = rx.recv_blocking() else { panic!("no control request") };
+        drop(client);
+        let started = std::time::Instant::now();
+        served.join().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(3), "noticed within a check or two");
+        assert!(reply.send(json!({})).is_err(), "nobody takes the answer");
+    }
+
+    #[test]
+    fn the_server_waits_longer_for_a_popup_than_the_core_may_take() {
+        assert!(answer_within(&json!({ "do": "terminal.popup", "args": {} })) > Duration::from_secs(10), "Core::call's limit");
+        assert_eq!(answer_within(&json!({ "do": "tab.new" })), Duration::from_secs(5));
     }
 
     #[test]

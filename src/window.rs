@@ -130,9 +130,14 @@ const POPUP_CLOSE_ENDS_PROGRAM: bool = false;
 struct Waiting {
     /// Listed live at least once: missing from a later listing means it's gone.
     seen: bool,
-    ended: Option<Value>,
+    /// The answer, and when it was ready: kept for a waiter on its way, for `WAIT_KEPT`.
+    ended: Option<(Value, Instant)>,
     replies: Vec<std::sync::mpsc::Sender<Value>>,
 }
+
+/// How long a finished `terminal.popup {wait}` keeps its exit code (and its
+/// terminal) for a waiter that hasn't asked yet.
+const WAIT_KEPT: Duration = Duration::from_secs(60);
 
 /// `terminal.popup {hold}`: the program, then its exit status until a key.
 /// Ctrl-C reaches the program but not the wrapper, so the status still shows.
@@ -140,7 +145,8 @@ fn popup_hold_argv(argv: Vec<String>) -> Result<Vec<String>, String> {
     if cfg!(windows) {
         return Err("terminal.popup hold needs sh, which Windows lacks".into());
     }
-    let script = r#"trap : INT; "$@"; code=$?; printf "\n[exit %s] press a key to close" "$code"; read -rn1 _; exit "$code""#;
+    // One key without Enter, in any sh (dash has no `read -n`).
+    let script = r#"trap : INT; "$@"; code=$?; printf "\n[exit %s] press a key to close" "$code"; old=$(stty -g 2>/dev/null); stty -icanon -echo 2>/dev/null; dd bs=1 count=1 >/dev/null 2>&1; stty "$old" 2>/dev/null; exit "$code""#;
     Ok(["sh", "-c", script, "popup"].into_iter().map(str::to_owned).chain(argv).collect())
 }
 
@@ -449,6 +455,8 @@ pub struct AppWindow {
     born: RefCell<HashMap<String, Instant>>,
     /// `terminal.popup {wait}` terminals, until a waiter has their exit code.
     waits: HashMap<String, Waiting>,
+    /// The terminal the peek overlay shows, and whether `terminal.popup` started it.
+    peeked: Option<(String, bool)>,
     /// Connection epoch: ignore replies from an old connection.
     core_generation: u64,
     checking_closed: bool,
@@ -541,6 +549,7 @@ impl AppWindow {
             folders_checked: HashMap::new(),
             born: RefCell::new(HashMap::new()),
             waits: HashMap::new(),
+            peeked: None,
             core_generation: 0,
             checking_closed: false,
             documents_watching: false,
@@ -591,8 +600,10 @@ impl AppWindow {
                 return false;
             }
             let _ = closing.update(cx, |this, cx| {
+                let deadline = std::time::Instant::now() + Duration::from_millis(250);
                 this.drain_documents(window, cx);
-                this.close_mods_now(std::time::Instant::now() + Duration::from_millis(250), window, cx);
+                this.close_mods_now(deadline, window, cx);
+                this.rm_finished_waits(deadline);
             });
             crate::place::save(window, cx);
             true
@@ -739,9 +750,12 @@ impl AppWindow {
                     match listed {
                         Some((live, ended)) => {
                             this.terminals_listed(live, window, cx);
-                            this.settle_waits(&ended, cx);
+                            this.settle_waits(&ended, Instant::now(), cx);
                         }
-                        None => this.tend_terminals(false, window, cx),
+                        None => {
+                            this.tend_terminals(false, window, cx);
+                            this.expire_waits(Instant::now(), cx);
+                        }
                     }
                     if changed { this.sync(window, cx); }
                     this.flush_documents(refresh, window, cx);
@@ -3613,11 +3627,20 @@ impl AppWindow {
     }
 
     fn peek_terminal(&mut self, address: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_peek(address, (0.8, 0.8), false, window, cx);
+        self.open_peek(address, (0.8, 0.8), false, false, window, cx);
     }
 
     /// The peek overlay: `close_ends_program` makes its ✕ end the program too.
-    fn open_peek(&mut self, address: &str, (width, height): (f64, f64), close_ends_program: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// It replaces the one open; a program `terminal.popup` started in that one
+    /// ends (its ✕ and the backdrop only hide it, to come back to with `hc`).
+    fn open_peek(&mut self, address: &str, (width, height): (f64, f64), close_ends_program: bool, started: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let open = self.overlays.iter().any(|o| o.id == "terminal-peek");
+        if let Some((shown, true)) = self.peeked.take().filter(|(shown, _)| open && shown != address) {
+            // A waited-on one is removed once its waiter has the exit code.
+            let rm = !self.waits.contains_key(&shown);
+            self.end_terminal(shown, rm, cx);
+        }
+        self.peeked = Some((address.to_owned(), started));
         self.close_overlay("terminal-peek", window, cx);
         self.open_overlay("terminal-peek".into(), json!({
             "kind": "dialog",
@@ -3651,64 +3674,128 @@ impl AppWindow {
         if wait {
             self.waits.insert(address.clone(), Waiting::default());
         }
-        self.open_peek(&address, size, POPUP_CLOSE_ENDS_PROGRAM, window, cx);
+        self.open_peek(&address, size, POPUP_CLOSE_ENDS_PROGRAM, true, window, cx);
         Ok(json!({ "terminal": address }))
+    }
+
+    /// The `herdr-app popup` that asked for this one gave up before the answer
+    /// (it timed out, or Ctrl-C): nobody will wait on it or remove it.
+    fn abandon_popup(&mut self, answer: &Value, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(address) = answer["terminal"].as_str() else { return };
+        if self.waits.remove(address).is_none() {
+            return;
+        }
+        if self.peeked.as_ref().is_some_and(|(shown, _)| shown == address) {
+            self.peeked = None;
+            self.close_overlay("terminal-peek", window, cx);
+        }
+        self.end_terminal(address.to_owned(), true, cx);
+    }
+
+    /// Ends a terminal's program off the UI thread, then removes the terminal if `rm`.
+    fn end_terminal(&self, address: String, rm: bool, cx: &mut Context<Self>) {
+        let core = self.core.clone();
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(e) = core.call("terminal.kill", json!({ "terminal": address })) {
+                    tracing::warn!("popup terminal.kill: {e:#}");
+                }
+                if rm && let Err(e) = core.call("terminal.rm", json!({ "terminal": address })) {
+                    tracing::warn!("popup terminal.rm: {e:#}");
+                }
+            })
+            .detach();
+    }
+
+    fn rm_terminal(&self, address: String, cx: &mut Context<Self>) {
+        let core = self.core.clone();
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(e) = core.call("terminal.rm", json!({ "terminal": address })) {
+                    tracing::warn!("popup terminal.rm: {e:#}");
+                }
+            })
+            .detach();
+    }
+
+    /// Closing: finished popups kept for a waiter that never came go too.
+    pub(crate) fn rm_finished_waits(&self, deadline: Instant) {
+        for address in self.waits.iter().filter(|(_, w)| w.ended.is_some()).map(|(a, _)| a) {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            if let Err(e) = self.core.call_timeout("terminal.rm", json!({ "terminal": address }), left) {
+                tracing::warn!("popup terminal.rm: {e:#}");
+            }
+        }
     }
 
     /// `{"wait": terminal}` on the control socket: answered with its exit code
     /// once it ends, now if it already has.
-    fn wait_for(&mut self, address: &str, reply: std::sync::mpsc::Sender<Value>) {
+    fn wait_for(&mut self, address: &str, reply: std::sync::mpsc::Sender<Value>, cx: &mut Context<Self>) {
         let Some(w) = self.waits.get_mut(address) else {
             let _ = reply.send(json!({ "error": format!("nothing waits on {address:?}: only terminal.popup with wait does") }));
             return;
         };
         match &w.ended {
-            Some(ended) => {
-                let _ = reply.send(ended.clone());
-                self.waits.remove(address);
+            Some((ended, _)) => {
+                if reply.send(ended.clone()).is_ok() {
+                    self.settled(address.to_owned(), cx);
+                }
             }
             None => w.replies.push(reply),
         }
     }
 
-    /// After the core's events: waited-on popups that finished (`ended`: their
-    /// exit codes) or went without one (removed by someone else) answer their
-    /// waiters, and the terminal is removed.
-    fn settle_waits(&mut self, ended: &HashMap<String, Value>, cx: &mut Context<Self>) {
-        let mut done = Vec::new();
+    /// After the core's events: waited-on popups that finished (`ended`: how
+    /// they ended) or went without an end (removed by someone else) answer
+    /// their waiters, and the terminal is removed. One nobody waits on yet
+    /// keeps its answer, and its terminal, for `WAIT_KEPT`.
+    fn settle_waits(&mut self, ended: &HashMap<String, Value>, now: Instant, cx: &mut Context<Self>) {
+        let mut answered = Vec::new();
         for (address, w) in self.waits.iter_mut().filter(|(_, w)| w.ended.is_none()) {
-            let code = match ended.get(address) {
-                Some(code) => code.clone(),
+            let end = match ended.get(address) {
+                Some(end) => end,
                 None if self.live.contains_key(address) => {
                     w.seen = true;
                     continue;
                 }
-                None if w.seen => Value::Null,
+                None if w.seen => &Value::Null,
                 // Not listed yet: it started after this listing began.
                 None => continue,
             };
-            let answer = json!({ "terminal": address, "exit_code": code });
-            let answered = !w.replies.is_empty();
-            for reply in w.replies.drain(..) {
-                let _ = reply.send(answer.clone());
+            let answer = json!({ "terminal": address, "exit_code": end["exit_code"], "signal": end["signal"] });
+            // A waiter that hung up (Ctrl-C) takes nothing.
+            let taken = w.replies.drain(..).fold(false, |taken, reply| reply.send(answer.clone()).is_ok() || taken);
+            w.ended = Some((answer, now));
+            if taken {
+                answered.push(address.clone());
             }
-            w.ended = Some(answer);
-            done.push((address.clone(), answered));
         }
-        for (address, answered) in done {
-            // Unanswered, it keeps the exit code for a waiter still on its way.
-            if answered {
-                self.waits.remove(&address);
-            }
-            let core = self.core.clone();
-            cx.background_executor()
-                .spawn(async move {
-                    if let Err(e) = core.call("terminal.rm", json!({ "terminal": address })) {
-                        tracing::warn!("popup terminal.rm: {e:#}");
-                    }
-                })
-                .detach();
+        for address in answered {
+            self.settled(address, cx);
         }
+        self.expire_waits(now, cx);
+    }
+
+    /// Finished popups whose waiter never came, after `WAIT_KEPT`.
+    fn expire_waits(&mut self, now: Instant, cx: &mut Context<Self>) {
+        let expired: Vec<String> = self.waits.iter().filter(|(_, w)| w.ended.as_ref().is_some_and(|(_, at)| now.duration_since(*at) >= WAIT_KEPT)).map(|(a, _)| a.clone()).collect();
+        for address in expired {
+            self.settled(address, cx);
+        }
+    }
+
+    /// A finished popup is done with: removed, and nothing left to end.
+    fn settled(&mut self, address: String, cx: &mut Context<Self>) {
+        self.waits.remove(&address);
+        if let Some((shown, started)) = &mut self.peeked
+            && *shown == address
+        {
+            *started = false;
+        }
+        self.rm_terminal(address, cx);
     }
 
     /// Which copies are on screen, for `<mod>.<command>` (`mods::send_command`).
@@ -3781,9 +3868,15 @@ impl AppWindow {
             Request::CloseOverlay { id } => self.close_overlay(&id, window, cx),
             Request::Refresh => self.refresh_mods(cx),
             Request::Control { cmd, reply } => match cmd.get("wait").and_then(Value::as_str) {
-                Some(address) => self.wait_for(address, reply),
+                Some(address) => self.wait_for(address, reply, cx),
                 None => {
-                    let _ = reply.send(self.control(cmd, window, cx));
+                    let popup = cmd.get("do").and_then(Value::as_str) == Some("terminal.popup");
+                    let answer = self.control(cmd, window, cx);
+                    if let Err(unsent) = reply.send(answer)
+                        && popup
+                    {
+                        self.abandon_popup(&unsent.0, window, cx);
+                    }
                 }
             },
         }
@@ -4245,7 +4338,7 @@ impl AppWindow {
                 .id(SharedString::from(format!("err-{slot}")))
                 .size_full()
                 .p(settings::z(6.5))
-                .text_xs()
+                .text_size(settings::text_rems(0.75))
                 .text_color(c("blocked"))
                 .overflow_y_scroll()
                 .child(format!("{} did not load:\n\n{}\n\nFix the files; Herdr retries on save.", inst.name, error.as_deref().unwrap_or("?")))
@@ -4258,7 +4351,7 @@ impl AppWindow {
     fn builtin_tabs(&self, n: &Node, cx: &mut Context<Self>) -> AnyElement {
         let active = n.active_child().map(|c| c.id.clone());
         let stack = n.id.clone();
-        let mut row = div().size_full().flex().flex_row().bg(c("surface")).text_xs();
+        let mut row = div().size_full().flex().flex_row().bg(c("surface")).text_size(settings::text_rems(0.75));
         for (i, ch) in n.children().iter().enumerate() {
             let (s, id) = (stack.clone(), ch.id.clone());
             let on = active.as_deref() == Some(ch.id.as_str());
@@ -4875,7 +4968,7 @@ impl Render for AppWindow {
         let _timed = crate::bench::timed(&crate::bench::WINDOW_US);
         crate::bench::frame_start();
         crate::terminal::next_frame();
-        window.set_rem_size(px(settings::ui_font_size()));
+        window.set_rem_size(settings::ui_rem());
         // A terminal the person clicked into becomes the focused pane.
         let clicked = self
             .terms
@@ -4916,6 +5009,8 @@ impl Render for AppWindow {
             .bg(c("background"))
             .text_color(c("foreground"))
             .font_family(settings::get().ui_font_family.clone())
+            // The rem leaves the text scale out; the text under it takes it here.
+            .text_size(settings::text_rems(1.0))
             .on_action(cx.listener(|this, a: &ShellAction, w, cx| {
                 // Nothing selected: the copy chord goes to the program (#216).
                 if a.id() == "terminal.copy" {
@@ -5357,12 +5452,26 @@ export default class Scale extends View {
   render() {
     return div().flex().flex_col().items_start()
       .child(div().id("gap").w(40).h(10).flex_none())
-      .child(div().id("label").flex_none().text_size(20).line_height(1).child("Hg"));
+      .child(div().id("rem-gap").w("2rem").h(10).flex_none())
+      .child(div().id("label").flex_none().text_size(20).line_height(1).child("Hg"))
+      .child(div().id("px-line").flex_none().text_size(20).line_height("24px").child("Hg"))
+      .child(div().id("rem-text").flex_none().text_size("1rem").line_height(1).child("Hg"));
   }
 }"#;
         let (view, cx) = open_window(cx, "scale", main_js, json!({"id": "root", "type": "block", "content": {"mod": "scale"}}));
-        for (ui_zoom, ui_text_scale, spacing, text) in [(1.0, 1.0, 1.0, 1.0), (1.2, 1.0, 1.2, 1.2), (1.0, 1.1, 1.0, 1.1), (1.2, 1.1, 1.2, 1.32), (1.0, 1.0, 1.0, 1.0)] {
-            let person = crate::settings::Person { ui_zoom, ui_text_scale, ..crate::settings::Person::default() };
+        // (zoom, ui_zoom, ui_text_scale): px grow by `spacing`, text by `text`.
+        for ((zoom, ui_zoom, ui_text_scale), spacing, text) in [
+            ((1.0, 1.0, 1.0), 1.0, 1.0),
+            ((1.0, 1.2, 1.0), 1.2, 1.2),
+            ((1.0, 1.0, 1.1), 1.0, 1.1),
+            ((1.0, 1.2, 1.1), 1.2, 1.32),
+            ((1.5, 1.0, 1.0), 1.5, 1.5),
+            ((1.5, 1.2, 1.1), 1.8, 1.98),
+            // zoom × ui_zoom stops at the largest zoom.
+            ((3.0, 1.5, 1.0), 3.0, 3.0),
+            ((1.0, 1.0, 1.0), 1.0, 1.0),
+        ] {
+            let person = crate::settings::Person { zoom, ui_zoom, ui_text_scale, ..crate::settings::Person::default() };
             crate::settings::write_person(&person).unwrap();
             view.update_in(cx, |this, window, cx| {
                 this.watched.settings = None;
@@ -5370,12 +5479,16 @@ export default class Scale extends View {
             });
             cx.run_until_parked();
             let (gap, label) = (cx.debug_bounds("gap").expect("no gap"), cx.debug_bounds("label").expect("no label"));
-            let at = format!("ui_zoom {ui_zoom}, ui_text_scale {ui_text_scale}");
+            let at = format!("zoom {zoom}, ui_zoom {ui_zoom}, ui_text_scale {ui_text_scale}");
             // Layout rounds to device pixels (half px here).
-            assert!((gap.size.width - px(40.0 * spacing)).abs() <= px(0.25), "{at}: spacing {gap:?}");
-            assert!((gap.size.height - px(10.0 * spacing)).abs() <= px(0.25), "{at}: spacing {gap:?}");
-            assert!((label.size.height - px(20.0 * text)).abs() <= px(0.25), "{at}: text {label:?}");
-            assert_eq!(crate::settings::font_size(), 14.0, "{at}: terminal text stays at zoom");
+            let near = |id: &str, size: gpui::Pixels, want: f32| assert!((size - px(want)).abs() <= px(0.25), "{at}: {id} is {size:?}, not {want}");
+            near("gap width", gap.size.width, 40.0 * spacing);
+            near("gap height", gap.size.height, 10.0 * spacing);
+            near("2rem", cx.debug_bounds("rem-gap").unwrap().size.width, 26.0 * spacing);
+            near("text", label.size.height, 20.0 * text);
+            near("a 24px line", cx.debug_bounds("px-line").unwrap().size.height, 24.0 * text);
+            near("1rem text", cx.debug_bounds("rem-text").unwrap().size.height, 13.0 * text);
+            assert_eq!(crate::settings::font_size(), 14.0 * zoom, "{at}: terminal text stays at zoom");
         }
     }
 
@@ -5535,19 +5648,29 @@ export default class Probe extends View {
         let next = std::sync::atomic::AtomicU32::new(8);
         let (core, calls) = crate::hc::answering(move |method, _| match method {
             "terminal.run" => Ok(json!({ "address": format!("t{}", next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) })),
-            "terminal.rm" => Ok(json!({})),
+            "terminal.rm" | "terminal.kill" => Ok(json!({})),
             _ => Err(json!({ "message": "not in this test" })),
         });
         let (view, cx) = open_window_on(core, cx, "unused", "", json!({ "id": "root", "type": "block", "content": { "mod": "unused" } }));
-        let called = |method: &str| calls.lock().unwrap().iter().filter(|(m, _)| m == method).map(|(_, p)| p.clone()).collect::<Vec<_>>();
+        let take = |method: &str| {
+            let mut calls = calls.lock().unwrap();
+            let (taken, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut *calls).into_iter().partition(|(m, _)| m == method);
+            *calls = kept;
+            // Background work runs in any order.
+            let mut taken = taken.into_iter().map(|(_, p)| p["terminal"].as_str().map_or(p.clone(), |t| json!(t))).collect::<Vec<_>>();
+            taken.sort_by_key(|p| p.to_string());
+            taken
+        };
         let peeked = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| {
             let peek = this.overlays.iter().find(|o| o.id == "terminal-peek").expect("the peek overlay");
             (serde_json::to_value(peek.layout.as_ref().expect("its layout")).unwrap(), peek.size.width)
         });
+        let peek_open = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.overlays.iter().any(|o| o.id == "terminal-peek"));
         let popup = |args: serde_json::Value, cx: &mut gpui::VisualTestContext| cx.update(|window, cx| view.update(cx, |this, cx| this.run_as("terminal.popup", args, false, window, cx)));
+        let now = std::time::Instant::now();
 
         assert_eq!(popup(json!({ "argv": ["htop"], "cwd": "/tmp" }), cx), json!({ "terminal": "t8" }));
-        let run = called("terminal.run").pop().unwrap();
+        let run = take("terminal.run").pop().unwrap();
         assert_eq!((&run["argv"], &run["cwd"], &run["no_parent"], &run["rm"]), (&json!(["htop"]), &json!("/tmp"), &json!(true), &json!(true)));
         let (layout, width) = peeked(cx);
         let blocks = layout.to_string();
@@ -5557,49 +5680,106 @@ export default class Probe extends View {
         assert!(view.update(cx, |this, _| this.waits.is_empty()), "nothing waits without wait");
 
         // Waiting: kept for the exit code, held output, the size asked for.
+        // It replaces the popup still open, whose program ends.
         assert_eq!(popup(json!({ "argv": ["sh", "-c", "exit 7"], "wait": true, "hold": true, "width": 600 }), cx), json!({ "terminal": "t9" }));
-        let run = called("terminal.run").pop().unwrap();
+        let run = take("terminal.run").pop().unwrap();
         assert_eq!(run["rm"], json!(false));
         let argv = run["argv"].as_array().unwrap();
         assert_eq!(argv[..2], [json!("sh"), json!("-c")]);
+        assert!(!argv[2].as_str().unwrap().contains("read -"), "dash has no read -n: {}", argv[2]);
         assert_eq!(argv[3..], [json!("popup"), json!("sh"), json!("-c"), json!("exit 7")]);
         assert_eq!(run["cwd"], json!(super::home()));
         let (layout, width) = peeked(cx);
         assert!(layout.to_string().contains(r#"{"terminal":"t9"}"#), "the new popup replaces the last");
         assert_eq!(width, 600.0);
+        cx.run_until_parked();
+        assert_eq!((take("terminal.kill"), take("terminal.rm")), (vec![json!("t8")], vec![json!("t8")]), "the replaced popup's program ends");
 
         let (tx, rx) = std::sync::mpsc::channel();
         view.update(cx, |this, cx| {
-            this.wait_for("t9", tx);
+            this.wait_for("t9", tx, cx);
             // Live, then finished with its code.
             this.live.insert("t9".into(), json!({}));
-            this.settle_waits(&HashMap::new(), cx);
+            this.settle_waits(&HashMap::new(), now, cx);
             this.live.clear();
-            this.settle_waits(&HashMap::from([("t9".to_owned(), json!(7))]), cx);
+            this.settle_waits(&HashMap::from([("t9".to_owned(), json!({ "exit_code": 7, "signal": null }))]), now, cx);
         });
-        assert_eq!(rx.try_recv().unwrap(), json!({ "terminal": "t9", "exit_code": 7 }));
+        assert_eq!(rx.try_recv().unwrap(), json!({ "terminal": "t9", "exit_code": 7, "signal": null }));
         cx.run_until_parked();
-        assert_eq!(called("terminal.rm"), [json!({ "terminal": "t9" })]);
+        assert_eq!(take("terminal.rm"), [json!("t9")]);
         assert!(view.update(cx, |this, _| this.waits.is_empty()));
 
-        // One that ends before anyone asks keeps its code for the waiter; one
-        // removed without finishing answers null; unknown ones are an error.
+        // A peek of a terminal someone else started never ends it, nor does a
+        // popup closed (hidden) before the next one opens.
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.live.insert("t5".into(), json!({}));
+            this.peek_terminal("t5", window, cx);
+        }));
+        popup(json!({ "argv": ["true"] }), cx);
+        cx.update(|window, cx| view.update(cx, |this, cx| this.close_overlay("terminal-peek", window, cx)));
+        popup(json!({ "argv": ["true"] }), cx);
+        cx.run_until_parked();
+        assert!(take("terminal.kill").is_empty(), "t9 had ended, t5 is a peek, t10 was hidden");
+        take("terminal.run");
+
+        // One that ends before anyone asks keeps its code (and terminal) for
+        // the waiter; one removed without finishing answers null; unknown
+        // ones are an error.
         popup(json!({ "argv": ["true"], "wait": true }), cx);
         popup(json!({ "argv": ["sleep", "9"], "wait": true }), cx);
+        cx.run_until_parked();
+        assert_eq!(take("terminal.kill"), [json!("t11"), json!("t12")], "the open popup each time");
+        take("terminal.rm");
         view.update(cx, |this, cx| {
-            this.live.insert("t11".into(), json!({}));
-            this.settle_waits(&HashMap::from([("t10".to_owned(), json!(0))]), cx);
+            this.live.insert("t13".into(), json!({}));
+            this.settle_waits(&HashMap::from([("t12".to_owned(), json!({ "exit_code": 0, "signal": null }))]), now, cx);
             this.live.clear();
-            this.settle_waits(&HashMap::new(), cx);
+            this.settle_waits(&HashMap::new(), now, cx);
         });
+        cx.run_until_parked();
+        assert!(take("terminal.rm").is_empty(), "kept for their waiters");
         let answer = |address: &str, cx: &mut gpui::VisualTestContext| {
             let (tx, rx) = std::sync::mpsc::channel();
-            view.update(cx, |this, _| this.wait_for(address, tx));
+            view.update(cx, |this, cx| this.wait_for(address, tx, cx));
             rx.try_recv().unwrap()
         };
-        assert_eq!(answer("t10", cx)["exit_code"], json!(0));
-        assert_eq!(answer("t11", cx)["exit_code"], json!(null));
-        assert!(answer("t10", cx)["error"].is_string(), "answered once");
+        assert_eq!(answer("t12", cx)["exit_code"], json!(0));
+        cx.run_until_parked();
+        assert_eq!(take("terminal.rm"), [json!("t12")], "removed once taken");
+        assert!(answer("t12", cx)["error"].is_string(), "answered once");
+
+        // t13 (no end) nobody claims: kept a minute, then removed.
+        view.update(cx, |this, cx| this.expire_waits(now + super::WAIT_KEPT / 2, cx));
+        cx.run_until_parked();
+        assert!(take("terminal.rm").is_empty());
+        view.update(cx, |this, cx| this.expire_waits(now + super::WAIT_KEPT, cx));
+        cx.run_until_parked();
+        assert_eq!(take("terminal.rm"), [json!("t13")]);
+        assert!(view.update(cx, |this, _| this.waits.is_empty()));
+
+        // A waiter that hung up takes nothing: the answer stays for another.
+        popup(json!({ "argv": ["true"], "wait": true }), cx);
+        let (tx, rx) = std::sync::mpsc::channel();
+        view.update(cx, |this, cx| {
+            this.wait_for("t14", tx, cx);
+            drop(rx);
+            this.live.insert("t14".into(), json!({}));
+            this.settle_waits(&HashMap::new(), now, cx);
+            this.live.clear();
+            this.settle_waits(&HashMap::from([("t14".to_owned(), json!({ "exit_code": null, "signal": 15 }))]), now, cx);
+        });
+        assert_eq!(answer("t14", cx), json!({ "terminal": "t14", "exit_code": null, "signal": 15 }));
+
+        // The CLI gave up before the window answered: nothing is left behind.
+        let (tx, rx) = std::sync::mpsc::channel();
+        drop(rx);
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.handle(crate::mods::Request::Control { cmd: json!({ "do": "terminal.popup", "args": { "argv": ["make"], "wait": true } }), reply: tx }, window, cx)
+        }));
+        cx.run_until_parked();
+        assert!(view.update(cx, |this, _| !this.waits.contains_key("t15")));
+        assert!(!peek_open(cx), "its popup closes");
+        assert_eq!((take("terminal.kill"), take("terminal.rm")), (vec![json!("t15")], vec![json!("t14"), json!("t15")]));
         assert!(popup(json!({ "argv": [] }), cx)["error"].is_string());
     }
 

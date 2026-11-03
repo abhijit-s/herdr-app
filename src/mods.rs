@@ -864,17 +864,32 @@ fn read_remote(machine: &str, path: &str) -> Result<Option<String>, String> {
     Ok(Some(String::from_utf8_lossy(&out).into_owned()))
 }
 
+/// Blocking work for a mod's async host function, off the window thread.
+/// Under test it runs when first polled instead: a thread of its own would
+/// wake GPUI's test scheduler from outside, which fails the test as not
+/// deterministic.
+pub(crate) fn off_thread<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> impl std::future::Future<Output = Option<T>> + Send {
+    #[cfg(test)]
+    {
+        async move { Some(work()) }
+    }
+    #[cfg(not(test))]
+    {
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(work());
+        });
+        async move { rx.recv().await.ok() }
+    }
+}
+
 fn exec_future(command: String, args: Vec<String>, cwd: Option<String>, on: Option<String>) -> impl std::future::Future<Output = Result<HostValue, HostError>> + Send {
-    let (tx, rx) = async_channel::bounded(1);
-    std::thread::spawn(move || {
-        let r = match on {
-            Some(m) => run_remote(&m, &command, &args, cwd).map(|(c, o, e)| (c, String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned())),
-            None => run_blocking(&command, &args, cwd),
-        };
-        let _ = tx.send_blocking(r);
+    let ran = off_thread(move || match on {
+        Some(m) => run_remote(&m, &command, &args, cwd).map(|(c, o, e)| (c, String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned())),
+        None => run_blocking(&command, &args, cwd),
     });
     async move {
-        let (code, stdout, stderr) = rx.recv().await.map_err(|_| HostError::new("the command was lost"))?.map_err(HostError::new)?;
+        let (code, stdout, stderr) = ran.await.ok_or_else(|| HostError::new("the command was lost"))?.map_err(HostError::new)?;
         Ok(HostObject::new().field("code", code as f64).field("stdout", stdout).field("stderr", stderr).into())
     }
 }
@@ -957,11 +972,8 @@ fn module(inst: Instance, copy: u64) -> HostModule {
             let on = opt_str(a.get(0), "on");
             // The table is loaded on the window thread; workers have only defaults.
             let list = crate::programs::startable();
-            let (tx, rx) = async_channel::bounded(1);
-            std::thread::spawn(move || {
-                let _ = tx.send_blocking(known_agents(on, list));
-            });
-            Ok(async move { Ok(to_host(&rx.recv().await.unwrap_or(Value::Array(Vec::new())))) })
+            let found = off_thread(move || known_agents(on, list));
+            Ok(async move { Ok(to_host(&found.await.unwrap_or(Value::Array(Vec::new())))) })
         })
         .async_function("pickFolder", |a| {
             let prompt = a.get(0).map(from_host).and_then(|v| v.get("prompt").and_then(Value::as_str).map(str::to_owned)).unwrap_or_else(|| "Open".into());
@@ -1037,7 +1049,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
         })
         .function("window", reader(reads.clone(), "window", |s| &s.window))
         .function("theme", |_| Ok(to_host(&serde_json::to_value(&*crate::settings::theme()).unwrap_or(Value::Null))))
-        .function("settings", |_| Ok(to_host(&serde_json::to_value(&*crate::settings::get()).unwrap_or(Value::Null))))
+        .function("settings", |_| Ok(to_host(&crate::settings::get().for_mods())))
         .function("keys", |_| {
             let list: Vec<Value> = crate::keys::listing().into_iter().map(|(s, k, a)| json!({ "section": s, "keys": k, "action": a })).collect();
             Ok(to_host(&Value::Array(list)))

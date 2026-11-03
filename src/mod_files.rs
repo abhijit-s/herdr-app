@@ -79,15 +79,11 @@ fn write(path: &Path, text: &str, expected: Option<&str>) -> Result<(), String> 
 pub fn read_with(
     read: impl FnOnce() -> Result<Option<String>, String> + Send + 'static,
 ) -> impl std::future::Future<Output = Result<HostValue, HostError>> + Send {
-    let (tx, rx) = async_channel::bounded(1);
-    std::thread::spawn(move || {
-        let _ = tx.send_blocking(read());
-    });
+    let read = crate::mods::off_thread(read);
     async move {
-        let value = rx
-            .recv()
+        let value = read
             .await
-            .map_err(|e| HostError::new(e.to_string()))?
+            .ok_or_else(|| HostError::new("the read was lost"))?
             .map_err(HostError::new)?;
         Ok(value.map(HostValue::from).unwrap_or(HostValue::Null))
     }
@@ -98,14 +94,11 @@ pub fn write_text(
     text: String,
     expected: Option<String>,
 ) -> impl std::future::Future<Output = Result<HostValue, HostError>> + Send {
-    let (tx, rx) = async_channel::bounded(1);
-    std::thread::spawn(move || {
-        let _ = tx.send_blocking(write(Path::new(&path), &text, expected.as_deref()));
-    });
+    let written = crate::mods::off_thread(move || write(Path::new(&path), &text, expected.as_deref()));
     async move {
-        rx.recv()
+        written
             .await
-            .map_err(|e| HostError::new(e.to_string()))?
+            .ok_or_else(|| HostError::new("the write was lost"))?
             .map_err(HostError::new)?;
         Ok(HostValue::Null)
     }

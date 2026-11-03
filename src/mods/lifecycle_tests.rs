@@ -87,9 +87,33 @@ export default class extends View {{
         assert_eq!(after.script_renders(), before.script_renders());
         assert_eq!(after.materializations(), before.materializations(), "a spinner step rebuilt the mod ({hover:?})");
 
+        // Something outside the mod changes: the window draws, replaying the
+        // cached mod, whose spinners keep turning.
+        window.update(cx, |_, _, cx| cx.notify()).unwrap();
+        cx.simulate_window_frame_request(handle);
+        cx.run_until_parked();
+        assert_eq!(renders.get(), drawn + 1, "the window drew ({hover:?})");
+        for _ in 0..2 {
+            std::thread::sleep(std::time::Duration::from_millis(15));
+            cx.executor().advance_clock(gpui::SPIN_STEP);
+            cx.run_until_parked();
+            cx.simulate_window_frame_request(handle);
+            let now = presented(cx);
+            assert_eq!(now.len(), 3, "replayed spinners are on screen ({hover:?})");
+            assert_ne!(now, last, "and still turn ({hover:?})");
+            last = now;
+        }
+        assert_eq!(runtime.read_metrics().materializations(), before.materializations(), "the replay rebuilt the mod ({hover:?})");
+
         window.update(cx, |_, window, cx| window.replace_root(cx, |_, _| Empty)).unwrap();
         cx.simulate_window_frame_request(handle);
         assert!(presented(cx).is_empty(), "a frame without spinners turns nothing");
+        // The step already scheduled finds no spinners: no more present-only frames.
+        let presents = handle.update(cx, |_, window, _| window.presents()).unwrap();
+        cx.executor().advance_clock(gpui::SPIN_STEP * 2);
+        cx.run_until_parked();
+        cx.simulate_window_frame_request(handle);
+        assert_eq!(handle.update(cx, |_, window, _| window.presents()).unwrap(), presents, "presented with no spinners ({hover:?})");
         let _ = handle.update(cx, |_, window, _| window.remove_window());
         cx.run_until_parked();
     }

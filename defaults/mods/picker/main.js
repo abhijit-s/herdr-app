@@ -248,7 +248,7 @@ export default class Picker extends View {
         v_flex()
           .id("pk-list")
           .on_size_change((size, cx) => {
-            this.listHeight = size.height / (settings().zoom * (settings().ui_zoom ?? 1));
+            this.listHeight = size.height / settings().ui_scale;
             cx.notify();
           })
           .h(Math.min(320, total))
