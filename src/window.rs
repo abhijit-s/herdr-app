@@ -6,6 +6,7 @@
 
 use crate::hc::Core;
 mod floats;
+mod follow_mouse;
 mod movable;
 mod pane_drag;
 mod pane_size;
@@ -396,6 +397,9 @@ pub struct AppWindow {
     swapped: HashMap<String, String>,
     float_drag: Option<floats::FloatDrag>,
     pane_drag: Option<pane_drag::PaneDrag>,
+    /// Focus follows mouse: the wait for the pane under the pointer, and its timer.
+    follow: follow_mouse::Follow,
+    follow_timer: Option<Task<()>>,
     pane_grip_hover: Option<String>,
     /// Each pane's top row the grip sits centered in: its top header, else a strip.
     pane_grip_rows: RefCell<HashMap<String, f32>>,
@@ -508,6 +512,8 @@ impl AppWindow {
             swapped: HashMap::new(),
             float_drag: None,
             pane_drag: None,
+            follow: Default::default(),
+            follow_timer: None,
             pane_grip_hover: None,
             pane_grip_rows: RefCell::default(),
             win_drag: None,
@@ -3367,6 +3373,7 @@ impl AppWindow {
                 self.save();
                 self.apply_look(window, cx);
             }
+            "focus.toggle_follows_mouse" => return self.toggle_follows_mouse(window, cx),
             "app.zoom_in" | "app.zoom_out" | "app.zoom_reset" => {
                 let zoom = settings::next_zoom(match name {
                     "app.zoom_in" => 1,
@@ -4940,8 +4947,12 @@ impl Render for AppWindow {
                     cx.stop_propagation();
                 }
             }))
-            .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, _, _| this.pointer = ev.position))
+            .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, _, _| {
+                this.pointer = ev.position;
+                this.follow_mouse_cancel();
+            }))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
+                this.follow_mouse(ev, window, cx);
                 this.drag_window(ev, window);
                 if this.drag.is_none() {
                     return;
@@ -5469,6 +5480,132 @@ export default class Scale extends View {
         cx.update(|window, cx| view.update(cx, |this, _| {
             assert!(this.focused_path(window).contains("pane"));
         }));
+    }
+
+    #[test]
+    fn focus_follows_the_resting_pointer_between_terminal_panes() {
+        in_own_process("follow_mouse");
+    }
+
+    /// Two terminal blocks, focus_follows_mouse on at 150 ms: the pane the
+    /// pointer rests on takes the focus after the delay, and not while a button
+    /// is held, an overlay is open, the window is inactive, or the keyboard
+    /// moved the focus since the pointer last moved.
+    #[gpui::test]
+    fn follow_mouse(cx: &mut gpui::TestAppContext) {
+        use gpui::{Modifiers, MouseButton, point, px};
+        use serde_json::json;
+        use std::time::Duration;
+        if !running_alone("follow_mouse") {
+            return;
+        }
+        // Written before the window watches the home: file events from another
+        // thread would wake the test's executor.
+        std::fs::create_dir_all(crate::mods::app_dir()).unwrap();
+        let person = crate::settings::Person { focus_follows_mouse: true, ..crate::settings::Person::default() };
+        crate::settings::write_person(&person).unwrap();
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "root", "type": "row", "children": [
+            { "id": "left", "type": "block", "content": { "terminal": "t1" } },
+            { "id": "right", "type": "block", "content": { "terminal": "t2" } }
+        ] }));
+        view.update_in(cx, |this, window, cx| {
+            window.activate_window();
+            // What's new opens on a first start, as a window overlay.
+            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                this.close_overlay(&id, window, cx);
+            }
+            assert!(this.person.focus_follows_mouse);
+            this.run_as("pane.focus", json!({ "terminal": "t1" }), false, window, cx);
+        });
+        cx.run_until_parked();
+        // The focused pane, checked against the terminal holding the keyboard.
+        let focused = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| view.update(cx, |this, _| {
+                let pane = this.focused_pane.clone().unwrap_or_default();
+                assert!(this.pane_focus(&pane).is_some_and(|f| f.is_focused(window)), "{pane} doesn't have the keyboard");
+                pane
+            }))
+        };
+        let wait = |cx: &mut gpui::VisualTestContext, ms: u64| {
+            cx.executor().advance_clock(Duration::from_millis(ms));
+            cx.run_until_parked();
+        };
+        let (left, right) = view.update(cx, |this, _| {
+            let b = this.bounds.borrow();
+            (b["left"].center(), b["right"].center())
+        });
+        let nudge = |p: gpui::Point<gpui::Pixels>, d: f32| point(p.x + px(d), p.y + px(d));
+        let none = Modifiers::default();
+        assert_eq!(focused(cx), "left");
+
+        // Resting on the other pane: not before the delay, then focused.
+        cx.simulate_mouse_move(left, None, none);
+        cx.simulate_mouse_move(right, None, none);
+        wait(cx, 100);
+        assert_eq!(focused(cx), "left", "focused before the delay");
+        wait(cx, 60);
+        assert_eq!(focused(cx), "right");
+
+        // Leaving before the delay cancels it, back on the focused pane.
+        cx.simulate_mouse_move(left, None, none);
+        wait(cx, 100);
+        cx.simulate_mouse_move(right, None, none);
+        wait(cx, 300);
+        assert_eq!(focused(cx), "right", "a cancelled wait fired");
+
+        // A held button (a selection dragged across) never moves the focus,
+        // and letting go over the other pane doesn't either until it moves.
+        cx.simulate_mouse_down(right, MouseButton::Left, none);
+        cx.simulate_mouse_move(left, Some(MouseButton::Left), none);
+        wait(cx, 300);
+        assert_eq!(focused(cx), "right", "moved the focus with a button held");
+        cx.simulate_mouse_up(left, MouseButton::Left, none);
+        wait(cx, 300);
+        assert_eq!(focused(cx), "right", "moved the focus without a pointer move");
+
+        // An open overlay holds it; one opening during the wait cancels it.
+        view.update_in(cx, |this, window, cx| this.open_overlay("held".into(), json!({ "kind": "window", "mod": "unused", "width": 10, "height": 10 }), window, cx));
+        cx.simulate_mouse_move(nudge(left, 1.0), None, none);
+        wait(cx, 300);
+        view.update_in(cx, |this, window, cx| this.close_overlay("held", window, cx));
+        cx.run_until_parked();
+        assert_eq!(cx.update(|_, cx| view.update(cx, |this, _| this.focused_pane.clone())).as_deref(), Some("right"), "moved the focus under an overlay");
+        cx.simulate_mouse_move(nudge(left, 2.0), None, none);
+        wait(cx, 100);
+        view.update_in(cx, |this, window, cx| this.open_overlay("held".into(), json!({ "kind": "window", "mod": "unused", "width": 10, "height": 10 }), window, cx));
+        wait(cx, 300);
+        view.update_in(cx, |this, window, cx| this.close_overlay("held", window, cx));
+        cx.run_until_parked();
+        assert_eq!(focused(cx), "right", "an overlay opened during the wait didn't cancel it");
+
+        // An inactive window holds it.
+        cx.deactivate_window();
+        cx.simulate_mouse_move(nudge(left, 3.0), None, none);
+        wait(cx, 300);
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        assert_eq!(cx.update(|_, cx| view.update(cx, |this, _| this.focused_pane.clone())).as_deref(), Some("right"), "moved the focus of an inactive window");
+
+        // The keyboard wins until the pointer moves: rest on left, then a key
+        // focuses right with the pointer still there.
+        cx.simulate_mouse_move(nudge(left, 4.0), None, none);
+        wait(cx, 200);
+        assert_eq!(focused(cx), "left");
+        view.update_in(cx, |this, window, cx| this.run_as("pane.focus", json!({ "terminal": "t2" }), false, window, cx));
+        wait(cx, 300);
+        assert_eq!(focused(cx), "right", "the still pointer took the focus back");
+        cx.simulate_mouse_move(nudge(left, 5.0), None, none);
+        wait(cx, 200);
+        assert_eq!(focused(cx), "left", "the next pointer move didn't focus");
+
+        // Turned off by the command, in settings.json too. Last: its write
+        // reaches the file watcher, whose thread mustn't wake this executor.
+        view.update_in(cx, |this, window, cx| {
+            this.run_as("focus.toggle_follows_mouse", json!(null), false, window, cx);
+            assert!(!this.person.focus_follows_mouse);
+            assert!(this.overlays.iter().any(|o| o.kind == super::OverlayKind::Toast), "no toast");
+        });
+        assert!(!crate::settings::load_person().unwrap().focus_follows_mouse, "the command didn't write settings.json");
     }
 
     /// Mods see window().active follow the focus, losing it too: a probe mod

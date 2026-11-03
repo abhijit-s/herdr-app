@@ -571,7 +571,41 @@ export default class Settings extends View {
           ),
         ),
       )
-      .child(fontRow("ui_font", null, "Interface font", s.ui_font_family, DEFAULT_UI_FONT));
+      .child(fontRow("ui_font", null, "Interface font", s.ui_font_family, DEFAULT_UI_FONT))
+      .child(div().h(18))
+      .child(this.heading(t, "Mouse"))
+      .child(this.followsMouse(t, cx));
+  }
+
+  // Focus follows mouse: a toggle, then its delay (50 ms steps) while it's on.
+  // Off and 150 ms are the defaults, left out of settings.json.
+  followsMouse(t, cx) {
+    const on = this.person.focus_follows_mouse === true;
+    const ms = Math.max(0, Math.min(2000, this.person.focus_follows_mouse_delay_ms ?? 150));
+    const delay = (d, cx) =>
+      this.change((q) => {
+        const next = Math.max(0, Math.min(2000, Math.round(((q.focus_follows_mouse_delay_ms ?? 150) + d) / 50) * 50));
+        if (next === 150) delete q.focus_follows_mouse_delay_ms;
+        else q.focus_follows_mouse_delay_ms = next;
+      }, cx);
+    return v_flex()
+      .w_full()
+      .child(
+        this.row(
+          t,
+          "Focus follows mouse",
+          "Resting the pointer on a terminal pane focuses it. Keys you press keep their pane until the pointer moves.",
+          this.toggle(t, "st-focus_follows_mouse", on, (_e, cx) =>
+            this.change((q) => {
+              if (q.focus_follows_mouse) delete q.focus_follows_mouse;
+              else q.focus_follows_mouse = true;
+            }, cx),
+          ),
+        ),
+      )
+      .when(on, (el) =>
+        el.child(this.row(t, "Focus delay", "How long the pointer rests on a pane first.", this.stepper(t, "st-focus_follows_mouse_delay_ms", `${ms} ms`, (_e, cx) => delay(-50, cx), (_e, cx) => delay(50, cx)))),
+      );
   }
 
   keyboard(t) {

@@ -387,6 +387,12 @@ pub struct Person {
     /// A program run for each alert instead of the system notification (alert.rs).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alert_command: Option<AlertCommand>,
+    /// The pointer resting on a terminal pane focuses it (window/follow_mouse.rs).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub focus_follows_mouse: bool,
+    /// How long it rests there first, in ms (0 to 2000; read through `focus_follows_mouse_delay`).
+    #[serde(skip_serializing_if = "is_follow_delay_default")]
+    pub focus_follows_mouse_delay_ms: u32,
     /// The herdr-core to use, when it isn't where Herdr looks (core_bin.rs).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub core: Option<String>,
@@ -511,6 +517,20 @@ fn is_one(v: &f32) -> bool {
     *v == 1.0
 }
 
+pub const FOLLOW_DELAY_DEFAULT_MS: u32 = 150;
+pub const FOLLOW_DELAY_MAX_MS: u32 = 2000;
+
+fn is_follow_delay_default(ms: &u32) -> bool {
+    *ms == FOLLOW_DELAY_DEFAULT_MS
+}
+
+impl Person {
+    /// `focus_follows_mouse_delay_ms`, at most `FOLLOW_DELAY_MAX_MS`.
+    pub fn focus_follows_mouse_delay(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.focus_follows_mouse_delay_ms.min(FOLLOW_DELAY_MAX_MS).into())
+    }
+}
+
 pub const UI_ZOOM_RANGE: (f32, f32) = (0.75, 1.5);
 pub const UI_TEXT_SCALE_RANGE: (f32, f32) = (0.8, 1.3);
 
@@ -529,6 +549,8 @@ impl Default for Person {
             system_notifications: SystemNotifications::Background,
             dock_bounce: false,
             alert_command: None,
+            focus_follows_mouse: false,
+            focus_follows_mouse_delay_ms: FOLLOW_DELAY_DEFAULT_MS,
             core: None,
             font: None,
             font_size: None,
@@ -1223,11 +1245,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn focus_follows_mouse_is_off_by_default_and_stays_out_of_settings_json() {
+        let person = Person::default();
+        assert!(!person.focus_follows_mouse);
+        assert_eq!(person.focus_follows_mouse_delay(), std::time::Duration::from_millis(150));
+        let json = serde_json::to_value(&person).unwrap();
+        assert!(json.get("focus_follows_mouse").is_none() && json.get("focus_follows_mouse_delay_ms").is_none(), "{json}");
+        let on: Person = serde_json::from_str(r#"{"focus_follows_mouse": true, "focus_follows_mouse_delay_ms": 400}"#).unwrap();
+        assert!(on.focus_follows_mouse);
+        assert_eq!(on.focus_follows_mouse_delay(), std::time::Duration::from_millis(400));
+        let json = serde_json::to_value(&on).unwrap();
+        assert_eq!((json["focus_follows_mouse"].as_bool(), json["focus_follows_mouse_delay_ms"].as_u64()), (Some(true), Some(400)));
+        assert!(serde_json::from_str::<Person>(r#"{"focus_follows_mouse": "yes"}"#).is_err());
+    }
+
+    #[test]
+    fn focus_follows_mouse_delay_is_clamped() {
+        for (asked, ms) in [(0, 0), (2000, 2000), (2001, 2000), (u32::MAX, 2000)] {
+            let person = Person { focus_follows_mouse_delay_ms: asked, ..Person::default() };
+            assert_eq!(person.focus_follows_mouse_delay(), std::time::Duration::from_millis(ms), "asked {asked}");
+        }
+    }
+
     /// The guide agents read (written to the home folder) explains every
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

@@ -545,6 +545,8 @@ The main ones:
   `pane.go` also reaches visible mods whose `mod.json` says `"focusable": true`, and
   starts from that mod while it holds the keyboard.
   `pane.swap` uses geometry only. Focus history lasts until the window closes.
+  `focus.toggle_follows_mouse` turns `focus_follows_mouse` (below) on or off in
+  settings.json and says which in a toast.
   `pane.focus {terminal}` prefers the first visible layout terminal block showing that
   address, then its model pane. Clicking a terminal block focuses it too.
   While a layout terminal block is focused, implicit split/close/zoom/go/swap and
@@ -649,6 +651,15 @@ What's about the user, never a look:
   time; a build not run from an app bundle sends none.
 - `dock_bounce`: `true` bounces the Dock icon when an agent needs the
   person while Herdr is in the background. Off by default.
+- `focus_follows_mouse`: `true` focuses a terminal pane (a tab's, or a layout's
+  terminal block) once the pointer rests on it for `focus_follows_mouse_delay_ms`
+  (0 to 2000, default 150), as a click would. Off by default;
+  `focus.toggle_follows_mouse` flips it. Only a real pointer move starts the wait:
+  content scrolling or panes moving under a still pointer never move the focus,
+  and a pane focused from the keyboard keeps it until the pointer moves again.
+  Nothing happens while a mouse button is held, while a dialog, popup, peek, menu
+  or window overlay is open (toasts don't count), or while Herdr isn't the active
+  window. Mod blocks, the sidebar and the tab bar never take the focus this way.
 - `alert_command`: a program run for each alert in place of the system
   notification, under the same `system_notifications` rule: one string
   (run by `/bin/sh -c`) or an argv array (`["notify", "-q"]`). Herdr
