@@ -96,42 +96,45 @@ pub fn command_env(note: &Note) -> Vec<(&'static str, String)> {
 }
 
 /// What `send` did.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub enum Sent {
     Posted,
-    Ran,
+    /// The command started; why it failed comes here if it exits non-zero.
+    Ran(async_channel::Receiver<String>),
     /// The command didn't start (why): the system notification went instead.
     Fallback(String),
-}
-
-impl Sent {
-    /// Whether a system notification was posted, so it can be dismissed later.
-    pub fn posted(&self) -> bool {
-        !matches!(self, Sent::Ran)
-    }
 }
 
 /// Sends the alert: the person's command when they set one, else (or when it
 /// doesn't start) the system notification.
 pub fn send(note: &Note, command: Option<&AlertCommand>, cx: &App) -> Sent {
-    let sent = match command.map(|c| run(c, note)) {
-        Some(Ok(())) => return Sent::Ran,
-        Some(Err(error)) => Sent::Fallback(error),
+    let sent = match command.and_then(|c| Some((c, command_argv(c)?))) {
+        Some((c, argv)) => match run(&argv, label(c), note) {
+            Ok(failed) => return Sent::Ran(failed),
+            Err(error) => Sent::Fallback(error),
+        },
         None => Sent::Posted,
     };
     cx.show_system_notification(system_notification(note));
     sent
 }
 
+/// The command as the person wrote it, for the error toast: a shell line
+/// rather than `/bin/sh`.
+fn label(command: &AlertCommand) -> &str {
+    match command {
+        AlertCommand::Shell(line) => line,
+        AlertCommand::Argv(argv) => argv.first().map_or("", String::as_str),
+    }
+}
+
 /// How long an `alert_command` may run before it is killed.
 const ALERT_COMMAND_LIMIT: Duration = Duration::from_secs(30);
 
-/// Fire and forget: a thread waits for the program so it leaves no zombie,
-/// and the window never waits for it. It starts in the home folder (Herdr's
-/// own is `/` when opened from the Finder), in its own process group, so a
-/// hung one is killed with everything it started. Why it didn't start, if not.
-fn run(command: &AlertCommand, note: &Note) -> Result<(), String> {
-    let Some(argv) = command_argv(command) else { return Ok(()) };
+/// The process `run` starts: in the home folder (Herdr's own is `/` when
+/// opened from the Finder), in its own process group, so a hung one is
+/// killed with everything it started.
+fn command(argv: &[String], note: &Note) -> Command {
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..])
         .envs(command_env(note))
@@ -140,14 +143,38 @@ fn run(command: &AlertCommand, note: &Note) -> Result<(), String> {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     own_group(&mut cmd);
-    match cmd.spawn() {
+    cmd
+}
+
+/// Why an exit counts as a failure, or `None` when it doesn't. A shell line
+/// always starts, so a missing program only shows here (127).
+fn exit_failure(label: &str, code: Option<i32>) -> Option<String> {
+    match code? {
+        0 => None,
+        127 => Some(format!("alert_command {label:?} failed: command not found (exit 127)")),
+        126 => Some(format!("alert_command {label:?} failed: cannot run (exit 126)")),
+        code => Some(format!("alert_command {label:?} exited with code {code}")),
+    }
+}
+
+/// Fire and forget: a thread waits for the program so it leaves no zombie,
+/// and the window never waits for it. Why it didn't start, if not; once
+/// started, why it failed arrives on the receiver.
+fn run(argv: &[String], label: &str, note: &Note) -> Result<async_channel::Receiver<String>, String> {
+    match command(argv, note).spawn() {
         Ok(child) => {
-            let program = argv[0].clone();
-            std::thread::spawn(move || match reap(child, ALERT_COMMAND_LIMIT) {
-                Some(status) if !status.success() => tracing::warn!("alert_command {program:?} {status}"),
-                _ => {}
+            let (tx, rx) = async_channel::bounded(1);
+            let label = label.to_owned();
+            std::thread::spawn(move || {
+                let Some(status) = reap(child, ALERT_COMMAND_LIMIT) else { return };
+                if let Some(why) = exit_failure(&label, status.code()) {
+                    tracing::warn!("{why}");
+                    let _ = tx.try_send(why);
+                } else if !status.success() {
+                    tracing::warn!("alert_command {label:?} {status}");
+                }
             });
-            Ok(())
+            Ok(rx)
         }
         Err(error) => {
             let error = format!("alert_command {:?} did not start: {error}", argv[0]);
@@ -286,7 +313,8 @@ mod tests {
         let out = std::env::temp_dir().join(format!("herdr-alert-command-{}", std::process::id()));
         let _ = std::fs::remove_file(&out);
         let line = format!("printf '%s|%s|%s' \"$HERDR_AGENT_STATE\" \"$HERDR_AGENT_ADDRESS\" \"$HERDR_ALERT_TITLE\" > '{}'", out.display());
-        run(&AlertCommand::Shell(line), &note(Alert::Done)).unwrap();
+        let shell = AlertCommand::Shell(line.clone());
+        run(&command_argv(&shell).unwrap(), &line, &note(Alert::Done)).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !out.exists() || std::fs::read_to_string(&out).unwrap().is_empty() {
             assert!(std::time::Instant::now() < deadline, "the command never ran");
@@ -301,20 +329,35 @@ mod tests {
     fn send_posts_one_notification_per_agent_or_runs_the_command(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.set_app_identity("dev.herdr.test", "Herdr"));
         cx.update(|cx| {
-            assert_eq!(send(&note(Alert::Done), None, cx), Sent::Posted);
-            assert_eq!(send(&note(Alert::Blocked), None, cx), Sent::Posted);
+            assert!(matches!(send(&note(Alert::Done), None, cx), Sent::Posted));
+            assert!(matches!(send(&note(Alert::Blocked), None, cx), Sent::Posted));
         });
         assert_eq!(cx.delivered_system_notifications(), [system_notification(&note(Alert::Blocked))]);
-        cx.update(|cx| assert_eq!(send(&note(Alert::Done), Some(&AlertCommand::Argv(vec!["/usr/bin/true".into()])), cx), Sent::Ran));
+        let ran = cx.update(|cx| send(&note(Alert::Done), Some(&AlertCommand::Argv(vec!["/usr/bin/true".into()])), cx));
+        let Sent::Ran(failed) = ran else { panic!("{ran:?}") };
+        assert!(failed.recv_blocking().is_err(), "a command that succeeds reports nothing");
         assert_eq!(cx.shown_system_notifications().len(), 2);
         // A command that doesn't start: the system notification instead, and why.
         let missing = AlertCommand::Argv(vec!["/nonexistent/herdr-notify".into()]);
         let sent = cx.update(|cx| send(&note(Alert::Done), Some(&missing), cx));
         assert!(matches!(&sent, Sent::Fallback(why) if why.contains("/nonexistent/herdr-notify")), "{sent:?}");
-        assert!(sent.posted());
         assert_eq!(cx.shown_system_notifications().len(), 3);
         cx.update(|cx| cx.dismiss_system_notification(&tag("local:t7")));
         assert!(cx.delivered_system_notifications().is_empty());
+    }
+
+    #[test]
+    fn a_shell_line_that_fails_says_why_once_it_exits() {
+        let failed = |line: &str| {
+            let shell = AlertCommand::Shell(line.into());
+            run(&command_argv(&shell).unwrap(), line, &note(Alert::Done)).expect("a shell always starts").recv_blocking()
+        };
+        let missing = failed("/nonexistent/herdr-notify -s done").expect("reported");
+        assert_eq!(missing, "alert_command \"/nonexistent/herdr-notify -s done\" failed: command not found (exit 127)");
+        assert_eq!(failed("exit 3").expect("reported"), "alert_command \"exit 3\" exited with code 3");
+        assert!(failed("true").is_err(), "success reports nothing");
+        assert_eq!(exit_failure("x", Some(126)).as_deref(), Some("alert_command \"x\" failed: cannot run (exit 126)"));
+        assert_eq!(exit_failure("x", None), None, "killed by a signal: only logged");
     }
 
     #[cfg(unix)]
@@ -322,10 +365,8 @@ mod tests {
     fn a_hung_alert_command_is_killed_after_its_limit_with_what_it_started() {
         use std::io::BufRead;
         // A shell line, as `alert_command` runs one: the shell waits on its own child.
-        let mut cmd = Command::new("/bin/sh");
-        cmd.args(["-c", "sleep 30 & echo $!; wait"]).stdout(Stdio::piped());
-        own_group(&mut cmd);
-        let mut child = cmd.spawn().unwrap();
+        let argv = command_argv(&AlertCommand::Shell("sleep 30 & echo $!; wait".into())).unwrap();
+        let mut child = command(&argv, &note(Alert::Done)).stdout(Stdio::piped()).spawn().unwrap();
         let mut line = String::new();
         std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
         let sleep: libc::pid_t = line.trim().parse().unwrap();

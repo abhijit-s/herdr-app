@@ -150,6 +150,44 @@ export default class extends View {
     cx.run_until_parked();
 }
 
+// `spin` takes any number a script hands the bridge: a non-finite period is
+// ignored and a huge one clamped, so none of them panics the UI thread while it
+// draws. `.spin()` rejects these in JavaScript, but a script can call the global
+// `__apply` itself, which is the path the clamp guards.
+#[gpui::test]
+fn spin_with_an_absurd_period_draws_without_panicking(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    gpui_shell::policy::set_default(Policy::new());
+    let fixture = Fixture::new(r##"
+import { View, div, svg } from "gpui-kit";
+const spun = (ms) => {
+  const ring = svg("ring.svg").size(12);
+  let accepted = true;
+  try { ring.spin(ms); } catch { accepted = false; }
+  if (accepted) throw new Error("spin(" + ms + ") was accepted");
+  __apply(ring.__id, "spin", [ms]);
+  return ring;
+};
+export default class extends View {
+  render() {
+    return div().size_full().children([Infinity, NaN, 1e300].map(spun));
+  }
+}"##);
+    std::fs::write(fixture.0.join("ring.svg"), r#"<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><path d="M6 1a5 5 0 0 1 5 5"/></svg>"#).unwrap();
+    cx.set_asset_source(gpui_shell::AppAssets::new(fixture.0.clone()));
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&fixture.0, window, cx).unwrap()));
+    let handle: gpui::AnyWindowHandle = window.into();
+    for _ in 0..3 {
+        cx.simulate_window_frame_request(handle);
+        cx.run_until_parked();
+    }
+    let presented = handle.update(cx, |_, window, _| window.presented_spinners()).unwrap();
+    assert_eq!(presented.len(), 1, "only the clamped period spins");
+    let _ = handle.update(cx, |_, window, _| window.remove_window());
+    cx.run_until_parked();
+}
+
 #[gpui::test]
 fn size_change_reports_initial_and_resized_layout_without_pointer_input(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);

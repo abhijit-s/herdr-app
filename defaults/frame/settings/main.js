@@ -118,12 +118,14 @@ export default class Settings extends View {
     });
   }
 
-  // `broken`: settings.json doesn't parse (mid-edit), so nothing may be written over it.
+  // `broken`: settings.json doesn't parse (mid-edit), or isn't an object, so
+  // nothing may be written over it.
   async load() {
     this.raw = await readTextFile(this.file());
     try {
-      this.person = this.raw ? JSON.parse(this.raw) : {};
-      this.broken = false;
+      const person = this.raw ? JSON.parse(this.raw) : {};
+      this.broken = !person || typeof person !== "object" || Array.isArray(person);
+      this.person = this.broken ? {} : person;
     } catch {
       this.person = {};
       this.broken = true;
@@ -145,10 +147,15 @@ export default class Settings extends View {
   async save(edit) {
     let error;
     for (let attempt = 0; attempt < 3; attempt++) {
-      await this.load();
-      if (this.broken) return { title: "settings.json has errors: fix it first" };
-      const next = JSON.parse(JSON.stringify(this.person));
-      edit(next);
+      let next;
+      try {
+        await this.load();
+        if (this.broken) return { title: "settings.json has errors: fix it first" };
+        next = JSON.parse(JSON.stringify(this.person));
+        edit(next);
+      } catch (e) {
+        return { title: "Cannot read settings.json", body: String(e?.message ?? e) };
+      }
       try {
         await writeTextFile(this.file(), JSON.stringify(next, null, 2) + "\n", this.raw);
         this.person = next;
