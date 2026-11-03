@@ -462,6 +462,21 @@ impl TestAppContext {
         self.test_window(window_handle).simulate_resize(size);
     }
 
+    /// HERDR: serves the app's assets (the svgs it draws, say) from `source`.
+    pub fn set_asset_source(&self, source: impl crate::AssetSource) {
+        let source: Arc<dyn crate::AssetSource> = Arc::new(source);
+        let mut app = self.app.borrow_mut();
+        app.svg_renderer = crate::SvgRenderer::new(source.clone());
+        app.asset_source = source;
+    }
+
+    /// HERDR: delivers a frame request to the window, as the platform's frame
+    /// source would: it draws if anything changed, else presents if it must.
+    pub fn simulate_window_frame_request(&self, window_handle: AnyWindowHandle) {
+        self.test_window(window_handle)
+            .simulate_frame_request(crate::RequestFrameOptions::default());
+    }
+
     /// Simulates a change in whether the platform is presenting the window.
     pub fn simulate_window_visibility_change(
         &self,

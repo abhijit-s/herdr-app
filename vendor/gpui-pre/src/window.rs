@@ -1200,6 +1200,9 @@ pub struct Window {
     pub(crate) rendered_frame: Frame,
     // HERDR: distinguish an empty scene from a window that has not drawn yet.
     rendered_frame_size: Option<(Size<Pixels>, f32)>,
+    // HERDR: the frame on screen has spinning sprites / their next step is due.
+    presents_spinners: bool,
+    spin_step_scheduled: bool,
     pub(crate) next_frame: Frame,
     next_hitbox_id: HitboxId,
     pub(crate) next_tooltip_id: TooltipId,
@@ -1856,12 +1859,13 @@ impl Window {
                 }
 
                 handle
-                    .update(&mut cx, |_, window, _| {
+                    .update(&mut cx, |_, window, cx| {
                         if window.invalidator.is_dirty()
                             || !window.next_frame_callbacks.borrow().is_empty()
                         {
                             window.platform_window.schedule_frame();
                         }
+                        window.schedule_spin_step(cx);
                     })
                     .log_err();
 
@@ -2093,6 +2097,8 @@ impl Window {
             focused_text_input_active: false,
             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             rendered_frame_size: None,
+            presents_spinners: false,
+            spin_step_scheduled: false,
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame_callbacks,
             next_hitbox_id: HitboxId(0),
@@ -2191,6 +2197,17 @@ impl ContentMask<Pixels> {
         let bounds = self.bounds.intersect(&other.bounds);
         ContentMask { bounds }
     }
+}
+
+/// HERDR: how often spinning sprites step: ~10 fps, and a small spinner
+/// looks the same.
+pub const SPIN_STEP: Duration = Duration::from_millis(100);
+
+/// HERDR: the clock spinning sprites turn by: one for the whole process, so
+/// spinners turn together.
+pub fn spin_clock_ms() -> f64 {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    EPOCH.get_or_init(std::time::Instant::now).elapsed().as_secs_f64() * 1000.0
 }
 
 impl Window {
@@ -3519,6 +3536,7 @@ impl Window {
         let _foreground_turn = profiler::journal::foreground_turn();
         #[cfg(feature = "profiler")]
         let present_start = Instant::now();
+        self.presents_spinners = self.rendered_frame.scene.turn_spinners(spin_clock_ms());
         self.platform_window.draw(&self.rendered_frame.scene);
         #[cfg(feature = "profiler")]
         self.window_profiler.record_present(
@@ -3529,6 +3547,40 @@ impl Window {
         );
         self.needs_present.set(false);
         profiling::finish_frame!();
+    }
+
+    /// HERDR: while the frame on screen has spinning sprites, presents it again
+    /// (no draw) after [`SPIN_STEP`]. A draw in between turns them as well.
+    fn schedule_spin_step(&mut self, cx: &mut App) {
+        if !self.presents_spinners || self.spin_step_scheduled {
+            return;
+        }
+        self.spin_step_scheduled = true;
+        let handle = self.handle;
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(SPIN_STEP).await;
+            handle
+                .update(cx, |_, window, _| {
+                    window.spin_step_scheduled = false;
+                    window.needs_present.set(true);
+                    window.platform_window.schedule_frame();
+                    window.invalidator.wake_platform();
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    /// HERDR: the transformations of the spinning sprites last presented.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn presented_spinners(&self) -> Vec<TransformationMatrix> {
+        self.rendered_frame
+            .scene
+            .monochrome_sprites
+            .iter()
+            .filter(|s| s.spins())
+            .map(|s| s.transformation)
+            .collect()
     }
 
     /// Presents the most recently drawn frame if it hasn't been presented yet.
@@ -4915,8 +4967,39 @@ impl Window {
         &mut self,
         bounds: Bounds<Pixels>,
         path: SharedString,
+        data: Option<&[u8]>,
+        transformation: TransformationMatrix,
+        color: Hsla,
+        cx: &App,
+    ) -> Result<()> {
+        self.paint_svg_sprite(bounds, path, data, transformation, 0, color, cx)
+    }
+
+    /// HERDR: paints a monochrome SVG that turns about its center once every
+    /// `period`, forever, with no further draws: each present turns it to
+    /// [`spin_clock_ms`], and the window presents again every [`SPIN_STEP`]
+    /// while a frame on screen has one. A cached view that replays it keeps it
+    /// turning, and nothing is drawn for it once a frame leaves it out.
+    pub fn paint_spinning_svg(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        path: SharedString,
+        data: Option<&[u8]>,
+        period: Duration,
+        color: Hsla,
+        cx: &App,
+    ) -> Result<()> {
+        let period = period.as_millis().clamp(1, u32::MAX as u128) as u32;
+        self.paint_svg_sprite(bounds, path, data, TransformationMatrix::unit(), period, color, cx)
+    }
+
+    fn paint_svg_sprite(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        path: SharedString,
         mut data: Option<&[u8]>,
         transformation: TransformationMatrix,
+        spin_period_ms: u32,
         color: Hsla,
         cx: &App,
     ) -> Result<()> {
@@ -4960,15 +5043,19 @@ impl Window {
             .map_origin(|value| ScaledPixels(round_half_toward_zero(value.0)))
             .map_size(|size| size.ceil());
 
-        self.next_frame.scene.insert_primitive(MonochromeSprite {
+        let mut sprite = MonochromeSprite {
             order: 0,
-            pad: 0,
+            pad: spin_period_ms,
             bounds: final_bounds,
             content_mask,
             color: color.opacity(element_opacity),
             tile,
             transformation,
-        });
+        };
+        if sprite.spins() {
+            sprite.turn(spin_clock_ms());
+        }
+        self.next_frame.scene.insert_primitive(sprite);
 
         Ok(())
     }

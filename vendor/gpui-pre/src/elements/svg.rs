@@ -16,6 +16,7 @@ use gpui_util::ResultExt;
 pub struct Svg {
     interactivity: Interactivity,
     transformation: Option<Transformation>,
+    spin: Option<std::time::Duration>,
     path: Option<SharedString>,
     external_path: Option<SharedString>,
     data: Option<Arc<[u8]>>,
@@ -28,6 +29,7 @@ pub fn svg() -> Svg {
     Svg {
         interactivity: Interactivity::new(),
         transformation: None,
+        spin: None,
         path: None,
         external_path: None,
         data: None,
@@ -65,6 +67,14 @@ impl Svg {
     /// Note that this won't effect the hitbox or layout of the element, only the rendering.
     pub fn with_transformation(mut self, transformation: Transformation) -> Self {
         self.transformation = Some(transformation);
+        self
+    }
+
+    /// HERDR: turns the SVG about its center once every `period`, forever,
+    /// without drawing its view again (see [`Window::paint_spinning_svg`]).
+    /// For an SVG drawn from [`Svg::path`]; takes the place of any transformation.
+    pub fn spinning(mut self, period: std::time::Duration) -> Self {
+        self.spin = Some(period);
         self
     }
 }
@@ -180,9 +190,14 @@ impl Element for Svg {
                         )
                         .log_err();
                 } else if let Some((path, color)) = self.path.as_ref().zip(style.text.color) {
-                    window
-                        .paint_svg(bounds, path.clone(), None, transformation, color, cx)
-                        .log_err();
+                    match self.spin {
+                        Some(period) => window
+                            .paint_spinning_svg(bounds, path.clone(), None, period, color, cx)
+                            .log_err(),
+                        None => window
+                            .paint_svg(bounds, path.clone(), None, transformation, color, cx)
+                            .log_err(),
+                    };
                 }
             },
         )
