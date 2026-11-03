@@ -46,6 +46,11 @@ name = "thicken_ink"
 path = "tests/thicken_ink.rs"
 harness = false
 
+[[test]]
+name = "weight_ink"
+path = "tests/weight_ink.rs"
+harness = false
+
 [dev-dependencies]
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["test-support"] }
 gpui = { package = "gpui-pre", version = "=0.3.8", features = ["test-support"] }

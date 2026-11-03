@@ -182,3 +182,15 @@ test("interface thicken strength shows only while it's on, and steps by 16 withi
   expect(click({ ...on, ui_font_thicken_strength: 240 }, {}, "st-ui_font_thicken_strength-plus")).toEqual(on);
   expect(click({ ...on, font_thicken_strength: 96 }, {}, "st-ui_font_thicken_strength-minus")).toEqual({ ...on, font_thicken_strength: 96, ui_font_thicken_strength: 240 });
 });
+
+test("interface font weight steps by 25 within 100 to 900, leaving 400 out of settings.json", () => {
+  expect(click({}, {}, "st-ui_font_weight-plus")).toEqual({ ui_font_weight: 425 });
+  expect(click({ font_size: 15 }, {}, "st-ui_font_weight-minus")).toEqual({ font_size: 15, ui_font_weight: 375 });
+  expect(click({ ui_font_weight: 425 }, {}, "st-ui_font_weight-minus")).toEqual({});
+  expect(click({ ui_font_weight: 900 }, {}, "st-ui_font_weight-plus")).toEqual({ ui_font_weight: 900 });
+  expect(click({ ui_font_weight: 100 }, {}, "st-ui_font_weight-minus")).toEqual({ ui_font_weight: 100 });
+  // Out of range in settings.json: Herdr uses the end, so the first click moves off it.
+  expect(click({ ui_font_weight: 950 }, {}, "st-ui_font_weight-minus")).toEqual({ ui_font_weight: 875 });
+  expect(click({ font_weight: 300 }, { font_weight: 300 }, "st-ui_font_weight-plus")).toEqual({ font_weight: 300, ui_font_weight: 425 });
+  expect(click({ ui_font_weight: 600 }, {}, "st-font_weight-plus")).toEqual({ ui_font_weight: 600, font_weight: 525 });
+});

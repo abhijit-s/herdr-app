@@ -719,6 +719,15 @@ What's about the user, never a look:
   with the same steps as `font_thicken_strength`. Default 255. The Settings
   window sets both on its Text page under Size: a "Thicken interface text" toggle, and a
   strength stepper in steps of 16 while it's on.
+- `ui_font_weight` (100..900, default 400): the panels' regular text weight
+  (every mod, tab, popup, toast and the Settings window). Text that sets its
+  own weight (a mod's `font_weight(...)` or `font_bold()`, bold labels,
+  markdown bold) moves by as much, within 100..900, so bold stays bolder:
+  at 500, `font_weight(600)` draws at 700. Terminals keep `font_weight`.
+  A variable `ui_font` draws every step; static faces draw the nearest weight
+  they have (the bundled Geist has only Regular). Changes apply live. The
+  Settings window sets it on its Text page under Size:
+  an "Interface font weight" stepper in steps of 25.
 - `theme`: a theme name or `{light, dark}`; used where the layout sets none.
   The theme picker overrides any layout and stays on that layout.
 - `colors`: theme color overrides (`{"accent":"#ff8800"}`), with the same
