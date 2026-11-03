@@ -237,6 +237,10 @@ struct StyleTable {
     /// Indexed by the `u16` stored in `SpecOp::NullaryStyle`.
     nullary: Vec<FunctionReflection<StyleRefinement>>,
     by_name: HashMap<&'static str, u16>,
+    /// HERDR: whether `nullary[i]` sets a font size (`text_xs`, `text_sm`, …).
+    /// Those sizes are rems, and the window rem carries the pixel scale only, so
+    /// [`apply_nullary`] adds the text scale to them as `text_length` does.
+    sets_text_size: Vec<bool>,
 }
 
 fn table() -> &'static StyleTable {
@@ -263,7 +267,12 @@ fn table() -> &'static StyleTable {
                 .or_insert((nullary.len() + offset) as u16);
         }
 
-        StyleTable { nullary, by_name }
+        let sets_text_size = nullary
+            .iter()
+            .map(|method| method.invoke(StyleRefinement::default()).text.font_size.is_some())
+            .collect();
+
+        StyleTable { nullary, by_name, sets_text_size }
     })
 }
 
@@ -382,12 +391,27 @@ const EXTRA_NULLARY_DOCS: &[(&str, &str)] = &[
 pub fn apply_nullary(index: u16, refinement: StyleRefinement) -> StyleRefinement {
     let table = table();
     if let Some(method) = table.nullary.get(index as usize) {
-        return method.invoke(refinement);
+        let refinement = method.invoke(refinement);
+        return if table.sets_text_size[index as usize] {
+            with_text_scale(refinement)
+        } else {
+            refinement
+        };
     }
     match EXTRA_NULLARY.get(index as usize - table.nullary.len()) {
         Some((_, apply)) => apply(refinement),
         None => refinement,
     }
+}
+
+/// Scales the rem font size a reflected `text_*` method just wrote. A pixel
+/// size is left alone: no reflected method writes one, and it would need the
+/// pixel scale too.
+fn with_text_scale(mut refinement: StyleRefinement) -> StyleRefinement {
+    if let Some(AbsoluteLength::Rems(size)) = refinement.text.font_size {
+        refinement.text.font_size = Some(crate::value::scaled_text_rems(size.0).into());
+    }
+    refinement
 }
 
 /// Returns the interned name if `name` is a style method that takes arguments.
@@ -676,7 +700,7 @@ fn text_length(value: &Bridged, method: &str) -> ShellResult<AbsoluteLength> {
     if let Bridged::Str(text) = value {
         let text = text.trim();
         if let Some(number) = text.strip_suffix("rem") {
-            return Ok(rems(parse_number(number, text, method)? * crate::value::text_scale()).into());
+            return Ok(crate::value::scaled_text_rems(parse_number(number, text, method)?).into());
         }
         if let Some(number) = text.strip_suffix("px") {
             return Ok(crate::value::scaled_text_px(parse_number(number, text, method)?).into());
@@ -722,6 +746,20 @@ mod tests {
             "expected hundreds of reflected style methods, got {}",
             table().nullary.len()
         );
+    }
+
+    #[test]
+    fn reflected_text_sizes_follow_the_text_scale_and_nothing_else_does() {
+        let text_sm = nullary_index("text_sm").expect("text_sm is a reflected style");
+        let items_center = nullary_index("items_center").expect("items_center is a reflected style");
+        assert!(table().sets_text_size[text_sm as usize]);
+        assert!(!table().sets_text_size[items_center as usize]);
+
+        let scaled = crate::value::scaled_text_rems(0.875);
+        let styled = apply_nullary(text_sm, StyleRefinement::default());
+        assert_eq!(styled.text.font_size, Some(scaled.into()));
+        let styled = apply_nullary(items_center, styled);
+        assert_eq!(styled.text.font_size, Some(scaled.into()), "a later style must not scale the size again");
     }
 
     #[test]

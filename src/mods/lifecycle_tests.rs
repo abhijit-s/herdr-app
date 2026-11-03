@@ -119,6 +119,37 @@ export default class extends View {{
     }
 }
 
+// A spinner nobody can see (faded out, or drawn in a clear colour) is left
+// out of the frame, so it doesn't keep the window presenting ~10 times a second.
+#[gpui::test]
+fn invisible_spinners_do_not_keep_the_window_presenting(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    gpui_shell::policy::set_default(Policy::new());
+    let fixture = Fixture::new(r##"
+import { View, div, svg } from "gpui-kit";
+export default class extends View {
+  render() {
+    return div().size_full()
+      .child(svg("ring.svg").size(12).spin(900))
+      .child(div().opacity(0).child(svg("ring.svg").size(12).spin(900)))
+      .child(svg("ring.svg").size(12).text_color("#00000000").spin(900));
+  }
+}"##);
+    std::fs::write(fixture.0.join("ring.svg"), r#"<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><path d="M6 1a5 5 0 0 1 5 5"/></svg>"#).unwrap();
+    cx.set_asset_source(gpui_shell::AppAssets::new(fixture.0.clone()));
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&fixture.0, window, cx).unwrap()));
+    let handle: gpui::AnyWindowHandle = window.into();
+    for _ in 0..3 {
+        cx.simulate_window_frame_request(handle);
+        cx.run_until_parked();
+    }
+    let presented = handle.update(cx, |_, window, _| window.presented_spinners()).unwrap();
+    assert_eq!(presented.len(), 1, "only the visible spinner is on screen");
+    let _ = handle.update(cx, |_, window, _| window.remove_window());
+    cx.run_until_parked();
+}
+
 #[gpui::test]
 fn size_change_reports_initial_and_resized_layout_without_pointer_input(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);

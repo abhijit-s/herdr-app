@@ -550,7 +550,7 @@ pub fn error_banner(message: &str, window: &mut Window, cx: &mut App) -> AnyElem
                         .gap(rems(0.125))
                         .child(
                             div()
-                                .text_size(rems(0.75))
+                                .text_size(crate::value::scaled_text_rems(0.75))
                                 .line_height(relative(1.4))
                                 .text_color(foreground)
                                 .child(SharedString::from(
@@ -560,7 +560,7 @@ pub fn error_banner(message: &str, window: &mut Window, cx: &mut App) -> AnyElem
                         )
                         .child(
                             div()
-                                .text_size(rems(0.6875))
+                                .text_size(crate::value::scaled_text_rems(0.6875))
                                 .line_height(relative(1.45))
                                 .text_color(muted)
                                 .child(SharedString::from(first_line(message))),
@@ -682,7 +682,7 @@ pub fn failure_surface(
                         .p(rems(1.25))
                         .child(
                             div()
-                                .text_size(rems(0.875))
+                                .text_size(crate::value::scaled_text_rems(0.875))
                                 .line_height(relative(1.4))
                                 .text_color(foreground)
                                 .child(SharedString::from(heading.to_owned())),
@@ -693,7 +693,7 @@ pub fn failure_surface(
                                 .max_h(rems(18.))
                                 .overflow_y_scroll()
                                 .font_family(system_monospace_font())
-                                .text_size(rems(0.75))
+                                .text_size(crate::value::scaled_text_rems(0.75))
                                 .line_height(relative(1.5))
                                 .text_color(muted)
                                 .child(FailureDetailText::new(selection, displayed_message)),
@@ -709,7 +709,7 @@ pub fn failure_surface(
                                 .border_color(border)
                                 .child(
                                     div()
-                                        .text_size(rems(0.75))
+                                        .text_size(crate::value::scaled_text_rems(0.75))
                                         .line_height(relative(1.5))
                                         .text_color(muted)
                                         .child(SharedString::from(recovery.to_owned())),
@@ -880,7 +880,7 @@ fn copy_button(
         .px(rems(0.75))
         .border_1()
         .border_color(border)
-        .text_size(rems(0.75))
+        .text_size(crate::value::scaled_text_rems(0.75))
         .line_height(relative(1.))
         .text_color(if copied { muted } else { foreground })
         .hover(|style| style.opacity(0.8))
