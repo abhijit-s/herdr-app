@@ -309,8 +309,8 @@ struct Behavior {
     /// HERDR: `frames(list, ms)` and `loop(property, policy)` (see [`apply_loops`]).
     frames: Option<(f64, Vec<String>)>,
     loops: SmallVec<[Loop; 1]>,
-    /// HERDR: `spin(ms)`: an svg turning once every `ms`.
-    spin: Option<f64>,
+    /// HERDR: `spin(ms)`: an svg turning once every `ms` (see [`spin_period`]).
+    spin: Option<Duration>,
     disabled: bool,
     selectable: Option<bool>,
     text_scrollable: Option<bool>,
@@ -1429,8 +1429,8 @@ fn materialize_component(
             image.style().text.color = Some(inherited);
             // HERDR: `spin`. GPUI turns the drawn sprite at each present, so a
             // step draws nothing again: not the view, nor the window above it.
-            if let Some(ms) = behavior.spin {
-                image = image.spinning(Duration::from_secs_f64(ms / 1000.0));
+            if let Some(period) = behavior.spin {
+                image = image.spinning(period);
             }
             image.into_any_element()
         }
@@ -2605,7 +2605,7 @@ pub(in crate::materialize) fn resolve_ops(
             }
             SpecOp::Method("spin", args) => {
                 if let [Bridged::Number(ms)] = args.as_slice() {
-                    behavior.spin = Some(ms.max(100.0));
+                    behavior.spin = spin_period(*ms);
                 }
             }
             SpecOp::Method("frames", args) => {
@@ -3038,6 +3038,18 @@ fn milliseconds(args: &[Bridged]) -> Option<Duration> {
         .and_then(|ms| checked_milliseconds(f64::from(ms)))
 }
 
+/// The turn period for `spin(ms)`, or `None` to ignore the call.
+///
+/// A script may pass any number. A non-finite one is ignored, and the rest are
+/// clamped to 100 ms – 1 hour, so `Duration::from_secs_f64` can never panic on
+/// the UI thread, outside the script's `catch_unwind`.
+fn spin_period(ms: f64) -> Option<Duration> {
+    const FASTEST_MS: f64 = 100.0;
+    const SLOWEST_MS: f64 = 3_600_000.0;
+    ms.is_finite()
+        .then(|| Duration::from_secs_f64(ms.clamp(FASTEST_MS, SLOWEST_MS) / 1000.0))
+}
+
 fn checked_milliseconds(ms: f64) -> Option<Duration> {
     ms.is_finite()
         .then(|| Duration::try_from_secs_f64(ms.max(0.0) / 1000.0).ok())
@@ -3468,6 +3480,16 @@ mod motion_identity_tests {
             should_dispatch_hover(true, Some(bounds), point(px(50.), px(60.))),
             "hover entries remain dispatchable"
         );
+    }
+
+    #[test]
+    fn spin_ignores_non_finite_periods_and_clamps_the_rest() {
+        assert_eq!(spin_period(f64::INFINITY), None);
+        assert_eq!(spin_period(f64::NEG_INFINITY), None);
+        assert_eq!(spin_period(f64::NAN), None);
+        assert_eq!(spin_period(1e300), Some(Duration::from_secs(3600)));
+        assert_eq!(spin_period(-5.0), Some(Duration::from_millis(100)));
+        assert_eq!(spin_period(750.0), Some(Duration::from_millis(750)));
     }
 
     #[test]
