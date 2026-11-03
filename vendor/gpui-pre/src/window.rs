@@ -5009,6 +5009,10 @@ impl Window {
         color: Hsla,
         cx: &App,
     ) -> Result<()> {
+        // An invisible spinner would keep the window presenting for nothing.
+        if color.opacity(self.element_opacity()).a <= 0.0 {
+            return Ok(());
+        }
         let period = period.as_millis().clamp(1, u32::MAX as u128) as u32;
         self.paint_svg_sprite(bounds, path, data, TransformationMatrix::unit(), period, color, cx)
     }

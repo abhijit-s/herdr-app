@@ -73,6 +73,10 @@ impl Svg {
     /// HERDR: turns the SVG about its center once every `period`, forever,
     /// without drawing its view again (see [`Window::paint_spinning_svg`]).
     /// Takes the place of any transformation.
+    ///
+    /// The turn is not reflected in the bounds used for layer ordering and
+    /// clipping, so a corner that leaves the box is not accounted for: keep a
+    /// spinner round, or symmetric within its box.
     pub fn spinning(mut self, period: std::time::Duration) -> Self {
         self.spin = Some(period);
         self
