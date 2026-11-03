@@ -43,7 +43,7 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 `feat/font-weight`: `font_weight` in settings.json or a layout's look (100 to 900, default 500, the Medium upstream hard-codes); bold stays at least 700. Rows kept from earlier frames are keyed on the whole cell font, so a weight change redraws them.
 
-- Settings window: a "Terminal font weight" stepper (steps of 100) under the terminal font. When the layout's look sets a weight, the row says so, as the font row does.
+- Settings window: a "Terminal font weight" stepper (steps of 25, any of which a variable font draws) under the terminal font. When the layout's look sets a weight, the row says so, as the font row does.
 - Files: `src/settings.rs`, `src/layout.rs`, `src/terminal.rs` (`cell_font`, `paint_grid`), `defaults/AGENTS.md`, `defaults/frame/settings/main.js`
 - Upstream: issue #134, pull request #332. Upstream's `font_ligatures` (#244) landed alongside it; the branch merges `upstream/master` to stay conflict-free.
 
@@ -69,7 +69,8 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 `feat/font-thicken`: `font_thicken` and `font_thicken_strength` (0 to 255, default 255), person settings that rasterise terminal glyphs as Ghostty's `font-thicken` does: CoreGraphics font smoothing on, a gray fill of strength / 255 in linear gray, whatever the text color, then tinted. GPUI otherwise picks the smoothing level from the text color's luminance, so dark text on light draws at the lightest level and light text on dark at the heaviest. Panels keep GPUI's behaviour. `HERDR:` changes in `vendor/gpui-pre` (`RenderGlyphParams::thicken`, in the glyph atlas key; `Window::with_glyph_thicken`) and `vendor/gpui-pre-macos/src/text_system.rs` (the rasteriser, and 1 more pixel of raster room, as Ghostty pads thickened glyphs). The terminal paints its grid inside `with_glyph_thicken`, and the row cache's `painted_with` key carries the strength.
 
 - Measured (`tests/thicken_ink.rs`, JetBrains Mono 12px at 1x): font smoothing steps at strengths about 112, 192, 224 and 255, so Ghostty's 30 is its lightest level. Weight 400 with strength 30 inks both polarities alike (0.126), as Ghostty does; weight 250 without thickening inks light on dark 0.134 and dark on light 0.107.
-- Files: `src/settings.rs`, `src/terminal.rs` (`glyph_thicken`, `paint_grid`), `vendor/gpui-pre/src/{text_system.rs,window.rs}`, `vendor/gpui-pre-macos/src/text_system.rs`, `vendor/gpui-pre-{wgpu,windows}` (the new field), `tests/thicken_ink.rs`, `defaults/AGENTS.md`
+- Settings window: a "Thicken" toggle under the terminal font weight, and a "Thicken strength" stepper (steps of 16, so it lands on each smoothing level above) shown while it's on. Off and 255 leave their keys out of settings.json. Layouts set neither, so the rows never say a layout sets its own.
+- Files: `src/settings.rs`, `src/terminal.rs` (`glyph_thicken`, `paint_grid`), `vendor/gpui-pre/src/{text_system.rs,window.rs}`, `vendor/gpui-pre-macos/src/text_system.rs`, `vendor/gpui-pre-{wgpu,windows}` (the new field), `tests/thicken_ink.rs`, `defaults/AGENTS.md`, `defaults/frame/settings/main.js`, `scripts/settings.test.ts`
 - Upstream: fork only for now
 
 

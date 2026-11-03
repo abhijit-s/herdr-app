@@ -701,7 +701,9 @@ What's about the user, never a look:
   about 100 all draw as its lightest smoothing, the one dark text gets without
   `font_thicken`; 255 draws as white text does. With `font_weight` 400 and a
   strength of 30, terminal text matches Ghostty's Regular at strength 30.
-  Changes apply immediately, including text already on screen.
+  Changes apply immediately, including text already on screen. The Settings
+  window sets both under Size and fonts: a Thicken toggle, and a strength
+  stepper in steps of 16 while it's on.
 - `theme`: a theme name or `{light, dark}`; used where the layout sets none.
   The theme picker overrides any layout and stays on that layout.
 - `colors`: theme color overrides (`{"accent":"#ff8800"}`), with the same
