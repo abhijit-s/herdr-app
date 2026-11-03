@@ -1698,6 +1698,57 @@ mod tests {
         }
     }
 
+    // Output in a terminal that isn't on screen (another tab or space) must not
+    // invalidate the window, yet keep its screen current and still tell the
+    // window about titles, which the sidebar and tabs show.
+    #[gpui::test]
+    fn output_off_screen_keeps_the_screen_and_redraws_nothing(cx: &mut gpui::TestAppContext) {
+        use super::*;
+        let window = cx.add_window(|_, _| Empty);
+        let terminal = window
+            .update(cx, |_, _, cx| cx.new(|cx| TerminalView::attach(crate::hc::offline(), "t1".into(), (40, 5), cx)))
+            .unwrap();
+        cx.run_until_parked();
+        let notified = Rc::new(Cell::new(0));
+        let titles = Rc::new(Cell::new(0));
+        let (n, t) = (notified.clone(), titles.clone());
+        let _observed = cx.update(|cx| cx.observe(&terminal, move |_, _| n.set(n.get() + 1)));
+        let _subscribed = cx.update(|cx| {
+            cx.subscribe(&terminal, move |_, ev: &TerminalEvent, _| {
+                if matches!(ev, TerminalEvent::TitleChanged) {
+                    t.set(t.get() + 1);
+                }
+            })
+        });
+        let print = |text: &str, cx: &mut gpui::TestAppContext| {
+            let bytes = text.as_bytes().to_vec();
+            terminal.update(cx, |t, cx| t.ingest(vec![Stream::Data(bytes)], cx));
+            cx.executor().advance_clock(Duration::from_millis(100));
+            cx.run_until_parked();
+        };
+
+        // Shown in the frame being built: its output is drawn.
+        terminal.update(cx, |t, cx| {
+            t.mark_shown();
+            t.ingest(vec![Stream::Data(b"shown\r\n".to_vec())], cx);
+        });
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+        assert!(notified.get() > 0, "output on screen redraws it");
+
+        // The window drew a frame without it (its tab was switched away).
+        next_frame();
+        notified.set(0);
+        print("hidden\r\n\x1b]2;busy\x07", cx);
+        print("more\r\n", cx);
+        assert_eq!(notified.get(), 0, "output off screen invalidated the window");
+        assert_eq!(titles.get(), 1, "a title off screen still reaches the window");
+        let rows: Vec<String> = terminal.update(cx, |t, _| {
+            t.grid.borrow_mut().vt.frame().rows.iter().map(|r| r.iter().map(|c| c.text.as_str()).collect::<String>()).collect()
+        });
+        assert!(rows[1].starts_with("hidden") && rows[2].starts_with("more"), "the screen kept up while hidden: {rows:?}");
+    }
+
     #[test]
     fn letter_spacing_keeps_cells_within_half_to_one_and_a_half_advances() {
         use gpui::px;

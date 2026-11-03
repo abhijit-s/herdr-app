@@ -85,3 +85,10 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 - Files: `src/commands.rs`, `src/window.rs` (`popup`, `open_peek`, `wait_for`, `settle_waits`, `popup_hold_argv`, test `popup_peeks`), `src/control.rs` (`popup`, `parse_popup`, `serve`), `src/hc.rs` (`Core::start`, `EventLines::ended`, test core `answering`), `src/main.rs`, `defaults/mods/peek/main.js`, `defaults/AGENTS.md`, `docs/commands.md`
 - Upstream: none yet
+
+### Off-screen terminal output
+
+`perf/offscreen-no-redraw` (branched from `master`, fork only): a test, `output_off_screen_keeps_the_screen_and_redraws_nothing`, holding what `TerminalView::ingest` already does: output in a terminal not drawn in the window's current frame (another tab or space, a parked terminal, a hidden overlay) feeds its screen and still reports titles, but doesn't notify the window. The ~8 window draws a second the bench's `idle-busy-bg` shows come from the working agents' spinners in the tabs, pane header and agents mods (`spin(900)`, woken every 100 ms by gpui-kit's `spin_layer`), not from terminal output: GPUI marks every ancestor of a woken view dirty, so each spinner step runs `AppWindow::render` while terminal draws stay at 0.
+
+- Files: `src/terminal.rs` (tests)
+- Upstream: none yet
