@@ -42,9 +42,16 @@ const TOAST_MAX_WIDTH: f32 = 340.0;
 const TOAST_HEIGHT: f32 = 40.0;
 const TOAST_HEIGHT_WITH_BODY: f32 = 72.0;
 
-/// One line without a body, two with one.
+/// One line without a body, two with one: a body as the toast mod draws one
+/// (text that isn't blank, or anything else JavaScript calls true).
 fn toast_height(notification: &Value) -> f32 {
-    let body = notification.get("body").and_then(Value::as_str).is_some_and(|b| !b.is_empty());
+    let body = match notification.get("body") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_f64().is_some_and(|n| n != 0.0),
+        Some(Value::String(s)) => !s.trim().is_empty(),
+        Some(Value::Array(_) | Value::Object(_)) => true,
+    };
     if body { TOAST_HEIGHT_WITH_BODY } else { TOAST_HEIGHT }
 }
 
@@ -5403,6 +5410,27 @@ mod tests {
                 assert_eq!(bounds.origin, point(px(100.0), px(200.0)));
             }
         }
+    }
+
+    #[test]
+    fn a_toast_is_two_lines_high_only_with_a_body_the_mod_draws() {
+        use super::{TOAST_HEIGHT, TOAST_HEIGHT_WITH_BODY, toast_height};
+        use serde_json::json;
+        for (body, two) in [
+            (json!(null), false),
+            (json!(""), false),
+            (json!("  \n "), false),
+            (json!(false), false),
+            (json!(0), false),
+            (json!("to the clipboard"), true),
+            (json!(3), true),
+            (json!(true), true),
+            (json!(["a"]), true),
+        ] {
+            let want = if two { TOAST_HEIGHT_WITH_BODY } else { TOAST_HEIGHT };
+            assert_eq!(toast_height(&json!({ "title": "t", "body": body })), want, "{body}");
+        }
+        assert_eq!(toast_height(&json!({ "title": "t" })), TOAST_HEIGHT);
     }
 
     #[test]
