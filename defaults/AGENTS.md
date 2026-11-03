@@ -944,7 +944,8 @@ All of it is in `herdr.d.ts`. In short:
   returns an id; the mod gets `props().overlay` and closes itself with
   `closeOverlay(id)`; Esc closes the top dialog or popup. `frame: "none"`
   drops Herdr's border, corners and shadow so the mod draws its own.
-  `notify({ title, body, level, icon, timeout })` posts a notification, drawn by the `toast` mod.
+  `notify({ title, body, level, icon, timeout })` posts a notification, drawn by the `toast` mod
+  in an overlay as wide as its content (140 to 340 px) and 40 px high, 72 with a body.
 - Windows (`kind: "window"`): stay open until closed, over the layout and
   under dialogs; a press the mod doesn't stop drags it (stop it on your
   controls, like a title bar's buttons), it stays where dropped, and the one
