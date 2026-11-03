@@ -1,6 +1,6 @@
-//! `herdr-app do <command> [--arg value ... | json]`, `herdr-app ls`, `herdr-app commands`
-//! and `herdr-app status`: drive a running window from a shell (agents, tests)
-//! over `$HERDR_APP_HOME/herdr-app.sock`, one JSON line each way.
+//! `herdr-app do <command> [--arg value ... | json]`, `herdr-app ls`, `herdr-app commands`,
+//! `herdr-app status` and `herdr-app popup`: drive a running window from a shell
+//! (agents, tests) over `$HERDR_APP_HOME/herdr-app.sock`, one JSON line each way.
 
 use crate::mods::{self, Request};
 use serde_json::{Value, json};
@@ -44,9 +44,12 @@ fn serve(stream: UnixStream, tx: async_channel::Sender<Request>) {
     let reply = match serde_json::from_str::<Value>(&line) {
         Ok(cmd) => {
             let timeout = Duration::from_secs(if cmd.get("shot").is_some() { 30 } else { 5 });
+            // `{"wait": terminal}` answers when that terminal ends, however long it runs.
+            let waits = cmd.get("wait").is_some();
             let (reply_tx, reply_rx) = std::sync::mpsc::channel();
             let _ = tx.send_blocking(Request::Control { cmd, reply: reply_tx });
-            reply_rx.recv_timeout(timeout).unwrap_or_else(|_| json!({ "error": "the window did not answer" }))
+            let reply = if waits { reply_rx.recv().ok() } else { reply_rx.recv_timeout(timeout).ok() };
+            reply.unwrap_or_else(|| json!({ "error": "the window did not answer" }))
         }
         Err(e) => json!({ "error": format!("bad request: {e}") }),
     };
@@ -126,6 +129,114 @@ pub fn client(args: &[String]) -> i32 {
     if reply.get("error").is_some() { 1 } else { 0 }
 }
 
+const POPUP_USAGE: &str = "\
+Usage: herdr-app popup [--cwd DIR] [--hold] [--wait] [--size WxH] [--] <command> [args...]
+
+Runs a command on this computer in a popup over the shown tab (terminal.popup).
+The popup closes when the command ends; its ✕ only hides it, and the command
+keeps running (`hc ls`, `hc kill <t>`).
+
+  --cwd DIR    start in DIR (default: here)
+  --hold       keep the popup up after the command ends, until a key
+  --wait       wait for the command to end and exit with its exit code
+  --size WxH   the popup's size: px, or fractions of the window (0.6x0.5)
+  --           ends the options, for a command with its own flags
+
+Exits 2 for bad usage, 1 when the window is not open or the popup failed.
+";
+
+#[derive(Debug, PartialEq)]
+struct Popup {
+    argv: Vec<String>,
+    cwd: Option<String>,
+    hold: bool,
+    wait: bool,
+    size: Option<(f64, f64)>,
+}
+
+/// `herdr-app popup`'s arguments; `Ok(None)` asks for the usage.
+fn parse_popup(args: &[String]) -> Result<Option<Popup>, String> {
+    let mut p = Popup { argv: Vec::new(), cwd: None, hold: false, wait: false, size: None };
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(None),
+            "--hold" => p.hold = true,
+            "--wait" => p.wait = true,
+            "--cwd" => p.cwd = Some(it.next().ok_or("--cwd needs a folder")?.clone()),
+            "--size" => {
+                let value = it.next().ok_or("--size needs WxH")?;
+                let number = |n: &str| n.parse::<f64>().ok().filter(|n| *n > 0.0);
+                let size = value.split_once('x').and_then(|(w, h)| Some((number(w)?, number(h)?)));
+                p.size = Some(size.ok_or_else(|| format!("--size is WxH with positive numbers, not {value:?}"))?);
+            }
+            "--" => {
+                p.argv = it.cloned().collect();
+                break;
+            }
+            option if option.starts_with('-') => return Err(format!("unknown option {option}")),
+            _ => {
+                p.argv = std::iter::once(arg).chain(it).cloned().collect();
+                break;
+            }
+        }
+    }
+    if p.argv.is_empty() {
+        return Err("no command to run".into());
+    }
+    Ok(Some(p))
+}
+
+/// `herdr-app popup`: the process exit code (the command's, with `--wait`).
+pub fn popup(args: &[String]) -> i32 {
+    let p = match parse_popup(args) {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            print!("{POPUP_USAGE}");
+            return 0;
+        }
+        Err(e) => {
+            eprint!("herdr-app popup: {e}\n\n{POPUP_USAGE}");
+            return 2;
+        }
+    };
+    let cwd = p.cwd.or_else(|| std::env::current_dir().ok().map(|d| d.display().to_string()));
+    let mut args = json!({ "argv": p.argv, "cwd": cwd, "hold": p.hold, "wait": p.wait });
+    if let Some((width, height)) = p.size {
+        (args["width"], args["height"]) = (json!(width), json!(height));
+    }
+    let shown = match ask(&json!({ "do": "terminal.popup", "args": args }), Some(Duration::from_secs(35))) {
+        Ok(reply) if reply.get("error").is_none() => reply,
+        Ok(reply) => return popup_failed(reply["error"].as_str().unwrap_or("the popup failed")),
+        Err(e) => return popup_failed(&e),
+    };
+    if !p.wait {
+        return 0;
+    }
+    let Some(terminal) = shown["terminal"].as_str() else { return popup_failed("the window named no terminal") };
+    match ask(&json!({ "wait": terminal }), None) {
+        Ok(reply) if reply.get("error").is_none() => reply["exit_code"].as_i64().and_then(|c| i32::try_from(c).ok()).unwrap_or(1),
+        Ok(reply) => popup_failed(reply["error"].as_str().unwrap_or("waiting failed")),
+        Err(e) => popup_failed(&e),
+    }
+}
+
+fn popup_failed(message: &str) -> i32 {
+    eprintln!("herdr-app popup: {message}");
+    1
+}
+
+/// One request to the window and its reply; `None` waits as long as it takes.
+fn ask(cmd: &Value, timeout: Option<Duration>) -> Result<Value, String> {
+    let mut stream = UnixStream::connect(socket()).map_err(|e| format!("no Herdr window at {}: {e}", socket().display()))?;
+    let _ = stream.set_read_timeout(timeout);
+    let mut line = String::new();
+    if stream.write_all(format!("{cmd}\n").as_bytes()).is_err() || BufReader::new(&stream).read_line(&mut line).map_or(true, |n| n == 0) {
+        return Err("the window hung up".into());
+    }
+    serde_json::from_str(&line).map_err(|e| format!("bad reply from the window: {e}"))
+}
+
 /// `--name api --argv '["pi"]'` (values that parse as JSON are JSON), or one JSON object.
 fn parse_args(rest: &[String]) -> Result<Value, String> {
     match rest {
@@ -180,6 +291,25 @@ fn fail(message: &str) -> i32 {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn popup_reads_its_options_then_the_command() {
+        let parse = |args: &[&str]| parse_popup(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>());
+        let popup = |argv: &[&str]| Popup { argv: argv.iter().map(|a| a.to_string()).collect(), cwd: None, hold: false, wait: false, size: None };
+        assert_eq!(parse(&["htop"]), Ok(Some(popup(&["htop"]))));
+        // The command's own flags are its own, after the command or after --.
+        assert_eq!(parse(&["git", "log", "--oneline"]), Ok(Some(popup(&["git", "log", "--oneline"]))));
+        assert_eq!(parse(&["--", "-x", "--wait"]), Ok(Some(popup(&["-x", "--wait"]))));
+        assert_eq!(
+            parse(&["--cwd", "/tmp", "--hold", "--wait", "--size", "900x0.5", "make", "test"]),
+            Ok(Some(Popup { cwd: Some("/tmp".into()), hold: true, wait: true, size: Some((900.0, 0.5)), ..popup(&["make", "test"]) }))
+        );
+        assert_eq!(parse(&["-h"]), Ok(None));
+        assert_eq!(parse(&["--wait", "--help", "x"]), Ok(None));
+        for bad in [&[][..], &["--wait"], &["--"], &["--nope", "x"], &["--cwd"], &["--size", "80", "x"], &["--size", "0x1", "x"], &["--size", "ax2", "x"]] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn a_second_launch_raises_the_running_window() {

@@ -46,6 +46,7 @@ Usage:
   herdr-app                        open the window
   herdr-app ls                     spaces, their tabs and terminals, in the open window
   herdr-app do <command> [args]    run a command: --name api --argv '[\"pi\"]', or one JSON object
+  herdr-app popup [opts] <cmd...>  run a command in a popup over the tab (--wait: exit with its code)
   herdr-app feedback <text>        draft feedback for the person to review and send
   herdr-app commands               every command, its arguments, what it does
   herdr-app status                 what the window shows, and any errors
@@ -85,6 +86,9 @@ fn main() {
         mods::install_policy();
         gpui_shell::host::main_with_components(gpui_shell::FrozenComponentRegistry::default());
         return;
+    }
+    if args.get(1).map(String::as_str) == Some("popup") {
+        std::process::exit(control::popup(&args[2..]));
     }
     if matches!(args.get(1).map(String::as_str), Some("do" | "status" | "ls" | "commands" | "feedback" | "shot")) {
         std::process::exit(control::client(&args[1..]));
