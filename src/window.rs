@@ -471,6 +471,8 @@ pub struct AppWindow {
     synced_model_pane: Option<String>,
     pane_history: Vec<String>,
     window_active: bool,
+    /// Agents with a system notification up (alert.rs), taken down once seen.
+    notified: HashSet<String>,
     /// The system's appearance; a layout with a light and a dark theme follows it.
     system_dark: bool,
     /// The OS tells us when files change (`files.rs`); else the disk is polled.
@@ -560,6 +562,7 @@ impl AppWindow {
             synced_model_pane: None,
             pane_history: Vec::new(),
             window_active: true,
+            notified: HashSet::new(),
             system_dark: is_dark(window.appearance()),
             file_events: crate::files::watch(&mods::app_dir()),
             polls: 0,
@@ -610,6 +613,19 @@ impl AppWindow {
             w.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": note }), window, cx);
         }
 
+        // Clicking a system notification goes there, as clicking the toast does.
+        let (handle, this) = (window.window_handle(), cx.entity().downgrade());
+        cx.on_system_notification_response(move |response, cx| {
+            let Some(addr) = crate::alert::address_of(&response.tag).map(str::to_owned) else { return };
+            cx.activate(true);
+            let _ = handle.update(cx, |_, window, cx| {
+                window.activate_window();
+                let _ = this.update(cx, |this, cx| {
+                    this.notified.remove(&addr);
+                    this.run("agent.focus", json!({ "terminal": addr }), window, cx);
+                });
+            });
+        });
         w._tasks.push(cx.spawn_in(window, async move |this, cx| {
             loop {
                 if this.update_in(cx, |this, window, cx| this.poll(window, cx)).is_err() {
@@ -2029,7 +2045,11 @@ impl AppWindow {
             let prev = self.model.agents.get(addr).and_then(|a| a.word.clone());
             let child = rec.get("parent").and_then(Value::as_str).is_some_and(|p| !p.is_empty());
             if let Some(alert) = self.model.alert_for(addr, child, prev.as_deref(), word.as_deref(), looking) {
-                alerts.push((addr.clone(), alert, looking));
+                alerts.push((addr.clone(), alert, prev.clone(), looking));
+            }
+            // Seen, or back at work: its notification is old news.
+            if (looking || word.as_deref() == Some("working")) && self.notified.remove(addr) {
+                cx.dismiss_system_notification(&crate::alert::tag(addr));
             }
             changed |= self.model.set_word(addr, word, app, looking);
             let turn = rec.get("turn").and_then(Value::as_u64).unwrap_or(0);
@@ -2037,11 +2057,14 @@ impl AppWindow {
             changed |= self.model.set_turn(addr, turn, label.max(self.written_seen.get(addr).copied()));
         }
         self.written_seen.retain(|a, _| self.live.contains_key(a));
+        for gone in self.notified.extract_if(|a| !self.live.contains_key(a)) {
+            cx.dismiss_system_notification(&crate::alert::tag(&gone));
+        }
         changed |= self.share_seen(cx);
         // Changes already made before Herdr started aren't news.
         if self.listed_once {
-            for (addr, alert, looking) in alerts {
-                self.alert(&addr, alert, looking, window, cx);
+            for (addr, alert, prev, looking) in alerts {
+                self.alert(&addr, alert, prev, looking, window, cx);
             }
         }
         self.track_folders(cx);
@@ -2061,9 +2084,11 @@ impl AppWindow {
 
     /// Tells the person an agent needs them or finished: Herdr's sounds, and a
     /// toast (drawn by the `toast` mod; click it to go there) unless they're
-    /// looking at that agent.
-    fn alert(&mut self, addr: &str, alert: model::Alert, looking: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if settings::get().sounds.enabled {
+    /// looking at that agent. Outside the window too, as `system_notifications`
+    /// says: a system notification, or the person's `alert_command` instead.
+    fn alert(&mut self, addr: &str, alert: model::Alert, prev: Option<String>, looking: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let settings = settings::get();
+        if settings.sounds.enabled {
             crate::sound::play(if alert == model::Alert::Blocked { "blocked" } else { "done" });
         }
         // Needing the person brings a settled tab back.
@@ -2088,12 +2113,18 @@ impl AppWindow {
             let (p, c) = (self.model.space_of(&pane)?, self.model.tab_of(&pane)?);
             Some(format!("{} / {}", self.model.space_name(p, &self::home()), Model::tab_name(p, c)))
         });
-        let (title, level) = match alert {
-            model::Alert::Blocked => (format!("{name} needs you"), "error"),
-            model::Alert::Done => (format!("{name} finished"), "info"),
-        };
+        let note = crate::alert::Note { address: addr.to_owned(), alert, prev, app, name, place };
+        if crate::alert::should_notify(settings.system_notifications, self.window_active, looking)
+            && crate::alert::send(&note, settings.alert_command.as_ref(), cx)
+        {
+            self.notified.insert(addr.to_owned());
+        }
+        if alert == model::Alert::Blocked && settings.dock_bounce && !self.window_active {
+            window.request_attention();
+        }
+        let level = if alert == model::Alert::Blocked { "error" } else { "info" };
         let notification = json!({
-            "title": title, "body": place, "level": level,
+            "title": note.title(), "body": note.place, "level": level,
             "action": { "name": "agent.focus", "args": { "terminal": addr } },
         });
         self.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": notification }), window, cx);

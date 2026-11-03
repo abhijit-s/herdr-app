@@ -636,6 +636,27 @@ What's about the user, never a look:
   goes there when clicked. `done` / `blocked` replace the bundled MP3s
   (path absolute or relative to `~/.config/herdr-app`). Changes apply live,
   including the Play buttons in Settings > Alerts.
+- `system_notifications`: `"background"` (default), `"always"` or `"off"`.
+  The same alerts also go to the system's notification center: titled as
+  the toast, with "space / tab" as the body, one per agent (a newer alert
+  replaces the older one). `background` sends them only while Herdr isn't
+  the app in front; `always` also while it is. Never for the agent the
+  person is looking at. Clicking one brings Herdr forward on that agent;
+  it goes away once the person looks at the agent or it starts working
+  again. The toast shows either way. macOS asks permission the first
+  time; a build not run from an app bundle sends none.
+- `dock_bounce`: `true` bounces the Dock icon when an agent needs the
+  person while Herdr is in the background. Off by default.
+- `alert_command`: a program run for each alert in place of the system
+  notification, under the same `system_notifications` rule: one string
+  (run by `/bin/sh -c`) or an argv array (`["notify", "-q"]`). Herdr
+  doesn't wait for it, and gives it `HERDR_AGENT_STATE` (`blocked` or
+  `done`), `HERDR_AGENT_PREV_STATE` (the status it left, when known),
+  `HERDR_AGENT_APP` (e.g. `claude-code`), `HERDR_AGENT_NAME`,
+  `HERDR_AGENT_ADDRESS`, `HERDR_AGENT_PLACE` ("space / tab") and
+  `HERDR_ALERT_TITLE` (the toast's title). It runs with Herdr's
+  environment, whose PATH may be short when Herdr was opened from the
+  Dock: give a full path.
 - `core`: the herdr-core binary to use, when it isn't where Herdr looks
   (PATH, the login shell's PATH, `~/.local/bin`, Homebrew, mise, Nix,
   cargo). Read at start.
