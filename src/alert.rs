@@ -20,12 +20,34 @@ pub struct Note {
     pub name: String,
     /// "space / tab", as the toast shows it.
     pub place: Option<String>,
+    /// What the agent's 7501 report said with it.
+    pub said: Said,
+}
+
+/// The agent's own words from its 7501 report, as given; empty when it said
+/// nothing.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Said {
+    /// permission, question or auth.
+    pub kind: String,
+    pub title: String,
+    /// Its own summary, e.g. "approve Bash: make".
+    pub message: String,
+}
+
+impl Said {
+    /// From the terminal's 7501 record in the core's listing.
+    pub fn of(report: Option<&serde_json::Value>) -> Said {
+        let field = |key: &str| report.and_then(|r| r.get(key)).and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+        Said { kind: field("kind"), title: field("title"), message: field("msg") }
+    }
 }
 
 impl Note {
     pub fn title(&self) -> String {
         match self.alert {
             Alert::Blocked => format!("{} needs you", self.name),
+            Alert::Error => format!("{} hit an error", self.name),
             Alert::Done => format!("{} finished", self.name),
         }
     }
@@ -33,6 +55,7 @@ impl Note {
     fn state(&self) -> &'static str {
         match self.alert {
             Alert::Blocked => "blocked",
+            Alert::Error => "error",
             Alert::Done => "done",
         }
     }
@@ -64,9 +87,15 @@ pub fn system_notification(note: &Note) -> SystemNotification {
     SystemNotification {
         tag: tag(&note.address).into(),
         title: note.title().into(),
-        body: note.place.clone().unwrap_or_default().into(),
+        body: body(note).into(),
         actions: Vec::new(),
     }
+}
+
+/// The agent's own message when it gave one, over "space / tab".
+fn body(note: &Note) -> String {
+    let lines = [note.said.message.trim(), note.place.as_deref().unwrap_or_default()];
+    lines.into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
 }
 
 /// The program and its arguments; `None` when there is nothing to run.
@@ -91,6 +120,9 @@ pub fn command_env(note: &Note) -> Vec<(&'static str, String)> {
         ("HERDR_AGENT_ADDRESS", note.address.clone()),
         ("HERDR_AGENT_PLACE", note.place.clone().unwrap_or_default()),
         ("HERDR_ALERT_TITLE", note.title()),
+        ("HERDR_AGENT_MESSAGE", note.said.message.clone()),
+        ("HERDR_AGENT_KIND", note.said.kind.clone()),
+        ("HERDR_AGENT_TITLE", note.said.title.clone()),
     ]);
     env
 }
@@ -232,7 +264,12 @@ mod tests {
             app: Some("claude-code".into()),
             name: "Claude".into(),
             place: Some("herdr / main".into()),
+            said: Said::default(),
         }
+    }
+
+    fn said(message: &str) -> Said {
+        Said { kind: "permission".into(), title: "fix the build".into(), message: message.into() }
     }
 
     #[test]
@@ -301,11 +338,40 @@ mod tests {
             ("HERDR_AGENT_ADDRESS", "local:t7".into()),
             ("HERDR_AGENT_PLACE", "herdr / main".into()),
             ("HERDR_ALERT_TITLE", "Claude needs you".into()),
+            ("HERDR_AGENT_MESSAGE", String::new()),
+            ("HERDR_AGENT_KIND", String::new()),
+            ("HERDR_AGENT_TITLE", String::new()),
         ];
         assert_eq!(env, expected);
         let bare = command_env(&Note { prev: None, app: None, place: None, ..note(Alert::Done) });
         assert_eq!(bare.iter().find(|(k, _)| *k == "HERDR_AGENT_STATE").map(|(_, v)| v.as_str()), Some("done"));
         assert!(bare.iter().all(|(k, _)| *k != "HERDR_AGENT_PREV_STATE"));
+    }
+
+    #[test]
+    fn the_agents_own_words_reach_the_command_and_the_notification_as_given() {
+        let quoted = "approve Bash: echo \"$HOME\" 'x' $(id); `id`";
+        let n = Note { said: said(quoted), ..note(Alert::Blocked) };
+        let env = command_env(&n);
+        let get = |key: &str| env.iter().find(|(k, _)| *k == key).map(|(_, v)| v.as_str());
+        assert_eq!(get("HERDR_AGENT_MESSAGE"), Some(quoted));
+        assert_eq!(get("HERDR_AGENT_KIND"), Some("permission"));
+        assert_eq!(get("HERDR_AGENT_TITLE"), Some("fix the build"));
+        assert_eq!(system_notification(&n).body.as_ref(), format!("{quoted}\nherdr / main"));
+        let alone = Note { place: None, said: said("  done: 3 files  "), ..note(Alert::Done) };
+        assert_eq!(system_notification(&alone).body.as_ref(), "done: 3 files");
+        let report = serde_json::json!({ "state": "blocked", "kind": "question", "title": "t", "msg": "which one?" });
+        assert_eq!(Said::of(Some(&report)), Said { kind: "question".into(), title: "t".into(), message: "which one?".into() });
+        assert_eq!(Said::of(Some(&serde_json::json!("blocked"))), Said::default(), "a bare word says nothing more");
+        assert_eq!(Said::of(None), Said::default());
+    }
+
+    #[test]
+    fn an_error_is_told_apart_from_blocked() {
+        let n = note(Alert::Error);
+        assert_eq!(command_env(&n)[0], ("HERDR_AGENT_STATE", "error".to_owned()));
+        assert_eq!(n.title(), "Claude hit an error");
+        assert!(Alert::Error.needs_you() && Alert::Blocked.needs_you() && !Alert::Done.needs_you());
     }
 
     #[test]

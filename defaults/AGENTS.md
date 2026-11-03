@@ -672,11 +672,17 @@ What's about the user, never a look:
 - `alert_command`: a program run for each alert in place of the system
   notification, under the same `system_notifications` rule: one string
   (run by `/bin/sh -c`) or an argv array (`["notify", "-q"]`). Herdr
-  doesn't wait for it, and gives it `HERDR_AGENT_STATE` (`blocked` or
-  `done`), `HERDR_AGENT_PREV_STATE` (the status it left, when known),
-  `HERDR_AGENT_APP` (e.g. `claude-code`), `HERDR_AGENT_NAME`,
-  `HERDR_AGENT_ADDRESS`, `HERDR_AGENT_PLACE` ("space / tab") and
-  `HERDR_ALERT_TITLE` (the toast's title). It runs with Herdr's
+  doesn't wait for it, and gives it `HERDR_AGENT_STATE` (`blocked`,
+  `error` or `done`), `HERDR_AGENT_PREV_STATE` (the status it left, when
+  known), `HERDR_AGENT_APP` (e.g. `claude-code`), `HERDR_AGENT_NAME`,
+  `HERDR_AGENT_ADDRESS`, `HERDR_AGENT_PLACE` ("space / tab"),
+  `HERDR_ALERT_TITLE` (the toast's title), and the agent's own words from
+  its status report, as given and empty when it said nothing:
+  `HERDR_AGENT_MESSAGE` (its summary, e.g. "approve Bash: make"),
+  `HERDR_AGENT_KIND` (`permission`, `question` or `auth`) and
+  `HERDR_AGENT_TITLE`. They are environment variables only, never part of
+  the command line; quote them in a shell line (`"$HERDR_AGENT_MESSAGE"`).
+  The system notification shows the same message above "space / tab". It runs with Herdr's
   environment, whose PATH may be short when Herdr was opened from the
   Dock: give a full path. It starts in the home folder; one still running
   after 30 s is killed with everything it started. One that doesn't start,
