@@ -721,6 +721,15 @@ What's about the user, never a look:
   strength stepper in steps of 16 while it's on.
 - `text_contrast` (0..1): sharpens the edges of terminal text without widening its strokes. When the text is blended, each edge pixel's coverage moves toward an S-curve: faint pixels fade and nearly solid ones fill, so a stroke keeps about the same ink. Thickening adds ink instead. 0 (the default) draws text as rasterised; 1 uses the full curve. Try 0.5 first. Panels follow `ui_text_contrast`. Changes apply immediately. The Settings window sets it on its Text page under Terminal text, with a "Contrast" stepper in steps of 0.1.
 - `ui_text_contrast` (0..1): the same for the panels' text (every mod, tab, popup, toast and the Settings window), apart from the terminals' `text_contrast`. Icons are left as drawn. Default 0. The Settings window sets it on its Text page under Size, with an "Interface contrast" stepper in steps of 0.1.
+- `ui_font_weight` (100..900, default 400): the panels' regular text weight
+  (every mod, tab, popup, toast and the Settings window). Text that sets its
+  own weight (a mod's `font_weight(...)` or `font_bold()`, bold labels,
+  markdown bold) moves by as much, within 100..900, so bold stays bolder:
+  at 500, `font_weight(600)` draws at 700. Terminals keep `font_weight`.
+  A variable `ui_font` draws every step; static faces draw the nearest weight
+  they have (the bundled Geist has only Regular). Changes apply live. The
+  Settings window sets it on its Text page under Size:
+  an "Interface font weight" stepper in steps of 25.
 - `theme`: a theme name or `{light, dark}`; used where the layout sets none.
   The theme picker overrides any layout and stays on that layout.
 - `colors`: theme color overrides (`{"accent":"#ff8800"}`), with the same

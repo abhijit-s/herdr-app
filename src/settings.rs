@@ -433,6 +433,10 @@ pub struct Person {
     /// The panels' font (their sizes follow zoom).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_font: Option<String>,
+    /// The panels' regular text weight, 100 to 900; text set heavier or
+    /// lighter keeps its distance from it.
+    #[serde(skip_serializing_if = "is_ui_weight_default")]
+    pub ui_font_weight: u16,
     /// Anonymous usage data (telemetry.rs). On unless set to false.
     #[serde(skip_serializing_if = "is_true")]
     pub telemetry: bool,
@@ -537,6 +541,13 @@ fn is_full_strength(v: &u16) -> bool {
     *v == THICKEN_STRENGTH_DEFAULT
 }
 
+/// The weight the panels' text has unless something sets one: GPUI's normal.
+pub const UI_FONT_WEIGHT_DEFAULT: u16 = 400;
+
+fn is_ui_weight_default(v: &u16) -> bool {
+    *v == UI_FONT_WEIGHT_DEFAULT
+}
+
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -600,6 +611,7 @@ impl Default for Person {
             text_contrast: 0.0,
             ui_text_contrast: 0.0,
             ui_font: None,
+            ui_font_weight: UI_FONT_WEIGHT_DEFAULT,
             telemetry: true,
             clipboard_write: true,
             minimum_contrast: 1.0,
@@ -635,6 +647,8 @@ pub struct Settings {
     pub ui_text_contrast: f32,
     pub ui_font_family: String,
     pub ui_font_size: f32,
+    /// The panels' regular text weight (see `ui_weight_shift`).
+    pub ui_font_weight: u16,
     /// How big the whole app is drawn (1 = as designed). The zoom keys change it.
     pub zoom: f32,
     /// The panels' size on top of `zoom` (terminals' text and cells excluded).
@@ -704,6 +718,7 @@ impl Default for Settings {
             ui_text_contrast: 0.0,
             ui_font_family: "Geist".into(),
             ui_font_size: 13.0,
+            ui_font_weight: UI_FONT_WEIGHT_DEFAULT,
             zoom: 1.0,
             ui_zoom: 1.0,
             ui_text_scale: 1.0,
@@ -757,6 +772,7 @@ impl Settings {
             ui_text_contrast: person.ui_text_contrast,
             ui_font_family: look.ui_font.clone().or(person.ui_font.clone()).unwrap_or(d.ui_font_family),
             ui_font_size: d.ui_font_size,
+            ui_font_weight: person.ui_font_weight,
             zoom: person.zoom,
             ui_zoom: clamp_scale(person.ui_zoom, UI_ZOOM_RANGE),
             ui_text_scale: clamp_scale(person.ui_text_scale, UI_TEXT_SCALE_RANGE),
@@ -835,6 +851,9 @@ impl Settings {
         }
         if !(0.0..=1.0).contains(&self.ui_text_contrast) {
             out.push(format!("ui_text_contrast {} is outside 0..1", self.ui_text_contrast));
+        }
+        if !(100..=900).contains(&self.ui_font_weight) {
+            out.push(format!("ui_font_weight {} is outside 100..900", self.ui_font_weight));
         }
         if !(100..=900).contains(&self.font_weight) {
             out.push(format!("font_weight {} is outside 100..900", self.font_weight));
@@ -1028,6 +1047,13 @@ impl Settings {
     /// terminals' grids.
     pub fn ui_glyph_thicken(&self) -> Option<u8> {
         self.ui_font_thicken.then(|| self.ui_font_thicken_strength.min(255) as u8)
+    }
+
+    /// How much heavier every run of the panels' text is shaped than it asks
+    /// for (`Window::set_font_weight_shift`): regular text lands on
+    /// `ui_font_weight` and bold stays as much bolder. Terminals shape at 0.
+    pub fn ui_weight_shift(&self) -> f32 {
+        f32::from(self.ui_font_weight.clamp(100, 900)) - f32::from(UI_FONT_WEIGHT_DEFAULT)
     }
 
     /// At most the largest `zoom`: a big zoom and a big `ui_zoom` don't compound past it.
@@ -1292,6 +1318,22 @@ mod tests {
     }
 
     #[test]
+    fn ui_font_weight_defaults_to_normal_and_shifts_only_the_panels() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.ui_font_weight, 400);
+        assert_eq!(serde_json::to_value(&default).unwrap().get("ui_font_weight"), None);
+        let d = Settings::compose(&default, &crate::layout::Look::default(), true);
+        assert_eq!((d.ui_font_weight, d.ui_weight_shift()), (400, 0.0));
+        for (weight, shift, ok) in [(99, -300.0, false), (100, -300.0, true), (550, 150.0, true), (900, 500.0, true), (901, 500.0, false)] {
+            let person: Person = serde_json::from_value(serde_json::json!({"ui_font_weight": weight})).unwrap();
+            let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
+            assert_eq!((settings.ui_font_weight, settings.ui_weight_shift()), (weight, shift));
+            assert_eq!(settings.font_weight, 500, "the terminals keep theirs");
+            assert_eq!(settings.problems().is_empty(), ok, "weight {weight}");
+        }
+    }
+
+    #[test]
     fn ui_font_thicken_defaults_off_at_full_strength_apart_from_the_terminals() {
         let default: Person = serde_json::from_str("{}").unwrap();
         assert!(!default.ui_font_thicken);
@@ -1497,7 +1539,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_thicken: true, font_thicken_strength: 30, ui_font_thicken: true, ui_font_thicken_strength: 30, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_thicken: true, font_thicken_strength: 30, ui_font_thicken: true, ui_font_thicken_strength: 30, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

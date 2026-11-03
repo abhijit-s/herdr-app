@@ -4149,6 +4149,22 @@ impl Window {
         self.base_glyph_thicken = strength;
     }
 
+    /// HERDR: every run this window shapes outside a `with_font_weight_shift`
+    /// is `shift` heavier (lighter when negative), within 100 to 900: the
+    /// default weight and explicit ones alike, so bold stays bolder. Set it
+    /// while rendering, as `set_rem_size`.
+    pub fn set_font_weight_shift(&mut self, shift: f32) {
+        self.text_system.replace_weight_shift(shift);
+    }
+
+    /// HERDR: shapes the runs in `f` with their weights shifted by `shift`.
+    pub fn with_font_weight_shift<R>(&mut self, shift: f32, f: impl FnOnce(&mut Self) -> R) -> R {
+        let outer = self.text_system.replace_weight_shift(shift);
+        let result = f(self);
+        self.text_system.replace_weight_shift(outer);
+        result
+    }
+
     /// HERDR: paints the monochrome glyphs in `f` thickened at `strength`
     /// (0 to 255) whatever their color, as Ghostty's `font-thicken` does,
     /// or, with None, at the platform's color-dependent dilation.

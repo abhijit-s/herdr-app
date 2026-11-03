@@ -5097,6 +5097,7 @@ impl Render for AppWindow {
         window.set_rem_size(settings::ui_rem());
         window.set_glyph_thicken(settings::get().ui_glyph_thicken());
         window.set_glyph_contrast(settings::get().ui_text_contrast);
+        window.set_font_weight_shift(settings::get().ui_weight_shift());
         // A terminal the person clicked into becomes the focused pane.
         let clicked = self
             .terms

@@ -46,6 +46,7 @@ const SYSTEM_NOTIFICATIONS = [
 // What the app uses when settings.json names no font (settings.rs).
 const DEFAULT_FONT = "JetBrains Mono";
 const DEFAULT_UI_FONT = "Geist";
+const DEFAULT_UI_FONT_WEIGHT = 400;
 
 export default class Settings extends View {
   init(_props, cx) {
@@ -539,6 +540,15 @@ export default class Settings extends View {
         }, cx);
       return this.stepper(t, `st-${key}`, `${Math.round(now * 100)}%`, (_e, cx) => go(-0.05, cx), (_e, cx) => go(0.05, cx));
     };
+    // 400 is the default, left out of settings.json. Layouts don't set it.
+    const weightIn = (w) => Math.max(100, Math.min(900, w ?? DEFAULT_UI_FONT_WEIGHT));
+    const uiWeight = weightIn(this.person.ui_font_weight);
+    const uiWeightStep = (d, cx) =>
+      this.change((q) => {
+        const next = weightIn(weightIn(q.ui_font_weight) + d);
+        if (next === DEFAULT_UI_FONT_WEIGHT) delete q.ui_font_weight;
+        else q.ui_font_weight = next;
+      }, cx);
     const fontRow = (which, sizeKey, title, family, def, sizeNow) =>
       v_flex()
         .w_full()
@@ -574,6 +584,7 @@ export default class Settings extends View {
       .child(this.row(t, "Interface zoom", "Panels, tabs and popups, on top of zoom. Terminals keep their size.", scaleStepper("ui_zoom", s.ui_zoom)))
       .child(this.row(t, "Interface text size", "The panels' text only: spacing and icons keep their size.", scaleStepper("ui_text_scale", s.ui_text_scale)))
       .child(fontRow("ui_font", null, "Interface font", s.ui_font_family, DEFAULT_UI_FONT))
+      .child(this.row(t, "Interface font weight", "Panels, tabs and popups. Bold text stays as much bolder; terminals keep theirs.", this.stepper(t, "st-ui_font_weight", `${uiWeight}`, (_e, cx) => uiWeightStep(-25, cx), (_e, cx) => uiWeightStep(25, cx))))
       .child(this.thicken(t, "ui_font_thicken", "Thicken interface text", "Panels, tabs and popups as heavy whatever their color. Terminals follow their own."))
       .child(this.contrast(t, "ui_text_contrast", "Interface contrast", "Crisper edges on the panels' text, at the same weight. Terminals follow their own."))
       .child(div().h(18))
