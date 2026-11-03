@@ -8,7 +8,6 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use serde_json::json;
 use std::cell::{Cell, RefCell};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
 use crate::links;
@@ -111,13 +110,18 @@ pub struct TerminalView {
 thread_local! {
     /// Terminals with output waiting for the next tick of the output clock.
     static OUTPUT_CLOCK: RefCell<Vec<WeakEntity<TerminalView>>> = const { RefCell::new(Vec::new()) };
+    /// The window's frame number, counted where the window renders. Per thread:
+    /// the app renders on one, and each GPUI test on its own, so a test's
+    /// frames are not bumped by a window another test is rendering.
+    static FRAME: Cell<u64> = const { Cell::new(0) };
 }
 
-/// The window's frame number, counted where the window renders.
-static FRAME: AtomicU64 = AtomicU64::new(0);
-
 pub fn next_frame() {
-    FRAME.fetch_add(1, Ordering::Relaxed);
+    FRAME.with(|frame| frame.set(frame.get() + 1));
+}
+
+fn frame() -> u64 {
+    FRAME.with(Cell::get)
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
@@ -407,7 +411,7 @@ impl TerminalView {
         // Output in a terminal nobody sees doesn't redraw the window; it's
         // drawn fresh when shown again. Nor does output that changed nothing
         // on screen (an agent spinning its title).
-        if self.shown_in.get() == FRAME.load(Ordering::Relaxed) && self.grid.borrow_mut().vt.shows_change() {
+        if self.shown_in.get() == frame() && self.grid.borrow_mut().vt.shows_change() {
             self.redraw_soon(cx);
         }
         open
@@ -441,7 +445,7 @@ impl TerminalView {
 
     /// The window puts this terminal on screen in the frame it's building.
     pub fn mark_shown(&self) {
-        self.shown_in.set(FRAME.load(Ordering::Relaxed));
+        self.shown_in.set(frame());
     }
 
     fn send(&self, bytes: &[u8]) {
@@ -672,7 +676,7 @@ impl TerminalView {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
                 let keep = this.update(cx, |this, cx| {
                     if !this.selecting { return false; }
-                    if this.shown_in.get() != FRAME.load(Ordering::Relaxed) {
+                    if this.shown_in.get() != frame() {
                         this.finish_selection(None, cx);
                         return false;
                     }
