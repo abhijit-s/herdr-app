@@ -1203,6 +1203,8 @@ pub struct Window {
     // HERDR: the frame on screen has spinning sprites / their next step is due.
     presents_spinners: bool,
     spin_step_scheduled: bool,
+    #[cfg(any(test, feature = "test-support"))]
+    presents: usize,
     pub(crate) next_frame: Frame,
     next_hitbox_id: HitboxId,
     pub(crate) next_tooltip_id: TooltipId,
@@ -2099,6 +2101,8 @@ impl Window {
             rendered_frame_size: None,
             presents_spinners: false,
             spin_step_scheduled: false,
+            #[cfg(any(test, feature = "test-support"))]
+            presents: 0,
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame_callbacks,
             next_hitbox_id: HitboxId(0),
@@ -2234,6 +2238,7 @@ impl Window {
             self.visibility_observers
                 .clone()
                 .retain(&(), |callback| callback(visibility, self, cx));
+            self.schedule_spin_step(cx);
         }
         #[cfg(feature = "profiler")]
         if self.invalidator.is_dirty() || self.needs_present.get() {
@@ -3537,6 +3542,10 @@ impl Window {
         #[cfg(feature = "profiler")]
         let present_start = Instant::now();
         self.presents_spinners = self.rendered_frame.scene.turn_spinners(spin_clock_ms());
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.presents += 1;
+        }
         self.platform_window.draw(&self.rendered_frame.scene);
         #[cfg(feature = "profiler")]
         self.window_profiler.record_present(
@@ -3550,9 +3559,10 @@ impl Window {
     }
 
     /// HERDR: while the frame on screen has spinning sprites, presents it again
-    /// (no draw) after [`SPIN_STEP`]. A draw in between turns them as well.
+    /// (no draw) after [`SPIN_STEP`]. A draw in between turns them as well. A
+    /// hidden window steps again once it is visible.
     fn schedule_spin_step(&mut self, cx: &mut App) {
-        if !self.presents_spinners || self.spin_step_scheduled {
+        if !self.presents_spinners || self.spin_step_scheduled || !self.visibility.is_visible() {
             return;
         }
         self.spin_step_scheduled = true;
@@ -3562,6 +3572,10 @@ impl Window {
             handle
                 .update(cx, |_, window, _| {
                     window.spin_step_scheduled = false;
+                    // A draw since took the spinners away, or the window went out of sight.
+                    if !window.presents_spinners || !window.visibility.is_visible() {
+                        return;
+                    }
                     window.needs_present.set(true);
                     window.platform_window.schedule_frame();
                     window.invalidator.wake_platform();
@@ -3569,6 +3583,12 @@ impl Window {
                 .ok();
         })
         .detach();
+    }
+
+    /// HERDR: how many frames this window has presented, drawn or not.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn presents(&self) -> usize {
+        self.presents
     }
 
     /// HERDR: the transformations of the spinning sprites last presented.
