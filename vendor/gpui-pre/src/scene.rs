@@ -720,6 +720,10 @@ pub struct MonochromeSprite {
     pub color: Hsla,
     pub tile: AtlasTile,
     pub transformation: TransformationMatrix,
+    // HERDR: how far the shader pulls this glyph's coverage toward an
+    // S-curve, 0 (as rasterised) to 1 (`Window::with_glyph_contrast`).
+    pub contrast: f32,
+    pub contrast_pad: u32,
 }
 
 // HERDR: a spinning sprite keeps turning with no draw. Its `pad`, which no

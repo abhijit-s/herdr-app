@@ -623,6 +623,7 @@ struct MonochromeSpriteVertexOutput {
   float2 tile_position;
   float4 color [[flat]];
   float4 clip_distance;
+  float contrast [[flat]];
 };
 
 struct MonochromeSpriteFragmentInput {
@@ -630,7 +631,16 @@ struct MonochromeSpriteFragmentInput {
   float2 tile_position;
   float4 color [[flat]];
   float4 clip_distance;
+  float contrast [[flat]];
 };
+
+// HERDR: pulls glyph coverage toward smoothstep by `contrast` (0 to 1), so
+// edge pixels sharpen without the stroke gaining ink: the curve is symmetric
+// about 0.5. Matches `sharpen_coverage` in shaders.wgsl and shaders.hlsl.
+float sharpen_coverage(float alpha, float contrast) {
+  float s = alpha * alpha * (3.0 - 2.0 * alpha);
+  return mix(alpha, s, contrast);
+}
 
 vertex MonochromeSpriteVertexOutput monochrome_sprite_vertex(
     uint unit_vertex_id [[vertex_id]], uint sprite_id [[instance_id]],
@@ -652,7 +662,8 @@ vertex MonochromeSpriteVertexOutput monochrome_sprite_vertex(
       device_position,
       tile_position,
       color,
-      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
+      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
+      sprite.contrast};
 }
 
 fragment float4 monochrome_sprite_fragment(
@@ -668,7 +679,7 @@ fragment float4 monochrome_sprite_fragment(
   float4 sample =
       atlas_texture.sample(atlas_texture_sampler, input.tile_position);
   float4 color = input.color;
-  color.a *= sample.a;
+  color.a *= sharpen_coverage(sample.a, input.contrast);
   return color;
 }
 
