@@ -591,6 +591,10 @@ pub struct Settings {
     pub ui_zoom: f32,
     /// The panels' text size on top of their zoom.
     pub ui_text_scale: f32,
+    /// `ui_zoom` and `ui_text_scale` as settings.json has them, before
+    /// clamping: what `problems` reports.
+    #[serde(skip)]
+    pub asked_ui_scales: (f32, f32),
     /// The theme showing: a preset or a file in themes/.
     pub theme: String,
     /// The layout's theme for each appearance (the same one twice when it names one).
@@ -647,6 +651,7 @@ impl Default for Settings {
             zoom: 1.0,
             ui_zoom: 1.0,
             ui_text_scale: 1.0,
+            asked_ui_scales: (1.0, 1.0),
             theme: DEFAULT_DARK.into(),
             theme_light: DEFAULT_LIGHT.into(),
             theme_dark: DEFAULT_DARK.into(),
@@ -693,6 +698,7 @@ impl Settings {
             zoom: person.zoom,
             ui_zoom: clamp_scale(person.ui_zoom, UI_ZOOM_RANGE),
             ui_text_scale: clamp_scale(person.ui_text_scale, UI_TEXT_SCALE_RANGE),
+            asked_ui_scales: (person.ui_zoom, person.ui_text_scale),
             theme: if dark { theme_dark.clone() } else { theme_light.clone() },
             theme_light,
             theme_dark,
@@ -767,6 +773,12 @@ impl Settings {
         }
         if !(0.8..=2.0).contains(&self.line_height) {
             out.push(format!("line_height {} is outside 0.8..2", self.line_height));
+        }
+        let (ui_zoom, ui_text_scale) = self.asked_ui_scales;
+        for (key, asked, (lo, hi), used) in [("ui_zoom", ui_zoom, UI_ZOOM_RANGE, self.ui_zoom), ("ui_text_scale", ui_text_scale, UI_TEXT_SCALE_RANGE, self.ui_text_scale)] {
+            if !(lo..=hi).contains(&asked) {
+                out.push(format!("{key} {asked} is outside {lo}..{hi}: using {used}"));
+            }
         }
         out
     }
@@ -918,16 +930,29 @@ pub fn font_size() -> f32 {
     get().terminal_font_size()
 }
 
-/// The panels' base text size (the window's rem).
+/// The panels' base text size, with the text scale.
 pub fn ui_font_size() -> f32 {
     get().ui_font_size_px()
+}
+
+/// The window's rem: the panels' base text size at their zoom but without
+/// the text scale, so rem-based spacing, radii and panels keep their size.
+pub fn ui_rem() -> Pixels {
+    px(get().ui_rem_px())
+}
+
+/// A text size in rems (`text_xs` is 0.75) that also takes the text scale,
+/// which the rem leaves out.
+pub fn text_rems(rems: f32) -> Pixels {
+    px(get().text_rems_px(rems))
 }
 
 /// Sizes at these settings. Terminals (text, cells, padding) follow `zoom`
 /// only; everything else follows `ui_scale`, and text also `ui_text_scale`.
 impl Settings {
+    /// At most the largest `zoom`: a big zoom and a big `ui_zoom` don't compound past it.
     pub fn ui_scale(&self) -> f32 {
-        self.zoom * self.ui_zoom
+        (self.zoom * self.ui_zoom).min(ZOOM_MAX)
     }
 
     pub fn ui_px(&self, v: f32) -> f32 {
@@ -940,6 +965,28 @@ impl Settings {
 
     pub fn ui_font_size_px(&self) -> f32 {
         self.ui_text_px(self.ui_font_size)
+    }
+
+    pub fn ui_rem_px(&self) -> f32 {
+        self.ui_px(self.ui_font_size)
+    }
+
+    /// In the order GPUI turns rems into px (rems × rem), so at text scale 1
+    /// it is `text_xs()` and friends bit for bit.
+    pub fn text_rems_px(&self, rems: f32) -> f32 {
+        rems * self.ui_rem_px() * self.ui_text_scale
+    }
+
+    /// What mods get as `settings()`: these settings, and `ui_scale` (what
+    /// their px are drawn at, to divide window px by) and the ranges of
+    /// `ui_zoom` and `ui_text_scale`.
+    pub fn for_mods(&self) -> serde_json::Value {
+        let mut v = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
+        if let Some(o) = v.as_object_mut() {
+            o.insert("ui_scale".into(), serde_json::json!(self.ui_scale()));
+            o.insert("ui_scale_ranges".into(), serde_json::json!({ "ui_zoom": UI_ZOOM_RANGE, "ui_text_scale": UI_TEXT_SCALE_RANGE }));
+        }
+        v
     }
 
     pub fn terminal_font_size(&self) -> f32 {
@@ -1235,6 +1282,49 @@ mod tests {
         assert!((bigger.ui_text_px(12.0) - 12.0 * 1.2 * 1.1).abs() < 1e-4);
         assert!((bigger.ui_font_size_px() - 13.0 * 1.2 * 1.1).abs() < 1e-4);
         assert_eq!(bigger.mod_scales(), (plain.mod_scales().0, 1.1));
+    }
+
+    /// The window's rem keeps rem spacing at the panels' zoom; only text takes the text scale.
+    #[test]
+    fn the_rem_leaves_the_text_scale_to_the_text() {
+        for zoom in [1.0, 1.1, 1.3, 2.0] {
+            let s = scaled(zoom, 1.0, 1.0);
+            assert_eq!(s.ui_rem_px().to_bits(), (13.0 * zoom).to_bits());
+            assert_eq!(s.text_rems_px(0.75).to_bits(), (0.75 * s.ui_rem_px()).to_bits(), "text_xs at zoom {zoom}");
+            assert_eq!(s.text_rems_px(1.0).to_bits(), s.ui_font_size_px().to_bits());
+        }
+        let (plain, bigger) = (scaled(1.0, 1.2, 1.0), scaled(1.0, 1.2, 1.25));
+        assert_eq!(bigger.ui_rem_px(), plain.ui_rem_px(), "rem spacing keeps its size");
+        assert!((bigger.text_rems_px(0.75) - 0.75 * 13.0 * 1.2 * 1.25).abs() < 1e-4);
+        assert!((bigger.ui_font_size_px() - 13.0 * 1.2 * 1.25).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_panels_zoom_stops_at_the_largest_zoom() {
+        assert_eq!(scaled(3.0, 1.5, 1.0).ui_scale(), ZOOM_MAX);
+        assert_eq!(scaled(2.5, 1.5, 1.0).ui_scale(), ZOOM_MAX);
+        assert!((scaled(1.5, 1.5, 1.0).ui_scale() - 2.25).abs() < 1e-6);
+        assert_eq!(scaled(3.0, 1.5, 1.0).mod_scales().0, ZOOM_MAX);
+    }
+
+    #[test]
+    fn out_of_range_ui_scales_are_problems() {
+        assert!(scaled(1.0, 1.5, 0.8).problems().is_empty(), "the ends are in range");
+        let problems = scaled(1.0, 2.0, 0.5).problems();
+        assert!(problems.iter().any(|p| p.starts_with("ui_zoom 2 is outside 0.75..1.5: using 1.5")), "{problems:?}");
+        assert!(problems.iter().any(|p| p.starts_with("ui_text_scale 0.5 is outside 0.8..1.3: using 0.8")), "{problems:?}");
+        assert!(scaled(1.0, f32::NAN, 1.0).problems().iter().any(|p| p.contains("ui_zoom NaN")));
+    }
+
+    /// Mods divide window px by `ui_scale`, and the Settings window steps within the ranges.
+    #[test]
+    fn mods_get_the_panels_zoom_and_the_scale_ranges() {
+        let v = scaled(1.5, 1.2, 1.1).for_mods();
+        assert!((v["ui_scale"].as_f64().unwrap() - 1.8).abs() < 1e-6, "{v}");
+        let range = |key: &str| serde_json::from_value::<(f32, f32)>(v["ui_scale_ranges"][key].clone()).unwrap();
+        assert_eq!((range("ui_zoom"), range("ui_text_scale")), (UI_ZOOM_RANGE, UI_TEXT_SCALE_RANGE));
+        assert!(v.get("asked_ui_scales").is_none());
+        assert_eq!(v["zoom"], serde_json::json!(1.5));
     }
 
     #[test]

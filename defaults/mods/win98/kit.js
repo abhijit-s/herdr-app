@@ -44,8 +44,7 @@ export function scale() {
 
 /** How much Herdr scales this mod's px: its zoom times the panels' own. */
 export function uiZoom() {
-  const s = settings();
-  return (Number(s?.zoom) || 1) * (Number(s?.ui_zoom) || 1);
+  return Number(settings()?.ui_scale) || 1;
 }
 
 export function unit() {

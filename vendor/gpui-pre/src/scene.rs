@@ -50,6 +50,8 @@ pub struct Scene {
     pub subpixel_sprites: Vec<SubpixelSprite>,
     pub polychrome_sprites: Vec<PolychromeSprite>,
     pub surfaces: Vec<PaintSurface>,
+    /// HERDR: whether any monochrome sprite spins, so presents skip the scan.
+    has_spinners: bool,
 }
 
 #[expect(missing_docs)]
@@ -66,6 +68,7 @@ impl Scene {
         self.subpixel_sprites.clear();
         self.polychrome_sprites.clear();
         self.surfaces.clear();
+        self.has_spinners = false;
     }
 
     pub fn len(&self) -> usize {
@@ -119,6 +122,7 @@ impl Scene {
             }
             Primitive::MonochromeSprite(sprite) => {
                 sprite.order = order;
+                self.has_spinners |= sprite.spins();
                 self.monochrome_sprites.push(*sprite);
             }
             Primitive::SubpixelSprite(sprite) => {
@@ -742,6 +746,9 @@ impl MonochromeSprite {
 impl Scene {
     /// HERDR: turns the spinning sprites to `clock_ms`; whether there are any.
     pub fn turn_spinners(&mut self, clock_ms: f64) -> bool {
+        if !self.has_spinners {
+            return false;
+        }
         let mut any = false;
         for sprite in self.monochrome_sprites.iter_mut().filter(|s| s.spins()) {
             sprite.turn(clock_ms);

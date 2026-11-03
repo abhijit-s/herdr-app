@@ -72,7 +72,7 @@ impl Svg {
 
     /// HERDR: turns the SVG about its center once every `period`, forever,
     /// without drawing its view again (see [`Window::paint_spinning_svg`]).
-    /// For an SVG drawn from [`Svg::path`]; takes the place of any transformation.
+    /// Takes the place of any transformation.
     pub fn spinning(mut self, period: std::time::Duration) -> Self {
         self.spin = Some(period);
         self
@@ -156,18 +156,17 @@ impl Element for Svg {
                     })
                     .unwrap_or_default();
 
+                let spin = self.spin;
+                let paint = |window: &mut Window, path: &SharedString, data: Option<&[u8]>, color, cx: &mut App| {
+                    match spin {
+                        Some(period) => window.paint_spinning_svg(bounds, path.clone(), data, period, color, cx),
+                        None => window.paint_svg(bounds, path.clone(), data, transformation, color, cx),
+                    }
+                    .log_err();
+                };
                 if let Some((data, path)) = self.data.as_ref().zip(self.data_path.as_ref()) {
                     if let Some(color) = style.text.color {
-                        window
-                            .paint_svg(
-                                bounds,
-                                path.clone(),
-                                Some(&**data),
-                                transformation,
-                                color,
-                                cx,
-                            )
-                            .log_err();
+                        paint(window, path, Some(&**data), color, cx);
                     }
                 } else if let Some((path, color)) =
                     self.external_path.as_ref().zip(style.text.color)
@@ -178,26 +177,9 @@ impl Element for Svg {
                     else {
                         return;
                     };
-
-                    window
-                        .paint_svg(
-                            bounds,
-                            path.clone(),
-                            Some(&bytes),
-                            transformation,
-                            color,
-                            cx,
-                        )
-                        .log_err();
+                    paint(window, path, Some(&bytes), color, cx);
                 } else if let Some((path, color)) = self.path.as_ref().zip(style.text.color) {
-                    match self.spin {
-                        Some(period) => window
-                            .paint_spinning_svg(bounds, path.clone(), None, period, color, cx)
-                            .log_err(),
-                        None => window
-                            .paint_svg(bounds, path.clone(), None, transformation, color, cx)
-                            .log_err(),
-                    };
+                    paint(window, path, None, color, cx);
                 }
             },
         )

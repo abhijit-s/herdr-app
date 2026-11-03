@@ -1653,7 +1653,7 @@ impl Render for TerminalView {
                         .rounded_md()
                         .bg(crate::settings::color("raised"))
                         .text_color(hsla(vt::theme().fg))
-                        .text_xs()
+                        .text_size(crate::settings::text_rems(0.75))
                         .child(format!("[{why}]")),
                 )
             })

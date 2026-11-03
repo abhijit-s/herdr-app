@@ -15,7 +15,7 @@ export function versionHeader(t, note) {
 export function releaseItems(t, note, { collapsed = false, width = 0, onSizeChange } = {}) {
   const body = v_flex().id(`release-items-${note.version}`).gap(collapsed ? 8 : 16);
   if (onSizeChange && !collapsed) body.on_size_change(onSizeChange);
-  const mediaWidth = width / settings().zoom;
+  const mediaWidth = width / settings().ui_scale;
   const highlights = note.items.filter(item => !item.fixed);
   for (const item of highlights) {
     const card = v_flex().w_full().rounded(10).border_1().border_color(t.border).overflow_hidden();

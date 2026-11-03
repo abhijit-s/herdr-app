@@ -172,6 +172,7 @@ fn main() {
                         let _ = w.update(cx, |this, window, cx| {
                             this.drain_documents(window, cx);
                             this.close_mods_now(deadline, window, cx);
+                            this.rm_finished_waits(deadline);
                             place::save(window, cx);
                         });
                     }
