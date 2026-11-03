@@ -96,7 +96,20 @@ fn await_reply(stream: &UnixStream, reply: &std::sync::mpsc::Receiver<Value>, de
 
 const HANG_UP_CHECK: Duration = Duration::from_millis(500);
 
+/// The client closed its socket. One that only shut its writing half
+/// (`printf … | nc -U`) is still reading: POLLHUP comes only once nothing
+/// can be written to it (macOS reports it only with POLLOUT asked for).
+#[cfg(unix)]
+fn hung_up(stream: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut fd = libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLOUT, revents: 0 };
+    // SAFETY: one valid pollfd, and a zero timeout: it never blocks.
+    let ready = unsafe { libc::poll(&mut fd, 1, 0) };
+    ready > 0 && fd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+}
+
 /// A client sends one line, then only reads: anything readable now is its end of the stream.
+#[cfg(windows)]
 fn hung_up(stream: &UnixStream) -> bool {
     use std::io::{ErrorKind, Read};
     if stream.set_nonblocking(true).is_err() {
@@ -401,6 +414,31 @@ mod tests {
         served.join().unwrap();
         assert!(started.elapsed() < Duration::from_secs(3), "noticed within a check or two");
         assert!(reply.send(json!({})).is_err(), "nobody takes the answer");
+    }
+
+    /// `printf … | nc -U` shuts its writing half after the line and keeps
+    /// reading: that is no hang-up, and the answer still reaches it.
+    #[cfg(unix)]
+    #[test]
+    fn a_client_that_only_stops_writing_still_gets_its_answer() {
+        let (client, server) = UnixStream::pair().unwrap();
+        (&client).write_all(b"{}\n").unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        assert!(!hung_up(&server), "half-closed");
+        let (tx, rx) = async_channel::unbounded();
+        let served = std::thread::spawn(move || serve(server, tx));
+        let Ok(Request::Control { reply, .. }) = rx.recv_blocking() else { panic!("no control request") };
+        // Slower than a hang-up check or two.
+        std::thread::sleep(HANG_UP_CHECK * 3);
+        reply.send(json!({ "ok": true })).expect("still waited for");
+        let mut line = String::new();
+        BufReader::new(&client).read_line(&mut line).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&line).unwrap(), json!({ "ok": true }));
+        served.join().unwrap();
+        let (open, other) = UnixStream::pair().unwrap();
+        assert!(!hung_up(&open));
+        drop(other);
+        assert!(hung_up(&open), "closed");
     }
 
     #[test]
