@@ -471,6 +471,17 @@ export default class Settings extends View {
     // Fractional settings arrive as f32 widened to f64 (1.15 as 1.1499999...).
     const ownFraction = (key, composed, def) => Math.abs((p[key] ?? def) - composed) > 0.001;
     const fraction = (v) => `${Math.round(v * 100) / 100}`;
+    // A percent in 5% steps; 100% leaves it out of settings.json.
+    const scaleStepper = (key, value, lo, hi) => {
+      const now = value ?? 1;
+      const go = (d, cx) =>
+        this.change((q) => {
+          const next = Math.round(Math.max(lo, Math.min(hi, (q[key] ?? now) + d)) * 100) / 100;
+          if (next === 1) delete q[key];
+          else q[key] = next;
+        }, cx);
+      return this.stepper(t, `st-${key}`, `${Math.round(now * 100)}%`, (_e, cx) => go(-0.05, cx), (_e, cx) => go(0.05, cx));
+    };
     const fontRow = (which, sizeKey, title, family, def, sizeNow) =>
       v_flex()
         .w_full()
@@ -514,6 +525,8 @@ export default class Settings extends View {
             .child(this.button(t, "st-zoom-reset", "Reset", () => run("app.zoom_reset"))),
         ),
       )
+      .child(this.row(t, "Interface zoom", "Panels, tabs and popups, on top of zoom. Terminals keep their size.", scaleStepper("ui_zoom", s.ui_zoom, 0.75, 1.5)))
+      .child(this.row(t, "Interface text size", "The panels' text only: spacing and icons keep their size.", scaleStepper("ui_text_scale", s.ui_text_scale, 0.8, 1.3)))
       .child(fontRow("font", "font_size", "Terminal font", s.font_family, DEFAULT_FONT, s.font_size))
       .child(
         this.row(

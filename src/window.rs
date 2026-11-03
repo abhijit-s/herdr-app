@@ -806,8 +806,8 @@ impl AppWindow {
             return;
         }
         let viewport = window.viewport_size();
-        let width = 880.0_f32.min((f32::from(viewport.width) / settings::zoom() - 24.0).max(1.0));
-        let height = 760.0_f32.min((f32::from(viewport.height) / settings::zoom() - 24.0).max(1.0));
+        let width = 880.0_f32.min((f32::from(viewport.width) / settings::ui_scale() - 24.0).max(1.0));
+        let height = 760.0_f32.min((f32::from(viewport.height) / settings::ui_scale() - 24.0).max(1.0));
         let spec = json!({ "mod": "frame-whatsnew", "kind": "window", "width": width, "height": height, "props": { "notes": notes } });
         self.open_overlay(mods::new_overlay_id(), spec, window, cx);
     }
@@ -3793,6 +3793,8 @@ impl AppWindow {
                 "zoom": round(settings::zoom()),
                 "font_size": round(settings::font_size()),
                 "ui_font_size": round(settings::ui_font_size()),
+                "ui_zoom": round(settings::get().ui_zoom),
+                "ui_text_scale": round(settings::get().ui_text_scale),
                 "space": self.model.active,
                 "tab": self.model.active_tab().map(|c| c.id.clone()),
                 "focused_pane": self.focused_pane,
@@ -4213,7 +4215,7 @@ impl AppWindow {
             Some(Copy { error, inst, .. }) => div()
                 .id(SharedString::from(format!("err-{slot}")))
                 .size_full()
-                .p_2()
+                .p(settings::z(6.5))
                 .text_xs()
                 .text_color(c("blocked"))
                 .overflow_y_scroll()
@@ -4234,7 +4236,7 @@ impl AppWindow {
             row = row.child(
                 div()
                     .id(SharedString::from(format!("tab-{}", ch.id)))
-                    .px_3()
+                    .px(settings::z(9.75))
                     .flex()
                     .items_center()
                     .text_color(if on { c("foreground") } else { c("muted") })
@@ -4248,7 +4250,7 @@ impl AppWindow {
 
     fn separator(&self, n: &Node, axis: Axis, gap: f32, index: usize, cx: &mut Context<Self>) -> AnyElement {
         let row = axis == Axis::Row;
-        let zoom = settings::zoom();
+        let zoom = settings::ui_scale();
         let line = n.divider.as_ref().map(|d| (d.width * zoom, c(&d.color)));
         let width = pane_size::separator_width(n, gap) * zoom;
         let mut sep = div().flex_none().relative().flex().items_center().justify_center();
@@ -4302,7 +4304,7 @@ impl AppWindow {
             Axis::Column => (f32::from(ba.size.height), f32::from(bb.size.height)),
         };
         // Measured on screen; sizes are stored as designed (unzoomed).
-        let zoom = settings::zoom();
+        let zoom = settings::ui_scale();
         let (la, lb, start, end, p) = (la / zoom, lb / zoom, start / zoom, end / zoom, p / zoom);
         let total = la + lb;
         let mut new_a = (p - start).clamp(24.0, (end - start) - 24.0);
@@ -4415,7 +4417,7 @@ impl AppWindow {
         if let Some(error) = crate::update::core().error {
             out.push(div().absolute().right(settings::z(16.0)).bottom(settings::z(toast_y))
                 .max_w(settings::z(540.0)).p(settings::z(12.0)).rounded_lg().bg(c("popover"))
-                .border_1().border_color(c("border")).text_size(settings::z(13.0)).text_color(c("foreground"))
+                .border_1().border_color(c("border")).text_size(settings::zt(13.0)).text_color(c("foreground"))
                 .id("core-update-error").cursor_pointer()
                 .on_click(cx.listener(|this, _, w, cx| this.run("app.settings", json!({ "section": "updates" }), w, cx)))
                 .child(format!("herdr-core update failed: {error} · Open Updates")).into_any_element());
@@ -4464,7 +4466,7 @@ impl AppWindow {
             .rounded_full()
             .shadow_lg()
             .occlude()
-            .text_size(settings::z(13.0))
+            .text_size(settings::zt(13.0))
             .child(div().text_color(c("foreground")).child(label.clone()))
             .when(app_ready, |pill| pill.child(
                 div()
@@ -5306,6 +5308,45 @@ mod tests {
             let text = cx.debug_bounds(format!("text-{id}").leak()).unwrap_or_else(|| panic!("no text-{id}"));
             assert_eq!(content, pill.inset(px(1.0)), "{id}: the content fills the pill inside its border");
             assert!((text.center().y - pill.center().y).abs() < px(0.5), "{id}: text centred: text {text:?}, pill {pill:?}");
+        }
+    }
+
+    #[test]
+    fn mods_follow_ui_zoom_and_text_scale_live() {
+        in_own_process("mod_ui_scales");
+    }
+
+    /// settings.json's ui_zoom grows a mod's px; ui_text_scale only its text.
+    #[gpui::test]
+    fn mod_ui_scales(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("mod_ui_scales") {
+            return;
+        }
+        let main_js = r#"import { View, div } from "gpui-kit";
+export default class Scale extends View {
+  render() {
+    return div().flex().flex_col().items_start()
+      .child(div().id("gap").w(40).h(10).flex_none())
+      .child(div().id("label").flex_none().text_size(20).line_height(1).child("Hg"));
+  }
+}"#;
+        let (view, cx) = open_window(cx, "scale", main_js, json!({"id": "root", "type": "block", "content": {"mod": "scale"}}));
+        for (ui_zoom, ui_text_scale, spacing, text) in [(1.0, 1.0, 1.0, 1.0), (1.2, 1.0, 1.2, 1.2), (1.0, 1.1, 1.0, 1.1), (1.2, 1.1, 1.2, 1.32), (1.0, 1.0, 1.0, 1.0)] {
+            let person = crate::settings::Person { ui_zoom, ui_text_scale, ..crate::settings::Person::default() };
+            crate::settings::write_person(&person).unwrap();
+            view.update_in(cx, |this, window, cx| {
+                this.watched.settings = None;
+                this.reload_config(window, cx);
+            });
+            cx.run_until_parked();
+            let (gap, label) = (cx.debug_bounds("gap").expect("no gap"), cx.debug_bounds("label").expect("no label"));
+            let at = format!("ui_zoom {ui_zoom}, ui_text_scale {ui_text_scale}");
+            // Layout rounds to device pixels (half px here).
+            assert!((gap.size.width - px(40.0 * spacing)).abs() <= px(0.25), "{at}: spacing {gap:?}");
+            assert!((gap.size.height - px(10.0 * spacing)).abs() <= px(0.25), "{at}: spacing {gap:?}");
+            assert!((label.size.height - px(20.0 * text)).abs() <= px(0.25), "{at}: text {label:?}");
+            assert_eq!(crate::settings::font_size(), 14.0, "{at}: terminal text stays at zoom");
         }
     }
 

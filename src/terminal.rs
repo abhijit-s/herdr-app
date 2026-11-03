@@ -17,9 +17,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 fn pad() -> (f32, f32) {
-    let p = crate::settings::get().terminal_padding;
-    let zoom = crate::settings::zoom();
-    (p[0] * zoom, p[1] * zoom)
+    crate::settings::get().terminal_padding_px()
 }
 
 pub(crate) fn grid_size(bounds: Size<Pixels>, cell: Size<Pixels>) -> (u16, u16) {
@@ -1093,17 +1091,20 @@ fn needs_ligatures(text: &str, font: &Font) -> bool {
 }
 
 pub fn cell_size(window: &Window) -> Size<Pixels> {
+    cell_size_at(window, &crate::settings::get())
+}
+
+fn cell_size_at(window: &Window, s: &crate::settings::Settings) -> Size<Pixels> {
     let ts = window.text_system();
     let f = cell_font(false, false);
     let id = ts.resolve_font(&f);
-    let fs = px(crate::settings::font_size());
+    let fs = px(s.terminal_font_size());
     let advance = ts.advance(id, fs, 'M').map(|s| s.width).unwrap_or(fs * 0.6);
     let h = ts.ascent(id, fs) + ts.descent(id, fs).abs();
     let scale = window.scale_factor();
-    let s = crate::settings::get();
     // Glyphs sit exactly on their cells (gpui-pre `apply_force_width_to_layout`),
     // so any width works; boxes snap their edges (`snap_box`).
-    let w = cell_width(advance, crate::settings::z(s.letter_spacing), s.cell_width, scale);
+    let w = cell_width(advance, px(s.letter_spacing * s.zoom), s.cell_width, scale);
     size(w, row_height(h, s.line_height, scale))
 }
 
@@ -1645,10 +1646,10 @@ impl Render for TerminalView {
                 d.child(
                     div()
                         .absolute()
-                        .bottom_2()
-                        .right_3()
-                        .px_2()
-                        .py_1()
+                        .bottom(crate::settings::z(6.5))
+                        .right(crate::settings::z(9.75))
+                        .px(crate::settings::z(6.5))
+                        .py(crate::settings::z(3.25))
                         .rounded_md()
                         .bg(crate::settings::color("raised"))
                         .text_color(hsla(vt::theme().fg))
@@ -1884,6 +1885,25 @@ mod tests {
         assert!(needs_ligatures("界=>", &font));
         assert!(needs_ligatures("fi ->", &gpui::font("Fira Code")));
         assert!(needs_ligatures("fi", &gpui::font("Fira Code")));
+    }
+
+    /// ui_zoom and ui_text_scale are the panels': a terminal's cells are the same.
+    #[gpui::test]
+    fn ui_scales_leave_terminal_cells_alone(cx: &mut gpui::TestAppContext) {
+        use super::*;
+        let at = |zoom: f32, ui_zoom: f32, ui_text_scale: f32| {
+            let person = crate::settings::Person { zoom, ui_zoom, ui_text_scale, ..Default::default() };
+            crate::settings::Settings::compose(&person, &crate::layout::Look::default(), true)
+        };
+        let window = cx.add_window(|_, _| Empty);
+        window.update(cx, |_, window, _| {
+            for zoom in [1.0, 1.5] {
+                let plain = cell_size_at(window, &at(zoom, 1.0, 1.0));
+                assert_eq!(cell_size_at(window, &at(zoom, 1.2, 1.0)), plain, "ui_zoom at zoom {zoom}");
+                assert_eq!(cell_size_at(window, &at(zoom, 1.5, 1.3)), plain, "both at zoom {zoom}");
+            }
+            assert_ne!(cell_size_at(window, &at(1.5, 1.0, 1.0)), cell_size_at(window, &at(1.0, 1.0, 1.0)), "zoom still sizes cells");
+        }).unwrap();
     }
 
     #[gpui::test]

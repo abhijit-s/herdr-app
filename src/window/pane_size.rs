@@ -124,7 +124,7 @@ impl AppWindow {
             Some(Content::Context { pane: Some(frame), .. }) if frame.lone || root.panes().len() > 1 => Some(frame),
             _ => None,
         };
-        let zoom = settings::zoom();
+        let zoom = settings::ui_scale();
         let focused = root.path_to(pane)?.into_iter().collect();
         // The absolute bounds canvas already excludes the context border (padding box).
         let (y, x) = padding(context);

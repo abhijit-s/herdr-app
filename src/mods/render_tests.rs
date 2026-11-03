@@ -294,22 +294,26 @@ fn brand_leaves_room_for_macos_traffic_lights_only_outside_full_screen(cx: &mut 
 fn tabs_leave_room_for_macos_traffic_lights(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
-    for (platform, titlebar, fullscreen, width, lights, zoom, expected) in [
-        ("macos", "none", false, 44, true, 1.0, 32),
-        ("macos", "none", false, 44, true, 0.5, 108),
-        ("macos", "none", false, 44, true, 2.0, 10),
-        ("macos", "none", false, 60, true, 1.0, 16),
-        ("macos", "none", false, 76, true, 1.0, 10),
-        ("macos", "none", false, 268, true, 1.0, 10),
-        ("macos", "none", true, 44, true, 1.0, 10),
-        ("macos", "system", false, 44, true, 1.0, 10),
-        ("macos", "none", false, 44, false, 1.0, 10),
-        ("linux", "none", false, 44, true, 1.0, 10),
-        ("windows", "none", false, 44, true, 1.0, 10),
+    // The traffic lights are window px: the mod divides by the zoom its px are drawn at (zoom × ui_zoom).
+    for (platform, titlebar, fullscreen, width, lights, (zoom, ui_zoom), expected) in [
+        ("macos", "none", false, 44, true, (1.0, 1.0), 32),
+        ("macos", "none", false, 44, true, (0.5, 1.0), 108),
+        ("macos", "none", false, 44, true, (2.0, 1.0), 10),
+        ("macos", "none", false, 44, true, (1.0, 0.5), 108),
+        ("macos", "none", false, 44, true, (0.5, 2.0), 32),
+        ("macos", "none", false, 60, true, (1.0, 1.0), 16),
+        ("macos", "none", false, 76, true, (1.0, 1.0), 10),
+        ("macos", "none", false, 268, true, (1.0, 1.0), 10),
+        ("macos", "none", true, 44, true, (1.0, 1.0), 10),
+        ("macos", "system", false, 44, true, (1.0, 1.0), 10),
+        ("macos", "none", false, 44, false, (1.0, 1.0), 10),
+        ("linux", "none", false, 44, true, (1.0, 1.0), 10),
+        ("windows", "none", false, 44, true, (1.0, 1.0), 10),
     ] {
         let mut values = fixture(true, props(), updates("current", "current"));
         values.insert("window".into(), json!({"platform":platform,"titlebar":titlebar,"fullscreen":fullscreen,"buttons":false}));
         values.get_mut("settings").unwrap()["zoom"] = json!(zoom);
+        values.get_mut("settings").unwrap()["ui_zoom"] = json!(ui_zoom);
         let layout = values.get_mut("layout").unwrap();
         layout["children"][0]["size"]["px"] = json!(width);
         if !lights {
@@ -375,6 +379,26 @@ fn terminal_text_rows_show_whose_value_is_in_use(cx: &mut TestAppContext) {
             assert!(tree.contains(id), "missing {id}: {tree}");
         }
         assert_eq!(tree.matches(layout).count(), overridden, "{person}: {tree}");
+    }
+}
+
+#[gpui::test]
+fn interface_zoom_and_text_size_rows_show_their_percent(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut p = props();
+    p["section"] = json!("look");
+    for ((ui_zoom, ui_text_scale), (zoom_shown, text_shown)) in [((1.0, 1.0), ("100%", "100%")), ((1.2, 1.1), ("120%", "110%"))] {
+        let mut values = fixture(true, p.clone(), updates("current", "current"));
+        values.get_mut("settings").unwrap()["ui_zoom"] = json!(ui_zoom);
+        values.get_mut("settings").unwrap()["ui_text_scale"] = json!(ui_text_scale);
+        let tree = describe_with_values(cx, &staged, "frame/settings", values, Some("this.load = async () => {}; this.person = {};")).unwrap();
+        for id in ["st-ui_zoom-minus", "st-ui_zoom-plus", "st-ui_text_scale-minus", "st-ui_text_scale-plus", "Interface zoom", "Interface text size"] {
+            assert!(tree.contains(id), "missing {id}: {tree}");
+        }
+        let row = |key: &str| tree.lines().skip_while(|l| !l.contains(&format!("st-{key}-minus"))).take(12).collect::<Vec<_>>().join("\n");
+        assert!(row("ui_zoom").contains(zoom_shown), "ui_zoom {ui_zoom}: {}", row("ui_zoom"));
+        assert!(row("ui_text_scale").contains(text_shown), "ui_text_scale {ui_text_scale}: {}", row("ui_text_scale"));
     }
 }
 

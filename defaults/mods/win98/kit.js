@@ -42,9 +42,14 @@ export function scale() {
   return k === 2 ? 2 : 1;
 }
 
+/** How much Herdr scales this mod's px: its zoom times the panels' own. */
+export function uiZoom() {
+  const s = settings();
+  return (Number(s?.zoom) || 1) * (Number(s?.ui_zoom) || 1);
+}
+
 export function unit() {
-  const z = Number(settings()?.zoom) || 1;
-  const k = scale() / z;
+  const k = scale() / uiZoom();
   const u = (n) => n * k;
   u.k = k;
   return u;
@@ -196,7 +201,7 @@ export function gradient(from, to, angle = 90) {
 
 /** A layer that fills its parent with a 1 px dither (Win98's checked buttons). */
 export function dither(u, color = C.hi) {
-  return window.paint_path(RECT(), Background.checkerboard(color, Math.max(1, u(1) * (Number(settings()?.zoom) || 1)))).absolute().top(0).left(0).size_full();
+  return window.paint_path(RECT(), Background.checkerboard(color, Math.max(1, u(1) * uiZoom()))).absolute().top(0).left(0).size_full();
 }
 
 // ---- icons
@@ -343,10 +348,6 @@ export function menuSize(items, start = false) {
   return { w, h };
 }
 
-function zoom() {
-  return Number(settings()?.zoom) || 1;
-}
-
 /**
  * Opens a Win98 popup menu (the menu role). items: [{ label: "&New", icon,
  * shortcut, act: { run: [command, args], dialog, app, ... }, sub: [items],
@@ -363,8 +364,8 @@ export function openMenu(items, at, o = {}) {
     mod: "win98",
     kind: "popup",
     frame: "none",
-    width: (width * k) / zoom(),
-    height: (h * k) / zoom(),
+    width: (width * k) / uiZoom(),
+    height: (h * k) / uiZoom(),
     ...(where ? { at: where } : {}),
     props: { role: "menu", items, parents: o.parents ?? [], start: Boolean(o.start), owner: o.owner ?? null },
   });
@@ -380,7 +381,7 @@ export function openDialog(kind, p = {}) {
     mod: "win98",
     kind: "window",
     frame: "none",
-    width: (w * k) / zoom(),
+    width: (w * k) / uiZoom(),
     props: { role: "dialog", kind, ...p },
   });
 }
@@ -444,12 +445,12 @@ const FIT = { taskbar: 28, desktop: 84 };
 export function fitLayout() {
   const l = layout();
   if (!l || typeof l !== "object") return false;
-  const z = Number(settings()?.zoom) || 1;
-  const k = scale() / z;
+  const k = scale() / uiZoom();
   const want = (n) => Math.round(n * k * 1000) / 1000;
   let changed = false;
   // Large Fonts: the MS-DOS font at a crisp 32 px too; Small: Herdr's zoom as usual.
-  const font = scale() === 2 ? want(16) : 16;
+  // The terminals' font follows zoom only, not ui_zoom.
+  const font = scale() === 2 ? Math.round((16 * scale() / (Number(settings()?.zoom) || 1)) * 1000) / 1000 : 16;
   if (Math.abs((l.font_size ?? 0) - font) > 0.01) {
     l.font_size = font;
     changed = true;
