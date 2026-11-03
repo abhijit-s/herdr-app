@@ -36,7 +36,7 @@ const HANDLE: f32 = 6.0;
 const TRAFFIC_LIGHT_WIDTH: f32 = 64.0;
 
 // A toast is as wide as what it says, within these; its height is fixed, so toasts stack.
-const TOAST_MIN_WIDTH: f32 = 140.0;
+const TOAST_MIN_WIDTH: f32 = 200.0;
 const TOAST_MAX_WIDTH: f32 = 340.0;
 const TOAST_HEIGHT: f32 = 40.0;
 const TOAST_HEIGHT_WITH_BODY: f32 = 72.0;
