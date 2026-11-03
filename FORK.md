@@ -99,3 +99,17 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 - Files: `src/terminal.rs` (tests)
 - Upstream: none yet
+
+### Rows kept while output scrolls
+
+`perf/changed-rows-only` (branched from `master`, fork only): a terminal draws again only the rows that changed, also while output scrolls the screen. libghostty marks every row dirty when the screen scrolls (its `render.h`, "Row Identity"), so `Vt::frame` read every row into a new `Rc` and `paint_grid`, which kept a row's drawing by position and threw them all away on a full-dirty frame, rebuilt every visible row each frame (the bench's `agent` scenario: ~1050 rows a second for ~19 frames). `Vt::frame` now keeps the last `Rc` of a row (by libghostty's row id) that reads the same after being read again, and `keep_rows` keeps a row's drawing by that `Rc` (and its ligature cursor column) wherever the row moved. Selection, colors, wide characters and combining marks are in the cells, so a row that changed in any of them reads differently; font, cell size, letter spacing and ligature changes still drop every kept drawing (`painted_with`).
+
+- Files: `src/vt.rs` (`Frame`, `Vt::frame`, test `a_row_stays_the_same_rc_only_while_it_reads_the_same`), `src/terminal.rs` (`PaintedRow`, `keep_rows`, `paint_grid`, test `only_rows_that_changed_are_built_again`)
+- Upstream: none yet
+
+### Rows kept while output scrolls
+
+`perf/changed-rows-only` (branched from `master`, fork only): a terminal row's drawing (backgrounds, shaped text, icons and sprites) is built again only when the row changed, also while output scrolls the screen. libghostty marks every row dirty when the screen scrolls (see "Row Identity" in its `render.h`), so `Vt::frame` read each one as a new row and `paint_grid`, which kept drawings by position, rebuilt the whole screen every frame an agent streamed output (the bench's `agent` scenario: ~1000 rows a second, ~56 a frame). `Vt::frame` now keeps a dirty row's `Rc` when it reads the same as the row with that id last frame, and `keep_rows` finds a row's drawing by its `Rc` wherever it moved. Selection, colors and width are in the cells, so a row selected, recolored or resized reads differently and is built again; the cell, font, fonts and ligature setting still clear every drawing, and with ligatures the cursor's column is part of the key.
+
+- Files: `src/vt.rs` (`Frame`, `Vt::frame`, test `a_row_stays_the_same_rc_only_while_it_reads_the_same`), `src/terminal.rs` (`PaintedRow`, `keep_rows`, `paint_grid`, test `only_rows_that_changed_are_built_again`)
+- Upstream: none yet
