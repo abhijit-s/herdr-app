@@ -74,7 +74,7 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 ### Toasts fit their content
 
-`feat/toast-fit-content` (branched from `master`, fork only): a toast is as wide as its content, 140 to 340 px (titles still truncate at 340), and 40 px high without a body, 72 with one; an explicit `height` still wins, and toasts stay right-anchored and stacked.
+`feat/toast-fit-content` (branched from `master`, fork only): a toast is as wide as its content, 200 to 340 px (titles still truncate at 340), and 40 px high without a body, 72 with one; an explicit `height` still wins, and toasts stay right-anchored and stacked. `fix/toast-content-fill`: the toast mod's root fills the pill (inside its border) and its text is vertically centred; a fitted `ShellRoot` grows to its container when `set_fill_fitted` is on, which only toasts use, so fitted popups and floats are unchanged. A keyed (`.id(...)`) script element records its bounds under that id in debug test builds, so tests can measure mod content.
 
-- Files: `src/window.rs` (`toast_height`, `open_overlay`, `render_overlays`, test `toast_sizes`), `defaults/AGENTS.md`
+- Files: `src/window.rs` (`toast_height`, `open_overlay`, `render_overlays`, test `toast_sizes`), `vendor/gpui-kit/crates/shell/src/root.rs` (`fill_fitted`), `vendor/gpui-kit/crates/shell/src/materialize.rs` (debug selector for keyed elements), `defaults/AGENTS.md`
 - Upstream: none yet
