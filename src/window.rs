@@ -3644,11 +3644,13 @@ impl AppWindow {
     }
 
     /// The peek overlay: `close_ends_program` makes its ✕ end the program too.
-    /// It replaces the one open; a program `terminal.popup` started in that one
-    /// ends (its ✕ and the backdrop only hide it, to come back to with `hc`).
+    /// It replaces the one open. A new popup (`started`) over one that
+    /// `terminal.popup` started ends that program; a plain peek (a link
+    /// clicked in it) only hides it, as its ✕ and the backdrop do, to come
+    /// back to with `hc`.
     fn open_peek(&mut self, address: &str, (width, height): (f64, f64), close_ends_program: bool, started: bool, window: &mut Window, cx: &mut Context<Self>) {
         let open = self.overlays.iter().any(|o| o.id == "terminal-peek");
-        if let Some((shown, true)) = self.peeked.take().filter(|(shown, _)| open && shown != address) {
+        if let Some((shown, true)) = self.peeked.take().filter(|(shown, _)| started && open && shown != address) {
             // A waited-on one is removed once its waiter has the exit code.
             let rm = !self.waits.contains_key(&shown);
             self.end_terminal(shown, rm, cx);
@@ -6052,6 +6054,14 @@ export default class Probe extends View {
         assert!(!peek_open(cx), "its popup closes");
         assert_eq!((take("terminal.kill"), take("terminal.rm")), (vec![json!("t15")], vec![json!("t14"), json!("t15")]));
         assert!(popup(json!({ "argv": [] }), cx)["error"].is_string());
+
+        // A plain peek over an open popup (a link clicked in it) only hides
+        // it, and a popup over that peek ends neither.
+        popup(json!({ "argv": ["htop"] }), cx);
+        cx.update(|window, cx| view.update(cx, |this, cx| this.peek_terminal("t5", window, cx)));
+        popup(json!({ "argv": ["true"] }), cx);
+        cx.run_until_parked();
+        assert!(take("terminal.kill").is_empty(), "t16 was hidden by the peek, t5 is a peek");
     }
 
     include!("window/pane_size_tests.rs");
