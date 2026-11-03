@@ -77,12 +77,13 @@ impl EventLines {
         json!({ "terminals": live })
     }
 
-    /// Finished terminals still on record, and their exit codes (null after a signal).
+    /// Finished terminals still on record, and how they ended: `exit_code`, or
+    /// (null code) the `signal` number that killed the program.
     pub fn ended(&self) -> HashMap<String, Value> {
         self.terminals
             .iter()
             .filter(|t| t["state"] == "finished")
-            .filter_map(|t| Some((t["address"].as_str()?.to_owned(), t["exit_code"].clone())))
+            .filter_map(|t| Some((t["address"].as_str()?.to_owned(), json!({ "exit_code": t["exit_code"], "signal": t["signal"] }))))
             .collect()
     }
 
@@ -577,8 +578,11 @@ mod tests {
         assert_eq!(lines.live()["terminals"][1]["foreground"]["cwd"], "/src");
         lines.push(event(10, "finished", "t1", json!({"reason": "exited", "exit_code": 0, "signal": null, "finished_ms": 1})).as_bytes());
         assert_eq!(addresses(&lines), ["t2"], "finished: no longer live");
-        lines.push(event(11, "removed", "t2", json!({})).as_bytes());
-        assert!(addresses(&lines).is_empty());
+        assert_eq!(lines.ended(), HashMap::from([("t1".to_owned(), json!({"exit_code": 0, "signal": null}))]));
+        lines.push(event(11, "finished", "t2", json!({"reason": "exited", "exit_code": null, "signal": 15, "finished_ms": 2})).as_bytes());
+        assert_eq!(lines.ended()["t2"], json!({"exit_code": null, "signal": 15}), "killed by SIGTERM");
+        lines.push(event(12, "removed", "t2", json!({})).as_bytes());
+        assert!(addresses(&lines).is_empty() && lines.ended().len() == 1, "removed: gone from both");
         let missed = format!("{}\n", json!({"method": "missed", "params": {"seq": 20, "terminals": [rec("t9")]}}));
         let got = lines.push(missed.as_bytes());
         assert!(got.terminals && got.docs, "missed: everything again");

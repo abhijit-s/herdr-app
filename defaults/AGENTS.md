@@ -558,8 +558,10 @@ The main ones:
   `terminal.popup {argv, cwd?, hold?, wait?, width?, height?}` (start a program on
   this computer without a parent and peek at it in one step; the terminal is removed
   when it ends unless `wait`, which keeps it until `{"wait": terminal}` on the
-  control socket returns its `exit_code`; `hold` keeps the popup up until a key;
-  ✕ hides the popup and the program keeps running; `herdr-app popup` wraps it),
+  control socket returns its `exit_code` (and `signal`), or for a minute; `hold`
+  keeps the popup up until a key; ✕ hides the popup and the program keeps
+  running, while a new popup over an open one ends the program that one
+  started; `herdr-app popup` wraps it),
   `terminal.show {terminal?, pane?}`, `terminal.copy`, `terminal.paste` (copied
   files, such as Finder's or a clipboard manager's image, as if dropped; an image
   alone as `terminal.paste_image` pastes it), `terminal.paste_image` (Ctrl+V: an
