@@ -718,6 +718,39 @@ pub struct MonochromeSprite {
     pub transformation: TransformationMatrix,
 }
 
+// HERDR: a spinning sprite keeps turning with no draw. Its `pad`, which no
+// shader reads, holds its period in ms (0: it doesn't spin), so a cached view
+// that replays it replays the spin too; each present turns it to the clock
+// ([`Scene::turn_spinners`]), and the window presents again while any spin.
+impl MonochromeSprite {
+    /// Whether this sprite spins.
+    pub fn spins(&self) -> bool {
+        self.pad != 0
+    }
+
+    pub(crate) fn turn(&mut self, clock_ms: f64) {
+        let period = self.pad as f64;
+        let angle = ((clock_ms % period) / period * std::f64::consts::TAU) as f32;
+        let center = self.bounds.center();
+        self.transformation = TransformationMatrix::unit()
+            .translate(center)
+            .rotate(Radians(angle))
+            .translate(point(ScaledPixels(-center.x.0), ScaledPixels(-center.y.0)));
+    }
+}
+
+impl Scene {
+    /// HERDR: turns the spinning sprites to `clock_ms`; whether there are any.
+    pub fn turn_spinners(&mut self, clock_ms: f64) -> bool {
+        let mut any = false;
+        for sprite in self.monochrome_sprites.iter_mut().filter(|s| s.spins()) {
+            sprite.turn(clock_ms);
+            any = true;
+        }
+        any
+    }
+}
+
 impl From<MonochromeSprite> for Primitive {
     fn from(sprite: MonochromeSprite) -> Self {
         Primitive::MonochromeSprite(sprite)

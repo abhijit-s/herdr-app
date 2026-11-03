@@ -31,6 +31,70 @@ impl Render for Mounted {
     }
 }
 
+/// Stands in for `AppWindow`: the window's root, rendered on every draw.
+struct Counted(gpui::Entity<ShellRoot>, Rc<Cell<usize>>);
+impl Render for Counted {
+    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        self.1.set(self.1.get() + 1);
+        self.0.clone()
+    }
+}
+
+// A spinner step presents the frame on screen again with the spinner turned:
+// no window render, no script, no rebuild of the mod, in a view whose opacity
+// changes on hover too.
+#[gpui::test]
+fn spinners_turn_without_drawing_the_window(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    gpui_shell::policy::set_default(Policy::new());
+    for hover in ["", ".hover(el => el.opacity(0.9))"] {
+        let fixture = Fixture::new(&format!(r#"
+import {{ View, div, svg }} from "gpui-kit";
+export default class extends View {{
+  render() {{
+    return div().size_full(){hover}
+      .children([1, 2, 3].map(() => svg("ring.svg").size(12).spin(900)));
+  }}
+}}"#));
+        std::fs::write(fixture.0.join("ring.svg"), r#"<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><path d="M6 1a5 5 0 0 1 5 5"/></svg>"#).unwrap();
+        cx.set_asset_source(gpui_shell::AppAssets::new(fixture.0.clone()));
+        let runtime = ShellRuntime::new_isolated().unwrap();
+        let renders = Rc::new(Cell::new(0));
+        let counted = renders.clone();
+        let window = cx.add_window(|window, cx| Counted(runtime.try_load(&fixture.0, window, cx).unwrap(), counted));
+        let handle: gpui::AnyWindowHandle = window.into();
+        for _ in 0..3 {
+            cx.simulate_window_frame_request(handle);
+            cx.run_until_parked();
+        }
+        let presented = |cx: &mut TestAppContext| handle.update(cx, |_, window, _| window.presented_spinners()).unwrap();
+        let first = presented(cx);
+        assert_eq!(first.len(), 3, "three spinners on screen ({hover:?})");
+        let (drawn, before) = (renders.get(), runtime.read_metrics());
+        let mut last = first;
+        for _ in 0..5 {
+            std::thread::sleep(std::time::Duration::from_millis(15));
+            cx.executor().advance_clock(gpui::SPIN_STEP);
+            cx.run_until_parked();
+            cx.simulate_window_frame_request(handle);
+            let now = presented(cx);
+            assert_eq!(now.len(), 3);
+            assert_ne!(now, last, "each step turns the spinners ({hover:?})");
+            last = now;
+        }
+        let after = runtime.read_metrics();
+        assert_eq!(renders.get(), drawn, "a spinner step rendered the window ({hover:?})");
+        assert_eq!(after.script_renders(), before.script_renders());
+        assert_eq!(after.materializations(), before.materializations(), "a spinner step rebuilt the mod ({hover:?})");
+
+        window.update(cx, |_, window, cx| window.replace_root(cx, |_, _| Empty)).unwrap();
+        cx.simulate_window_frame_request(handle);
+        assert!(presented(cx).is_empty(), "a frame without spinners turns nothing");
+        let _ = handle.update(cx, |_, window, _| window.remove_window());
+        cx.run_until_parked();
+    }
+}
+
 #[gpui::test]
 fn size_change_reports_initial_and_resized_layout_without_pointer_input(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);

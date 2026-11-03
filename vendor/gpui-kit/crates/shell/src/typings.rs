@@ -1887,7 +1887,8 @@ const ELEMENT_METHODS: &str = r#"    /**
     loop<Self extends Element>(this: Self, property: import("gpui-shell").MotionProperty, policy: import("gpui-shell").LoopPolicy): Self;
     /**
      * Turns an `svg` once every `ms`, forever (a spinner: draw an arc).
-     * Runs natively at about 30 fps, only while drawn. `ms` at least 100.
+     * Runs natively at about 10 fps without drawing the view again, only
+     * while drawn. `ms` at least 100.
      */
     spin<Self extends Element>(this: Self, ms: number): Self;
 
