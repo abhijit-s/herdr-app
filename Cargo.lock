@@ -3220,6 +3220,7 @@ dependencies = [
  "image",
  "itertools 0.14.0",
  "log",
+ "memmap2",
  "objc",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
@@ -3234,6 +3235,7 @@ dependencies = [
  "semver",
  "smallvec",
  "strum",
+ "swash",
  "uuid",
  "zed-font-kit",
 ]

@@ -662,6 +662,9 @@ struct MacWindowState {
     native_view: NonNull<Object>,
     blurred_view: Option<id>,
     background_appearance: WindowBackgroundAppearance,
+    // HERDR: whether the window's display shows subpixel glyphs right, found
+    // when first asked and again whenever the window's screen or scale changes.
+    subpixel_capable: Option<bool>,
     cursor_style: CursorStyle,
     cursor_visible: Arc<AtomicBool>,
     frame_source: Option<WindowFrameSource>,
@@ -1101,6 +1104,7 @@ impl MacWindow {
                 native_view: NonNull::new_unchecked(native_view),
                 blurred_view: None,
                 background_appearance: WindowBackgroundAppearance::Opaque,
+                subpixel_capable: None,
                 cursor_style: CursorStyle::Arrow,
                 cursor_visible,
                 frame_source: None,
@@ -1912,8 +1916,14 @@ impl PlatformWindow for MacWindow {
         self.0.as_ref().lock().background_appearance
     }
 
+    // HERDR: subpixel glyphs on opaque windows on 1x, unrotated displays.
     fn is_subpixel_rendering_supported(&self) -> bool {
-        false
+        let mut lock = self.0.lock();
+        if lock.background_appearance != WindowBackgroundAppearance::Opaque {
+            return false;
+        }
+        let native_window = lock.native_window;
+        *lock.subpixel_capable.get_or_insert_with(|| screen_shows_subpixels(native_window))
     }
 
     fn set_edited(&mut self, edited: bool) {
@@ -2446,6 +2456,20 @@ impl rwh::HasDisplayHandle for MacWindow {
     fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
         Ok(rwh::DisplayHandle::appkit())
     }
+}
+
+/// HERDR: one device pixel per point, and the display's color subpixels
+/// in their usual order and rows: the display not rotated.
+fn screen_shows_subpixels(native_window: id) -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGDisplayRotation(display: CGDirectDisplayID) -> f64;
+    }
+    let screen: id = unsafe { msg_send![native_window, screen] };
+    if screen.is_null() || unsafe { NSScreen::backingScaleFactor(screen) } != 1.0 {
+        return false;
+    }
+    display_id_for_screen(screen).is_some_and(|display| unsafe { CGDisplayRotation(display) } == 0.0)
 }
 
 fn get_scale_factor(native_window: id) -> f32 {
@@ -3104,6 +3128,7 @@ extern "C" fn window_did_move(this: &Object, _: Sel, _: id) {
 // Update the window scale factor and drawable size, and call the resize callback if any.
 fn update_window_scale_factor(window_state: &Arc<Mutex<MacWindowState>>) {
     let mut lock = window_state.as_ref().lock();
+    lock.subpixel_capable = None;
     let scale_factor = lock.scale_factor();
     let size = lock.content_size();
     let drawable_size = size.to_device_pixels(scale_factor);

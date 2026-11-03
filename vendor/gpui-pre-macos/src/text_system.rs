@@ -103,6 +103,10 @@ struct MacTextSystemState {
     // for mapping CoreText's runs back, where only the outlines matter.
     font_ids_by_weighted_base: HashMap<(FontId, i64), FontId>,
     font_ids_by_weighted_name: HashMap<(String, i64), FontId>,
+    // HERDR: embedded fonts' bytes by PostScript name, and the subpixel
+    // rasteriser that reads them (`lcd`).
+    embedded_fonts: HashMap<String, &'static [u8]>,
+    lcd: parking_lot::Mutex<crate::lcd::Rasterizer>,
 }
 
 impl MacTextSystem {
@@ -118,6 +122,8 @@ impl MacTextSystem {
             postscript_names_by_font_id: HashMap::default(),
             font_ids_by_weighted_base: HashMap::default(),
             font_ids_by_weighted_name: HashMap::default(),
+            embedded_fonts: HashMap::default(),
+            lcd: Default::default(),
         }))
     }
 }
@@ -301,6 +307,7 @@ impl MacTextSystemState {
                     };
                     let font = core_graphics::font::CGFont::from_data_provider(data_provider)
                         .map_err(|()| anyhow!("Could not load an embedded font."))?;
+                    self.embedded_fonts.insert(font.postscript_name().to_string(), embedded_font);
                     let font = font_kit::loaders::core_text::Font::from_core_graphics_font(font);
                     Ok(Handle::from_native(&font))
                 }
@@ -525,7 +532,15 @@ impl MacTextSystemState {
         // Expand the bounds by 1 pixel on each side to give CG room for anti-aliasing,
         // HERDR: and 1 more for thickening, which Ghostty takes to add at most 1 pixel to an edge.
         let room = if params.thicken.is_some() && !params.is_emoji { 2 } else { 1 };
-        Ok(bounds.dilate(DevicePixels(room)))
+        let bounds = bounds.dilate(DevicePixels(room));
+        // HERDR: subpixel glyphs' filter spreads up to a pixel to each side.
+        if params.subpixel_rendering && !params.is_emoji {
+            return Ok(Bounds {
+                origin: point(bounds.origin.x - DevicePixels(1), bounds.origin.y),
+                size: size(bounds.size.width + DevicePixels(2), bounds.size.height),
+            });
+        }
+        Ok(bounds)
     }
 
     fn rasterize_glyph(
@@ -545,6 +560,11 @@ impl MacTextSystemState {
                 bitmap_size.height += DevicePixels(1);
             }
             let bitmap_size = bitmap_size;
+
+            let subpixel = params.subpixel_rendering && !params.is_emoji;
+            if subpixel && let Some(bytes) = self.rasterize_subpixel_glyph(params, glyph_bounds, bitmap_size) {
+                return Ok((bitmap_size, bytes));
+            }
 
             let mut bytes;
             let cx;
@@ -632,9 +652,45 @@ impl MacTextSystemState {
                     swap_rgba_pa_to_bgra(pixel);
                 }
             }
+            // HERDR: a face swash can't draw: its grayscale coverage in every channel.
+            if subpixel {
+                bytes = bytes.iter().flat_map(|&a| [a, a, a, a]).collect();
+            }
 
             Ok((bitmap_size, bytes))
         }
+    }
+
+    /// HERDR: a coverage per color channel, BGRA, from swash (`lcd`), or None
+    /// when swash can't open the face or draw the glyph. The
+    /// outline is emboldened as CoreGraphics' smoothing would dilate it at
+    /// `thicken`'s strength, or else the color's `dilation`.
+    fn rasterize_subpixel_glyph(
+        &self,
+        params: &RenderGlyphParams,
+        glyph_bounds: Bounds<DevicePixels>,
+        bitmap_size: Size<DevicePixels>,
+    ) -> Option<Vec<u8>> {
+        let level = params.thicken.map_or(params.dilation, crate::lcd::smoothing_level);
+        let glyph = crate::lcd::Glyph {
+            glyph_id: params.glyph_id.0 as u16,
+            ppem: f32::from(params.font_size) * params.scale_factor,
+            shift: params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32,
+            embolden: crate::lcd::embolden(level),
+            origin: (glyph_bounds.origin.x.0, glyph_bounds.origin.y.0),
+            size: (bitmap_size.width.0 as usize, bitmap_size.height.0 as usize),
+        };
+        let font = &self.fonts[params.font_id.0];
+        let source = || crate::lcd::FaceSource {
+            native: font.native_font(),
+            shared: font.copy_font_data(),
+            embedded: self
+                .postscript_names_by_font_id
+                .get(&params.font_id)
+                .and_then(|name| self.embedded_fonts.get(name).copied()),
+            postscript_name: self.postscript_names_by_font_id.get(&params.font_id).cloned(),
+        };
+        self.lcd.lock().render(params.font_id, source, &glyph)
     }
 
     fn layout_line(&mut self, text: &str, font_size: Pixels, font_runs: &[FontRun]) -> LineLayout {

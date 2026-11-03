@@ -29,6 +29,9 @@ pub mod metal_renderer {
 mod open_type;
 
 #[cfg(feature = "font-kit")]
+mod lcd;
+
+#[cfg(feature = "font-kit")]
 mod text_system;
 
 mod platform;
