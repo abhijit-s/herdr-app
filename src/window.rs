@@ -905,8 +905,8 @@ impl AppWindow {
 
     /// Changes settings.json from inside the app (the zoom keys, the focus
     /// toggles). If the file is broken mid-edit, the change applies for now
-    /// without touching it. Whether it was saved.
-    fn write_person(&mut self, change: impl FnOnce(&mut settings::Person), window: &mut Window, cx: &mut Context<Self>) -> bool {
+    /// without touching it. Whether it was saved, and if not why.
+    fn write_person(&mut self, change: impl FnOnce(&mut settings::Person), window: &mut Window, cx: &mut Context<Self>) -> PersonSaved {
         let broken = settings::load_person().is_err();
         let saved = change_person(&mut self.person, change, broken, settings::write_person);
         if !broken {
@@ -3404,7 +3404,7 @@ impl AppWindow {
                 self.save();
                 self.apply_look(window, cx);
             }
-            "focus.toggle_follows_mouse" => return self.toggle_follows_mouse(window, cx),
+            "focus.toggle_follows_mouse" => return self.toggle_follows_mouse(person, window, cx),
             "app.zoom_in" | "app.zoom_out" | "app.zoom_reset" => {
                 let zoom = settings::next_zoom(match name {
                     "app.zoom_in" => 1,
@@ -4853,17 +4853,32 @@ fn pane_header_mod(n: &Node, name: &str, props: &Value) -> (String, Instance) {
     (format!("{}#frame", n.id), Instance { name: name.to_owned(), props })
 }
 
-/// Every node shown on screen (hidden ones and inactive stack children skipped).
-/// Applies `change` to `person`, then saves it with `save` unless settings.json
-/// is `broken`: whether it was saved (`AppWindow::write_person`).
-fn change_person(person: &mut settings::Person, change: impl FnOnce(&mut settings::Person), broken: bool, save: impl FnOnce(&settings::Person) -> std::io::Result<()>) -> bool {
-    change(person);
-    if broken {
-        return false;
-    }
-    save(person).inspect_err(|e| tracing::warn!("cannot write settings.json: {e}")).is_ok()
+/// What became of a change to settings.json made from inside the app.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PersonSaved {
+    Saved,
+    /// settings.json doesn't parse, so it was left alone.
+    Broken,
+    WriteFailed,
 }
 
+/// Applies `change` to `person`, then saves it with `save` unless settings.json
+/// is `broken` (`AppWindow::write_person`).
+fn change_person(person: &mut settings::Person, change: impl FnOnce(&mut settings::Person), broken: bool, save: impl FnOnce(&settings::Person) -> std::io::Result<()>) -> PersonSaved {
+    change(person);
+    if broken {
+        return PersonSaved::Broken;
+    }
+    match save(person) {
+        Ok(()) => PersonSaved::Saved,
+        Err(e) => {
+            tracing::warn!("cannot write settings.json: {e}");
+            PersonSaved::WriteFailed
+        }
+    }
+}
+
+/// Every node shown on screen (hidden ones and inactive stack children skipped).
 fn visible_nodes(n: &Node) -> Vec<&Node> {
     if n.hidden {
         return vec![];
@@ -5618,6 +5633,41 @@ export default class Scale extends View {
     }
 
     #[test]
+    fn focus_follows_mouse_works_beside_an_open_window_but_not_through_it() {
+        in_own_process("follow_beside_window");
+    }
+
+    #[gpui::test]
+    fn follow_beside_window(cx: &mut gpui::TestAppContext) {
+        use gpui::{point, px};
+        use serde_json::json;
+        if !running_alone("follow_beside_window") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.person.focus_follows_mouse = true;
+            this.open_overlay("w".into(), json!({ "kind": "window", "mod": "unused", "width": 200, "height": 200 }), window, cx);
+        }));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| view.update(cx, |this, _| {
+            assert!(!this.follow_gate(false, window).modal_open, "a window is not modal");
+            let pane = this.bounds.borrow()["pane"];
+            let slot = &this.overlays.iter().find(|o| o.id == "w").expect("the window").slot;
+            let over = this.bounds.borrow().get(slot).copied().expect("the window's painted bounds");
+            assert!(pane.contains(&over.center()));
+            let beside = point(pane.left() + px(2.0), pane.top() + px(2.0));
+            assert!(!over.contains(&beside));
+            assert_eq!(this.terminal_pane_at(beside).as_deref(), Some("pane"), "the pane beside the window");
+            assert_eq!(this.terminal_pane_at(over.center()), None, "the pane under the window");
+        }));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.open_overlay("d".into(), json!({ "kind": "dialog", "mod": "unused" }), window, cx);
+            assert!(this.follow_gate(false, window).modal_open, "a dialog is");
+        }));
+    }
+
+    #[test]
     fn pane_ring_follows_keyboard_focus() {
         in_own_process("pane_ring_focus");
     }
@@ -5725,20 +5775,21 @@ export default class Scale extends View {
         wait(cx, 300);
         assert_eq!(focused(cx), "right", "moved the focus without a pointer move");
 
-        // An open overlay holds it; one opening during the wait cancels it.
-        view.update_in(cx, |this, window, cx| this.open_overlay("held".into(), json!({ "kind": "window", "mod": "unused", "width": 10, "height": 10 }), window, cx));
+        // An open dialog holds it; one opening during the wait cancels it.
+        // (A window overlay doesn't: `follow_beside_window`.)
+        view.update_in(cx, |this, window, cx| this.open_overlay("held".into(), json!({ "kind": "dialog", "mod": "unused", "width": 10, "height": 10 }), window, cx));
         cx.simulate_mouse_move(nudge(left, 1.0), None, none);
         wait(cx, 300);
         view.update_in(cx, |this, window, cx| this.close_overlay("held", window, cx));
         cx.run_until_parked();
-        assert_eq!(cx.update(|_, cx| view.update(cx, |this, _| this.focused_pane.clone())).as_deref(), Some("right"), "moved the focus under an overlay");
+        assert_eq!(cx.update(|_, cx| view.update(cx, |this, _| this.focused_pane.clone())).as_deref(), Some("right"), "moved the focus under a dialog");
         cx.simulate_mouse_move(nudge(left, 2.0), None, none);
         wait(cx, 100);
-        view.update_in(cx, |this, window, cx| this.open_overlay("held".into(), json!({ "kind": "window", "mod": "unused", "width": 10, "height": 10 }), window, cx));
+        view.update_in(cx, |this, window, cx| this.open_overlay("held".into(), json!({ "kind": "dialog", "mod": "unused", "width": 10, "height": 10 }), window, cx));
         wait(cx, 300);
         view.update_in(cx, |this, window, cx| this.close_overlay("held", window, cx));
         cx.run_until_parked();
-        assert_eq!(focused(cx), "right", "an overlay opened during the wait didn't cancel it");
+        assert_eq!(focused(cx), "right", "a dialog opened during the wait didn't cancel it");
 
         // An inactive window holds it.
         cx.deactivate_window();

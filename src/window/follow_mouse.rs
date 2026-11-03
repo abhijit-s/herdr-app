@@ -26,12 +26,13 @@ pub(super) struct Gate {
     pub enabled: bool,
     pub window_active: bool,
     pub button_held: bool,
-    pub overlay_open: bool,
+    /// A dialog or popup is open (they hold the keyboard); toasts and windows don't count.
+    pub modal_open: bool,
 }
 
 impl Gate {
     fn open(&self) -> bool {
-        self.enabled && self.window_active && !self.button_held && !self.overlay_open
+        self.enabled && self.window_active && !self.button_held && !self.modal_open
     }
 }
 
@@ -174,9 +175,10 @@ impl AppWindow {
         }
     }
 
-    /// A key down anywhere: the keyboard has the focus until the pointer really moves.
+    /// A key down anywhere: the keyboard has the focus until the pointer really
+    /// moves. Held while off too, so a key that turns it on holds as well.
     pub(super) fn follow_mouse_keys(&mut self, window: &Window) {
-        if self.person.focus_follows_mouse && self.follow.keys(window.mouse_position()) == Step::Cancel {
+        if self.follow.keys(window.mouse_position()) == Step::Cancel {
             self.follow_timer = None;
         }
     }
@@ -201,41 +203,48 @@ impl AppWindow {
         self.run_as("pane.focus", args, false, window, cx);
     }
 
-    fn follow_gate(&self, button_held: bool, window: &Window) -> Gate {
+    pub(super) fn follow_gate(&self, button_held: bool, window: &Window) -> Gate {
         Gate {
             enabled: self.person.focus_follows_mouse,
             window_active: window.is_window_active(),
             button_held: button_held || self.drag.is_some() || self.pane_drag.is_some() || self.float_drag.is_some() || self.win_drag.is_some(),
-            // Toasts only tell; everything else over the panes is being used.
-            overlay_open: self.overlays.iter().any(|o| o.kind != OverlayKind::Toast),
+            // Toasts only tell and windows stay open beside the work; a window's
+            // own bounds are left out in `terminal_pane_at`.
+            modal_open: self.overlays.iter().any(|o| o.kind.modal_keys()),
         }
     }
 
     /// The shown terminal pane (the active tab's, or a layout's terminal block)
-    /// whose painted bounds hold `at`, unless a floating block is over it there.
-    /// Only shown blocks count: bounds stay behind for hidden ones. Overlay and
-    /// agent-view terminals are not panes.
-    fn terminal_pane_at(&self, at: Point<Pixels>) -> Option<String> {
+    /// whose painted bounds hold `at`, unless a floating block or a window
+    /// overlay is over it there. Only shown blocks count: bounds stay behind for
+    /// hidden ones. Overlay and agent-view terminals are not panes.
+    pub(super) fn terminal_pane_at(&self, at: Point<Pixels>) -> Option<String> {
         let bounds = self.bounds.borrow();
         let holds = |slot: &str| bounds.get(slot).is_some_and(|b| b.contains(&at));
         let tab = self.model.active_tab().filter(|_| self.shows_tab()).map(|t| t.shown());
         let pane = tab.into_iter().flat_map(|t| t.visible_blocks()).chain(self.chrome.visible_blocks()).filter(|n| n.terminal().is_some()).find(|n| holds(&n.id))?;
         let mut over = tab.into_iter().chain([&self.chrome]).flat_map(visible_nodes).flat_map(|n| n.floating.iter().filter(|f| !f.hidden));
-        if over.any(|f| holds(&floats::slot(&f.id))) {
+        let mut windows = self.overlays.iter().filter(|o| o.kind == OverlayKind::Window);
+        if over.any(|f| holds(&floats::slot(&f.id))) || windows.any(|o| holds(&o.slot)) {
             return None;
         }
         Some(pane.id.clone())
     }
 
     /// `focus.toggle_follows_mouse`: flips the setting in settings.json and says so.
-    pub(super) fn toggle_follows_mouse(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Unsaved, it warns, and a script or agent (`person: false`) gets an error.
+    pub(super) fn toggle_follows_mouse(&mut self, person: bool, window: &mut Window, cx: &mut Context<Self>) {
         let saved = self.write_person(toggle_follows, window, cx);
         let on = self.person.focus_follows_mouse;
         if !on {
             self.follow_mouse_cancel();
         }
         let title = follows_mouse_toast(on, saved);
-        self.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": { "title": title, "level": "info" } }), window, cx);
+        let level = if saved == PersonSaved::Saved { "info" } else { "warning" };
+        self.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": { "title": title, "level": level } }), window, cx);
+        if saved != PersonSaved::Saved && !person {
+            self.fail(title);
+        }
     }
 }
 
@@ -244,18 +253,23 @@ fn toggle_follows(p: &mut settings::Person) {
     p.focus_follows_mouse = !p.focus_follows_mouse;
 }
 
-/// What the toggle says: the new state, and when settings.json kept it from being saved.
-fn follows_mouse_toast(on: bool, saved: bool) -> String {
+/// What the toggle says: the new state, and why it wasn't saved when it wasn't.
+fn follows_mouse_toast(on: bool, saved: PersonSaved) -> String {
     let state = if on { "on" } else { "off" };
-    if saved { format!("Focus follows mouse: {state}") } else { format!("Focus follows mouse: {state} (not saved: settings.json has errors)") }
+    match saved {
+        PersonSaved::Saved => format!("Focus follows mouse: {state}"),
+        PersonSaved::Broken => format!("Focus follows mouse: {state} (not saved: settings.json has errors)"),
+        PersonSaved::WriteFailed => format!("Focus follows mouse: {state} (not saved: cannot write settings.json)"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::PersonSaved;
     use super::{Follow, Gate, Step, follows_mouse_toast, toggle_follows};
     use gpui::{Pixels, Point, point, px};
 
-    const OPEN: Gate = Gate { enabled: true, window_active: true, button_held: false, overlay_open: false };
+    const OPEN: Gate = Gate { enabled: true, window_active: true, button_held: false, modal_open: false };
 
     fn at(x: f32) -> Point<Pixels> {
         point(px(x), px(10.0))
@@ -417,7 +431,7 @@ mod tests {
             Gate { enabled: false, ..OPEN },
             Gate { window_active: false, ..OPEN },
             Gate { button_held: true, ..OPEN },
-            Gate { overlay_open: true, ..OPEN },
+            Gate { modal_open: true, ..OPEN },
         ];
         for gate in closed {
             let mut f = Follow::default();
@@ -460,19 +474,19 @@ mod tests {
             written = Some(p.focus_follows_mouse);
             Ok(())
         });
-        assert!(saved && p.focus_follows_mouse);
+        assert!(saved == PersonSaved::Saved && p.focus_follows_mouse);
         assert_eq!(written, Some(true));
         assert_eq!(follows_mouse_toast(p.focus_follows_mouse, saved), "Focus follows mouse: on");
 
         // settings.json mid-edit: on for now, left unwritten, and said so.
         let mut p = Person { focus_follows_mouse: false, ..Person::default() };
         let saved = super::super::change_person(&mut p, toggle_follows, true, |_| panic!("wrote a broken settings.json"));
-        assert!(!saved && p.focus_follows_mouse);
+        assert!(saved == PersonSaved::Broken && p.focus_follows_mouse);
         assert_eq!(follows_mouse_toast(p.focus_follows_mouse, saved), "Focus follows mouse: on (not saved: settings.json has errors)");
 
-        // A failed write is not saved either; back off.
+        // A failed write is not saved either, and says so; back off.
         let saved = super::super::change_person(&mut p, toggle_follows, false, |_| Err(std::io::Error::other("read-only")));
-        assert!(!saved && !p.focus_follows_mouse);
-        assert_eq!(follows_mouse_toast(p.focus_follows_mouse, saved), "Focus follows mouse: off (not saved: settings.json has errors)");
+        assert!(saved == PersonSaved::WriteFailed && !p.focus_follows_mouse);
+        assert_eq!(follows_mouse_toast(p.focus_follows_mouse, saved), "Focus follows mouse: off (not saved: cannot write settings.json)");
     }
 }

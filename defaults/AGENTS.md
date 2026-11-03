@@ -546,7 +546,9 @@ The main ones:
   starts from that mod while it holds the keyboard.
   `pane.swap` uses geometry only. Focus history lasts until the window closes.
   `focus.toggle_follows_mouse` turns `focus_follows_mouse` (below) on or off in
-  settings.json and says which in a toast.
+  settings.json and says which in a toast; when settings.json has errors or
+  can't be written, the change applies unsaved, the toast warns why, and a
+  control-socket caller gets that as an error.
   `pane.focus {terminal}` prefers the first visible layout terminal block showing that
   address, then its model pane. Clicking a terminal block focuses it too.
   While a layout terminal block is focused, implicit split/close/zoom/go/swap and
@@ -663,9 +665,10 @@ What's about the user, never a look:
   nor does a jitter under 1 px. After a key, or the focus moving some other way,
   the pointer must first go more than 4 px from where it was, so a pane focused
   from the keyboard keeps it while the hand rests on the mouse.
-  Nothing happens while a mouse button is held, while a dialog, popup, peek, menu
-  or window overlay is open (toasts don't count), or while Herdr isn't the active
-  window. Mod blocks, the sidebar and the tab bar never take the focus this way.
+  Nothing happens while a mouse button is held, while a dialog, popup, peek or
+  menu is open, or while Herdr isn't the active window. Toasts and window
+  overlays don't stop it, but a pane under a window overlay isn't focused
+  through it. Mod blocks, the sidebar and the tab bar never take the focus this way.
 - `alert_command`: a program run for each alert in place of the system
   notification, under the same `system_notifications` rule: one string
   (run by `/bin/sh -c`) or an argv array (`["notify", "-q"]`). Herdr
