@@ -21,7 +21,7 @@ This file is the inventory of what diverges. Update it in the same commit that a
 
 1. Start a change: `git switch -c feat/<slug> upstream/master`.
 2. Make it, gated behind a setting wherever practical, and commit.
-3. Merge and check it on `master`, which has the Xcode build fix branches lack: `git switch master && git merge --no-ff feat/<slug> && mise exec -- just check`. Upstream's code is not `cargo fmt` clean, so match the surrounding style rather than running `cargo fmt`.
+3. Merge and check it on `master`: `git switch master && git merge --no-ff feat/<slug> && mise exec -- just check`. Upstream's code is not `cargo fmt` clean, so match the surrounding style rather than running `cargo fmt`.
 4. Try it: `mise exec -- just install`, then restart Herdr.
 5. Push the branch: `git push -u origin feat/<slug>`. Bigger changes get an upstream issue first (upstream `CONTRIBUTING.md`).
 6. Open the pull request: `gh pr create -R herdrdev/herdr-app --head abhijit-s:feat/<slug>`.
@@ -29,13 +29,6 @@ This file is the inventory of what diverges. Update it in the same commit that a
 8. Sync and reinstall: `scripts/fork-sync`. It lists branches whose commits are not yet upstream. Once a change lands upstream, delete its branch and its entry below.
 
 ## Changes
-
-### Build without Xcode
-
-`fix/build-without-xcode`: passes `-Demit-xcframework=false` to Ghostty's lib-vt build. Ghostty builds the xcframework whenever `xcodebuild` is on PATH, and with only the Command Line Tools `/usr/bin/xcodebuild` is a stub that fails.
-
-- Files: `crates/ghostty-sys/build.rs`, `THIRD-PARTY-NOTICES`
-- Upstream: pull request #331
 
 ### Terminal line height
 
@@ -49,14 +42,7 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 `feat/font-weight`: `font_weight` in settings.json or a layout's look (100 to 900, default 500, the Medium upstream hard-codes); bold stays at least 700. Rows kept from earlier frames are keyed on the whole cell font, so a weight change redraws them.
 
 - Files: `src/settings.rs`, `src/layout.rs`, `src/terminal.rs` (`cell_font`, `paint_grid`), `defaults/AGENTS.md`
-- Upstream: issue #134, pull request #332
-
-### Coding ligatures
-
-`feat/ligatures`: `ligatures` in settings.json or a layout's look turns the font's `calt` feature on (one glyph per cell in coding fonts); `liga` and `dlig` stay off. `cell_features` holds the feature list, with a test.
-
-- Files: `src/settings.rs`, `src/layout.rs`, `src/terminal.rs` (`cell_features`, `cell_font`), `defaults/AGENTS.md`
-- Upstream: issue #176 is covered by pull request #244 (ruilopesm), which also breaks ligatures at the cursor and selection edges. Its macOS test needs the main thread; tested here and commented. Swap this branch for #244 once its checks pass.
+- Upstream: issue #134, pull request #332. Upstream's `font_ligatures` (#244) landed alongside it; the branch merges `upstream/master` to stay conflict-free.
 
 ### Cell width and letter spacing
 
@@ -65,7 +51,7 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 `feat/cell-width-pixel` (on top of `feat/terminal-letter-spacing`, fork only for now): `cell_width` (`"font"`, default, or `"pixel"`: the spaced width rounded down to whole device pixels, as Ghostty does). `feat/letter-spacing` is the retired first version of both.
 
 - Files: `src/settings.rs`, `src/terminal.rs` (`cell_size`), `vendor/gpui-pre/src/text_system/line_layout.rs`, `defaults/AGENTS.md`
-- Upstream: issue #171, pull request not yet opened
+- Upstream: issue #171, pull request #336 (`feat/terminal-letter-spacing`); `feat/cell-width-pixel` is fork only
 
 ### Variable font weights
 
