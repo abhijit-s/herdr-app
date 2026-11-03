@@ -71,3 +71,10 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 - Files: `src/commands.rs`, `src/window.rs`, `src/model.rs`, `src/mirror.rs` (tests), `defaults/AGENTS.md`, `defaults/herdr.d.ts`, `defaults/mods/pane/main.js`, `defaults/mods/terminals-pane/main.js`, `docs/commands.md`
 - Upstream: pull request #384, for issue #322 (which asks for `terminal.rename`)
+
+### Toasts fit their content
+
+`feat/toast-fit-content` (branched from `master`, fork only): a toast is as wide as its content, 140 to 340 px (titles still truncate at 340), and 40 px high without a body, 72 with one; an explicit `height` still wins, and toasts stay right-anchored and stacked.
+
+- Files: `src/window.rs` (`toast_height`, `open_overlay`, `render_overlays`, test `toast_sizes`), `defaults/AGENTS.md`
+- Upstream: none yet
