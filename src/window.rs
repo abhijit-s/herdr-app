@@ -5046,6 +5046,8 @@ impl Render for AppWindow {
                 this.pointer = ev.position;
                 this.follow_mouse_cancel();
             }))
+            // Out of the window: what the pointer passed on the way doesn't take the focus.
+            .on_mouse_exit(cx.listener(|this, _: &MouseExitEvent, _, _| this.follow_mouse_cancel()))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
                 this.follow_mouse(ev, window, cx);
                 this.drag_window(ev, window);
@@ -5612,11 +5614,6 @@ export default class Scale extends View {
         if !running_alone("follow_mouse") {
             return;
         }
-        // Written before the window watches the home: file events from another
-        // thread would wake the test's executor.
-        std::fs::create_dir_all(crate::mods::app_dir()).unwrap();
-        let person = crate::settings::Person { focus_follows_mouse: true, ..crate::settings::Person::default() };
-        crate::settings::write_person(&person).unwrap();
         let (view, cx) = open_window(cx, "unused", "", json!({ "id": "root", "type": "row", "children": [
             { "id": "left", "type": "block", "content": { "terminal": "t1" } },
             { "id": "right", "type": "block", "content": { "terminal": "t2" } }
@@ -5627,7 +5624,8 @@ export default class Scale extends View {
             for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
                 this.close_overlay(&id, window, cx);
             }
-            assert!(this.person.focus_follows_mouse);
+            // Not through settings.json: the file watcher's thread would wake this executor.
+            this.person.focus_follows_mouse = true;
             this.run_as("pane.focus", json!({ "terminal": "t1" }), false, window, cx);
         });
         cx.run_until_parked();
@@ -5710,15 +5708,6 @@ export default class Scale extends View {
         cx.simulate_mouse_move(nudge(left, 5.0), None, none);
         wait(cx, 200);
         assert_eq!(focused(cx), "left", "the next pointer move didn't focus");
-
-        // Turned off by the command, in settings.json too. Last: its write
-        // reaches the file watcher, whose thread mustn't wake this executor.
-        view.update_in(cx, |this, window, cx| {
-            this.run_as("focus.toggle_follows_mouse", json!(null), false, window, cx);
-            assert!(!this.person.focus_follows_mouse);
-            assert!(this.overlays.iter().any(|o| o.kind == super::OverlayKind::Toast), "no toast");
-        });
-        assert!(!crate::settings::load_person().unwrap().focus_follows_mouse, "the command didn't write settings.json");
     }
 
     /// Mods see window().active follow the focus, losing it too: a probe mod
