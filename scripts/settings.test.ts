@@ -26,7 +26,7 @@ const values: Record<string, any> = {
   View: class {}, div: element, svg: element, image: element, v_flex: element, h_flex: element,
   Scrollbar: element, Input: { new: element }, InputState: { new: () => ({ on() {}, focus() {} }) },
   settings: () => composed, window: () => ({ platform: "linux" }), props: () => ({}),
-  appHome: () => "/home", readTextFile: async () => disk.raw, notify: (n: any) => { disk.toasts.push(n); },
+  appHome: () => "/home", readTextFile: async () => { if (disk.readFail) throw new Error(disk.readFail); return disk.raw; }, notify: (n: any) => { disk.toasts.push(n); },
   writeTextFile: async (_path: string, text: string, expected: string | null) => {
     disk.writes++;
     if (disk.fail) throw new Error(disk.fail);
@@ -35,7 +35,7 @@ const values: Record<string, any> = {
   },
 };
 // settings.json as the mod sees it through readTextFile / writeTextFile.
-const disk: { raw: string | null; writes: number; fail?: string; toasts: any[] } = { raw: null, writes: 0, toasts: [] };
+const disk: { raw: string | null; writes: number; fail?: string; readFail?: string; toasts: any[] } = { raw: null, writes: 0, toasts: [] };
 const names = [...source.matchAll(/^import \{([^}]*)\}/gm)].flatMap(m => m[1].split(",").map(n => n.trim()));
 const args = names.map(name => values[name] ?? (() => undefined));
 const body = source
@@ -91,8 +91,8 @@ test("scale steps stay in the range Rust publishes, in hundredths", () => {
 });
 
 /** Runs `edit` through the Settings window's change() on `raw`; the toasts it posts. */
-async function change(raw: string | null, edit: (q: Record<string, any>) => void, fail?: string) {
-  Object.assign(disk, { raw, writes: 0, fail, toasts: [] });
+async function change(raw: string | null, edit: (q: Record<string, any>) => void, fail?: string, readFail?: string) {
+  Object.assign(disk, { raw, writes: 0, fail, readFail, toasts: [] });
   const view = new Settings();
   let done: () => void;
   const finished = new Promise<void>((resolve) => (done = resolve));
@@ -121,4 +121,22 @@ test("a write that keeps failing is reported, not dropped", async () => {
   expect(disk.writes).toBe(3);
   expect(disk.raw).toBe("{}");
   expect(toasts).toEqual([{ title: "Not saved to settings.json", body: "read-only file system", level: "error" }]);
+});
+
+test("settings.json that isn't an object counts as broken", async () => {
+  for (const raw of ["null", "[]", "3"]) {
+    const { toasts } = await change(raw, (q) => (q.dock_bounce = true));
+    expect(disk.raw).toBe(raw);
+    expect(disk.writes).toBe(0);
+    expect(toasts).toEqual([{ title: "settings.json has errors: fix it first", level: "error" }]);
+  }
+});
+
+test("a settings.json that can't be read, or an edit that throws, says why", async () => {
+  const unread = await change("{}", (q) => (q.dock_bounce = true), undefined, "permission denied");
+  expect(disk.writes).toBe(0);
+  expect(unread.toasts).toEqual([{ title: "Cannot read settings.json", body: "permission denied", level: "error" }]);
+  const thrown = await change("{}", () => { throw new Error("no such section"); });
+  expect(disk.writes).toBe(0);
+  expect(thrown.toasts).toEqual([{ title: "Cannot read settings.json", body: "no such section", level: "error" }]);
 });
