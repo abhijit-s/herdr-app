@@ -4238,9 +4238,7 @@ impl AppWindow {
                 })
                 // Popups size to their content, up to the window: a column, so a mod
                 // root with `min_h(0)` can shrink and scroll. Layout mods fill their block.
-                // Not cached here: ShellRoot caches the mod's view itself and draws its
-                // spinners over it, waking only itself (GPUI rebuilds all under a cached
-                // view that changed, so a spinner step would rebuild the mod).
+                // Not cached here: ShellRoot caches the mod's view itself.
                 .map(|d| if in_overlay { d.h_auto().min_h_0().flex().flex_col().child(root.clone()) } else { d.child(root.clone()) })
                 .into_any_element(),
             Some(Copy { error, inst, .. }) => div()

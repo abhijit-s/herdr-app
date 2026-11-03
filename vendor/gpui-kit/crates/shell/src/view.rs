@@ -297,14 +297,7 @@ impl Render for ScriptView {
         if self.is_dirty() {
             self.rebuild(window, cx);
         }
-        // HERDR: the view a ShellRoot shows leaves its spinners to it; not over an
-        // error banner, which must cover them.
-        let may_host = matches!(self.ownership, ViewOwnership::Root) && self.error.is_none();
-        let (built, again) = crate::materialize::build_view(cx.entity_id(), may_host, || self.draw(window, cx));
-        if again {
-            crate::materialize::wake_view_now(window, cx);
-        }
-        built
+        self.draw(window, cx)
     }
 }
 
