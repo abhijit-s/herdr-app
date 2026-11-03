@@ -8,6 +8,9 @@ import { props, closeOverlay, run, theme } from "herdr";
 
 const DOT = { error: "blocked", warning: "working", success: "done", info: "accent" };
 
+// Blank text is no body; window.rs's toast_height decides the same way.
+const hasBody = (body) => (typeof body === "string" ? body.trim() !== "" : Boolean(body));
+
 export default class Toast extends View {
   render(cx) {
     const t = theme();
@@ -31,7 +34,7 @@ export default class Toast extends View {
           .flex_1()
           .overflow_hidden()
           .child(div().truncate().font_semibold().text_size(13).text_color(t.foreground).child(p.title ?? ""))
-          .when(Boolean(p.body), (el) => el.child(div().truncate().text_size(12).text_color(t.muted).child(p.body ?? ""))),
+          .when(hasBody(p.body), (el) => el.child(div().truncate().text_size(12).text_color(t.muted).child(p.body ?? ""))),
       );
   }
 }

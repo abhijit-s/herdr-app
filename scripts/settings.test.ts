@@ -26,7 +26,16 @@ const values: Record<string, any> = {
   View: class {}, div: element, svg: element, image: element, v_flex: element, h_flex: element,
   Scrollbar: element, Input: { new: element }, InputState: { new: () => ({ on() {}, focus() {} }) },
   settings: () => composed, window: () => ({ platform: "linux" }), props: () => ({}),
+  appHome: () => "/home", readTextFile: async () => disk.raw, notify: (n: any) => { disk.toasts.push(n); },
+  writeTextFile: async (_path: string, text: string, expected: string | null) => {
+    disk.writes++;
+    if (disk.fail) throw new Error(disk.fail);
+    if (expected !== disk.raw) throw new Error("changed since read");
+    disk.raw = text;
+  },
 };
+// settings.json as the mod sees it through readTextFile / writeTextFile.
+const disk: { raw: string | null; writes: number; fail?: string; toasts: any[] } = { raw: null, writes: 0, toasts: [] };
 const names = [...source.matchAll(/^import \{([^}]*)\}/gm)].flatMap(m => m[1].split(",").map(n => n.trim()));
 const args = names.map(name => values[name] ?? (() => undefined));
 const body = source
@@ -79,4 +88,37 @@ test("scale steps stay in the range Rust publishes, in hundredths", () => {
   expect(scaleStep(0.8, 0.8, -0.05, [f32(0.8), f32(1.3)])).toBe(0.8);
   expect(scaleStep("big", 1.2, 0.05, [0.75, 1.5])).toBe(1.25);
   expect(scaleStep(Number.NaN, 1, -0.05, [0.75, 1.5])).toBe(0.95);
+});
+
+/** Runs `edit` through the Settings window's change() on `raw`; the toasts it posts. */
+async function change(raw: string | null, edit: (q: Record<string, any>) => void, fail?: string) {
+  Object.assign(disk, { raw, writes: 0, fail, toasts: [] });
+  const view = new Settings();
+  let done: () => void;
+  const finished = new Promise<void>((resolve) => (done = resolve));
+  view.change(edit, { spawn: (f: (cx: any) => Promise<void>) => f({ notify: () => done() }) });
+  await finished;
+  return { view, toasts: disk.toasts };
+}
+
+test("a change writes settings.json, keeping what else it holds", async () => {
+  const { view, toasts } = await change('{"font_size": 15}', (q) => (q.dock_bounce = true));
+  expect(JSON.parse(disk.raw!)).toEqual({ font_size: 15, dock_bounce: true });
+  expect(view.person).toEqual({ font_size: 15, dock_bounce: true });
+  expect(toasts).toEqual([]);
+});
+
+test("a broken settings.json is never written over, and says so", async () => {
+  const broken = '{"font_size": 15, "theme": "x",}';
+  const { toasts } = await change(broken, (q) => (q.dock_bounce = true));
+  expect(disk.raw).toBe(broken);
+  expect(disk.writes).toBe(0);
+  expect(toasts).toEqual([{ title: "settings.json has errors: fix it first", level: "error" }]);
+});
+
+test("a write that keeps failing is reported, not dropped", async () => {
+  const { toasts } = await change("{}", (q) => (q.dock_bounce = true), "read-only file system");
+  expect(disk.writes).toBe(3);
+  expect(disk.raw).toBe("{}");
+  expect(toasts).toEqual([{ title: "Not saved to settings.json", body: "read-only file system", level: "error" }]);
 });
