@@ -1613,7 +1613,10 @@ impl Render for TerminalView {
                     },
                     move |bounds, _, window, cx| {
                         // The grid shapes at font_weight, whatever ui_font_weight shifts.
-                        window.with_font_weight_shift(0.0, |window| window.with_glyph_thicken(glyph_thicken(), |window| paint_grid(bounds, &grid_paint, focused, window, cx)));
+                        let contrast = crate::settings::get().text_contrast;
+                        window.with_font_weight_shift(0.0, |window| {
+                            window.with_glyph_thicken(glyph_thicken(), |window| window.with_glyph_contrast(contrast, |window| paint_grid(bounds, &grid_paint, focused, window, cx)))
+                        });
                         let view = selection_view.clone();
                         window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
                             if phase == DispatchPhase::Capture {

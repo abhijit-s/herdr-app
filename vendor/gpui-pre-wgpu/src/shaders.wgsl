@@ -70,6 +70,14 @@ fn apply_contrast_and_gamma_correction(sample: f32, color: vec3<f32>, enhanced_c
     return apply_alpha_correction(contrasted, brightness, gamma_ratios);
 }
 
+// HERDR: pulls glyph coverage toward smoothstep by `contrast` (0 to 1), so
+// edge pixels sharpen without the stroke gaining ink: the curve is symmetric
+// about 0.5. Matches `sharpen_coverage` in shaders.metal and shaders.hlsl.
+fn sharpen_coverage(alpha: f32, contrast: f32) -> f32 {
+    let s = alpha * alpha * (3.0 - 2.0 * alpha);
+    return mix(alpha, s, contrast);
+}
+
 fn apply_contrast_and_gamma_correction3(sample: vec3<f32>, color: vec3<f32>, enhanced_contrast_factor: f32, gamma_ratios: vec4<f32>) -> vec3<f32> {
     let enhanced_contrast = light_on_dark_contrast(enhanced_contrast_factor, color);
 
@@ -1220,6 +1228,8 @@ struct MonochromeSprite {
     color: Hsla,
     tile: AtlasTile,
     transformation: TransformationMatrix,
+    contrast: f32,
+    contrast_pad: u32,
 }
 
 
@@ -1228,6 +1238,7 @@ struct MonoSpriteVarying {
     @location(0) tile_position: vec2<f32>,
     @location(1) @interpolate(flat) color: vec4<f32>,
     @location(3) clip_distances: vec4<f32>,
+    @location(4) @interpolate(flat) contrast: f32,
 }
 
 @vertex
@@ -1241,13 +1252,14 @@ fn vs_mono_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
     out.tile_position = to_tile_position(unit_vertex, sprite.tile);
     out.color = hsla_to_rgba(sprite.color);
     out.clip_distances = distance_from_clip_rect_transformed(unit_vertex, sprite.bounds, sprite.content_mask, sprite.transformation);
+    out.contrast = sprite.contrast;
     return out;
 }
 
 @fragment
 fn fs_mono_sprite(input: MonoSpriteVarying) -> @location(0) vec4<f32> {
     let sample = textureSample(t_sprite, s_sprite, input.tile_position).r;
-    let alpha_corrected = apply_contrast_and_gamma_correction(sample, input.color.rgb, gamma_params.grayscale_enhanced_contrast, gamma_params.gamma_ratios);
+    let alpha_corrected = sharpen_coverage(apply_contrast_and_gamma_correction(sample, input.color.rgb, gamma_params.grayscale_enhanced_contrast, gamma_params.gamma_ratios), input.contrast);
 
     // Alpha clip after using the derivatives.
     if (any(input.clip_distances < vec4<f32>(0.0))) {

@@ -1207,6 +1207,10 @@ pub struct Window {
     glyph_thicken: Option<u8>,
     // HERDR: the strength each frame's paint starts at (`set_glyph_thicken`).
     base_glyph_thicken: Option<u8>,
+    // HERDR: the coverage contrast `paint_glyph` uses (`with_glyph_contrast`).
+    glyph_contrast: f32,
+    // HERDR: the contrast each frame's paint starts at (`set_glyph_contrast`).
+    base_glyph_contrast: f32,
     #[cfg(any(test, feature = "test-support"))]
     presents: usize,
     pub(crate) next_frame: Frame,
@@ -2107,6 +2111,8 @@ impl Window {
             spin_step_scheduled: false,
             glyph_thicken: None,
             base_glyph_thicken: None,
+            glyph_contrast: 0.,
+            base_glyph_contrast: 0.,
             #[cfg(any(test, feature = "test-support"))]
             presents: 0,
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
@@ -3731,6 +3737,7 @@ impl Window {
         // HERDR: every glyph painted this frame, deferred ones and tooltips
         // too, starts at the window's strength; `with_glyph_thicken` nests.
         self.glyph_thicken = self.base_glyph_thicken;
+        self.glyph_contrast = self.base_glyph_contrast;
         root_element.paint(self, cx);
 
         #[cfg(any(feature = "inspector", debug_assertions))]
@@ -4165,6 +4172,23 @@ impl Window {
         let outer = std::mem::replace(&mut self.glyph_thicken, strength);
         let result = f(self);
         self.glyph_thicken = outer;
+        result
+    }
+
+    /// HERDR: the coverage contrast (as `with_glyph_contrast`) of the glyphs a
+    /// frame paints outside any `with_glyph_contrast`. Set it while rendering,
+    /// as `set_glyph_thicken`.
+    pub fn set_glyph_contrast(&mut self, contrast: f32) {
+        self.base_glyph_contrast = contrast.clamp(0., 1.);
+    }
+
+    /// HERDR: paints the monochrome glyphs in `f` with their coverage pulled
+    /// toward an S-curve by `contrast` (0, as rasterised, to 1): crisper edges
+    /// at about the same ink. Applied when blending, so the atlas is shared.
+    pub fn with_glyph_contrast<R>(&mut self, contrast: f32, f: impl FnOnce(&mut Self) -> R) -> R {
+        let outer = std::mem::replace(&mut self.glyph_contrast, contrast.clamp(0., 1.));
+        let result = f(self);
+        self.glyph_contrast = outer;
         result
     }
 
@@ -4909,6 +4933,8 @@ impl Window {
                     color: color.opacity(element_opacity),
                     tile,
                     transformation: TransformationMatrix::unit(),
+                    contrast: self.glyph_contrast,
+                    contrast_pad: 0,
                 });
             }
         }
@@ -5123,6 +5149,8 @@ impl Window {
             color: color.opacity(element_opacity),
             tile,
             transformation,
+            contrast: 0.,
+            contrast_pad: 0,
         };
         if sprite.spins() {
             sprite.turn(spin_clock_ms());

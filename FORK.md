@@ -83,6 +83,24 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 - Files: `src/settings.rs`, `src/terminal.rs` (`glyph_thicken`, `paint_grid`), `src/window.rs` (`AppWindow::render`), `vendor/gpui-pre/src/{text_system.rs,window.rs}`, `vendor/gpui-pre-macos/src/text_system.rs`, `vendor/gpui-pre-{wgpu,windows}` (the new field), `tests/thicken_ink.rs`, `defaults/AGENTS.md`, `defaults/frame/settings/main.js`, `scripts/settings.test.ts`
 - Upstream: fork only for now
 
+### Text contrast
+
+`feat/text-contrast`: `text_contrast` and `ui_text_contrast` (0 to 1, default 0), person settings that sharpen glyph edges when they're blended, without widening the strokes. The monochrome-sprite fragment shader moves the glyph's coverage toward smoothstep by the setting: `alpha' = mix(alpha, alpha² (3 − 2 alpha), contrast)`. The curve is symmetric about 0.5, so faint edge pixels fade, nearly solid ones fill, and a stroke keeps its ink. GPUI's wgpu and DirectX backends already apply Zed's DirectWrite-style `enhance_contrast`, `alpha (k + 1) / (alpha k + 1)`, with a global, luminance-scaled `k` and a gamma correction. The Metal backend has no curve. Zed's curve is not reused here: it raises every partial pixel, so it adds ink as thickening does. Measured on Metal at k = 1, it added 14% ink to light on dark and 17% to dark on light. Its luminance factor is 0 for light text, so it would leave light-on-dark terminal text unchanged. The wgpu and DirectX backends apply the S-curve after their own correction, so 0 leaves every backend as it was.
+
+`HERDR:` changes are in `vendor/gpui-pre/src/scene.rs` and its cbindgen copy `vendor/gpui-pre-apple/vendor/gpui/src/scene.rs`. They add `MonochromeSprite::contrast` and an 8-byte-aligning `contrast_pad`, making the sprite 30 words. They are also in `vendor/gpui-pre/src/window.rs` (`with_glyph_contrast`, `set_glyph_contrast`, and `paint_glyph` stamping the sprite), and in the `sharpen_coverage` function in `vendor/gpui-pre-apple/src/shaders.metal`, `vendor/gpui-pre-wgpu/src/shaders.wgsl` and `vendor/gpui-pre-windows/src/shaders.hlsl`. The WebGL decoder reads 30 words. On DirectX, subpixel sprites read their own `SubpixelSprite` buffer, which has no `contrast`, instead of `MonochromeSprite`'s. Contrast is applied at blend time, so it isn't in the glyph atlas key: interface and terminal glyphs share tiles. SVG icons draw at 0. `AppWindow::render` sets the window's contrast from `ui_text_contrast`, beside `set_glyph_thicken`. The terminal paints its grid inside `with_glyph_contrast(text_contrast)`. The row cache keeps shaped lines, not sprites, and re-reads the contrast each paint, so `painted_with` doesn't carry it.
+
+- Measured (`tests/text_contrast.rs`, JetBrains Mono at 12 device px, headless Metal). Edge share is the share of inked pixels with coverage between 0.2 and 0.8, and ink is the mean coverage over the text's box:
+
+| Text | Contrast 0 | 0.5 | 1 | Ink at 0 → 1 |
+| --- | --- | --- | --- | --- |
+| Light on dark | 0.440 | 0.390 | 0.360 | 0.0711 → 0.0719 (+1.1%) |
+| Dark on light | 0.503 | 0.433 | 0.374 | 0.0588 → 0.0590 (+0.3%) |
+
+- For comparison, `font_thicken` 255 takes dark-on-light ink to 0.0711 (+21%). `ui_text_contrast` 1 takes the panels' edge share from 0.440 to 0.360, while a terminal grid inside it at 0 stays at 0.440.
+- Settings window, Text page: under Size, an "Interface contrast" stepper; under Terminal text, a "Contrast" stepper below Thicken. Both step by 0.1 within 0 to 1. At 0, the key is left out of settings.json. Layouts set neither.
+- Files: `src/settings.rs`, `src/terminal.rs` (the grid's paint), `src/window.rs` (`AppWindow::render`), `vendor/gpui-pre/src/{scene.rs,window.rs}`, `vendor/gpui-pre-apple/{src/shaders.metal,vendor/gpui/src/scene.rs}`, `vendor/gpui-pre-wgpu/src/{shaders.wgsl,shaders_webgl.wgsl,wgpu_renderer.rs}`, `vendor/gpui-pre-windows/src/shaders.hlsl`, `tests/text_contrast.rs`, `defaults/AGENTS.md`, `defaults/frame/settings/main.js`, `scripts/settings.test.ts`
+- Upstream: fork only for now
+
 
 ### Pane names
 

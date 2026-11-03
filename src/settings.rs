@@ -423,6 +423,13 @@ pub struct Person {
     /// How much `ui_font_thicken` thickens, 0 to 255.
     #[serde(skip_serializing_if = "is_full_strength")]
     pub ui_font_thicken_strength: u16,
+    /// Sharpen terminal text's edges, 0 (off) to 1: coverage is pulled toward
+    /// an S-curve when blending, so strokes look crisper without widening.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub text_contrast: f32,
+    /// The same for the panels' text, apart from the terminals'.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub ui_text_contrast: f32,
     /// The panels' font (their sizes follow zoom).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_font: Option<String>,
@@ -553,6 +560,10 @@ fn is_one(v: &f32) -> bool {
     *v == 1.0
 }
 
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
 pub const FOLLOW_DELAY_DEFAULT_MS: u32 = 150;
 pub const FOLLOW_DELAY_MAX_MS: u32 = 2000;
 
@@ -597,6 +608,8 @@ impl Default for Person {
             font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
             ui_font_thicken: false,
             ui_font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
+            text_contrast: 0.0,
+            ui_text_contrast: 0.0,
             ui_font: None,
             ui_font_weight: UI_FONT_WEIGHT_DEFAULT,
             telemetry: true,
@@ -628,6 +641,10 @@ pub struct Settings {
     pub font_thicken_strength: u16,
     pub ui_font_thicken: bool,
     pub ui_font_thicken_strength: u16,
+    /// Terminal text's edge contrast, 0 (off) to 1.
+    pub text_contrast: f32,
+    /// The panels' text's edge contrast, 0 (off) to 1.
+    pub ui_text_contrast: f32,
     pub ui_font_family: String,
     pub ui_font_size: f32,
     /// The panels' regular text weight (see `ui_weight_shift`).
@@ -697,6 +714,8 @@ impl Default for Settings {
             font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
             ui_font_thicken: false,
             ui_font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
+            text_contrast: 0.0,
+            ui_text_contrast: 0.0,
             ui_font_family: "Geist".into(),
             ui_font_size: 13.0,
             ui_font_weight: UI_FONT_WEIGHT_DEFAULT,
@@ -749,6 +768,8 @@ impl Settings {
             font_thicken_strength: person.font_thicken_strength,
             ui_font_thicken: person.ui_font_thicken,
             ui_font_thicken_strength: person.ui_font_thicken_strength,
+            text_contrast: person.text_contrast,
+            ui_text_contrast: person.ui_text_contrast,
             ui_font_family: look.ui_font.clone().or(person.ui_font.clone()).unwrap_or(d.ui_font_family),
             ui_font_size: d.ui_font_size,
             ui_font_weight: person.ui_font_weight,
@@ -824,6 +845,12 @@ impl Settings {
         }
         if self.ui_font_thicken_strength > 255 {
             out.push(format!("ui_font_thicken_strength {} is outside 0..255", self.ui_font_thicken_strength));
+        }
+        if !(0.0..=1.0).contains(&self.text_contrast) {
+            out.push(format!("text_contrast {} is outside 0..1", self.text_contrast));
+        }
+        if !(0.0..=1.0).contains(&self.ui_text_contrast) {
+            out.push(format!("ui_text_contrast {} is outside 0..1", self.ui_text_contrast));
         }
         if !(100..=900).contains(&self.ui_font_weight) {
             out.push(format!("ui_font_weight {} is outside 100..900", self.ui_font_weight));
@@ -1269,6 +1296,24 @@ mod tests {
             assert!(settings.font_thicken);
             assert_eq!(settings.font_thicken_strength, strength);
             assert_eq!(settings.problems().is_empty(), strength <= 255, "strength {strength}");
+        }
+    }
+
+    #[test]
+    fn text_contrast_defaults_off_and_validates_both() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert_eq!((default.text_contrast, default.ui_text_contrast), (0.0, 0.0));
+        let saved = serde_json::to_value(&default).unwrap();
+        assert_eq!((saved.get("text_contrast"), saved.get("ui_text_contrast")), (None, None));
+        for (value, ok) in [(0.0, true), (0.5, true), (1.0, true), (-0.1, false), (1.1, false)] {
+            let person: Person = serde_json::from_value(serde_json::json!({"text_contrast": value})).unwrap();
+            let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
+            assert_eq!((settings.text_contrast, settings.ui_text_contrast), (value, 0.0));
+            assert_eq!(settings.problems().is_empty(), ok, "text_contrast {value}");
+            let person: Person = serde_json::from_value(serde_json::json!({"ui_text_contrast": value})).unwrap();
+            let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
+            assert_eq!((settings.text_contrast, settings.ui_text_contrast), (0.0, value));
+            assert_eq!(settings.problems().is_empty(), ok, "ui_text_contrast {value}");
         }
     }
 

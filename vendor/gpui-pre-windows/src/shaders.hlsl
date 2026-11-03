@@ -1145,6 +1145,8 @@ struct MonochromeSprite {
     Hsla color;
     AtlasTile tile;
     TransformationMatrix transformation;
+    float contrast;
+    uint contrast_pad;
 };
 
 struct MonochromeSpriteVertexOutput {
@@ -1152,6 +1154,7 @@ struct MonochromeSpriteVertexOutput {
     float2 tile_position: POSITION;
     nointerpolation float4 color: COLOR;
     float4 clip_distance: SV_ClipDistance;
+    nointerpolation float contrast: CONTRAST;
 };
 
 struct MonochromeSpriteFragmentInput {
@@ -1159,7 +1162,16 @@ struct MonochromeSpriteFragmentInput {
     float2 tile_position: POSITION;
     nointerpolation float4 color: COLOR;
     float4 clip_distance: SV_ClipDistance;
+    nointerpolation float contrast: CONTRAST;
 };
+
+// HERDR: pulls glyph coverage toward smoothstep by `contrast` (0 to 1), so
+// edge pixels sharpen without the stroke gaining ink: the curve is symmetric
+// about 0.5. Matches `sharpen_coverage` in shaders.metal and shaders.wgsl.
+float sharpen_coverage(float alpha, float contrast) {
+    float s = alpha * alpha * (3.0 - 2.0 * alpha);
+    return lerp(alpha, s, contrast);
+}
 
 StructuredBuffer<MonochromeSprite> mono_sprites: register(t1);
 
@@ -1178,17 +1190,42 @@ MonochromeSpriteVertexOutput monochrome_sprite_vertex(uint vertex_id: SV_VertexI
     output.tile_position = tile_position;
     output.color = color;
     output.clip_distance = clip_distance;
+    output.contrast = sprite.contrast;
     return output;
 }
 
 float4 monochrome_sprite_fragment(MonochromeSpriteFragmentInput input): SV_Target {
     float sample = t_sprite.Sample(s_sprite, input.tile_position).r;
-    float alpha_corrected = apply_contrast_and_gamma_correction(sample, input.color.rgb, grayscale_enhanced_contrast, gamma_ratios);
+    float alpha_corrected = sharpen_coverage(apply_contrast_and_gamma_correction(sample, input.color.rgb, grayscale_enhanced_contrast, gamma_ratios), input.contrast);
     return float4(input.color.rgb, input.color.a * alpha_corrected);
 }
 
+// HERDR: a SubpixelSprite has no `contrast`, so it reads its own buffer,
+// whose stride is MonochromeSprite's less those 8 bytes.
+struct SubpixelSprite {
+    uint order;
+    uint pad;
+    Bounds bounds;
+    Bounds content_mask;
+    Hsla color;
+    AtlasTile tile;
+    TransformationMatrix transformation;
+};
+
+StructuredBuffer<SubpixelSprite> subpixel_sprites: register(t1);
+
 MonochromeSpriteVertexOutput subpixel_sprite_vertex(uint vertex_id: SV_VertexID, uint instance_id: SV_InstanceID) {
-    return monochrome_sprite_vertex(vertex_id, instance_id);
+    float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
+    uint sprite_id = batch_start_index + instance_id;
+    SubpixelSprite sprite = subpixel_sprites[sprite_id];
+
+    MonochromeSpriteVertexOutput output;
+    output.position = to_device_position_transformed(unit_vertex, sprite.bounds, sprite.transformation);
+    output.tile_position = to_tile_position(unit_vertex, sprite.tile);
+    output.color = hsla_to_rgba(sprite.color);
+    output.clip_distance = distance_from_clip_rect_transformed(unit_vertex, sprite.bounds, sprite.content_mask, sprite.transformation);
+    output.contrast = 0.0;
+    return output;
 }
 
 SubpixelSpriteFragmentOutput subpixel_sprite_fragment(MonochromeSpriteFragmentInput input) {
