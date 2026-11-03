@@ -550,7 +550,7 @@ export default class Settings extends View {
       .child(div().pt(10).pb(6).text_size(12.5).font_medium().text_color(t.muted).child("Light"))
       .child(this.themePicker(t, true))
       .child(div().h(18))
-      .child(this.heading(t, "Size and fonts"))
+      .child(this.heading(t, "Size"))
       .child(
         this.row(
           t,
@@ -565,11 +565,14 @@ export default class Settings extends View {
       )
       .child(this.row(t, "Interface zoom", "Panels, tabs and popups, on top of zoom. Terminals keep their size.", scaleStepper("ui_zoom", s.ui_zoom)))
       .child(this.row(t, "Interface text size", "The panels' text only: spacing and icons keep their size.", scaleStepper("ui_text_scale", s.ui_text_scale)))
-      .child(fontRow("font", "font_size", "Terminal font", s.font_family, DEFAULT_FONT, s.font_size))
+      .child(fontRow("ui_font", null, "Interface font", s.ui_font_family, DEFAULT_UI_FONT))
+      .child(div().h(18))
+      .child(this.heading(t, "Terminal text"))
+      .child(fontRow("font", "font_size", "Font", s.font_family, DEFAULT_FONT, s.font_size))
       .child(
         this.row(
           t,
-          "Terminal font weight",
+          "Weight",
           own("font_weight", s.font_weight, 500) ? "This layout sets its own; yours shows in the others." : "Bold text is at least 700.",
           this.stepper(t, "st-font_weight", `${s.font_weight}`, (_e, cx) => step("font_weight", s.font_weight, -25, 100, 900, cx), (_e, cx) => step("font_weight", s.font_weight, 25, 100, 900, cx)),
         ),
@@ -578,7 +581,7 @@ export default class Settings extends View {
       .child(
         this.row(
           t,
-          "Terminal line height",
+          "Line height",
           ownFraction("line_height", s.line_height, 1.15) ? "This layout sets its own; yours shows in the others." : "Row height, as a multiple of the font's height.",
           this.stepper(t, "st-line_height", fraction(s.line_height), (_e, cx) => step("line_height", s.line_height, -0.05, 0.8, 2, cx), (_e, cx) => step("line_height", s.line_height, 0.05, 0.8, 2, cx)),
         ),
@@ -586,16 +589,16 @@ export default class Settings extends View {
       .child(
         this.row(
           t,
-          "Terminal letter spacing",
+          "Letter spacing",
           ownFraction("letter_spacing", s.letter_spacing, 0) ? "This layout sets its own; yours shows in the others." : "Px added to each letter's width.",
           this.stepper(t, "st-letter_spacing", fraction(s.letter_spacing), (_e, cx) => step("letter_spacing", s.letter_spacing, -0.5, -2, 10, cx), (_e, cx) => step("letter_spacing", s.letter_spacing, 0.5, -2, 10, cx)),
         ),
       )
-      .child(this.row(t, "Terminal cell width", "Whole pixels rounds each cell down, so letters sit evenly.", this.choicePicker(t, "st-cw", "cell_width", CELL_WIDTHS)))
+      .child(this.row(t, "Cell width", "Whole pixels rounds each cell down, so letters sit evenly.", this.choicePicker(t, "st-cw", "cell_width", CELL_WIDTHS)))
       .child(
         this.row(
           t,
-          "Terminal ligatures",
+          "Ligatures",
           "Joins pairs like -> and != where the font has them.",
           this.toggle(t, "st-font_ligatures", s.font_ligatures, (_e, cx) =>
             this.change((q) => {
@@ -605,7 +608,6 @@ export default class Settings extends View {
           ),
         ),
       )
-      .child(fontRow("ui_font", null, "Interface font", s.ui_font_family, DEFAULT_UI_FONT))
       .child(div().h(18))
       .child(this.heading(t, "Mouse"))
       .child(this.followsMouse(t, cx));
