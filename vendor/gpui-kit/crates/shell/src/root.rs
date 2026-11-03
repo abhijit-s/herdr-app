@@ -156,6 +156,8 @@ pub struct ShellRoot {
     fps_hud: Option<FpsHudRequest>,
     /// HERDR: size to the content instead of filling the parent (floating views).
     fit_content: bool,
+    /// HERDR: a fitted view that still grows to fill its container's box.
+    fill_fitted: bool,
 }
 
 /// Where the performance HUD sits over the window and how it behaves.
@@ -235,6 +237,7 @@ impl ShellRoot {
             tooltip_overlay: cx.new(|_| TooltipOverlay::new().render_with(render_tooltip)),
             fps_hud: None,
             fit_content: false,
+            fill_fitted: false,
         }
     }
 
@@ -243,6 +246,15 @@ impl ShellRoot {
     pub fn set_fit_content(&mut self, fit: bool, cx: &mut Context<Self>) {
         if self.fit_content != fit {
             self.fit_content = fit;
+            cx.notify();
+        }
+    }
+
+    /// HERDR: a fitted view still fills its container when the container is
+    /// bigger than the content (a toast with a minimum width and a set height).
+    pub fn set_fill_fitted(&mut self, fill: bool, cx: &mut Context<Self>) {
+        if self.fill_fitted != fill {
+            self.fill_fitted = fill;
             cx.notify();
         }
     }
@@ -857,6 +869,7 @@ impl Render for ShellRoot {
             // HERDR: a fitted view still stops at its container's height: a
             // column that can shrink, so a root with `min_h(0)` scrolls.
             .when(self.fit_content, |root| root.flex().flex_col().min_h_0())
+            .when(self.fit_content && self.fill_fitted, |root| root.flex_grow_1())
             // HERDR: no background of its own. The host draws behind every view,
             // and a floating view's rounded corners must show what's under it.
             .text_color(colors.foreground)
