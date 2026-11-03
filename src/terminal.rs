@@ -1104,7 +1104,14 @@ pub fn cell_size(window: &Window) -> Size<Pixels> {
     // Glyphs sit exactly on their cells (gpui-pre `apply_force_width_to_layout`),
     // so any width works; boxes snap their edges (`snap_box`).
     let w = cell_width(advance, crate::settings::z(s.letter_spacing), s.cell_width, scale);
-    size(w, px((f32::from(h) * s.line_height * scale).ceil() / scale))
+    size(w, row_height(h, s.line_height, scale))
+}
+
+/// The font's height times line_height, kept within the 0.8 to 2 settings.json
+/// allows (a 0 would make empty rows and endless grids), rounded up to whole
+/// device pixels.
+fn row_height(font_height: Pixels, line_height: f32, scale: f32) -> Pixels {
+    px((f32::from(font_height) * line_height.clamp(0.8, 2.0) * scale).ceil() / scale)
 }
 
 /// The font's advance plus letter_spacing, then, for `"pixel"`, rounded down
@@ -1700,6 +1707,15 @@ mod tests {
         assert_eq!(super::spaced_width(advance, px(2.)), px(10.));
         assert_eq!(super::spaced_width(advance, px(10.)), px(12.));
         assert_eq!(super::spaced_width(advance, px(-10.)), px(4.));
+    }
+
+    #[test]
+    fn line_height_stays_within_its_range() {
+        use gpui::px;
+        assert_eq!(super::row_height(px(10.), 1.15, 2.), px(11.5));
+        assert_eq!(super::row_height(px(10.), 0., 1.), px(8.));
+        assert_eq!(super::row_height(px(10.), -1., 1.), px(8.));
+        assert_eq!(super::row_height(px(10.), 5., 1.), px(20.));
     }
 
     #[test]

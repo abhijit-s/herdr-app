@@ -34,6 +34,7 @@ This file is the inventory of what diverges. Update it in the same commit that a
 
 Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as is: `line_height` in settings.json or a layout's look, the row height as a multiple of the font's height (0.8 to 2, default 1.15). It replaced this fork's own `feat/line-height`, which supported settings.json only.
 
+- `cell_size` clamps the value to 0.8 to 2 (`row_height`), on `master` only: the pull request only reports a value out of range, and `0` made empty rows and a hang.
 - Settings window: a "Terminal line height" stepper (0.05 steps) and a "Terminal ligatures" toggle for upstream's `font_ligatures`, which had no row. Both are committed on `master` only, with a render test for all the terminal rows (`terminal_text_rows_show_whose_value_is_in_use`).
 - Files: `src/settings.rs`, `src/layout.rs`, `src/terminal.rs` (`cell_size`), `defaults/AGENTS.md`; on `master`: `defaults/frame/settings/main.js`, `src/mods/render_tests.rs`
 - Upstream: pull request #67 (not ours), awaiting review
