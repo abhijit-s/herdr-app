@@ -566,6 +566,7 @@ export default class Settings extends View {
       .child(this.row(t, "Interface zoom", "Panels, tabs and popups, on top of zoom. Terminals keep their size.", scaleStepper("ui_zoom", s.ui_zoom)))
       .child(this.row(t, "Interface text size", "The panels' text only: spacing and icons keep their size.", scaleStepper("ui_text_scale", s.ui_text_scale)))
       .child(fontRow("ui_font", null, "Interface font", s.ui_font_family, DEFAULT_UI_FONT))
+      .child(this.thicken(t, "ui_font_thicken", "Thicken interface text", "Panels, tabs and popups as heavy whatever their color. Terminals follow their own."))
       .child(div().h(18))
       .child(this.heading(t, "Terminal text"))
       .child(fontRow("font", "font_size", "Font", s.font_family, DEFAULT_FONT, s.font_size))
@@ -577,7 +578,7 @@ export default class Settings extends View {
           this.stepper(t, "st-font_weight", `${s.font_weight}`, (_e, cx) => step("font_weight", s.font_weight, -25, 100, 900, cx), (_e, cx) => step("font_weight", s.font_weight, 25, 100, 900, cx)),
         ),
       )
-      .child(this.thicken(t))
+      .child(this.thicken(t, "font_thicken", "Thicken", "Terminal text as heavy whatever its color, as Ghostty's font-thicken does."))
       .child(
         this.row(
           t,
@@ -613,37 +614,39 @@ export default class Settings extends View {
       .child(this.followsMouse(t, cx));
   }
 
-  // Font thickening: a toggle, then its strength while it's on. Layouts don't set
+  // Font thickening (`key` is font_thicken for terminals, ui_font_thicken for
+  // the panels): a toggle, then its strength while it's on. Layouts don't set
   // either. Strength steps by 16 within 0..255, so it lands on each level macOS
   // smoothing draws (about 112, 192, 224 and 255). Off and 255 are the defaults,
   // left out of settings.json.
-  thicken(t) {
-    const on = this.person.font_thicken === true;
-    const strength = Math.max(0, Math.min(255, this.person.font_thicken_strength ?? 255));
+  thicken(t, key, label, hint) {
+    const strengthKey = `${key}_strength`;
+    const on = this.person[key] === true;
+    const strength = Math.max(0, Math.min(255, this.person[strengthKey] ?? 255));
     const go = (d, cx) =>
       this.change((q) => {
-        const now = Math.max(0, Math.min(255, q.font_thicken_strength ?? 255));
+        const now = Math.max(0, Math.min(255, q[strengthKey] ?? 255));
         const next = Math.max(0, Math.min(255, Math.round((now + d) / 16) * 16));
-        if (next === 255) delete q.font_thicken_strength;
-        else q.font_thicken_strength = next;
+        if (next === 255) delete q[strengthKey];
+        else q[strengthKey] = next;
       }, cx);
     return v_flex()
       .w_full()
       .child(
         this.row(
           t,
-          "Thicken",
-          "Terminal text as heavy whatever its color, as Ghostty's font-thicken does.",
-          this.toggle(t, "st-font_thicken", on, (_e, cx) =>
+          label,
+          hint,
+          this.toggle(t, `st-${key}`, on, (_e, cx) =>
             this.change((q) => {
-              if (q.font_thicken) delete q.font_thicken;
-              else q.font_thicken = true;
+              if (q[key]) delete q[key];
+              else q[key] = true;
             }, cx),
           ),
         ),
       )
       .when(on, (el) =>
-        el.child(this.row(t, "Thicken strength", "Like Ghostty's font-thicken-strength; 0 to 96 look the same.", this.stepper(t, "st-font_thicken_strength", `${strength}`, (_e, cx) => go(-16, cx), (_e, cx) => go(16, cx)))),
+        el.child(this.row(t, "Thicken strength", "Like Ghostty's font-thicken-strength; 0 to 96 look the same.", this.stepper(t, `st-${strengthKey}`, `${strength}`, (_e, cx) => go(-16, cx), (_e, cx) => go(16, cx)))),
       );
   }
 

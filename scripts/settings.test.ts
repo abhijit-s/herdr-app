@@ -164,3 +164,21 @@ test("thicken strength shows only while thickening, and steps by 16 within 0 to 
   expect(click({ ...on, font_thicken_strength: 240 }, {}, "st-font_thicken_strength-plus")).toEqual(on);
   expect(click({ ...on, font_thicken_strength: 250 }, {}, "st-font_thicken_strength-plus")).toEqual(on);
 });
+
+test("the interface thicken toggle adds ui_font_thicken, then removes it, apart from the terminal's", () => {
+  expect(click({ font_size: 15 }, {}, "st-ui_font_thicken")).toEqual({ font_size: 15, ui_font_thicken: true });
+  expect(click({ ui_font_thicken: true }, {}, "st-ui_font_thicken")).toEqual({});
+  expect(click({ font_thicken: true }, {}, "st-ui_font_thicken")).toEqual({ font_thicken: true, ui_font_thicken: true });
+  expect(click({ ui_font_thicken: true }, {}, "st-font_thicken")).toEqual({ ui_font_thicken: true, font_thicken: true });
+});
+
+test("interface thicken strength shows only while it's on, and steps by 16 within 0 to 255", () => {
+  expect(() => click({}, {}, "st-ui_font_thicken_strength-minus")).toThrow();
+  expect(() => click({ font_thicken: true }, {}, "st-ui_font_thicken_strength-minus")).toThrow();
+  const on = { ui_font_thicken: true };
+  expect(click(on, {}, "st-ui_font_thicken_strength-minus")).toEqual({ ...on, ui_font_thicken_strength: 240 });
+  expect(click({ ...on, ui_font_thicken_strength: 96 }, {}, "st-ui_font_thicken_strength-plus")).toEqual({ ...on, ui_font_thicken_strength: 112 });
+  expect(click({ ...on, ui_font_thicken_strength: 0 }, {}, "st-ui_font_thicken_strength-minus")).toEqual({ ...on, ui_font_thicken_strength: 0 });
+  expect(click({ ...on, ui_font_thicken_strength: 240 }, {}, "st-ui_font_thicken_strength-plus")).toEqual(on);
+  expect(click({ ...on, font_thicken_strength: 96 }, {}, "st-ui_font_thicken_strength-minus")).toEqual({ ...on, font_thicken_strength: 96, ui_font_thicken_strength: 240 });
+});
