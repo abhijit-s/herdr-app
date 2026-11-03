@@ -683,6 +683,70 @@ fragment float4 monochrome_sprite_fragment(
   return color;
 }
 
+// HERDR: subpixel glyphs. The atlas holds a coverage per color channel;
+// the fragment's second output blends each channel of the background toward
+// the text color by its own coverage (dual-source blending), in the same
+// gamma space as monochrome sprites, so equal coverages draw as they would.
+struct SubpixelSpriteVertexOutput {
+  float4 position [[position]];
+  float2 tile_position;
+  float4 color [[flat]];
+  float4 clip_distance;
+  float contrast [[flat]];
+};
+
+struct SubpixelSpriteFragmentOutput {
+  float4 color [[color(0), index(0)]];
+  float4 blend [[color(0), index(1)]];
+};
+
+vertex SubpixelSpriteVertexOutput subpixel_sprite_vertex(
+    uint unit_vertex_id [[vertex_id]], uint sprite_id [[instance_id]],
+    constant float2 *unit_vertices [[buffer(SpriteInputIndex_Vertices)]],
+    constant SubpixelSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
+    constant Size_DevicePixels *viewport_size
+    [[buffer(SpriteInputIndex_ViewportSize)]],
+    constant Size_DevicePixels *atlas_size
+    [[buffer(SpriteInputIndex_AtlasTextureSize)]]) {
+  float2 unit_vertex = unit_vertices[unit_vertex_id];
+  SubpixelSprite sprite = sprites[sprite_id];
+  float4 device_position =
+      to_device_position_transformed(unit_vertex, sprite.bounds, sprite.transformation, viewport_size);
+  float4 clip_distance = distance_from_clip_rect_transformed(unit_vertex, sprite.bounds,
+                                                 sprite.content_mask.bounds, sprite.transformation);
+  float2 tile_position = to_tile_position(unit_vertex, sprite.tile, atlas_size);
+  float4 color = hsla_to_rgba(sprite.color);
+  return SubpixelSpriteVertexOutput{
+      device_position,
+      tile_position,
+      color,
+      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
+      sprite.contrast};
+}
+
+fragment SubpixelSpriteFragmentOutput subpixel_sprite_fragment(
+    SubpixelSpriteVertexOutput input [[stage_in]],
+    texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]],
+    constant uint *is_bgr [[buffer(SpriteInputIndex_Sprites)]]) {
+  if (any(input.clip_distance < float4(0.0))) {
+    return SubpixelSpriteFragmentOutput{float4(0.0), float4(0.0)};
+  }
+  // Each texel is one device pixel: nearest keeps the channels apart.
+  constexpr sampler atlas_texture_sampler(mag_filter::nearest,
+                                          min_filter::nearest);
+  float3 coverage =
+      atlas_texture.sample(atlas_texture_sampler, input.tile_position).rgb;
+  if (*is_bgr != 0) {
+    coverage = coverage.bgr;
+  }
+  float3 alpha = input.color.a * float3(sharpen_coverage(coverage.r, input.contrast),
+                                        sharpen_coverage(coverage.g, input.contrast),
+                                        sharpen_coverage(coverage.b, input.contrast));
+  return SubpixelSpriteFragmentOutput{
+      float4(input.color.rgb, max(alpha.r, max(alpha.g, alpha.b))),
+      float4(alpha, 1.0)};
+}
+
 struct PolychromeSpriteVertexOutput {
   float4 position [[position]];
   float2 tile_position;

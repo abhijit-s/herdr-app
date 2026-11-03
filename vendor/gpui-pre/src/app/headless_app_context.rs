@@ -161,6 +161,20 @@ impl HeadlessAppContext {
         app.update_window(window, f)
     }
 
+    /// HERDR: simulates the window moving to a display at `scale_factor`.
+    pub fn simulate_scale_factor_change(&mut self, window: AnyWindowHandle, scale_factor: f32) {
+        let test_window = self
+            .app
+            .borrow_mut()
+            .windows
+            .get_mut(window.id)
+            .and_then(|window| window.as_deref_mut())
+            .and_then(|window| window.platform_window.as_test().cloned());
+        if let Some(mut test_window) = test_window {
+            test_window.simulate_scale_factor_change(scale_factor);
+        }
+    }
+
     /// Captures a screenshot from a window.
     ///
     /// Requires that the context was created with a renderer factory that

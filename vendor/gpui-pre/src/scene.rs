@@ -773,7 +773,9 @@ impl From<MonochromeSprite> for Primitive {
 #[expect(missing_docs)]
 pub struct SubpixelSprite {
     pub order: DrawOrder,
-    pub pad: u32, // align to 8 bytes
+    // HERDR: `MonochromeSprite::contrast` per color channel, in the bytes
+    // that aligned `bounds` to 8 (backends without it still read them as pad).
+    pub contrast: f32,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,

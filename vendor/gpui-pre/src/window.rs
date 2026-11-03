@@ -1211,6 +1211,10 @@ pub struct Window {
     glyph_contrast: f32,
     // HERDR: the contrast each frame's paint starts at (`set_glyph_contrast`).
     base_glyph_contrast: f32,
+    // HERDR: whether `paint_glyph` asks for subpixel glyphs (`with_glyph_subpixel`).
+    glyph_subpixel: bool,
+    // HERDR: the choice each frame's paint starts at (`set_glyph_subpixel`).
+    base_glyph_subpixel: bool,
     #[cfg(any(test, feature = "test-support"))]
     presents: usize,
     pub(crate) next_frame: Frame,
@@ -2113,6 +2117,8 @@ impl Window {
             base_glyph_thicken: None,
             glyph_contrast: 0.,
             base_glyph_contrast: 0.,
+            glyph_subpixel: false,
+            base_glyph_subpixel: false,
             #[cfg(any(test, feature = "test-support"))]
             presents: 0,
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
@@ -3738,6 +3744,7 @@ impl Window {
         // too, starts at the window's strength; `with_glyph_thicken` nests.
         self.glyph_thicken = self.base_glyph_thicken;
         self.glyph_contrast = self.base_glyph_contrast;
+        self.glyph_subpixel = self.base_glyph_subpixel;
         root_element.paint(self, cx);
 
         #[cfg(any(feature = "inspector", debug_assertions))]
@@ -4189,6 +4196,25 @@ impl Window {
         let outer = std::mem::replace(&mut self.glyph_contrast, contrast.clamp(0., 1.));
         let result = f(self);
         self.glyph_contrast = outer;
+        result
+    }
+
+    /// HERDR: whether the glyphs a frame paints outside any
+    /// `with_glyph_subpixel` ask for subpixel (per color channel) coverage.
+    /// Set it while rendering, as `set_glyph_thicken`.
+    pub fn set_glyph_subpixel(&mut self, subpixel: bool) {
+        self.base_glyph_subpixel = subpixel;
+    }
+
+    /// HERDR: paints the monochrome glyphs in `f` with subpixel coverage when
+    /// `subpixel` and the window can show it (`PlatformWindow::
+    /// is_subpixel_rendering_supported`, an opaque background), else grayscale.
+    /// Under the app's `TextRenderingMode::PlatformDefault` only; an explicit
+    /// mode wins.
+    pub fn with_glyph_subpixel<R>(&mut self, subpixel: bool, f: impl FnOnce(&mut Self) -> R) -> R {
+        let outer = std::mem::replace(&mut self.glyph_subpixel, subpixel);
+        let result = f(self);
+        self.glyph_subpixel = outer;
         result
     }
 
@@ -4917,7 +4943,7 @@ impl Window {
             if subpixel_rendering {
                 self.next_frame.scene.insert_primitive(SubpixelSprite {
                     order: 0,
-                    pad: 0,
+                    contrast: self.glyph_contrast,
                     bounds,
                     content_mask,
                     color: color.opacity(element_opacity),
@@ -4951,6 +4977,8 @@ impl Window {
         }
 
         let mode = match self.text_rendering_mode.get() {
+            // HERDR: a paint that asks for subpixel glyphs gets them.
+            TextRenderingMode::PlatformDefault if self.glyph_subpixel => TextRenderingMode::Subpixel,
             TextRenderingMode::PlatformDefault => self
                 .text_system()
                 .recommended_rendering_mode(font_id, font_size),

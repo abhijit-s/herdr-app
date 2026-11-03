@@ -121,6 +121,8 @@ pub struct MetalRenderer {
     quads_pipeline_state: metal::RenderPipelineState,
     underlines_pipeline_state: metal::RenderPipelineState,
     monochrome_sprites_pipeline_state: metal::RenderPipelineState,
+    // HERDR: subpixel glyphs, blended per color channel.
+    subpixel_sprites_pipeline_state: metal::RenderPipelineState,
     polychrome_sprites_pipeline_state: metal::RenderPipelineState,
     surfaces_pipeline_state: metal::RenderPipelineState,
     unit_vertices: metal::Buffer,
@@ -342,6 +344,14 @@ impl MetalRenderer {
             "monochrome_sprite_fragment",
             MTLPixelFormat::BGRA8Unorm,
         );
+        let subpixel_sprites_pipeline_state = build_subpixel_sprite_pipeline_state(
+            &device,
+            &library,
+            "subpixel_sprites",
+            "subpixel_sprite_vertex",
+            "subpixel_sprite_fragment",
+            MTLPixelFormat::BGRA8Unorm,
+        );
         let polychrome_sprites_pipeline_state = build_pipeline_state(
             &device,
             &library,
@@ -379,6 +389,7 @@ impl MetalRenderer {
             quads_pipeline_state,
             underlines_pipeline_state,
             monochrome_sprites_pipeline_state,
+            subpixel_sprites_pipeline_state,
             polychrome_sprites_pipeline_state,
             surfaces_pipeline_state,
             unit_vertices,
@@ -767,7 +778,14 @@ impl MetalRenderer {
                     viewport_size,
                     command_encoder,
                 ),
-                PrimitiveBatch::SubpixelSprites { .. } => unreachable!(),
+                PrimitiveBatch::SubpixelSprites { texture_id, range } => self
+                    .draw_subpixel_sprites(
+                        texture_id,
+                        range,
+                        instance_bindings,
+                        viewport_size,
+                        command_encoder,
+                    ),
             }
         }
 
@@ -1099,6 +1117,63 @@ impl MetalRenderer {
         );
     }
 
+    fn draw_subpixel_sprites(
+        &self,
+        texture_id: AtlasTextureId,
+        sprites: Range<usize>,
+        instance_bindings: &InstanceBindings,
+        viewport_size: Size<DevicePixels>,
+        command_encoder: &metal::RenderCommandEncoderRef,
+    ) {
+        if sprites.is_empty() {
+            return;
+        }
+
+        let Some(texture) = self.sprite_atlas.metal_texture(texture_id) else {
+            return;
+        };
+        let texture_size = size(
+            DevicePixels(texture.width() as i32),
+            DevicePixels(texture.height() as i32),
+        );
+        let is_bgr = gpui::subpixel_bgr() as u32;
+        command_encoder.set_render_pipeline_state(&self.subpixel_sprites_pipeline_state);
+        command_encoder.set_vertex_buffer(
+            SpriteInputIndex::Vertices as u64,
+            Some(&self.unit_vertices),
+            0,
+        );
+        command_encoder.set_vertex_buffer(
+            SpriteInputIndex::Sprites as u64,
+            Some(&instance_bindings.subpixel_sprites.buffer),
+            instance_bindings.subpixel_sprites.offset as u64,
+        );
+        command_encoder.set_vertex_bytes(
+            SpriteInputIndex::ViewportSize as u64,
+            mem::size_of_val(&viewport_size) as u64,
+            &viewport_size as *const Size<DevicePixels> as *const _,
+        );
+        command_encoder.set_vertex_bytes(
+            SpriteInputIndex::AtlasTextureSize as u64,
+            mem::size_of_val(&texture_size) as u64,
+            &texture_size as *const Size<DevicePixels> as *const _,
+        );
+        command_encoder.set_fragment_bytes(
+            SpriteInputIndex::Sprites as u64,
+            mem::size_of_val(&is_bgr) as u64,
+            &is_bgr as *const u32 as *const _,
+        );
+        command_encoder.set_fragment_texture(SpriteInputIndex::AtlasTexture as u64, Some(&texture));
+
+        command_encoder.draw_primitives_instanced_base_instance(
+            metal::MTLPrimitiveType::Triangle,
+            0,
+            6,
+            sprites.len() as u64,
+            sprites.start as u64,
+        );
+    }
+
     fn draw_polychrome_sprites(
         &self,
         texture_id: AtlasTextureId,
@@ -1340,6 +1415,42 @@ fn build_pipeline_state(
         .expect("could not create render pipeline state")
 }
 
+// HERDR: the second fragment output carries a coverage per color channel, so
+// each channel of the background moves toward the text color by its own.
+fn build_subpixel_sprite_pipeline_state(
+    device: &metal::DeviceRef,
+    library: &metal::LibraryRef,
+    label: &str,
+    vertex_fn_name: &str,
+    fragment_fn_name: &str,
+    pixel_format: metal::MTLPixelFormat,
+) -> metal::RenderPipelineState {
+    let vertex_fn = library
+        .get_function(vertex_fn_name, None)
+        .expect("error locating vertex function");
+    let fragment_fn = library
+        .get_function(fragment_fn_name, None)
+        .expect("error locating fragment function");
+
+    let descriptor = metal::RenderPipelineDescriptor::new();
+    descriptor.set_label(label);
+    descriptor.set_vertex_function(Some(vertex_fn.as_ref()));
+    descriptor.set_fragment_function(Some(fragment_fn.as_ref()));
+    let color_attachment = descriptor.color_attachments().object_at(0).unwrap();
+    color_attachment.set_pixel_format(pixel_format);
+    color_attachment.set_blending_enabled(true);
+    color_attachment.set_rgb_blend_operation(metal::MTLBlendOperation::Add);
+    color_attachment.set_alpha_blend_operation(metal::MTLBlendOperation::Add);
+    color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::Source1Color);
+    color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
+    color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSource1Color);
+    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::One);
+
+    device
+        .new_render_pipeline_state(&descriptor)
+        .expect("could not create render pipeline state")
+}
+
 fn build_path_sprite_pipeline_state(
     device: &metal::DeviceRef,
     library: &metal::LibraryRef,
@@ -1424,6 +1535,7 @@ struct InstanceBindings {
     shadows: InstanceBinding,
     underlines: InstanceBinding,
     monochrome_sprites: InstanceBinding,
+    subpixel_sprites: InstanceBinding,
     polychrome_sprites: InstanceBinding,
     surfaces: InstanceBinding,
 }
@@ -1434,6 +1546,7 @@ fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<I
         shadows: writer.write(&scene.shadows)?,
         underlines: writer.write(&scene.underlines)?,
         monochrome_sprites: writer.write(&scene.monochrome_sprites)?,
+        subpixel_sprites: writer.write(&scene.subpixel_sprites)?,
         polychrome_sprites: writer.write(&scene.polychrome_sprites)?,
         surfaces: writer.write_iter(scene.surfaces.iter().map(|surface| SurfaceBounds {
             bounds: surface.bounds,
