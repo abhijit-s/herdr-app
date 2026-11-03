@@ -21,6 +21,10 @@ const APPEARANCES = [
   ["light", "Light"],
   ["dark", "Dark"],
 ];
+const CELL_WIDTHS = [
+  ["font", "Font"],
+  ["pixel", "Whole pixels"],
+];
 
 // What the app uses when settings.json names no font (settings.rs).
 const DEFAULT_FONT = "JetBrains Mono";
@@ -297,8 +301,10 @@ export default class Settings extends View {
       );
   }
 
-  appearancePicker(t, cx) {
-    const now = this.person.appearance ?? null;
+  // One of a few values; picking the first (the default) leaves it out of settings.json.
+  choicePicker(t, id, key, choices) {
+    const def = choices[0][0];
+    const now = this.person[key] ?? def;
     return h_flex()
       .p(2)
       .gap(2)
@@ -307,9 +313,9 @@ export default class Settings extends View {
       .border_color(t.border)
       .bg(t.background)
       .children(
-        APPEARANCES.map(([value, label]) =>
+        choices.map(([value, label]) =>
           div()
-            .id(`st-ap-${label}`)
+            .id(`${id}-${label}`)
             .px(12)
             .py(4)
             .rounded(6)
@@ -319,8 +325,8 @@ export default class Settings extends View {
             .when(now !== value, (el) => el.text_color(t.muted).hover((s) => s.text_color(t.foreground)))
             .on_click((_e, cx) =>
               this.change((p) => {
-                if (value === null) delete p.appearance;
-                else p.appearance = value;
+                if (value === def) delete p[key];
+                else p[key] = value;
               }, cx),
             )
             .child(label),
@@ -488,7 +494,7 @@ export default class Settings extends View {
       .child(this.layoutPicker(t, cx))
       .child(div().h(18))
       .child(this.heading(t, "Theme"))
-      .child(this.row(t, "Appearance", "Light or dark, or as your system is now.", this.appearancePicker(t, cx)))
+      .child(this.row(t, "Appearance", "Light or dark, or as your system is now.", this.choicePicker(t, "st-ap", "appearance", APPEARANCES)))
       .child(div().pt(12).pb(8).text_size(12.5).text_color(t.dim).child("For the layout you're in: each layout keeps its own light and dark theme."))
       .child(div().pb(6).text_size(12.5).font_medium().text_color(t.muted).child("Dark"))
       .child(this.themePicker(t, false))
@@ -517,6 +523,7 @@ export default class Settings extends View {
           this.stepper(t, "st-letter_spacing", fraction(s.letter_spacing), (_e, cx) => step("letter_spacing", s.letter_spacing, -0.5, -2, 10, cx), (_e, cx) => step("letter_spacing", s.letter_spacing, 0.5, -2, 10, cx)),
         ),
       )
+      .child(this.row(t, "Terminal cell width", "Whole pixels rounds each cell down, so letters sit evenly.", this.choicePicker(t, "st-cw", "cell_width", CELL_WIDTHS)))
       .child(fontRow("ui_font", null, "Interface font", s.ui_font_family, DEFAULT_UI_FONT));
   }
 
