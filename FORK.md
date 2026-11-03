@@ -66,7 +66,7 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 ### Pane names
 
-`feat/pane-rename` (for issue #322, pull request not yet opened): `pane.rename {pane?, name}` names a pane like `tab.rename` and `space.rename`, asking with the shipped prompt when there's no name; an empty name goes back to the program's own. The name is the pane block's `title` in its tab's tree, so it saves and syncs with the layout document. `panes()` exposes it as `name`, and the shipped `pane` and `terminals-pane` headers show it.
+`feat/pane-rename` (for issue #322, pull request #384): `pane.rename {pane?, name}` names a pane like `tab.rename` and `space.rename`, asking with the shipped prompt when there's no name; an empty name goes back to the program's own. The name is the pane block's `title` in its tab's tree, so it saves and syncs with the layout document. `panes()` exposes it as `name`, and the shipped `pane` and `terminals-pane` headers show it.
 
 - Files: `src/commands.rs`, `src/window.rs`, `src/model.rs`, `src/mirror.rs` (tests), `defaults/AGENTS.md`, `defaults/herdr.d.ts`, `defaults/mods/pane/main.js`, `defaults/mods/terminals-pane/main.js`, `docs/commands.md`
-- Upstream: issue #322 asks for it (as `terminal.rename`)
+- Upstream: pull request #384, for issue #322 (which asks for `terminal.rename`)
