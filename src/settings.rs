@@ -1130,8 +1130,8 @@ pub fn load_home_fonts(cx: &mut gpui::App) -> bool {
     for dir in dirs {
         for path in std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()) {
             let font = path.extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_lowercase().as_str(), "ttf" | "otf" | "ttc"));
-            if font && !loaded.contains(&path) && let Ok(bytes) = std::fs::read(&path) {
-                new.push(std::borrow::Cow::Owned(bytes));
+            if font && !loaded.contains(&path) && let Some(bytes) = map_font(&path) {
+                new.push(std::borrow::Cow::Borrowed(bytes));
                 loaded.push(path);
             }
         }
@@ -1145,6 +1145,17 @@ pub fn load_home_fonts(cx: &mut gpui::App) -> bool {
     FONTS_ADDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     note_fonts(cx.text_system().all_font_names());
     true
+}
+
+/// Mapped, not read: the text system keeps borrowed bytes without copying
+/// them, so the font's pages stay file-backed and clean (megabytes per family
+/// that never count against the app). Leaked because fonts are never removed.
+/// A font file truncated in place while mapped would crash the app on its next
+/// read; replacing the file (a new inode, as copies and installers do) is safe.
+fn map_font(path: &std::path::Path) -> Option<&'static [u8]> {
+    let file = std::fs::File::open(path).ok()?;
+    let map = unsafe { memmap2::Mmap::map(&file) }.ok()?;
+    Some(&**Box::leak(Box::new(map)))
 }
 
 static FONTS_ADDED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

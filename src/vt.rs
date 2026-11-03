@@ -607,7 +607,9 @@ const BRACKETED_PASTE: GhosttyMode = 2004;
 const MAX_HOLD: Duration = Duration::from_millis(1000);
 const SCROLLBACK_MAX_LINES: usize = 10_000;
 // Bound memory per terminal; wide or heavily styled rows may hit this first.
-const SCROLLBACK_MAX_BYTES: usize = 10_000_000;
+// herdr-core's default `history_mb` (5 MiB): the core holds the history, so a
+// copy here bigger than the core's only costs memory.
+const SCROLLBACK_MAX_BYTES: usize = 5 * 1024 * 1024;
 /// Units per pixel for selection gestures (see `select`).
 const SUBPIXEL: f32 = 64.0;
 
@@ -1612,14 +1614,20 @@ mod tests {
     }
 
     #[test]
-    fn scrollback_retains_five_thousand_styled_lines() {
-        for cols in [80, 200] {
+    fn scrollback_keeps_the_latest_styled_lines_within_its_byte_cap() {
+        // 80 columns: all 5000 fit. 200 columns: the byte cap drops the oldest,
+        // but never below the 2000 lines an attach replays (`hc::attach`).
+        for (cols, all_kept) in [(80, true), (200, false)] {
             let mut vt = Vt::new(cols, 25);
             for line in 1..=5000 {
                 vt.write(format!("\x1b[1;31m{line:04}\x1b[0m {}\r\n", "x".repeat(cols as usize - 6)).as_bytes());
             }
             vt.scroll_viewport(-10_000);
-            for first in (1..=5000).step_by(25) {
+            let top: String = vt.frame().rows[0].iter().map(|c| c.text.as_str()).collect();
+            let oldest: usize = top[..4].parse().unwrap_or_else(|_| panic!("{cols} columns: {top:?}"));
+            assert_eq!(oldest == 1, all_kept, "{cols} columns: oldest kept is line {oldest}");
+            assert!(5000 - oldest + 1 >= 2000, "{cols} columns: only {} lines kept", 5000 - oldest + 1);
+            for first in (oldest..=5000 - 24).step_by(25) {
                 let frame = vt.frame();
                 for (offset, row) in frame.rows.iter().enumerate() {
                     let text: String = row.iter().map(|c| c.text.as_str()).collect();
