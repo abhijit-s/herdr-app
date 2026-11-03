@@ -140,3 +140,27 @@ test("a settings.json that can't be read, or an edit that throws, says why", asy
   expect(disk.writes).toBe(0);
   expect(thrown.toasts).toEqual([{ title: "Cannot read settings.json", body: "no such section", level: "error" }]);
 });
+
+test("terminal font weight steps by 25 within 100 to 900", () => {
+  expect(click({}, {}, "st-font_weight-plus")).toEqual({ font_weight: 525 });
+  expect(click({ font_weight: 425 }, { font_weight: 425 }, "st-font_weight-minus")).toEqual({ font_weight: 400 });
+  expect(click({ font_weight: 900 }, { font_weight: 900 }, "st-font_weight-plus")).toEqual({ font_weight: 900 });
+  expect(click({ font_weight: 100 }, { font_weight: 100 }, "st-font_weight-minus")).toEqual({ font_weight: 100 });
+});
+
+test("the thicken toggle adds font_thicken, then removes it", () => {
+  expect(click({ font_size: 15 }, {}, "st-font_thicken")).toEqual({ font_size: 15, font_thicken: true });
+  expect(click({ font_size: 15, font_thicken: true }, {}, "st-font_thicken")).toEqual({ font_size: 15 });
+});
+
+test("thicken strength shows only while thickening, and steps by 16 within 0 to 255", () => {
+  expect(() => click({}, {}, "st-font_thicken_strength-minus")).toThrow();
+  const on = { font_thicken: true };
+  expect(click(on, {}, "st-font_thicken_strength-minus")).toEqual({ ...on, font_thicken_strength: 240 });
+  expect(click({ ...on, font_thicken_strength: 96 }, {}, "st-font_thicken_strength-plus")).toEqual({ ...on, font_thicken_strength: 112 });
+  expect(click({ ...on, font_thicken_strength: 0 }, {}, "st-font_thicken_strength-minus")).toEqual({ ...on, font_thicken_strength: 0 });
+  expect(click({ ...on, font_thicken_strength: 999 }, {}, "st-font_thicken_strength-minus")).toEqual({ ...on, font_thicken_strength: 240 });
+  // Back at 255, the key leaves settings.json.
+  expect(click({ ...on, font_thicken_strength: 240 }, {}, "st-font_thicken_strength-plus")).toEqual(on);
+  expect(click({ ...on, font_thicken_strength: 250 }, {}, "st-font_thicken_strength-plus")).toEqual(on);
+});
