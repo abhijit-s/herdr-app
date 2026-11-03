@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 
-// The Settings window's Look section without a window or a core: its steppers
+// The Settings window's Text page without a window or a core: its steppers
 // and what a click writes to settings.json.
 class Element {
   nodes: Element[] = [];
@@ -54,7 +54,7 @@ function find(root: Element, id: string): Element {
   return undefined as any;
 }
 
-/** Clicks `id` in the Look section with `person` in settings.json; what gets written. */
+/** Clicks `id` on the Text page with `person` in settings.json; what gets written. */
 function click(person: Record<string, any>, shown: Record<string, any>, id: string) {
   composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, letter_spacing: 0, ui_scale_ranges: { ui_zoom: [0.75, 1.5], ui_text_scale: [0.8, 1.3] }, ...shown };
   const view = new Settings();
@@ -65,7 +65,7 @@ function click(person: Record<string, any>, shown: Record<string, any>, id: stri
     written = structuredClone(person);
     edit(written);
   };
-  const button = find(view.look(new Proxy({}, { get: () => "#000000" }), {}), id);
+  const button = find(view.text(new Proxy({}, { get: () => "#000000" })), id);
   expect(button).toBeDefined();
   button.calls.on_click[0](null, {});
   return written;

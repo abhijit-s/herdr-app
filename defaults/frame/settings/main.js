@@ -19,6 +19,7 @@ export function scaleStep(asked, composed, delta, [lo, hi]) {
 
 const SECTIONS = [
   { id: "look", title: "Look", icon: "palette" },
+  { id: "text", title: "Text", icon: "type" },
   ...(window()?.platform === "macos" ? [{ id: "keyboard", title: "Keyboard", icon: "keyboard" }] : []),
   { id: "machines", title: "Machines", icon: "server" },
   { id: "alerts", title: "Alerts", icon: "bell" },
@@ -501,6 +502,24 @@ export default class Settings extends View {
   }
 
   look(t, cx) {
+    return v_flex()
+      .w_full()
+      .child(this.heading(t, "Layout"))
+      .child(this.layoutPicker(t, cx))
+      .child(div().h(18))
+      .child(this.heading(t, "Theme"))
+      .child(this.row(t, "Appearance", "Light or dark, or as your system is now.", this.choicePicker(t, "st-ap", "appearance", APPEARANCES)))
+      .child(div().pt(12).pb(8).text_size(12.5).text_color(t.dim).child("For the layout you're in: each layout keeps its own light and dark theme."))
+      .child(div().pb(6).text_size(12.5).font_medium().text_color(t.muted).child("Dark"))
+      .child(this.themePicker(t, false))
+      .child(div().pt(10).pb(6).text_size(12.5).font_medium().text_color(t.muted).child("Light"))
+      .child(this.themePicker(t, true))
+      .child(div().h(18))
+      .child(this.heading(t, "Mouse"))
+      .child(this.followsMouse(t, cx));
+  }
+
+  text(t) {
     const s = settings();
     const p = this.person;
     const own = (key, composed, def) => (p[key] ?? def) !== composed;
@@ -539,17 +558,6 @@ export default class Settings extends View {
         .when(this.picking === which, (el) => el.child(this.fontList(t, which, def)));
     return v_flex()
       .w_full()
-      .child(this.heading(t, "Layout"))
-      .child(this.layoutPicker(t, cx))
-      .child(div().h(18))
-      .child(this.heading(t, "Theme"))
-      .child(this.row(t, "Appearance", "Light or dark, or as your system is now.", this.choicePicker(t, "st-ap", "appearance", APPEARANCES)))
-      .child(div().pt(12).pb(8).text_size(12.5).text_color(t.dim).child("For the layout you're in: each layout keeps its own light and dark theme."))
-      .child(div().pb(6).text_size(12.5).font_medium().text_color(t.muted).child("Dark"))
-      .child(this.themePicker(t, false))
-      .child(div().pt(10).pb(6).text_size(12.5).font_medium().text_color(t.muted).child("Light"))
-      .child(this.themePicker(t, true))
-      .child(div().h(18))
       .child(this.heading(t, "Size"))
       .child(
         this.row(
@@ -607,10 +615,7 @@ export default class Settings extends View {
             }, cx),
           ),
         ),
-      )
-      .child(div().h(18))
-      .child(this.heading(t, "Mouse"))
-      .child(this.followsMouse(t, cx));
+      );
   }
 
   // Font thickening: a toggle, then its strength while it's on. Layouts don't set
@@ -1094,6 +1099,8 @@ export default class Settings extends View {
                   .child(
                     this.section === "look"
                       ? this.look(t, cx)
+                      : this.section === "text"
+                        ? this.text(t)
                       : this.section === "keyboard"
                         ? this.keyboard(t)
                       : this.section === "machines"
