@@ -76,8 +76,8 @@ struct Grid {
     /// The cursor's cell in window coordinates, from the last paint: where the
     /// input method puts its candidate window.
     cursor_at: Option<Bounds<Pixels>>,
-    /// Each row's drawing by position, kept while the row is the same (`Rc`).
-    painted: Vec<(Rc<Vec<vt::Cell>>, Vec<RowOp>, Option<usize>)>,
+    /// Each row's drawing, kept while the row is the same `Rc`, wherever it moved.
+    painted: Vec<PaintedRow>,
     /// Font size, cell size, cell font, loaded fonts and ligature setting used to draw.
     painted_with: (u32, Size<Pixels>, Font, u64, bool),
 }
@@ -1145,6 +1145,39 @@ enum RowOp {
     Text { x: usize, line: ShapedLine },
 }
 
+/// A row's drawing as last painted, with the cells and ligature cursor column
+/// it was built from.
+struct PaintedRow {
+    cells: Rc<Vec<vt::Cell>>,
+    cursor: Option<usize>,
+    ops: Rc<Vec<RowOp>>,
+}
+
+/// This frame's row drawings: a row that is the same `Rc` as one painted last
+/// frame (`Vt::frame` keeps a row that didn't change, even when it moved) with
+/// the same cursor column keeps its drawing; only the others are `build`.
+/// Drawings are in cells from the row's start, so they move with their row.
+fn keep_rows(
+    last: Vec<PaintedRow>,
+    rows: &[Rc<Vec<vt::Cell>>],
+    cursor: Option<(u16, u16)>,
+    mut build: impl FnMut(&[vt::Cell], Option<usize>) -> Vec<RowOp>,
+) -> Vec<PaintedRow> {
+    let kept: HashMap<(*const Vec<vt::Cell>, Option<usize>), &Rc<Vec<RowOp>>> =
+        last.iter().map(|p| ((Rc::as_ptr(&p.cells), p.cursor), &p.ops)).collect();
+    rows.iter()
+        .enumerate()
+        .map(|(y, row)| {
+            let column = cursor.filter(|(_, cy)| *cy as usize == y).map(|(x, _)| x as usize);
+            let ops = match kept.get(&(Rc::as_ptr(row), column)) {
+                Some(ops) => Rc::clone(ops),
+                None => Rc::new(build(row, column)),
+            };
+            PaintedRow { cells: row.clone(), cursor: column, ops }
+        })
+        .collect()
+}
+
 /// A row's drawing: its backgrounds, merged into runs of one color, then its
 /// text in runs of one style (wide characters, sprites and icons on their own).
 fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, cursor: Option<usize>, window: &mut Window) -> Vec<RowOp> {
@@ -1304,37 +1337,19 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, w
     paint_images(true, window);
 
     // Each row's drawing is built once and painted again while the row is the
-    // same (`Vt::frame` keeps a row libghostty didn't change): an agent's spinner
-    // line rebuilds one row, not the whole screen.
+    // same: an agent's spinner line, or a line of output scrolling the screen,
+    // rebuilds the rows that changed, not the whole screen.
     let ligatures = crate::settings::get().font_ligatures;
     let cursor = frame.cursor_cell.filter(|_| ligatures);
     // The whole cell font, so a weight change redraws kept rows too.
     let with = (crate::settings::font_size().to_bits(), cell, cell_font(false, false), crate::settings::fonts_added(), ligatures);
-    // When every row changed (output scrolling), nothing is kept: the next
-    // frame would find none of them the same.
-    let mut painted = std::mem::take(&mut grid.borrow_mut().painted);
-    if grid.borrow().painted_with != with || frame.all {
-        painted.clear();
+    let mut last = std::mem::take(&mut grid.borrow_mut().painted);
+    if grid.borrow().painted_with != with {
+        last.clear();
     }
-    painted.truncate(frame.rows.len());
-    for (y, row) in frame.rows.iter().enumerate() {
-        let column = cursor.filter(|(_, cy)| *cy as usize == y).map(|(x, _)| x as usize);
-        let fresh;
-        let ops = if frame.all {
-            fresh = row_ops(row, cell, column, window);
-            &fresh
-        } else {
-            if painted.get(y).is_none_or(|(r, _, c)| !Rc::ptr_eq(r, row) || *c != column) {
-                let ops = row_ops(row, cell, column, window);
-                if y < painted.len() {
-                    painted[y] = (row.clone(), ops, column);
-                } else {
-                    painted.push((row.clone(), ops, column));
-                }
-            }
-            &painted[y].1
-        };
-        for op in ops {
+    let painted = keep_rows(last, &frame.rows, cursor, |row, column| row_ops(row, cell, column, window));
+    for (y, row) in painted.iter().enumerate() {
+        for op in row.ops.iter() {
             match op {
                 RowOp::Bg { from, to, color } => {
                     let b = Bounds::new(at(*from, y), size(cell.width * (to - from) as f32, cell.height));
@@ -2027,6 +2042,46 @@ mod tests {
                 }
             }
         }).unwrap();
+    }
+
+    #[test]
+    fn only_rows_that_changed_are_built_again() {
+        use super::*;
+        fn paint(last: Vec<PaintedRow>, vt: &mut Vt, ligatures: bool, built: &mut Vec<String>) -> Vec<PaintedRow> {
+            let frame = vt.frame();
+            let cursor = frame.cursor_cell.filter(|_| ligatures);
+            keep_rows(last, &frame.rows, cursor, |row, _| {
+                built.push(row.iter().map(|c| c.text.as_str()).collect());
+                Vec::new()
+            })
+        }
+        let mut vt = Vt::new(10, 4);
+        let mut built = Vec::new();
+        vt.write(b"a\r\nb\r\nc\r\nd");
+        let painted = paint(Vec::new(), &mut vt, false, &mut built);
+        assert_eq!(built, ["a", "b", "c", "d"]);
+
+        built.clear();
+        let painted = paint(painted, &mut vt, false, &mut built);
+        assert!(built.is_empty(), "nothing changed: {built:?}");
+
+        // Output scrolls the screen: every row moved, one is new.
+        vt.write(b"\r\ne");
+        let painted = paint(painted, &mut vt, false, &mut built);
+        assert_eq!(built, ["e"]);
+
+        built.clear();
+        vt.write(b"\x1b[2;1HC\x1b[4;2H");
+        let painted = paint(painted, &mut vt, false, &mut built);
+        assert_eq!(built, ["C"]);
+
+        // With ligatures the cursor's row is shaped around it: the row it
+        // leaves and the row it enters are built again.
+        let painted = paint(painted, &mut vt, true, &mut built);
+        built.clear();
+        vt.write(b"\r\nf");
+        paint(painted, &mut vt, true, &mut built);
+        assert_eq!(built, ["e", "f"]);
     }
 
     #[gpui::test]
