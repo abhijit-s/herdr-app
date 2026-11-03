@@ -64,6 +64,14 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 - Files: `vendor/gpui-pre-macos/src/text_system.rs`
 - Upstream: pull request #333 (on macOS the bundled JetBrains Mono drew Medium and Bold at Regular)
 
+### Font thickening
+
+`feat/font-thicken`: `font_thicken` and `font_thicken_strength` (0 to 255, default 255), person settings that rasterise terminal glyphs as Ghostty's `font-thicken` does: CoreGraphics font smoothing on, a gray fill of strength / 255 in linear gray, whatever the text color, then tinted. GPUI otherwise picks the smoothing level from the text color's luminance, so dark text on light draws at the lightest level and light text on dark at the heaviest. Panels keep GPUI's behaviour. `HERDR:` changes in `vendor/gpui-pre` (`RenderGlyphParams::thicken`, in the glyph atlas key; `Window::with_glyph_thicken`) and `vendor/gpui-pre-macos/src/text_system.rs` (the rasteriser, and 1 more pixel of raster room, as Ghostty pads thickened glyphs). The terminal paints its grid inside `with_glyph_thicken`, and the row cache's `painted_with` key carries the strength.
+
+- Measured (`tests/thicken_ink.rs`, JetBrains Mono 12px at 1x): font smoothing steps at strengths about 112, 192, 224 and 255, so Ghostty's 30 is its lightest level. Weight 400 with strength 30 inks both polarities alike (0.126), as Ghostty does; weight 250 without thickening inks light on dark 0.134 and dark on light 0.107.
+- Files: `src/settings.rs`, `src/terminal.rs` (`glyph_thicken`, `paint_grid`), `vendor/gpui-pre/src/{text_system.rs,window.rs}`, `vendor/gpui-pre-macos/src/text_system.rs`, `vendor/gpui-pre-{wgpu,windows}` (the new field), `tests/thicken_ink.rs`, `defaults/AGENTS.md`
+- Upstream: fork only for now
+
 
 ### Pane names
 

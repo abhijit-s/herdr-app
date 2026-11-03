@@ -409,6 +409,13 @@ pub struct Person {
     pub font_weight: Option<u16>,
     /// Enable programming ligatures in terminal fonts.
     pub font_ligatures: bool,
+    /// Thicken terminal text as Ghostty's `font-thicken` does: the same for
+    /// every text color (macOS).
+    #[serde(skip_serializing_if = "is_false")]
+    pub font_thicken: bool,
+    /// How much `font_thicken` thickens, 0 to 255.
+    #[serde(skip_serializing_if = "is_full_strength")]
+    pub font_thicken_strength: u16,
     /// The panels' font (their sizes follow zoom).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_font: Option<String>,
@@ -509,6 +516,17 @@ impl OptionAsAlt {
     }
 }
 
+/// Ghostty's `font-thicken-strength` default.
+pub const THICKEN_STRENGTH_DEFAULT: u16 = 255;
+
+fn is_full_strength(v: &u16) -> bool {
+    *v == THICKEN_STRENGTH_DEFAULT
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 fn is_true(b: &bool) -> bool {
     *b
 }
@@ -557,6 +575,8 @@ impl Default for Person {
             line_height: None,
             font_weight: None,
             font_ligatures: false,
+            font_thicken: false,
+            font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
             ui_font: None,
             telemetry: true,
             clipboard_write: true,
@@ -583,6 +603,8 @@ pub struct Settings {
     /// The terminals' text weight (bold text is at least 700).
     pub font_weight: u16,
     pub font_ligatures: bool,
+    pub font_thicken: bool,
+    pub font_thicken_strength: u16,
     pub ui_font_family: String,
     pub ui_font_size: f32,
     /// How big the whole app is drawn (1 = as designed). The zoom keys change it.
@@ -646,6 +668,8 @@ impl Default for Settings {
             line_height: 1.15,
             font_weight: 500,
             font_ligatures: false,
+            font_thicken: false,
+            font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
             ui_font_family: "Geist".into(),
             ui_font_size: 13.0,
             zoom: 1.0,
@@ -693,6 +717,8 @@ impl Settings {
             line_height: look.line_height.or(person.line_height).unwrap_or(d.line_height),
             font_weight: look.font_weight.or(person.font_weight).unwrap_or(d.font_weight),
             font_ligatures: person.font_ligatures,
+            font_thicken: person.font_thicken,
+            font_thicken_strength: person.font_thicken_strength,
             ui_font_family: look.ui_font.clone().or(person.ui_font.clone()).unwrap_or(d.ui_font_family),
             ui_font_size: d.ui_font_size,
             zoom: person.zoom,
@@ -761,6 +787,9 @@ impl Settings {
         }
         if !(1.0..=21.0).contains(&self.minimum_contrast) {
             out.push(format!("minimum_contrast {} is outside 1..21", self.minimum_contrast));
+        }
+        if self.font_thicken_strength > 255 {
+            out.push(format!("font_thicken_strength {} is outside 0..255", self.font_thicken_strength));
         }
         if !(100..=900).contains(&self.font_weight) {
             out.push(format!("font_weight {} is outside 100..900", self.font_weight));
@@ -1178,6 +1207,22 @@ mod tests {
     }
 
     #[test]
+    fn font_thicken_defaults_off_at_ghosttys_strength_and_validates_it() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert!(!default.font_thicken);
+        assert_eq!(default.font_thicken_strength, 255);
+        assert_eq!(serde_json::to_value(&default).unwrap().get("font_thicken"), None);
+        assert_eq!(serde_json::to_value(&default).unwrap().get("font_thicken_strength"), None);
+        for strength in [0, 30, 255, 256] {
+            let person: Person = serde_json::from_value(serde_json::json!({"font_thicken": true, "font_thicken_strength": strength})).unwrap();
+            let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
+            assert!(settings.font_thicken);
+            assert_eq!(settings.font_thicken_strength, strength);
+            assert_eq!(settings.problems().is_empty(), strength <= 255, "strength {strength}");
+        }
+    }
+
+    #[test]
     fn minimum_contrast_defaults_off_and_validates_the_ratio() {
         let default: Person = serde_json::from_str("{}").unwrap();
         assert_eq!(default.minimum_contrast, 1.0);
@@ -1362,7 +1407,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_thicken: true, font_thicken_strength: 30, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();
