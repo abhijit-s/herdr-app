@@ -34,14 +34,16 @@ This file is the inventory of what diverges. Update it in the same commit that a
 
 Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as is: `line_height` in settings.json or a layout's look, the row height as a multiple of the font's height (0.8 to 2, default 1.15). It replaced this fork's own `feat/line-height`, which supported settings.json only.
 
-- Files: `src/settings.rs`, `src/layout.rs`, `src/terminal.rs` (`cell_size`), `defaults/AGENTS.md`
+- Settings window: a "Terminal line height" stepper (0.05 steps) and a "Terminal ligatures" toggle for upstream's `font_ligatures`, which had no row. Both are committed on `master` only, with a render test for all the terminal rows (`terminal_text_rows_show_whose_value_is_in_use`).
+- Files: `src/settings.rs`, `src/layout.rs`, `src/terminal.rs` (`cell_size`), `defaults/AGENTS.md`; on `master`: `defaults/frame/settings/main.js`, `src/mods/render_tests.rs`
 - Upstream: pull request #67 (not ours), awaiting review
 
 ### Terminal font weight
 
 `feat/font-weight`: `font_weight` in settings.json or a layout's look (100 to 900, default 500, the Medium upstream hard-codes); bold stays at least 700. Rows kept from earlier frames are keyed on the whole cell font, so a weight change redraws them.
 
-- Files: `src/settings.rs`, `src/layout.rs`, `src/terminal.rs` (`cell_font`, `paint_grid`), `defaults/AGENTS.md`
+- Settings window: a "Terminal font weight" stepper (steps of 100) under the terminal font. When the layout's look sets a weight, the row says so, as the font row does.
+- Files: `src/settings.rs`, `src/layout.rs`, `src/terminal.rs` (`cell_font`, `paint_grid`), `defaults/AGENTS.md`, `defaults/frame/settings/main.js`
 - Upstream: issue #134, pull request #332. Upstream's `font_ligatures` (#244) landed alongside it; the branch merges `upstream/master` to stay conflict-free.
 
 ### Cell width and letter spacing
@@ -50,7 +52,8 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 `feat/cell-width-pixel` (on top of `feat/terminal-letter-spacing`, fork only for now): `cell_width` (`"font"`, default, or `"pixel"`: the spaced width rounded down to whole device pixels, as Ghostty does). `feat/letter-spacing` is the retired first version of both.
 
-- Files: `src/settings.rs`, `src/terminal.rs` (`cell_size`), `vendor/gpui-pre/src/text_system/line_layout.rs`, `defaults/AGENTS.md`
+- Settings window: a "Terminal letter spacing" stepper (0.5px steps) on `feat/terminal-letter-spacing`, and a "Terminal cell width" choice (Font or Whole pixels) on `feat/cell-width-pixel`, which turns the appearance picker into a general `choicePicker`. `feat/cell-width-pixel` merges `feat/terminal-letter-spacing` to pick up its row.
+- Files: `src/settings.rs`, `src/terminal.rs` (`cell_size`), `vendor/gpui-pre/src/text_system/line_layout.rs`, `defaults/AGENTS.md`, `defaults/frame/settings/main.js`
 - Upstream: issue #171, pull request #336 (`feat/terminal-letter-spacing`); `feat/cell-width-pixel` is fork only
 
 ### Variable font weights

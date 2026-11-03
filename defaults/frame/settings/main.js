@@ -526,12 +526,33 @@ export default class Settings extends View {
       .child(
         this.row(
           t,
+          "Terminal line height",
+          ownFraction("line_height", s.line_height, 1.15) ? "This layout sets its own; yours shows in the others." : "Row height, as a multiple of the font's height.",
+          this.stepper(t, "st-line_height", fraction(s.line_height), (_e, cx) => step("line_height", s.line_height, -0.05, 0.8, 2, cx), (_e, cx) => step("line_height", s.line_height, 0.05, 0.8, 2, cx)),
+        ),
+      )
+      .child(
+        this.row(
+          t,
           "Terminal letter spacing",
           ownFraction("letter_spacing", s.letter_spacing, 0) ? "This layout sets its own; yours shows in the others." : "Px added to each letter's width.",
           this.stepper(t, "st-letter_spacing", fraction(s.letter_spacing), (_e, cx) => step("letter_spacing", s.letter_spacing, -0.5, -2, 10, cx), (_e, cx) => step("letter_spacing", s.letter_spacing, 0.5, -2, 10, cx)),
         ),
       )
       .child(this.row(t, "Terminal cell width", "Whole pixels rounds each cell down, so letters sit evenly.", this.choicePicker(t, "st-cw", "cell_width", CELL_WIDTHS)))
+      .child(
+        this.row(
+          t,
+          "Terminal ligatures",
+          "Joins pairs like -> and != where the font has them.",
+          this.toggle(t, "st-font_ligatures", s.font_ligatures, (_e, cx) =>
+            this.change((q) => {
+              if (s.font_ligatures) delete q.font_ligatures;
+              else q.font_ligatures = true;
+            }, cx),
+          ),
+        ),
+      )
       .child(fontRow("ui_font", null, "Interface font", s.ui_font_family, DEFAULT_UI_FONT));
   }
 

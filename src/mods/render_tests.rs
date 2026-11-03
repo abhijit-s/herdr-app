@@ -362,6 +362,23 @@ fn font_pickers_contain_scroll_on_the_wrapper(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn terminal_text_rows_show_whose_value_is_in_use(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut p = props();
+    p["section"] = json!("look");
+    let layout = "This layout sets its own; yours shows in the others.";
+    for (person, overridden) in [("{}", 0), ("{font_weight: 300, line_height: 1.4, letter_spacing: 1}", 3)] {
+        let setup = format!("this.load = async () => {{}}; this.person = {person};");
+        let tree = describe(cx, &staged, "frame/settings", true, p.clone(), updates("current", "current"), Some(&setup)).unwrap();
+        for id in ["st-font_weight-plus", "st-line_height-plus", "st-letter_spacing-plus", "st-cw-Font", "st-cw-Whole pixels", "st-font_ligatures"] {
+            assert!(tree.contains(id), "missing {id}: {tree}");
+        }
+        assert_eq!(tree.matches(layout).count(), overridden, "{person}: {tree}");
+    }
+}
+
+#[gpui::test]
 fn check_materializes_retained_elements_in_a_rendered_view(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
