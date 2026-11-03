@@ -70,7 +70,7 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 - Measured (`tests/thicken_ink.rs`, JetBrains Mono 12px at 1x): font smoothing steps at strengths about 112, 192, 224 and 255, so Ghostty's 30 is its lightest level. Weight 400 with strength 30 inks both polarities alike (0.126), as Ghostty does; weight 250 without thickening inks light on dark 0.134 and dark on light 0.107.
 - Measured, interface (same test, dark on light): `ui_font_thicken` at 255 takes panel text from 0.126 to 0.152 ink, while a terminal grid inside it with `font_thicken` off stays at 0.126.
-- Settings window: under Size, a "Thicken interface text" toggle; under Terminal text, a "Thicken" toggle below Weight. Each shows a "Thicken strength" stepper (steps of 16, so it lands on each smoothing level above) while it's on. Off and 255 leave their keys out of settings.json. Layouts set neither, so the rows never say a layout sets its own.
+- Settings window, Text page: under Size, a "Thicken interface text" toggle; under Terminal text, a "Thicken" toggle below Weight. Each shows a "Thicken strength" stepper (steps of 16, so it lands on each smoothing level above) while it's on. Off and 255 leave their keys out of settings.json. Layouts set neither, so the rows never say a layout sets its own.
 - Files: `src/settings.rs`, `src/terminal.rs` (`glyph_thicken`, `paint_grid`), `src/window.rs` (`AppWindow::render`), `vendor/gpui-pre/src/{text_system.rs,window.rs}`, `vendor/gpui-pre-macos/src/text_system.rs`, `vendor/gpui-pre-{wgpu,windows}` (the new field), `tests/thicken_ink.rs`, `defaults/AGENTS.md`, `defaults/frame/settings/main.js`, `scripts/settings.test.ts`
 - Upstream: fork only for now
 

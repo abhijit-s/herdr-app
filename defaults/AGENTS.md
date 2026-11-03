@@ -717,7 +717,7 @@ What's about the user, never a look:
   system's smoothing, where dark text on light draws thinnest.
 - `ui_font_thicken_strength` (0..255): how much `ui_font_thicken` thickens,
   with the same steps as `font_thicken_strength`. Default 255. The Settings
-  window sets both under Size: a "Thicken interface text" toggle, and a
+  window sets both on its Text page under Size: a "Thicken interface text" toggle, and a
   strength stepper in steps of 16 while it's on.
 - `theme`: a theme name or `{light, dark}`; used where the layout sets none.
   The theme picker overrides any layout and stays on that layout.
