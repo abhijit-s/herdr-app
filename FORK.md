@@ -25,7 +25,7 @@ This file is the inventory of what diverges. Update it in the same commit that a
 4. Try it: `mise exec -- just install`, then restart Herdr.
 5. Push the branch: `git push -u origin feat/<slug>`. Bigger changes get an upstream issue first (upstream `CONTRIBUTING.md`).
 6. Open the pull request: `gh pr create -R herdrdev/herdr-app --head abhijit-s:feat/<slug>`.
-7. Keep it current when upstream moves: `git rebase upstream/master feat/<slug> && git push -f origin feat/<slug>`.
+7. Keep it current when upstream moves by merging, never rebasing: `git switch feat/<slug> && git merge upstream/master && git push origin feat/<slug>`. A merge keeps review comments anchored and needs no force-push.
 8. Sync and reinstall: `scripts/fork-sync`. It lists branches whose commits are not yet upstream. Once a change lands upstream, delete its branch and its entry below.
 
 ## Upstream syncs
