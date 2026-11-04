@@ -28,6 +28,18 @@ This file is the inventory of what diverges. Update it in the same commit that a
 7. Keep it current when upstream moves: `git rebase upstream/master feat/<slug> && git push -f origin feat/<slug>`.
 8. Sync and reinstall: `scripts/fork-sync`. It lists branches whose commits are not yet upstream. Once a change lands upstream, delete its branch and its entry below.
 
+## Upstream syncs
+
+Each merge of `upstream/master` into `master`, with the conflict choices worth remembering.
+
+- 2026-11-04, `f6fe216..816d205` (25 commits: find bar #436, `terminal.scroll` #455, scroll thumb #428, independent core bundle #477 with fe29715 and 816d205, hidden tabs keep their pane size #340, display facts at start, fallback symbol fitting, #484 to #486). Choices:
+  - `Core::run` takes upstream's `display` but keeps the fork's split: `start_record` adds the `TERM` env for every start, and `terminal.popup` now passes `display` too.
+  - `paint_grid` keeps the fork's `keep_rows` (rows by `Rc` wherever they moved, no `Frame::all`) and takes upstream's three passes over the kept rows: backgrounds, find highlights (`Frame::search_spans`, outside the cached `RowOp`s), then text.
+  - `TerminalView::on_screen_this_frame` and the find bar's search task use the fork's per-thread `frame()`, not upstream's `FRAME` atomic.
+  - Upstream's `fit_hidden_tabs` (#340) resizes hidden tabs' terminals through `Grid::fit`; it runs alongside the fork's hidden-terminal cache release, which frees only render state and row drawings, so a released terminal still resizes and reads a full frame when shown.
+  - `displayed_size` (upstream's refactor of `initial_size`) keeps the fork's `settings::ui_scale()` for the frame padding.
+  - `THIRD-PARTY-NOTICES` regenerated with `just notices`; `just test` runs both `scripts/settings.test.ts` (fork) and `scripts/worktree.test.ts` (upstream).
+
 ## Changes
 
 ### Terminal line height
