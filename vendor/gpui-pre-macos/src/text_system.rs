@@ -662,21 +662,33 @@ impl MacTextSystemState {
     }
 
     /// HERDR: a coverage per color channel, BGRA, from swash (`lcd`), or None
-    /// when swash can't open the face or draw the glyph. The
-    /// outline is emboldened as CoreGraphics' smoothing would dilate it at
-    /// `thicken`'s strength, or else the color's `dilation`.
+    /// when swash can't open the face or draw the glyph. The outline grows as
+    /// far as inks it like CoreGraphics' grayscale at the same smoothing:
+    /// `thicken`'s strength (continuous, `lcd::thicken_level`), or else the
+    /// color's `dilation`.
     fn rasterize_subpixel_glyph(
         &self,
         params: &RenderGlyphParams,
         glyph_bounds: Bounds<DevicePixels>,
         bitmap_size: Size<DevicePixels>,
     ) -> Option<Vec<u8>> {
-        let level = params.thicken.map_or(params.dilation, crate::lcd::smoothing_level);
+        let level = params.thicken.map_or(params.dilation as f32, crate::lcd::thicken_level);
+        let embolden = self.subpixel_weight(params, glyph_bounds, bitmap_size).embolden(level);
+        self.render_subpixel(params, glyph_bounds, bitmap_size, embolden)
+    }
+
+    fn render_subpixel(
+        &self,
+        params: &RenderGlyphParams,
+        glyph_bounds: Bounds<DevicePixels>,
+        bitmap_size: Size<DevicePixels>,
+        embolden: f32,
+    ) -> Option<Vec<u8>> {
         let glyph = crate::lcd::Glyph {
             glyph_id: params.glyph_id.0 as u16,
             ppem: f32::from(params.font_size) * params.scale_factor,
             shift: params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32,
-            embolden: crate::lcd::embolden(level),
+            embolden,
             origin: (glyph_bounds.origin.x.0, glyph_bounds.origin.y.0),
             size: (bitmap_size.width.0 as usize, bitmap_size.height.0 as usize),
         };
@@ -691,6 +703,40 @@ impl MacTextSystemState {
             postscript_name: self.postscript_names_by_font_id.get(&params.font_id).cloned(),
         };
         self.lcd.lock().render(params.font_id, source, &glyph)
+    }
+
+    /// HERDR: how far this glyph's outline grows to ink as CoreGraphics draws
+    /// it: the glyph drawn by CoreGraphics at smoothing levels 0 and 4
+    /// (thicken 0 and 255) and by swash at two emboldenings. swash's plain
+    /// coverage is lighter than CoreGraphics' by an amount that varies from
+    /// glyph to glyph, so one figure per face strays by a few percent.
+    fn subpixel_weight(
+        &self,
+        params: &RenderGlyphParams,
+        glyph_bounds: Bounds<DevicePixels>,
+        bitmap_size: Size<DevicePixels>,
+    ) -> crate::lcd::Weight {
+        let gray = [0, 255].map(|thicken| {
+            let p = RenderGlyphParams { subpixel_rendering: false, dilation: 0, thicken: Some(thicken), ..params.clone() };
+            self.raster_bounds(&p)
+                .and_then(|bounds| self.rasterize_glyph(&p, bounds))
+                .map_or(0.0, |(_, bytes)| bytes.iter().map(|&a| a as f64).sum::<f64>())
+        });
+        let swash = |direction: f32| {
+            crate::lcd::Weight::PROBES.map(|embolden| {
+                self.render_subpixel(params, glyph_bounds, bitmap_size, direction * embolden)
+                    .map_or(0.0, |bytes| bytes.chunks_exact(4).map(|t| (t[0] as f64 + t[1] as f64 + t[2] as f64) / 3.0).sum::<f64>())
+            })
+        };
+        // swash takes one winding for the whole outline and gets some glyphs'
+        // wrong (JetBrains Mono's `i`), so emboldening shrinks them: those
+        // grow the other way.
+        let (mut direction, mut coverage) = (1.0, swash(1.0));
+        if coverage[1] < coverage[0] {
+            (direction, coverage) = (-1.0, swash(-1.0));
+        }
+        let weight = crate::lcd::Weight::calibrate(gray, coverage).unwrap_or(crate::lcd::Weight::FALLBACK);
+        crate::lcd::Weight { direction, ..weight }
     }
 
     fn layout_line(&mut self, text: &str, font_size: Pixels, font_runs: &[FontRun]) -> LineLayout {

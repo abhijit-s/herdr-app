@@ -22,22 +22,65 @@ use swash::{
 /// FreeType's `FT_LCD_FILTER_DEFAULT` weights, out of 256.
 pub const FIR: [u32; 5] = [8, 77, 86, 77, 8];
 
-/// How far each side of a stroke grows, in device pixels, to land subpixel
-/// ink near CoreGraphics' grayscale at the same smoothing level (0 to 4, see
-/// `smoothing_level`): swash's plain coverage is lighter, and each level of
-/// CoreGraphics' smoothing dilation adds about the same again. Tuned with
-/// tests/subpixel_text.rs, which prints both inks.
-pub fn embolden(level: u8) -> f32 {
-    const BASE: f32 = 0.09;
-    const PER_LEVEL: f32 = 0.032;
-    BASE + PER_LEVEL * level.min(4) as f32
+/// The thicken strengths at which CoreGraphics' smoothing steps one dilation
+/// level up (Ghostty's gray fill, in linear gray). tests/subpixel_text.rs
+/// sweeps every strength against them.
+const SMOOTHING_STEPS: [f32; 4] = [100., 165., 208., 241.];
+
+/// The smoothing level, 0 to 4, that a thicken strength draws at, made
+/// continuous: 0 at strength 0, then straight through the middle of each of
+/// CoreGraphics' levels 1 to 3, to 4 at 255. Every strength adds weight, and
+/// no strength lands more than three quarters of a level from grayscale's.
+pub fn thicken_level(strength: u8) -> f32 {
+    let strength = strength as f32;
+    let mut knots = vec![(0.0, 0.0)];
+    knots.extend(SMOOTHING_STEPS.windows(2).enumerate().map(|(k, pair)| ((pair[0] + pair[1]) / 2.0, k as f32 + 1.0)));
+    knots.push((255.0, 4.0));
+    knots
+        .windows(2)
+        .find(|pair| strength <= pair[1].0)
+        .map_or(4.0, |pair| {
+            let ((s0, l0), (s1, l1)) = (pair[0], pair[1]);
+            l0 + (strength - s0) / (s1 - s0) * (l1 - l0)
+        })
 }
 
-/// The dilation level CoreGraphics smoothing draws a thicken strength at:
-/// strengths below the first step look the same as none.
-pub fn smoothing_level(strength: u8) -> u8 {
-    const STEPS: [u8; 4] = [112, 192, 224, 255];
-    STEPS.iter().filter(|&&step| strength >= step).count() as u8
+/// How far each side of a glyph's strokes grows, in device pixels, for
+/// swash's coverage to ink as CoreGraphics' grayscale does: `base` at
+/// smoothing level 0 (swash's plain coverage is lighter), `per_level` more for
+/// each level of smoothing dilation. `direction` is -1 for a glyph swash
+/// emboldens inside out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Weight {
+    pub base: f32,
+    pub per_level: f32,
+    pub direction: f32,
+}
+
+impl Weight {
+    /// For a glyph either rasteriser draws empty: JetBrains Mono's at 12 px.
+    pub const FALLBACK: Weight = Weight { base: 0.09, per_level: 0.032, direction: 1.0 };
+    /// How far the calibration's two swash passes grow each side: about
+    /// where smoothing levels 0 and 4 land, as coverage curves slightly.
+    pub const PROBES: [f32; 2] = [0.08, 0.22];
+
+    /// From a glyph's summed coverage: CoreGraphics' at smoothing
+    /// levels 0 and 4, and swash's emboldened by each of `PROBES`.
+    pub fn calibrate(gray: [f64; 2], swash: [f64; 2]) -> Option<Weight> {
+        let [low, high] = Self::PROBES.map(|p| p as f64);
+        let per_pixel = (swash[1] - swash[0]) / (high - low);
+        let embolden = |coverage: f64| low + (coverage - swash[0]) / per_pixel;
+        (per_pixel > 0.0 && gray[0] > 0.0).then(|| Weight {
+            base: embolden(gray[0]) as f32,
+            per_level: ((embolden(gray[1]) - embolden(gray[0])) / 4.0) as f32,
+            direction: 1.0,
+        })
+    }
+
+    /// The signed strength to hand swash at this smoothing level.
+    pub fn embolden(self, level: f32) -> f32 {
+        self.direction * (self.base + self.per_level * level).max(0.0)
+    }
 }
 
 /// A 3x-wide alpha mask: `width` subpixels by `height` rows, its first column
@@ -268,6 +311,39 @@ fn variations(native: &CTFont) -> Vec<Setting<f32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thicken_level_rises_through_the_middle_of_each_level() {
+        assert_eq!(thicken_level(0), 0.0);
+        assert_eq!(thicken_level(255), 4.0);
+        for (k, pair) in SMOOTHING_STEPS.windows(2).enumerate() {
+            let middle = (pair[0] + pair[1]) / 2.0;
+            let (below, above) = (thicken_level(middle.floor() as u8), thicken_level(middle.ceil() as u8));
+            assert!(below <= k as f32 + 1.0 && k as f32 + 1.0 <= above, "level {} mid-step", k + 1);
+        }
+        for strength in 0..=255u8 {
+            let grayscale = SMOOTHING_STEPS.iter().filter(|&&step| strength as f32 >= step).count() as f32;
+            assert!((thicken_level(strength) - grayscale).abs() <= 0.76, "{strength}: near grayscale's level");
+        }
+        assert!(thicken_level(30) > 0.0, "no strength is weightless");
+        for strength in 1..=255u8 {
+            let (below, here) = (thicken_level(strength - 1), thicken_level(strength));
+            assert!(here > below, "{strength}: rises");
+            assert!(here - below < 0.08, "{strength}: no jump");
+        }
+    }
+
+    #[test]
+    fn calibrate_solves_for_grayscale_ink() {
+        // swash inks 180 at 0.08 and 320 at 0.22: 1000 per pixel.
+        let weight = Weight::calibrate([190.0, 318.0], [180.0, 320.0]).unwrap();
+        assert!((weight.base - 0.09).abs() < 1e-6);
+        assert!((weight.per_level - 0.032).abs() < 1e-6);
+        assert!((weight.embolden(4.0) - 0.218).abs() < 1e-6);
+        assert_eq!(Weight::calibrate([190.0, 318.0], [180.0, 180.0]), None);
+        assert_eq!(Weight { base: -0.5, per_level: 0.0, direction: 1.0 }.embolden(0.0), 0.0);
+        assert_eq!(Weight { direction: -1.0, ..weight }.embolden(4.0), -weight.embolden(4.0));
+    }
 
     #[test]
     fn filter_spreads_one_subpixel_by_the_fir_weights() {
