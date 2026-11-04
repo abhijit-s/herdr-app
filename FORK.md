@@ -32,6 +32,9 @@ This file is the inventory of what diverges. Update it in the same commit that a
 
 Each merge of `upstream/master` into `master`, with the conflict choices worth remembering.
 
+- 2026-11-05, `816d205..e77f112` (14 commits: release 0.1.13, exec time limits for mods, theme-name cards #437, palette scrolling #531, toast agent names #530, transient mods shared state #516, launch-folder fixes #511). Choices:
+  - `exec_future` takes upstream's `limit` (`run_blocking`, `run_remote_with_limit`) and keeps the fork's `off_thread`, so tests still run the work when polled.
+  - `render_tests.rs` keeps the fork's text-page tests beside upstream's `long_theme_names_stay_inside_their_card`.
 - 2026-11-04, `f6fe216..816d205` (25 commits: find bar #436, `terminal.scroll` #455, scroll thumb #428, independent core bundle #477 with fe29715 and 816d205, hidden tabs keep their pane size #340, display facts at start, fallback symbol fitting, #484 to #486). Choices:
   - `Core::run` takes upstream's `display` but keeps the fork's split: `start_record` adds the `TERM` env for every start, and `terminal.popup` now passes `display` too.
   - `paint_grid` keeps the fork's `keep_rows` (rows by `Rc` wherever they moved, no `Frame::all`) and takes upstream's three passes over the kept rows: backgrounds, find highlights (`Frame::search_spans`, outside the cached `RowOp`s), then text.
