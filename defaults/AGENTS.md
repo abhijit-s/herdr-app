@@ -1030,6 +1030,7 @@ All of it is in `herdr.d.ts`. In short:
   `panes()` still lists only model panes; none is focused while a terminal block is.
   For composition navigation: `run("pane.focus", {terminal: nextAddress})`.
   Terminal copy/paste and implicit right-click routing follow the focused block.
+  Reads subscribe: a copy re-renders only when something it read (in render, a callback or a child) changes, so read what you show and no more. A hidden copy (another tab's pane header, an inactive stack child) is not redrawn; it catches up when shown.
 - Floating: `placement()` (null unless this copy floats).
 - Act: `run(command, args)`.
 - Overlays: `openOverlay({ mod, props, kind: "dialog" | "popup" | "window", width, height, at, frame })`
@@ -1070,7 +1071,7 @@ All of it is in `herdr.d.ts`. In short:
   `cx.spawn(async (cx) => { for (;;) { await watchFolder(dir); this.reload(); cx.notify(); } })`.
 - `notify({ ..., action: { name, args } })`: the toast runs the command when clicked.
 - This copy: `props()`, `shared(key)` / `setShared(key, value)` (every mod
-  sees it; setting re-renders all), `nextCommand()` (key commands for this
+  sees it; setting re-renders the copies that read that key), `nextCommand()` (key commands for this
   mod: `cx.spawn(async (cx) => { for (;;) { const c = await nextCommand(); …; cx.notify(); } })`).
 
 Mods are trusted code: commands and network access (including `fetch`) are unrestricted.

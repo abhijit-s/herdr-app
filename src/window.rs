@@ -1557,7 +1557,7 @@ impl AppWindow {
                 self.copies.insert(slot, copy);
             }
         }
-        self.publish_shown_copies();
+        self.publish_shown_copies(cx);
 
         // Keyboard to the focused pane when it changes (never steal it from an open dialog).
         let model_pane = self.model.focused_pane();
@@ -1726,19 +1726,24 @@ impl AppWindow {
     }
 
     fn refresh_mods(&self, cx: &mut Context<Self>) {
-        self.refresh_mods_matching(|_| true, cx);
+        self.refresh_mods_matching(true, cx);
     }
 
+    /// Only the copies whose reads changed (`mods::snapshot_changed`).
     fn refresh_snapshot_mods(&self, cx: &mut Context<Self>) {
-        self.refresh_mods_matching(mods::snapshot_changed, cx);
+        self.refresh_mods_matching(false, cx);
     }
 
-    fn refresh_mods_matching(&self, changed: impl Fn(u64) -> bool, cx: &mut Context<Self>) {
+    /// A hidden copy draws nothing: it catches up when shown (`publish_shown_copies`).
+    fn refresh_mods_matching(&self, all: bool, cx: &mut Context<Self>) {
         if let Some(runtime) = &self.runtime {
             for c in self.copies.values() {
-                if let Some(root) = &c.root
-                    && changed(c.id)
-                {
+                let Some(root) = &c.root else { continue };
+                if !mods::is_shown(c.id) {
+                    if all {
+                        mods::missed(c.id);
+                    }
+                } else if all || mods::snapshot_changed(c.id) {
                     let _ = runtime.refresh(root, cx);
                 }
             }
@@ -3702,7 +3707,7 @@ impl AppWindow {
                 t.focus.focus(window, cx);
             }
         } else {
-            self.publish_shown_copies();
+            self.publish_shown_copies(cx);
         }
         cx.notify();
     }
@@ -3903,10 +3908,20 @@ impl AppWindow {
         self.rm_terminal(address, cx);
     }
 
-    /// Which copies are on screen, for `<mod>.<command>` (`mods::send_command`).
-    fn publish_shown_copies(&self) {
+    /// Which copies are on screen, for `<mod>.<command>` (`mods::send_command`)
+    /// and refreshes; one coming into view catches up on what changed meanwhile.
+    fn publish_shown_copies(&self, cx: &mut Context<Self>) {
         let (_, shown) = self.visible();
-        mods::set_shown_copies(shown.iter().filter_map(|(s, i)| self.copies.get(s).filter(|c| c.inst == *i)).map(|c| c.id).collect());
+        let fresh = mods::set_shown_copies(shown.iter().filter_map(|(s, i)| self.copies.get(s).filter(|c| c.inst == *i)).map(|c| c.id).collect());
+        if let Some(runtime) = &self.runtime {
+            for c in self.copies.values().filter(|c| fresh.contains(&c.id)) {
+                if let Some(root) = &c.root
+                    && (mods::take_missed(c.id) | mods::snapshot_changed(c.id))
+                {
+                    let _ = runtime.refresh(root, cx);
+                }
+            }
+        }
     }
 
     /// Closes an overlay; a kept window stays closed on the next start too.
@@ -3928,7 +3943,7 @@ impl AppWindow {
             if o.layout.is_some() {
                 self.sync(window, cx);
             } else {
-                self.publish_shown_copies();
+                self.publish_shown_copies(cx);
             }
             // The keyboard never ends up nowhere: back to a dialog still open,
             // else the pane, else the window (where the app's keys work). A
@@ -3972,6 +3987,7 @@ impl AppWindow {
             Request::OpenOverlay { id, spec } => self.open_overlay(id, spec, window, cx),
             Request::CloseOverlay { id } => self.close_overlay(&id, window, cx),
             Request::Refresh => self.refresh_mods(cx),
+            Request::Changed => self.refresh_snapshot_mods(cx),
             Request::Control { cmd, reply } => match cmd.get("wait").and_then(Value::as_str) {
                 Some(address) => self.wait_for(address, reply, cx),
                 None => {
