@@ -56,8 +56,9 @@ export function playSound(sound: string): null;
  *   tab.next, tab.prev.
  * Panes: pane.split {direction: "right" | "down", pane?}, pane.close {pane?}, pane.zoom {pane?},
  *   pane.focus {pane | terminal}, pane.go {direction}, pane.swap {direction}, focus.toggle_follows_mouse. Pane menus get target { pane, terminal }.
- *   pane.arrange {mode: "tiled" | "bsp" | "master" | "columns" | "rows" | "next", tab?} rebuilds a tab's panes evenly in that shape
- *   (next: the one after the tab's last, from tiled); terminals, mod panes and focus stay, a zoomed pane unzooms.
+ *   pane.arrange {mode: "tiled" | "bsp" | "master" | "columns" | "rows" | "next" | "off", tab?} rebuilds a tab's panes evenly in that shape
+ *   (next: the one after the tab's last, from tiled); terminals, mod panes and focus stay, a zoomed pane unzooms. The tab keeps
+ *   the mode: each split or close in it arranges it again (the new pane right after the one split); off clears it.
  * Terminals: terminal.open {argv?, folder?, place?: "tab" | "right" | "down"}, terminal.kill {terminal},
  *   terminal.keep {terminal, place?} (a running one without a pane, e.g. a sub-agent, gets one),
  *   terminal.park {terminal} (its pane goes, it keeps running; the menu's "Send back"),
@@ -99,7 +100,7 @@ export interface TabInfo {
   status: Status | null;
   panes: number;
   zoomed: boolean;
-  /** How pane.arrange last arranged it on this screen, or null: never (manual splits don't reset it). */
+  /** The pane.arrange mode it keeps on this screen (splits and closes arrange it again), or null: none (never, or "off"). */
   arrange: "tiled" | "bsp" | "master" | "columns" | "rows" | null;
   /** Put away on this screen (tab.settle): lists hide it or fold it; it keeps running and comes back
    *  when shown or when an agent in it needs the person. */

@@ -46,6 +46,15 @@ const SUBPIXEL_ORDERS = [
   ["rgb", "RGB"],
   ["bgr", "BGR"],
 ];
+// pane.arrange's modes for settings.json's default_arrange; Off leaves it out.
+const ARRANGES = [
+  [null, "Off"],
+  ["tiled", "Tiled"],
+  ["bsp", "BSP"],
+  ["master", "Master"],
+  ["columns", "Columns"],
+  ["rows", "Rows"],
+];
 const SYSTEM_NOTIFICATIONS = [
   ["background", "When away"],
   ["always", "Always"],
@@ -526,7 +535,10 @@ export default class Settings extends View {
       .child(this.themePicker(t, true))
       .child(div().h(18))
       .child(this.heading(t, "Mouse"))
-      .child(this.followsMouse(t, cx));
+      .child(this.followsMouse(t, cx))
+      .child(div().h(18))
+      .child(this.heading(t, "Panes"))
+      .child(this.row(t, "New tabs arrange", "New tabs start in this arrangement: splits and closes arrange their panes again.", this.choicePicker(t, "st-da", "default_arrange", ARRANGES)));
   }
 
   text(t) {

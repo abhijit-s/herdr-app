@@ -88,8 +88,17 @@ pub fn check(root: &Node) -> Result<(), String> {
 /// The tab's tree rebuilt in `mode`. `master` (a pane id) leads in master mode;
 /// the others keep reading order. The root keeps its id and look, as a row;
 /// `fresh` names the new containers.
-pub fn arrange(root: &Node, mode: Mode, master: Option<&str>, mut fresh: impl FnMut() -> String) -> Node {
+pub fn arrange(root: &Node, mode: Mode, master: Option<&str>, fresh: impl FnMut() -> String) -> Node {
+    let order: Vec<String> = reading_order(root).iter().map(|n| n.id.clone()).collect();
+    arrange_in(root, &order, mode, master, fresh)
+}
+
+/// `arrange`, its panes in `order` (pane ids) rather than reading order; panes
+/// `order` leaves out follow in reading order.
+pub fn arrange_in(root: &Node, order: &[String], mode: Mode, master: Option<&str>, mut fresh: impl FnMut() -> String) -> Node {
+    let rank = |n: &Node| order.iter().position(|id| *id == n.id).unwrap_or(order.len());
     let mut panes: Vec<Node> = reading_order(root).into_iter().cloned().collect();
+    panes.sort_by_key(|p| (p.hidden, rank(p)));
     for p in &mut panes {
         p.size = None;
     }
@@ -305,6 +314,18 @@ mod tests {
             }
             assert_eq!(shape(&tree), shape(&start));
         }
+    }
+
+    #[test]
+    fn a_given_order_wins_over_reading_order_and_missing_panes_follow() {
+        let order = |ids: &[&str]| ids.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let got = arrange_in(&tab(4), &order(&["p3", "p1"]), Mode::Columns, None, || "s".into());
+        assert_eq!(shape(&got), "R[p3 p1 p2 p4]");
+        let got = arrange_in(&tab(4), &order(&["p1", "p4", "p2", "p3"]), Mode::Bsp, None, || "s".into());
+        assert_eq!(shape(&got), "R[p1 C[p4 R[p2 p3]]]");
+        // The master still leads in master mode.
+        let got = arrange_in(&tab(3), &order(&["p2", "p1", "p3"]), Mode::Master, Some("p3"), || "s".into());
+        assert_eq!(shape(&got), "R[p3 C[p2 p1]]");
     }
 
     #[test]

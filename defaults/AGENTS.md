@@ -570,11 +570,19 @@ The main ones:
   even sizes: `tiled` (a grid row by row, `ceil(sqrt(n))` across; a short last
   row's panes widen), `bsp` (each pane takes half of what's left: right, down,
   right…), `master` (the focused pane on the left half, the rest stacked on the
-  right), `columns`, `rows`, or `next` (the mode after the tab's last, from
-  `tiled`; the tab's `arrange` field says which). Panes go in reading order: by
+  right), `columns`, `rows`, `next` (the mode after the tab's last, from
+  `tiled`; the tab's `arrange` field says which), or `off`. Panes go in reading order: by
   top edge, then left edge. Terminals, mod panes, names and focus stay; a zoomed
-  pane unzooms. The new tree is saved like any split; new splits don't follow
-  the mode. Default key: Cmd+Shift+Space (macOS), Ctrl+Shift+Space (Linux, Windows).
+  pane unzooms. The new tree is saved like any split. The tab keeps the mode
+  (on this screen): every pane split into the tab or closed in it, by a key, a
+  mod or an agent, arranges it again with even sizes, the new pane right after
+  the one it split in reading order (in `bsp` it takes half of that pane's
+  space; in `master` the master stays). A dragged divider holds until the next
+  split or close; `pane.swap` and pane drags keep the mode, and the next
+  arrangement follows the new order. `off` clears the mode and leaves the panes
+  where they are; `next` never picks it. settings.json's `default_arrange`
+  gives new tabs a mode. Default key: Cmd+Shift+Space (macOS), Ctrl+Shift+Space
+  (Linux, Windows).
   `focus.toggle_follows_mouse` turns `focus_follows_mouse` (below) on or off in
   settings.json and says which in a toast; when settings.json has errors or
   can't be written, the change applies unsaved, the toast warns why, and a
@@ -706,6 +714,11 @@ What's about the user, never a look:
   menu is open, or while Herdr isn't the active window. Toasts and window
   overlays don't stop it, but a pane under a window overlay isn't focused
   through it. Mod blocks, the sidebar and the tab bar never take the focus this way.
+- `default_arrange`: the `pane.arrange` mode tabs made on this screen start
+  in (`tiled`, `bsp`, `master`, `columns` or `rows`), so their splits and
+  closes arrange them from the first split. Absent (the default), or any other
+  value: new tabs have none. Tabs already open keep theirs. The Settings
+  window's Look page sets it ("New tabs arrange").
 - `alert_command`: a program run for each alert in place of the system
   notification, under the same `system_notifications` rule: one string
   (run by `/bin/sh -c`) or an argv array (`["notify", "-q"]`). Herdr

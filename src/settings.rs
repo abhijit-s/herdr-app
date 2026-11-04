@@ -393,6 +393,9 @@ pub struct Person {
     /// How long it rests there first, in ms (0 to 2000; read through `focus_follows_mouse_delay`).
     #[serde(skip_serializing_if = "is_follow_delay_default")]
     pub focus_follows_mouse_delay_ms: u32,
+    /// The pane.arrange mode new tabs start in (read through `default_arrange`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_arrange: Option<String>,
     /// The herdr-core to use, when it isn't where Herdr looks (core_bin.rs).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub core: Option<String>,
@@ -624,6 +627,11 @@ impl Person {
     pub fn focus_follows_mouse_delay(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.focus_follows_mouse_delay_ms.min(FOLLOW_DELAY_MAX_MS).into())
     }
+
+    /// `default_arrange` as a mode; a name that isn't one is none.
+    pub fn default_arrange(&self) -> Option<crate::arrange::Mode> {
+        self.default_arrange.as_deref().and_then(crate::arrange::Mode::parse)
+    }
 }
 
 pub const UI_ZOOM_RANGE: (f32, f32) = (0.75, 1.5);
@@ -646,6 +654,7 @@ impl Default for Person {
             alert_command: None,
             focus_follows_mouse: false,
             focus_follows_mouse_delay_ms: FOLLOW_DELAY_DEFAULT_MS,
+            default_arrange: None,
             core: None,
             font: None,
             font_size: None,
@@ -1632,11 +1641,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn default_arrange_is_off_by_default_and_unknown_modes_are_none() {
+        use crate::arrange::Mode;
+        let person: Person = serde_json::from_str("{}").unwrap();
+        assert_eq!(person.default_arrange(), None);
+        assert!(serde_json::to_value(&person).unwrap().get("default_arrange").is_none());
+        let bsp: Person = serde_json::from_str(r#"{"default_arrange": "bsp"}"#).unwrap();
+        assert_eq!(bsp.default_arrange(), Some(Mode::Bsp));
+        for odd in [r#"{"default_arrange": "spiral"}"#, r#"{"default_arrange": "next"}"#, r#"{"default_arrange": "off"}"#] {
+            assert_eq!(serde_json::from_str::<Person>(odd).unwrap().default_arrange(), None, "{odd}");
+        }
+    }
+
     /// The guide agents read (written to the home folder) explains every
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_thicken: true, font_thicken_strength: 30, ui_font_thicken: true, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_thicken: true, font_thicken_strength: 30, ui_font_thicken: true, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();
