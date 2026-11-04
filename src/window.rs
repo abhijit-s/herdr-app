@@ -2431,7 +2431,7 @@ impl AppWindow {
     /// Reads each terminal's live folder, and its repo and branch for mods.
     /// Each terminal's folder, and its repo and branch from the shared git
     /// status (`git_status`): asked once per folder, again when its repo changes
-    /// on disk. Another machine's, or a folder that wasn't a repo, is asked again
+    /// on disk. One that isn't watched (another machine's, no repo) is asked again
     /// when a command or an agent's turn ends there (a clone, a checkout).
     fn track_folders(&mut self, cx: &mut Context<Self>) {
         let home = mods::home().to_string_lossy().into_owned();
@@ -2458,7 +2458,7 @@ impl AppWindow {
                 Some(model::FolderInfo { top: cwd, branch: None })
             } else {
                 let place = git_status::Place { on, folder: cwd.clone() };
-                let (info, unwatched) = git_status::read(&place, |v, _| (folder_info(v, &cwd), place.on.is_some() || v == &Value::Bool(false)));
+                let (info, unwatched) = git_status::read(&place, |v, _, lasting| (folder_info(v, &cwd), !lasting || v == &Value::Bool(false)));
                 if ended && unwatched {
                     git_status::refresh(&place);
                 }
@@ -2472,11 +2472,11 @@ impl AppWindow {
             }
         }
         self.folders_busy.retain(|a, _| self.live.contains_key(a));
-        // Refresh unnamed spaces when a terminal moves.
+        // Refresh unnamed spaces when a terminal moves; mods show its folder.
         if moved {
             self.save();
         }
-        if changed {
+        if changed || moved {
             self.publish(cx);
             cx.notify();
         }

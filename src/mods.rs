@@ -1179,7 +1179,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
                 let place = git_place(a)?;
                 let files = a.get(1).and_then(|o| o.get("files")).and_then(HostValue::as_bool).unwrap_or(false);
                 record(&reads, &place.read_key());
-                Ok(crate::git_status::read(&place, |v, revision| to_host(&crate::git_status::shown(v, revision, files))))
+                Ok(crate::git_status::read(&place, |v, revision, _| to_host(&crate::git_status::shown(v, revision, files))))
             }
         })
         .async_function("nextGitStatus", |a| {

@@ -66,6 +66,8 @@ struct Entry {
     revision: u64,
     checked: Instant,
     pending: bool,
+    /// Asked again while a look was under way (that look may predate the change).
+    again: bool,
     lasting: bool,
     waiters: Vec<Waiter>,
 }
@@ -83,8 +85,14 @@ thread_local! {
 
 fn ask(place: &Place) {
     WORKERS.with_borrow_mut(|workers| {
-        let tx = workers.entry(place.on.clone()).or_insert_with(|| Worker::spawn(place.on.clone(), Box::new(|u| crate::mods::request(crate::mods::Request::Git(u)))));
-        let _ = tx.send(Msg::Look(place.clone()));
+        let spawn = || Worker::spawn(place.on.clone(), Box::new(|u| crate::mods::request(crate::mods::Request::Git(u))));
+        let tx = workers.entry(place.on.clone()).or_insert_with(spawn);
+        if tx.send(Msg::Look(place.clone())).is_err() {
+            // Its worker stopped: a new one, or the place would wait forever.
+            let tx = spawn();
+            let _ = tx.send(Msg::Look(place.clone()));
+            workers.insert(place.on.clone(), tx);
+        }
     });
 }
 
@@ -93,7 +101,7 @@ fn entry<R>(place: &Place, f: impl FnOnce(&mut Entry) -> R) -> R {
         let now = Instant::now();
         let e = all.entry(place.clone()).or_insert_with(|| {
             ask(place);
-            Entry { value: Value::Null, revision: 0, checked: now, pending: true, lasting: false, waiters: Vec::new() }
+            Entry { value: Value::Null, revision: 0, checked: now, pending: true, again: false, lasting: false, waiters: Vec::new() }
         });
         let stale = if e.lasting { LASTING_STALE } else { STALE };
         if !e.pending && now.duration_since(e.checked) > stale {
@@ -104,9 +112,10 @@ fn entry<R>(place: &Place, f: impl FnOnce(&mut Entry) -> R) -> R {
     })
 }
 
-/// The answer for `place` now (`null` while git is first asked), and its revision.
-pub fn read<R>(place: &Place, f: impl FnOnce(&Value, u64) -> R) -> R {
-    entry(place, |e| f(&e.value, e.revision))
+/// The answer for `place` now (`null` while git is first asked), its revision,
+/// and whether it is lasting (changes on disk, or none possible, bring the next one).
+pub fn read<R>(place: &Place, f: impl FnOnce(&Value, u64, bool) -> R) -> R {
+    entry(place, |e| f(&e.value, e.revision, e.lasting))
 }
 
 /// Resolves with `{ status, revision }` once there is an answer newer than revision `after`
@@ -126,7 +135,9 @@ pub fn next(place: &Place, after: Option<u64>, files: bool) -> async_channel::Re
 /// Looks again now (as soon as the folder's last look allows).
 pub fn refresh(place: &Place) {
     entry(place, |e| {
-        if !e.pending {
+        if e.pending {
+            e.again = true;
+        } else {
             ask(place);
             e.pending = true;
         }
@@ -137,7 +148,10 @@ pub fn refresh(place: &Place) {
 pub fn apply(u: Update) -> bool {
     ENTRIES.with_borrow_mut(|all| {
         let Some(e) = all.get_mut(&u.place) else { return false };
-        e.pending = false;
+        e.pending = std::mem::take(&mut e.again);
+        if e.pending {
+            ask(&u.place);
+        }
         e.checked = Instant::now();
         e.lasting = u.lasting;
         let changed = e.value != u.value;
@@ -195,6 +209,7 @@ struct Repo {
     root: PathBuf,
     git_dirs: Vec<PathBuf>,
     ignored: HashSet<PathBuf>,
+    ignored_at: Option<Instant>,
 }
 
 impl Repo {
@@ -287,10 +302,15 @@ impl Worker {
         let new_folder = matches!(event.kind, notify::EventKind::Create(_));
         for repo in self.repos.values_mut() {
             if event.paths.iter().any(|p| p.starts_with(&repo.root) && (p.file_name().is_some_and(|n| n == ".gitignore" || n == "exclude") || (new_folder && p.is_dir() && repo.counts(p)))) {
-                repo.ignored = ignored(&repo.root);
+                // Once per burst, not per folder a checkout makes (`ignored` walks the tree).
+                if repo.ignored_at.is_none_or(|at| at.elapsed() > QUIET) {
+                    repo.ignored = ignored(&repo.root);
+                    repo.ignored_at = Some(Instant::now());
+                }
             }
             if rescan || event.paths.iter().any(|p| repo.counts(p)) {
-                hit.extend(repo.places.iter().cloned());
+                // One look answers them all (`look`).
+                hit.extend(repo.places.iter().next().cloned());
             }
         }
         let at = Instant::now() + QUIET;
@@ -299,12 +319,22 @@ impl Worker {
         }
     }
 
+    /// One look answers every folder asked about in the same work tree.
     fn look(&mut self, place: &Place) {
         let start = Instant::now();
         let (value, no_repo) = self.status(place);
-        self.last.insert(place.clone(), (Instant::now(), start.elapsed()));
-        let lasting = no_repo || self.repos.values().any(|r| r.places.contains(place));
-        (self.sink)(Update { place: place.clone(), value, lasting });
+        let took = start.elapsed();
+        let root = self.resolved.get(place).map(|r| r.root.clone());
+        let mut answered = vec![place.clone()];
+        if let Some(root) = &root {
+            answered.extend(self.resolved.iter().filter(|(p, r)| *p != place && &r.root == root).map(|(p, _)| p.clone()));
+        }
+        let lasting = no_repo || (cfg!(not(target_os = "linux")) && self.repos.values().any(|r| r.places.contains(place)));
+        for p in answered {
+            self.due.remove(&p);
+            self.last.insert(p.clone(), (Instant::now(), took));
+            (self.sink)(Update { place: p, value: value.clone(), lasting });
+        }
     }
 
     /// The answer, and whether git said there is no repo.
@@ -381,13 +411,14 @@ impl Worker {
             }
         }
         let ignored = ignored(&root);
-        self.repos.insert(root.clone(), Repo { places: HashSet::from([place.clone()]), root, git_dirs, ignored });
+        self.repos.insert(root.clone(), Repo { places: HashSet::from([place.clone()]), root, git_dirs, ignored, ignored_at: None });
     }
 }
 
 /// Folders to register: the work tree and git's own folders where they live
 /// elsewhere (a linked worktree's). Inotify needs one per directory, so on Linux
-/// it is the work tree's non-ignored folders and git's, without objects.
+/// it is the work tree's non-ignored folders and git's, without objects; folders
+/// made later go unwatched there, so Linux answers aren't lasting (`look`).
 fn watch_list(root: &Path, git_dirs: &[PathBuf]) -> Vec<PathBuf> {
     #[cfg(target_os = "linux")]
     {
@@ -564,6 +595,7 @@ mod tests {
             root: "/r".into(),
             git_dirs: vec!["/r/.git".into(), "/main/.git".into()],
             ignored: HashSet::from([PathBuf::from("/r/target"), PathBuf::from("/r/.DS_Store")]),
+            ignored_at: None,
         };
         assert!(repo.counts(Path::new("/r/src/main.rs")));
         assert!(repo.counts(Path::new("/r")));
@@ -623,7 +655,13 @@ mod tests {
         let first = next_update(&rx, Duration::from_secs(10)).expect("first look");
         assert_eq!(first.value["branch"], "main");
         assert_eq!(first.value["unstaged"], 0);
-        assert!(first.lasting, "watched");
+        assert_eq!(first.lasting, cfg!(not(target_os = "linux")), "watched");
+        // A second folder in the same work tree.
+        let top = Place { on: None, folder: root.to_string_lossy().into_owned() };
+        worker.send(Msg::Look(top.clone())).unwrap();
+        let mut both: Vec<String> = (0..2).map(|_| next_update(&rx, Duration::from_secs(10)).expect("both answered").place.folder).collect();
+        both.sort();
+        assert_eq!(both, [top.folder.clone(), place.folder.clone()], "one look answers every folder in the tree");
         // Wait for the first look's spacing to pass: what follows is from the watcher alone.
         std::thread::sleep(MIN_GAP);
         std::fs::create_dir_all(root.join("target/debug")).unwrap();
@@ -634,6 +672,9 @@ mod tests {
         let after = next_update(&rx, Duration::from_secs(10)).expect("a change on disk is looked at");
         assert_eq!(after.value["unstaged"], 1);
         assert_eq!(after.value["files"][0]["path"], "a.txt");
+        let sibling = next_update(&rx, Duration::from_secs(10)).expect("the other folder too");
+        assert_ne!(sibling.place, after.place);
+        assert!(next_update(&rx, Duration::from_millis(1500)).is_none(), "from that one look");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -657,8 +698,8 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         WORKERS.with_borrow_mut(|w| w.insert(Some("test-machine".into()), tx));
         let place = Place { on: Some("test-machine".into()), folder: "/r".into() };
-        assert_eq!(read(&place, |v, r| (v.clone(), r)), (Value::Null, 0));
-        assert_eq!(read(&place, |v, r| (v.clone(), r)), (Value::Null, 0));
+        assert_eq!(read(&place, |v, r, _| (v.clone(), r)), (Value::Null, 0));
+        assert_eq!(read(&place, |v, r, _| (v.clone(), r)), (Value::Null, 0));
         let asked = || rx.try_iter().filter(|m| matches!(m, Msg::Look(_))).count();
         assert_eq!(asked(), 1, "a pending look is not asked for again");
         let waiting = next(&place, None, false);
@@ -670,8 +711,18 @@ mod tests {
         assert!(later.try_recv().is_err());
         refresh(&place);
         assert_eq!(asked(), 1);
+        refresh(&place);
+        assert_eq!(asked(), 0, "already asked");
+        let racing = Place { on: Some("test-machine".into()), folder: "/r2".into() };
+        read(&racing, |_, _, _| ());
+        refresh(&racing);
+        assert_eq!(asked(), 1, "a look is under way: asked again only once it lands");
+        apply(Update { place: racing.clone(), value: json!(false), lasting: false });
+        assert_eq!(asked(), 1, "the change may postdate that look");
+        apply(Update { place: racing, value: json!(false), lasting: false });
+        assert_eq!(asked(), 0);
         assert!(apply(Update { place: place.clone(), value: json!({ "branch": "other", "files": [] }), lasting: false }));
         assert_eq!(later.try_recv().unwrap()["status"]["files"], json!([]));
-        assert_eq!(read(&place, |_, r| r), 2);
+        assert_eq!(read(&place, |_, r, _| r), 2);
     }
 }
