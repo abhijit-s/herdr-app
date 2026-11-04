@@ -2,6 +2,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod alert;
+mod arrange;
 mod bench;
 mod commands;
 mod control;

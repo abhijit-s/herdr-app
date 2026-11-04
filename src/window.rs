@@ -3033,8 +3033,9 @@ impl AppWindow {
             if !args.is_object() { args = json!({}); }
             args["machine"] = json!(machine);
         }
-        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "pane.split" | "pane.close" | "pane.rename" | "pane.swap" | "terminal.keep" | "terminal.park") {
-            let node = ["id", "space", "pane"].into_iter().find_map(|k| Self::arg(&args, k));
+        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "pane.split" | "pane.close" | "pane.rename" | "pane.swap" | "pane.arrange" | "terminal.keep" | "terminal.park") {
+            let node = ["id", "space", "pane"].into_iter().find_map(|k| Self::arg(&args, k))
+                .or_else(|| if name == "pane.arrange" { Self::arg(&args, "tab") } else { None });
             let target = node.and_then(|id| self.model.space(id).or_else(|| self.model.space_of(id))).or_else(|| self.model.active_space());
             let machine = if name == "space.new" { Self::arg(&args, "machine") }
                 else if name == "terminal.park" { Self::arg(&args, "terminal").and_then(|a| a.split_once('/').map(|(m, _)| m)) }
@@ -3276,6 +3277,20 @@ impl AppWindow {
                     return self.go(dir, window, cx);
                 }
                 self.swap_pane(dir);
+            }
+            "pane.arrange" => {
+                use crate::arrange::Mode;
+                let tab = Self::owned(a, "tab").or_else(|| self.model.active_tab().map(|t| t.id.clone()));
+                let Some(tab) = tab.filter(|t| self.model.tab(t).is_some()) else { return self.fail("pane.arrange: no such tab") };
+                let mode = match Self::arg(a, "mode").unwrap_or_default() {
+                    "next" => Mode::next(self.model.tab(&tab).and_then(|t| t.arrange)),
+                    other => match Mode::parse(other) {
+                        Some(mode) => mode,
+                        None => return self.fail(format!("pane.arrange mode is tiled, bsp, master, columns, rows or next, not {other:?}")),
+                    },
+                };
+                let r = self.model.arrange_tab(&tab, mode).map(|()| json!({ "ok": true, "tab": tab, "mode": mode.name() }));
+                self.answer(r);
             }
             // ---- terminals
             "terminal.open" => {
@@ -5952,6 +5967,69 @@ export default class Scale extends View {
         let (view, cx) = cx.add_window_view(|window, cx| super::AppWindow::new(core, requests, window, cx));
         assert_eq!(view.update(cx, |this, _| this.layout_name.clone()), "test");
         (view, cx)
+    }
+
+    #[test]
+    fn arranging_panes_keeps_terminals_and_focus_and_cycles_modes() {
+        in_own_process("arrange_panes");
+    }
+
+    /// Tab t: a | (b / c) with a mod pane m under c, b focused and zoomed.
+    /// `pane.arrange` rebuilds it without touching a pane's terminal or mod,
+    /// keeps b focused, unzooms, and `next` walks the modes from tiled.
+    #[gpui::test]
+    fn arrange_panes(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Content, Node};
+        use crate::model::{Tab, pane};
+        use serde_json::json;
+        if !running_alone("arrange_panes") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        let run = |cx: &mut gpui::VisualTestContext, command: &str, args: serde_json::Value| {
+            let reply = view.update_in(cx, |this, window, cx| this.run_as(command, args, false, window, cx));
+            cx.run_until_parked();
+            reply
+        };
+        view.update_in(cx, |this, _, _| {
+            this.documents.entry(String::new()).or_default().available = true;
+            let viewer = Node::block("m", Content::Mod { name: "unused".into(), props: json!({}) });
+            let right = Node::container("r", Axis::Column, vec![pane("b", "tb"), pane("c", "tc"), viewer]);
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), right]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.add_tab("s", Tab::new("u", "", "d", "td"));
+            this.model.select_tab("t");
+            this.model.focus_pane("b");
+            this.model.tab_mut("t").unwrap().zoomed = Some("b".into());
+        });
+        let contents = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| {
+            let mut all: Vec<(String, Option<Content>)> = this.model.tab("t").unwrap().root.panes().iter().map(|p| (p.id.clone(), p.content().cloned())).collect();
+            all.sort_by(|x, y| x.0.cmp(&y.0));
+            all
+        });
+        let before = contents(cx);
+        for want in ["tiled", "bsp", "master", "columns", "rows", "tiled"] {
+            let reply = run(cx, "pane.arrange", json!({ "mode": "next" }));
+            assert_eq!(reply, json!({ "ok": true, "tab": "t", "mode": want }));
+            assert_eq!(contents(cx), before, "{want}: every pane keeps its terminal or mod");
+            view.update(cx, |this, _| {
+                let tab = this.model.tab("t").unwrap();
+                assert_eq!(tab.arrange.map(crate::arrange::Mode::name), Some(want));
+                assert_eq!(tab.zoomed, None);
+                assert_eq!(this.model.focused_pane().as_deref(), Some("b"), "{want}");
+                assert_eq!(this.model.active_tab().map(|t| t.id.as_str()), Some("t"));
+            });
+        }
+        // Master mode puts the focused pane first, on the left.
+        run(cx, "pane.arrange", json!({ "mode": "master" }));
+        view.update(cx, |this, _| assert_eq!(this.model.tab("t").unwrap().root.children()[0].id, "b"));
+        // Another tab by id; its own mode memory.
+        assert_eq!(run(cx, "pane.arrange", json!({ "mode": "next", "tab": "u" }))["mode"], "tiled");
+        view.update(cx, |this, _| assert_eq!(this.model.tab("t").unwrap().arrange, Some(crate::arrange::Mode::Master)));
+        assert!(run(cx, "pane.arrange", json!({ "mode": "spiral" }))["error"].as_str().unwrap().contains("not \"spiral\""));
+        assert!(run(cx, "pane.arrange", json!({ "mode": "rows", "tab": "nope" }))["error"].is_string());
+        assert!(run(cx, "pane.arrange", json!({}))["error"].as_str().unwrap().contains("needs mode"));
     }
 
     #[test]

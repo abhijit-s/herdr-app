@@ -285,6 +285,15 @@ Swap the focused pane with its neighbor in a direction.
 |---|---|
 | `direction` | yes |
 
+## `pane.arrange`
+
+Rearrange a tab's panes (default: the shown tab) evenly: "tiled" (a grid), "bsp" (each pane takes half of what's left, right then down), "master" (the focused pane on the left half, the rest stacked on the right), "columns", "rows", or "next" (the mode after the tab's last one, from tiled). Panes keep their terminals and go in reading order (top to bottom, then left to right); a zoomed pane unzooms.
+
+| Argument | Required |
+|---|---|
+| `mode` | yes |
+| `tab` | no |
+
 ## `focus.toggle_follows_mouse`
 
 Turn focus follows mouse on or off (settings.json's focus_follows_mouse): the pointer resting on a terminal pane focuses it.

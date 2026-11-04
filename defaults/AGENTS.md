@@ -566,6 +566,15 @@ The main ones:
   `pane.go` also reaches visible mods whose `mod.json` says `"focusable": true`, and
   starts from that mod while it holds the keyboard.
   `pane.swap` uses geometry only. Focus history lasts until the window closes.
+  `pane.arrange {mode, tab?}` rebuilds a tab's panes (default: the shown tab) with
+  even sizes: `tiled` (a grid row by row, `ceil(sqrt(n))` across; a short last
+  row's panes widen), `bsp` (each pane takes half of what's left: right, down,
+  right…), `master` (the focused pane on the left half, the rest stacked on the
+  right), `columns`, `rows`, or `next` (the mode after the tab's last, from
+  `tiled`; the tab's `arrange` field says which). Panes go in reading order: by
+  top edge, then left edge. Terminals, mod panes, names and focus stay; a zoomed
+  pane unzooms. The new tree is saved like any split; new splits don't follow
+  the mode. Default key: Cmd+Shift+Space (macOS), Ctrl+Shift+Space (Linux, Windows).
   `focus.toggle_follows_mouse` turns `focus_follows_mouse` (below) on or off in
   settings.json and says which in a toast; when settings.json has errors or
   can't be written, the change applies unsaved, the toast warns why, and a
