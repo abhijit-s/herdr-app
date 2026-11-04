@@ -430,6 +430,16 @@ pub struct Person {
     /// The same for the panels' text, apart from the terminals'.
     #[serde(skip_serializing_if = "is_zero")]
     pub ui_text_contrast: f32,
+    /// Trial: smooth terminal text with a coverage per color channel
+    /// (subpixel, on 1x displays) rather than one (grayscale) (macOS).
+    #[serde(skip_serializing_if = "TextRendering::is_grayscale")]
+    pub text_rendering: TextRendering,
+    /// The same for the panels' text, apart from the terminals'.
+    #[serde(skip_serializing_if = "TextRendering::is_grayscale")]
+    pub ui_text_rendering: TextRendering,
+    /// The display's color subpixels left to right, for subpixel smoothing.
+    #[serde(skip_serializing_if = "SubpixelOrder::is_rgb")]
+    pub subpixel_order: SubpixelOrder,
     /// The panels' font (their sizes follow zoom).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_font: Option<String>,
@@ -534,6 +544,41 @@ impl OptionAsAlt {
     }
 }
 
+/// How glyph edges are smoothed: one coverage per pixel, or one per color
+/// channel, which only shows right on 1x displays (grayscale elsewhere).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextRendering {
+    #[default]
+    Grayscale,
+    Subpixel,
+}
+
+impl TextRendering {
+    fn is_grayscale(&self) -> bool {
+        *self == TextRendering::Grayscale
+    }
+
+    /// Whether glyphs ask for subpixel coverage (`Window::with_glyph_subpixel`).
+    pub fn subpixel(self) -> bool {
+        self == TextRendering::Subpixel
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SubpixelOrder {
+    #[default]
+    Rgb,
+    Bgr,
+}
+
+impl SubpixelOrder {
+    fn is_rgb(&self) -> bool {
+        *self == SubpixelOrder::Rgb
+    }
+}
+
 /// Ghostty's `font-thicken-strength` default.
 pub const THICKEN_STRENGTH_DEFAULT: u16 = 255;
 
@@ -610,6 +655,9 @@ impl Default for Person {
             ui_font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
             text_contrast: 0.0,
             ui_text_contrast: 0.0,
+            text_rendering: TextRendering::Grayscale,
+            ui_text_rendering: TextRendering::Grayscale,
+            subpixel_order: SubpixelOrder::Rgb,
             ui_font: None,
             ui_font_weight: UI_FONT_WEIGHT_DEFAULT,
             telemetry: true,
@@ -645,6 +693,11 @@ pub struct Settings {
     pub text_contrast: f32,
     /// The panels' text's edge contrast, 0 (off) to 1.
     pub ui_text_contrast: f32,
+    /// Terminal text's smoothing (subpixel only where the display allows).
+    pub text_rendering: TextRendering,
+    /// The panels' text's smoothing.
+    pub ui_text_rendering: TextRendering,
+    pub subpixel_order: SubpixelOrder,
     pub ui_font_family: String,
     pub ui_font_size: f32,
     /// The panels' regular text weight (see `ui_weight_shift`).
@@ -716,6 +769,9 @@ impl Default for Settings {
             ui_font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
             text_contrast: 0.0,
             ui_text_contrast: 0.0,
+            text_rendering: TextRendering::Grayscale,
+            ui_text_rendering: TextRendering::Grayscale,
+            subpixel_order: SubpixelOrder::Rgb,
             ui_font_family: "Geist".into(),
             ui_font_size: 13.0,
             ui_font_weight: UI_FONT_WEIGHT_DEFAULT,
@@ -770,6 +826,9 @@ impl Settings {
             ui_font_thicken_strength: person.ui_font_thicken_strength,
             text_contrast: person.text_contrast,
             ui_text_contrast: person.ui_text_contrast,
+            text_rendering: person.text_rendering,
+            ui_text_rendering: person.ui_text_rendering,
+            subpixel_order: person.subpixel_order,
             ui_font_family: look.ui_font.clone().or(person.ui_font.clone()).unwrap_or(d.ui_font_family),
             ui_font_size: d.ui_font_size,
             ui_font_weight: person.ui_font_weight,
@@ -1311,6 +1370,25 @@ mod tests {
     }
 
     #[test]
+    fn text_rendering_defaults_to_grayscale_rgb_and_takes_each_value() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        let saved = serde_json::to_value(&default).unwrap();
+        for key in ["text_rendering", "ui_text_rendering", "subpixel_order"] {
+            assert_eq!(saved.get(key), None, "{key} is left out while default");
+        }
+        let settings = Settings::compose(&default, &crate::layout::Look::default(), true);
+        assert_eq!((settings.text_rendering, settings.ui_text_rendering, settings.subpixel_order), (TextRendering::Grayscale, TextRendering::Grayscale, SubpixelOrder::Rgb));
+        let person: Person = serde_json::from_value(serde_json::json!({"text_rendering": "subpixel", "subpixel_order": "bgr"})).unwrap();
+        let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
+        assert_eq!((settings.text_rendering, settings.ui_text_rendering, settings.subpixel_order), (TextRendering::Subpixel, TextRendering::Grayscale, SubpixelOrder::Bgr));
+        let person: Person = serde_json::from_value(serde_json::json!({"ui_text_rendering": "subpixel"})).unwrap();
+        assert_eq!(Settings::compose(&person, &crate::layout::Look::default(), true).ui_text_rendering, TextRendering::Subpixel);
+        for bad in [serde_json::json!({"text_rendering": "lcd"}), serde_json::json!({"ui_text_rendering": true}), serde_json::json!({"subpixel_order": "vrgb"})] {
+            assert!(serde_json::from_value::<Person>(bad.clone()).is_err(), "{bad} is refused");
+        }
+    }
+
+    #[test]
     fn text_contrast_defaults_off_and_validates_both() {
         let default: Person = serde_json::from_str("{}").unwrap();
         assert_eq!((default.text_contrast, default.ui_text_contrast), (0.0, 0.0));
@@ -1550,7 +1628,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_thicken: true, font_thicken_strength: 30, ui_font_thicken: true, ui_font_thicken_strength: 30, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_thicken: true, font_thicken_strength: 30, ui_font_thicken: true, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

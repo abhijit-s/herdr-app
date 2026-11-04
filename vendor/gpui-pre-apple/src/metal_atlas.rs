@@ -18,6 +18,7 @@ impl MetalAtlas {
             supports_shared_storage,
             monochrome_textures: Default::default(),
             polychrome_textures: Default::default(),
+            subpixel_textures: Default::default(),
         })))
     }
 
@@ -35,6 +36,8 @@ struct MetalAtlasTextures {
     supports_shared_storage: bool,
     monochrome_textures: AtlasTextureList<MetalAtlasTexture>,
     polychrome_textures: AtlasTextureList<MetalAtlasTexture>,
+    // HERDR: subpixel glyphs, each texel a coverage per color channel.
+    subpixel_textures: AtlasTextureList<MetalAtlasTexture>,
 }
 
 impl PlatformAtlas for MetalAtlas {
@@ -76,7 +79,7 @@ impl AtlasBackend for MetalAtlasTextures {
         let textures = match id.kind {
             AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
             AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
-            AtlasTextureKind::Subpixel => unreachable!(),
+            AtlasTextureKind::Subpixel => &mut self.subpixel_textures,
         };
 
         let Some(texture_slot) = textures
@@ -109,7 +112,7 @@ impl MetalAtlasTextures {
             let textures = match texture_kind {
                 AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
                 AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
-                AtlasTextureKind::Subpixel => unreachable!(),
+                AtlasTextureKind::Subpixel => &mut self.subpixel_textures,
             };
 
             if let Some(tile) = textures
@@ -154,7 +157,10 @@ impl MetalAtlasTextures {
                 pixel_format = metal::MTLPixelFormat::BGRA8Unorm;
                 usage = metal::MTLTextureUsage::ShaderRead;
             }
-            AtlasTextureKind::Subpixel => unreachable!(),
+            AtlasTextureKind::Subpixel => {
+                pixel_format = metal::MTLPixelFormat::BGRA8Unorm;
+                usage = metal::MTLTextureUsage::ShaderRead;
+            }
         }
         texture_descriptor.set_pixel_format(pixel_format);
         texture_descriptor.set_usage(usage);
@@ -170,7 +176,7 @@ impl MetalAtlasTextures {
         let texture_list = match kind {
             AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
             AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
-            AtlasTextureKind::Subpixel => unreachable!(),
+            AtlasTextureKind::Subpixel => &mut self.subpixel_textures,
         };
 
         let index = texture_list.free_list.pop();
@@ -201,7 +207,7 @@ impl MetalAtlasTextures {
         let textures = match id.kind {
             AtlasTextureKind::Monochrome => &self.monochrome_textures,
             AtlasTextureKind::Polychrome => &self.polychrome_textures,
-            AtlasTextureKind::Subpixel => unreachable!(),
+            AtlasTextureKind::Subpixel => &self.subpixel_textures,
         };
         textures.textures.get(id.index as usize)?.as_ref()
     }

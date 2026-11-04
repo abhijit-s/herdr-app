@@ -57,10 +57,18 @@ name = "weight_ink"
 path = "tests/weight_ink.rs"
 harness = false
 
+[[test]]
+name = "subpixel_text"
+path = "tests/subpixel_text.rs"
+harness = false
+
 [dev-dependencies]
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["test-support"] }
 gpui = { package = "gpui-pre", version = "=0.3.8", features = ["test-support"] }
 gpui-shell = { path = "vendor/gpui-kit/crates/shell", features = ["render-test-support"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+swash = "=0.2.10"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 gpui_wgpu = { package = "gpui-pre-wgpu", path = "vendor/gpui-pre-wgpu", features = ["test-support"] }

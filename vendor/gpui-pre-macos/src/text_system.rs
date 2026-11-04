@@ -103,6 +103,24 @@ struct MacTextSystemState {
     // for mapping CoreText's runs back, where only the outlines matter.
     font_ids_by_weighted_base: HashMap<(FontId, i64), FontId>,
     font_ids_by_weighted_name: HashMap<(String, i64), FontId>,
+    // HERDR: embedded fonts' bytes by PostScript name, and the subpixel
+    // rasteriser that reads them (`lcd`).
+    embedded_fonts: HashMap<String, &'static [u8]>,
+    lcd: parking_lot::Mutex<crate::lcd::Rasterizer>,
+    // HERDR: each font's subpixel growth (`lcd::fit`), by font, size in device
+    // pixels and what it draws like; and which way each glyph grows outward
+    // (`lcd::Samples::outward`).
+    subpixel_weights: parking_lot::Mutex<HashMap<(FontId, u32, SubpixelMatch), crate::lcd::Weight>>,
+    subpixel_outward: parking_lot::Mutex<HashMap<(FontId, GlyphId), f32>>,
+}
+
+/// HERDR: what a font's subpixel glyphs are calibrated to draw like:
+/// CoreGraphics' grayscale through thicken's smoothing levels, or at a
+/// color's dilation.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum SubpixelMatch {
+    Thicken,
+    Dilation(u8),
 }
 
 impl MacTextSystem {
@@ -118,6 +136,10 @@ impl MacTextSystem {
             postscript_names_by_font_id: HashMap::default(),
             font_ids_by_weighted_base: HashMap::default(),
             font_ids_by_weighted_name: HashMap::default(),
+            embedded_fonts: HashMap::default(),
+            lcd: Default::default(),
+            subpixel_weights: Default::default(),
+            subpixel_outward: Default::default(),
         }))
     }
 }
@@ -301,6 +323,7 @@ impl MacTextSystemState {
                     };
                     let font = core_graphics::font::CGFont::from_data_provider(data_provider)
                         .map_err(|()| anyhow!("Could not load an embedded font."))?;
+                    self.embedded_fonts.insert(font.postscript_name().to_string(), embedded_font);
                     let font = font_kit::loaders::core_text::Font::from_core_graphics_font(font);
                     Ok(Handle::from_native(&font))
                 }
@@ -525,7 +548,15 @@ impl MacTextSystemState {
         // Expand the bounds by 1 pixel on each side to give CG room for anti-aliasing,
         // HERDR: and 1 more for thickening, which Ghostty takes to add at most 1 pixel to an edge.
         let room = if params.thicken.is_some() && !params.is_emoji { 2 } else { 1 };
-        Ok(bounds.dilate(DevicePixels(room)))
+        let bounds = bounds.dilate(DevicePixels(room));
+        // HERDR: subpixel glyphs' filter spreads up to a pixel to each side.
+        if params.subpixel_rendering && !params.is_emoji {
+            return Ok(Bounds {
+                origin: point(bounds.origin.x - DevicePixels(1), bounds.origin.y),
+                size: size(bounds.size.width + DevicePixels(2), bounds.size.height),
+            });
+        }
+        Ok(bounds)
     }
 
     fn rasterize_glyph(
@@ -545,6 +576,11 @@ impl MacTextSystemState {
                 bitmap_size.height += DevicePixels(1);
             }
             let bitmap_size = bitmap_size;
+
+            let subpixel = params.subpixel_rendering && !params.is_emoji;
+            if subpixel && let Some(bytes) = self.rasterize_subpixel_glyph(params, glyph_bounds, bitmap_size) {
+                return Ok((bitmap_size, bytes));
+            }
 
             let mut bytes;
             let cx;
@@ -632,9 +668,150 @@ impl MacTextSystemState {
                     swap_rgba_pa_to_bgra(pixel);
                 }
             }
+            // HERDR: a face swash can't draw: its grayscale coverage in every channel.
+            if subpixel {
+                bytes = bytes.iter().flat_map(|&a| [a, a, a, a]).collect();
+            }
 
             Ok((bitmap_size, bytes))
         }
+    }
+
+    /// HERDR: a coverage per color channel, BGRA, from swash (`lcd`), or None
+    /// when swash can't open the face or draw the glyph. The outline grows,
+    /// across and along the rows, by its font's one growth (`subpixel_weight`):
+    /// at `thicken`'s strength through smoothing levels made continuous
+    /// (`lcd::thicken_level`), else at the color's `dilation` exactly.
+    fn rasterize_subpixel_glyph(
+        &self,
+        params: &RenderGlyphParams,
+        glyph_bounds: Bounds<DevicePixels>,
+        bitmap_size: Size<DevicePixels>,
+    ) -> Option<Vec<u8>> {
+        let level = params.thicken.map_or(params.dilation as f32, crate::lcd::thicken_level);
+        let growth = self.subpixel_weight(params).at(level);
+        let sign = self.subpixel_outward(params);
+        self.render_subpixel(params, glyph_bounds, bitmap_size, growth.map(|g| sign * g))
+    }
+
+    /// HERDR: the growth for every glyph of `params`' font at its size: fitted
+    /// once over printable ASCII (`lcd::fit`), for thicken against
+    /// CoreGraphics at smoothing levels 0 and 4 (strengths 0 and 255),
+    /// interpolated (`lcd::Weight`).
+    fn subpixel_weight(&self, params: &RenderGlyphParams) -> crate::lcd::Weight {
+        let matching = match params.thicken {
+            Some(_) => SubpixelMatch::Thicken,
+            None => SubpixelMatch::Dilation(params.dilation),
+        };
+        let key = (params.font_id, (f32::from(params.font_size) * params.scale_factor).to_bits(), matching);
+        if let Some(weight) = self.subpixel_weights.lock().get(&key) {
+            return *weight;
+        }
+        let weight = self.calibrate_subpixel(params).unwrap_or(crate::lcd::Weight::FALLBACK);
+        self.subpixel_weights.lock().insert(key, weight);
+        weight
+    }
+
+    fn calibrate_subpixel(&self, params: &RenderGlyphParams) -> Option<crate::lcd::Weight> {
+        // Lowercase counts twice, as it fills most text: fitted over printable
+        // ASCII evenly, Geist 13 inks 2% over grayscale on interface text;
+        // over lowercase alone, 1 to 3% under.
+        let glyphs: Vec<(crate::lcd::Samples, RenderGlyphParams, Bounds<DevicePixels>, usize)> = ('!'..='~')
+            .filter_map(|ch| Some((self.glyph_for_char(params.font_id, ch)?, if ch.is_ascii_lowercase() { 2 } else { 1 })))
+            .filter_map(|(glyph_id, count)| {
+                let params = RenderGlyphParams { glyph_id, subpixel_variant: point(0, 0), subpixel_rendering: false, ..params.clone() };
+                let bounds = self.raster_bounds(&params).ok().filter(|bounds| bounds.size.width.0 > 0 && bounds.size.height.0 > 0)?;
+                Some((self.subpixel_samples(&params, bounds)?, params, bounds, count))
+            })
+            .collect();
+        let growth = |thicken: Option<u8>| {
+            let grays: Vec<Option<Vec<f32>>> = glyphs
+                .iter()
+                .map(|(_, params, bounds, _)| {
+                    let (_, bytes) = self.rasterize_glyph(&RenderGlyphParams { thicken, ..params.clone() }, *bounds).ok()?;
+                    Some(bytes.iter().map(|&a| a as f32 / 255.0).collect())
+                })
+                .collect();
+            let pairs: Vec<(&crate::lcd::Samples, &[f32])> = glyphs
+                .iter()
+                .zip(&grays)
+                .filter_map(|((samples, _, _, count), gray)| Some(std::iter::repeat_n((samples, gray.as_deref()?), *count)))
+                .flatten()
+                .collect();
+            crate::lcd::fit(&pairs)
+        };
+        match params.thicken {
+            Some(_) => Some(crate::lcd::Weight::between(growth(Some(0))?, growth(Some(255))?)),
+            None => growth(None).map(crate::lcd::Weight::steady),
+        }
+    }
+
+    /// HERDR: 1, or -1 for a glyph swash grows inward (`lcd::Samples::outward`).
+    fn subpixel_outward(&self, params: &RenderGlyphParams) -> f32 {
+        let key = (params.font_id, params.glyph_id);
+        if let Some(sign) = self.subpixel_outward.lock().get(&key) {
+            return *sign;
+        }
+        let gray_params = RenderGlyphParams { subpixel_variant: point(0, 0), subpixel_rendering: false, ..params.clone() };
+        let sign = self
+            .raster_bounds(&gray_params)
+            .ok()
+            .filter(|bounds| bounds.size.width.0 > 0 && bounds.size.height.0 > 0)
+            .and_then(|bounds| self.subpixel_samples(&gray_params, bounds))
+            .map_or(1.0, |samples| samples.outward());
+        self.subpixel_outward.lock().insert(key, sign);
+        sign
+    }
+
+    /// HERDR: the glyph drawn by swash plain and grown each way, at one
+    /// sample per pixel in CoreGraphics' box.
+    fn subpixel_samples(&self, params: &RenderGlyphParams, bounds: Bounds<DevicePixels>) -> Option<crate::lcd::Samples> {
+        let mut size = bounds.size;
+        size.width += DevicePixels((params.subpixel_variant.x > 0) as i32);
+        let probe = crate::lcd::Samples::PROBE;
+        let [plain, across, along] = [[0.0, 0.0], [probe, 0.0], [0.0, probe]].map(|embolden| {
+            let glyph = self.subpixel_glyph(params, bounds.origin, size, embolden);
+            self.lcd.lock().coverage(params.font_id, || self.face_source(params.font_id), &glyph)
+        });
+        Some(crate::lcd::Samples { width: size.width.0 as usize, plain: plain?, grown: [across?, along?] })
+    }
+
+    fn subpixel_glyph(
+        &self,
+        params: &RenderGlyphParams,
+        origin: gpui::Point<DevicePixels>,
+        size: Size<DevicePixels>,
+        embolden: [f32; 2],
+    ) -> crate::lcd::Glyph {
+        crate::lcd::Glyph {
+            glyph_id: params.glyph_id.0 as u16,
+            ppem: f32::from(params.font_size) * params.scale_factor,
+            shift: params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32,
+            embolden,
+            origin: (origin.x.0, origin.y.0),
+            size: (size.width.0 as usize, size.height.0 as usize),
+        }
+    }
+
+    fn face_source(&self, font_id: FontId) -> crate::lcd::FaceSource {
+        let font = &self.fonts[font_id.0];
+        crate::lcd::FaceSource {
+            native: font.native_font(),
+            shared: font.copy_font_data(),
+            embedded: self.postscript_names_by_font_id.get(&font_id).and_then(|name| self.embedded_fonts.get(name).copied()),
+            postscript_name: self.postscript_names_by_font_id.get(&font_id).cloned(),
+        }
+    }
+
+    fn render_subpixel(
+        &self,
+        params: &RenderGlyphParams,
+        glyph_bounds: Bounds<DevicePixels>,
+        bitmap_size: Size<DevicePixels>,
+        embolden: [f32; 2],
+    ) -> Option<Vec<u8>> {
+        let glyph = self.subpixel_glyph(params, glyph_bounds.origin, bitmap_size, embolden);
+        self.lcd.lock().render(params.font_id, || self.face_source(params.font_id), &glyph)
     }
 
     fn layout_line(&mut self, text: &str, font_size: Pixels, font_runs: &[FontRun]) -> LineLayout {

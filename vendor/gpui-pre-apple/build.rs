@@ -58,6 +58,7 @@ mod apple_build {
             "BorderStyle".into(),
             "SpriteInputIndex".into(),
             "MonochromeSprite".into(),
+            "SubpixelSprite".into(),
             "PolychromeSprite".into(),
             "PathSprite".into(),
             "SurfaceInputIndex".into(),

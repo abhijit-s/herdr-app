@@ -2754,6 +2754,20 @@ pub enum WindowBackgroundAppearance {
     MicaAltBackdrop,
 }
 
+// HERDR: the display's subpixel order, for renderers that read it per frame.
+static SUBPIXEL_BGR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// HERDR: whether subpixel glyphs are drawn for blue-green-red subpixels
+/// rather than red-green-blue. Windows pick it up on their next frame.
+pub fn set_subpixel_bgr(bgr: bool) {
+    SUBPIXEL_BGR.store(bgr, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// HERDR: see `set_subpixel_bgr`.
+pub fn subpixel_bgr() -> bool {
+    SUBPIXEL_BGR.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The text rendering mode to use for drawing glyphs.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum TextRenderingMode {

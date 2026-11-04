@@ -420,8 +420,9 @@ impl PlatformWindow for TestWindow {
         WindowBackgroundAppearance::Opaque
     }
 
+    // HERDR: as macOS, only at 1x, so headless tests can draw both.
     fn is_subpixel_rendering_supported(&self) -> bool {
-        false
+        self.0.lock().scale_factor == 1.0
     }
 
     fn set_title(&mut self, title: &str) {
