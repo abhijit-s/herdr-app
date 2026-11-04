@@ -170,7 +170,7 @@ mod linux {
     }
 }
 
-fn watch_directories(root: &Path) -> Result<HashSet<PathBuf>, String> {
+pub(crate) fn watch_directories(root: &Path) -> Result<HashSet<PathBuf>, String> {
     #[cfg(target_os = "linux")]
     {
         linux::watch_directories(root)

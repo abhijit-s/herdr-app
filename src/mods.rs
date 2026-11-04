@@ -390,7 +390,12 @@ pub enum Request {
     Run { name: String, args: Value },
     OpenOverlay { id: String, spec: Value },
     CloseOverlay { id: String },
+    /// Every copy re-renders.
     Refresh,
+    /// Copies whose reads changed re-render (`snapshot_changed`).
+    Changed,
+    /// A look at a folder's git status finished.
+    Git(crate::git_status::Update),
     /// From `herdr-app do` / `herdr-app status` (control.rs); answer on `reply`.
     Control { cmd: Value, reply: std::sync::mpsc::Sender<Value> },
 }
@@ -433,11 +438,17 @@ pub fn shared(key: &str) -> Option<Value> {
     with_shared(|s| s.values.get(key).cloned())
 }
 
-/// Sets a value every mod can read (persisted in shared.json); mods re-render.
+/// Sets a value every mod can read (persisted in shared.json); the copies that read it re-render.
 pub fn set_shared(key: String, value: Value) {
+    let read_key = shared_key(&key);
     if with_shared(|s| s.set(key, value)) {
-        request(Request::Refresh);
+        bump_revision(&read_key);
+        request(Request::Changed);
     }
+}
+
+fn shared_key(key: &str) -> String {
+    format!("shared\u{0}{key}")
 }
 
 fn with_shared<R>(f: impl FnOnce(&mut SharedStore) -> R) -> R {
@@ -554,7 +565,11 @@ thread_local! {
     /// Each loaded copy's props, which the window can replace without
     /// reloading the copy (`set_props`).
     static LIVE_PROPS: RefCell<HashMap<u64, Weak<RefCell<Value>>>> = RefCell::new(HashMap::new());
-    static REVISIONS: RefCell<HashMap<&'static str, u64>> = RefCell::new(HashMap::new());
+    /// How often each thing mods read has changed: a snapshot key, `shared\0<key>`,
+    /// a folder's git status (`git_status::Place::read_key`).
+    static REVISIONS: RefCell<HashMap<String, u64>> = RefCell::new(HashMap::new());
+    /// Copies passed over by a refresh while hidden: refreshed once shown.
+    static MISSED: RefCell<std::collections::HashSet<u64>> = RefCell::new(std::collections::HashSet::new());
     static COPY_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static OVERLAY_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -588,9 +603,19 @@ fn publish(key: &'static str, set: impl FnOnce(&mut Snapshot) -> (Value, Value))
         old != new
     });
     if changed {
-        REVISIONS.with_borrow_mut(|r| *r.entry(key).or_default() += 1);
+        bump_revision(key);
     }
     changed
+}
+
+/// Something mods read changed: the copies that read it redraw.
+pub fn bump_revision(key: &str) {
+    REVISIONS.with_borrow_mut(|r| match r.get_mut(key) {
+        Some(n) => *n += 1,
+        None => {
+            r.insert(key.to_owned(), 1);
+        }
+    });
 }
 
 pub fn publish_layout(layout: &Node) -> bool {
@@ -631,17 +656,19 @@ pub fn publish_focused(v: Value) -> bool {
 }
 
 #[derive(Default)]
-struct LiveReads(HashMap<&'static str, u64>);
+struct LiveReads(HashMap<String, u64>);
 
 impl LiveReads {
-    fn record(&mut self, key: &'static str, revisions: &HashMap<&'static str, u64>) {
-        self.0.entry(key).or_insert_with(|| revisions.get(key).copied().unwrap_or(0));
+    fn record(&mut self, key: &str, revisions: &HashMap<String, u64>) {
+        if !self.0.contains_key(key) {
+            self.0.insert(key.to_owned(), revisions.get(key).copied().unwrap_or(0));
+        }
     }
 
-    fn changed(&mut self, revisions: &HashMap<&'static str, u64>) -> bool {
+    fn changed(&mut self, revisions: &HashMap<String, u64>) -> bool {
         let mut changed = false;
         for (key, seen) in &mut self.0 {
-            let revision = revisions.get(key).copied().unwrap_or(0);
+            let revision = revisions.get(key.as_str()).copied().unwrap_or(0);
             changed |= *seen != revision;
             *seen = revision;
         }
@@ -650,8 +677,12 @@ impl LiveReads {
 }
 
 fn read(reads: &RefCell<LiveReads>, key: &'static str, f: impl FnOnce(&Snapshot) -> &Value) -> HostValue {
-    REVISIONS.with_borrow(|r| reads.borrow_mut().record(key, r));
+    record(reads, key);
     SNAPSHOT.with(|s| to_host(f(&s.borrow())))
+}
+
+fn record(reads: &RefCell<LiveReads>, key: &str) {
+    REVISIONS.with_borrow(|r| reads.borrow_mut().record(key, r));
 }
 
 fn reader(reads: Rc<RefCell<LiveReads>>, key: &'static str, f: fn(&Snapshot) -> &Value) -> impl Fn(&gpui_shell::HostArguments) -> gpui_shell::HostResult {
@@ -702,9 +733,27 @@ pub fn send_command_to(copy: u64, command: &str) -> bool {
     })
 }
 
-/// The copies on screen now (`prepare_load` numbers them).
-pub fn set_shown_copies(copies: std::collections::HashSet<u64>) {
-    SHOWN_COPIES.with(|s| *s.borrow_mut() = copies);
+/// The copies on screen now (`prepare_load` numbers them); returns those that just came into view.
+pub fn set_shown_copies(copies: std::collections::HashSet<u64>) -> Vec<u64> {
+    SHOWN_COPIES.with_borrow_mut(|shown| {
+        let fresh = copies.difference(shown).copied().collect();
+        *shown = copies;
+        fresh
+    })
+}
+
+pub fn is_shown(copy: u64) -> bool {
+    SHOWN_COPIES.with_borrow(|s| s.contains(&copy))
+}
+
+/// A refresh of every copy passed over hidden `copy`: it redraws once shown.
+pub fn missed(copy: u64) {
+    MISSED.with_borrow_mut(|m| m.insert(copy));
+}
+
+/// Whether `copy`, coming into view, has a refresh to catch up on.
+pub fn take_missed(copy: u64) -> bool {
+    MISSED.with_borrow_mut(|m| m.remove(&copy))
 }
 
 pub fn new_overlay_id() -> String {
@@ -751,6 +800,16 @@ pub fn from_host(v: &HostValue) -> Value {
 }
 
 pub const DECLARATIONS: &str = include_str!("../defaults/herdr.d.ts");
+
+/// `(folder, { on })`: the folder as given, without a trailing slash.
+fn git_place(a: &gpui_shell::HostArguments) -> Result<crate::git_status::Place, HostError> {
+    let folder = a.string(0)?;
+    let folder = if folder.len() > 1 { folder.trim_end_matches('/') } else { folder };
+    if folder.is_empty() {
+        return Err(HostError::new("gitStatus needs a folder"));
+    }
+    Ok(crate::git_status::Place { on: opt_str(a.get(1), "on").filter(|m| !m.is_empty()), folder: folder.to_owned() })
+}
 
 fn strings(v: Option<&HostValue>) -> Vec<String> {
     v.and_then(HostValue::as_array).map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect()).unwrap_or_default()
@@ -1098,9 +1157,13 @@ fn module(inst: Instance, copy: u64) -> HostModule {
             move |_| Ok(float.as_ref().map_or(HostValue::Null, |id| read(&reads, "floats", |s| s.floats.get(id).unwrap_or(&Value::Null))))
         })
         .function("props", move |_| Ok(to_host(&live_props.borrow())))
-        .function("shared", |a| {
-            let k = a.string(0)?;
-            Ok(with_shared(|s| s.values.get(k).map(to_host).unwrap_or(HostValue::Null)))
+        .function("shared", {
+            let reads = reads.clone();
+            move |a| {
+                let k = a.string(0)?;
+                record(&reads, &shared_key(k));
+                Ok(with_shared(|s| s.values.get(k).map(to_host).unwrap_or(HostValue::Null)))
+            }
         })
         .function("setShared", |a| {
             set_shared(a.string(0)?.to_owned(), from_host(a.value(1)?));
@@ -1109,6 +1172,27 @@ fn module(inst: Instance, copy: u64) -> HostModule {
         .async_function("watchFolder", |a| {
             let path = a.string(0)?.to_owned();
             Ok(async move { crate::files::next_change(path).await.map(|v| to_host(&json!(v))).map_err(HostError::new) })
+        })
+        .function("gitStatus", {
+            let reads = reads.clone();
+            move |a| {
+                let place = git_place(a)?;
+                let files = a.get(1).and_then(|o| o.get("files")).and_then(HostValue::as_bool).unwrap_or(false);
+                record(&reads, &place.read_key());
+                Ok(crate::git_status::read(&place, |v, revision, _| to_host(&crate::git_status::shown(v, revision, files))))
+            }
+        })
+        .async_function("nextGitStatus", |a| {
+            let place = git_place(a)?;
+            let options = a.get(1);
+            let files = options.and_then(|o| o.get("files")).and_then(HostValue::as_bool).unwrap_or(false);
+            let after = options.and_then(|o| o.get("after")).and_then(HostValue::as_number).map(|n| n as u64);
+            let next = crate::git_status::next(&place, after, files);
+            Ok(async move { next.recv().await.map(|v| to_host(&v)).map_err(|_| HostError::new("herdr-app is shutting down")) })
+        })
+        .function("refreshGitStatus", |a| {
+            crate::git_status::refresh(&git_place(a)?);
+            Ok(HostValue::Null)
         })
         .async_function("nextCommand", move |_| {
             let rx = commands.clone();
@@ -1211,10 +1295,10 @@ mod tests {
         let mut chrome = LiveReads::default();
         list.record("agents", &revisions);
         chrome.record("layout", &revisions);
-        revisions.insert("terminals", 1);
+        revisions.insert("terminals".into(), 1);
         assert!(!list.changed(&revisions));
         assert!(!chrome.changed(&revisions));
-        revisions.insert("agents", 1);
+        revisions.insert("agents".into(), 1);
         // A callback reading the new snapshot must not swallow a pending redraw.
         list.record("agents", &revisions);
         assert!(list.changed(&revisions));
@@ -1222,7 +1306,7 @@ mod tests {
         assert!(!list.changed(&revisions));
         // Dependencies first read by a child or a callback remain subscribed.
         list.record("focused", &revisions);
-        revisions.insert("focused", 1);
+        revisions.insert("focused".into(), 1);
         assert!(list.changed(&revisions));
     }
 
@@ -1244,6 +1328,48 @@ mod tests {
             assert!(!snapshot_changed(1));
             drop(reads);
             assert!(!snapshot_changed(1));
+        }).join().unwrap();
+    }
+
+    #[test]
+    fn a_shared_value_redraws_only_the_copies_that_read_it() {
+        std::thread::spawn(|| {
+            let (theme, list) = (Rc::new(RefCell::new(LiveReads::default())), Rc::new(RefCell::new(LiveReads::default())));
+            LIVE_READS.with_borrow_mut(|copies| {
+                copies.insert(1, Rc::downgrade(&theme));
+                copies.insert(2, Rc::downgrade(&list));
+            });
+            record(&theme, &shared_key("test.theme"));
+            record(&list, &shared_key("test.sort"));
+            // shared.json outlives a test run: start from values no earlier run left.
+            let run = json!(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos().to_string());
+            set_shared("test.theme".into(), run.clone());
+            set_shared("test.sort".into(), run);
+            assert!(snapshot_changed(1) && snapshot_changed(2));
+            set_shared("test.sort".into(), json!("name"));
+            assert!(!snapshot_changed(1), "a key it never read");
+            assert!(snapshot_changed(2));
+            set_shared("test.sort".into(), json!("name"));
+            assert!(!snapshot_changed(2), "the same value is no change");
+            set_shared("test.theme".into(), json!("dark"));
+            assert!(snapshot_changed(1));
+            assert!(!snapshot_changed(2));
+        }).join().unwrap();
+    }
+
+    #[test]
+    fn a_copy_coming_into_view_is_told_and_catches_up_on_missed_refreshes() {
+        std::thread::spawn(|| {
+            assert_eq!(set_shown_copies([1].into()), [1]);
+            missed(2);
+            let mut fresh = set_shown_copies([1, 2].into());
+            fresh.sort();
+            assert_eq!(fresh, [2], "already shown copies aren't news");
+            assert!(is_shown(2));
+            assert!(take_missed(2));
+            assert!(!take_missed(2), "caught up once");
+            assert!(set_shown_copies([2].into()).is_empty());
+            assert!(!is_shown(1));
         }).join().unwrap();
     }
 

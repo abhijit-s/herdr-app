@@ -388,10 +388,11 @@ export function notify(n: {
  * The exported View may implement async close(cx) for bounded final cleanup. */
 export function props(): any;
 
-/** Reads a value every mod can see (persisted). */
+/** Reads a value every mod can see (persisted). Live: a copy that read a key
+ *  (in render, a callback or a child) re-renders when that key changes. */
 export function shared(key: string): unknown;
 
-/** Sets a shared value; every mod re-renders so it can react. */
+/** Sets a shared value; the copies that read that key re-render so they can react. */
 export function setShared(key: string, value: unknown): null;
 
 /**
@@ -414,3 +415,60 @@ export function nextCommand(): Promise<string>;
  * Watch what you show, not a whole home folder (node_modules is a lot of events).
  */
 export function watchFolder(path: string): Promise<string[]>;
+
+export interface GitStatus {
+  /** The work tree's top folder (a linked worktree's own). */
+  root: string;
+  gitDir: string;
+  /** The repo's own .git folder, shared by its worktrees: the repo's identity. */
+  commonDir: string;
+  /** The repo's name: its main checkout's folder name. */
+  name: string;
+  /** A linked worktree (`git worktree add`), not the main checkout. */
+  linked: boolean;
+  /** null: detached HEAD. */
+  branch: string | null;
+  /** The commit checked out; null before the first commit. */
+  head: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  /** Changed files: in the index, in the work tree, untracked, in conflict. */
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  conflicted: number;
+  /** With `files: true`: each changed file, relative to root, with git's two status
+   *  letters (`porcelain=v1` style: " M", "A ", "??", "UU"...). At most 5000. */
+  files?: { path: string; xy: string }[];
+  truncated?: boolean;
+  /** Goes up each time this folder's answer changes (see nextGitStatus). */
+  revision: number;
+}
+
+/**
+ * The git status of the repo `folder` is in, cached and shared by every mod: git
+ * runs once per change, not once per mod or per render. `null` until the first
+ * answer (it comes at once, or soon); `false` when the folder is in no repo (or
+ * git couldn't say). Live: the copy re-renders when this folder's answer changes.
+ * A local repo is looked at again when something in it changes on disk (ignored
+ * folders don't count), after the burst settles and at most about once a second.
+ * `on`: a machine's name, for its folder; no watcher there, so call
+ * refreshGitStatus when its answer could have changed (a command ended there);
+ * it is also looked at again when read once a minute old.
+ *   const g = gitStatus(cwd); if (g) label = `${g.branch ?? "detached"} ${g.ahead ? "↑" + g.ahead : ""}`;
+ * Missing on older herdr-app builds: `import * as herdr from "herdr"` and check
+ * `typeof herdr.gitStatus === "function"` to keep a fallback.
+ */
+export function gitStatus(folder: string, options?: { on?: string | null; files?: boolean }): GitStatus | false | null;
+
+/**
+ * Resolves with the folder's git status and its revision once there is an answer
+ * newer than revision `after` (without `after`: as soon as there is one). For
+ * work outside render:
+ *   let after; for (;;) { const { status, revision } = await nextGitStatus(dir, { after, files: true }); after = revision; ...; cx.notify(); }
+ */
+export function nextGitStatus(folder: string, options?: { on?: string | null; files?: boolean; after?: number }): Promise<{ status: GitStatus | false; revision: number }>;
+
+/** Asks git about the folder again now (as soon as its last look allows). */
+export function refreshGitStatus(folder: string, options?: { on?: string | null }): null;

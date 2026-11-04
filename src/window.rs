@@ -4,6 +4,7 @@
 //! terminal is a mod. Commands (commands.rs) are the one way to change
 //! anything: keys, mods, menus and agents all run them.
 
+use crate::git_status;
 use crate::hc::Core;
 mod floats;
 mod follow_mouse;
@@ -540,7 +541,8 @@ pub struct AppWindow {
     /// Live folders by address (from the shell process).
     cwds: HashMap<String, String>,
     /// When each terminal's repo and branch were last read, and what it was doing.
-    folders_checked: HashMap<String, FolderCheck>,
+    /// Whether each terminal was busy at the last look at its folder.
+    folders_busy: HashMap<String, bool>,
     /// When Herdr started each terminal: a listing already in flight can't know them yet.
     born: RefCell<HashMap<String, Instant>>,
     /// `terminal.popup {wait}` terminals, until a waiter has their exit code.
@@ -643,7 +645,7 @@ impl AppWindow {
             live: HashMap::new(),
             listed_once: false,
             cwds: HashMap::new(),
-            folders_checked: HashMap::new(),
+            folders_busy: HashMap::new(),
             born: RefCell::new(HashMap::new()),
             waits: HashMap::new(),
             peeked: None,
@@ -1614,7 +1616,7 @@ impl AppWindow {
                 self.copies.insert(slot, copy);
             }
         }
-        self.publish_shown_copies();
+        self.publish_shown_copies(cx);
 
         // Keyboard to the focused pane when it changes (never steal it from an open dialog).
         let model_pane = self.model.focused_pane();
@@ -1783,19 +1785,24 @@ impl AppWindow {
     }
 
     fn refresh_mods(&self, cx: &mut Context<Self>) {
-        self.refresh_mods_matching(|_| true, cx);
+        self.refresh_mods_matching(true, cx);
     }
 
+    /// Only the copies whose reads changed (`mods::snapshot_changed`).
     fn refresh_snapshot_mods(&self, cx: &mut Context<Self>) {
-        self.refresh_mods_matching(mods::snapshot_changed, cx);
+        self.refresh_mods_matching(false, cx);
     }
 
-    fn refresh_mods_matching(&self, changed: impl Fn(u64) -> bool, cx: &mut Context<Self>) {
+    /// A hidden copy draws nothing: it catches up when shown (`publish_shown_copies`).
+    fn refresh_mods_matching(&self, all: bool, cx: &mut Context<Self>) {
         if let Some(runtime) = &self.runtime {
             for c in self.copies.values() {
-                if let Some(root) = &c.root
-                    && changed(c.id)
-                {
+                let Some(root) = &c.root else { continue };
+                if !mods::is_shown(c.id) {
+                    if all {
+                        mods::missed(c.id);
+                    }
+                } else if all || mods::snapshot_changed(c.id) {
                     let _ = runtime.refresh(root, cx);
                 }
             }
@@ -2142,8 +2149,10 @@ impl AppWindow {
         self.forget_gone_popped();
         self.closing_terminals.retain(|addr, completed| !*completed || self.live.contains_key(addr));
         // A new sub-agent changes only this list; mods that show teams need to redraw.
+        // A listing that changed nothing as the app shows it (an agent's spinning
+        // title, stripped above) is an ordinary tick, not news for the mods.
         let terminals_changed = mods::publish_terminals(list);
-        self.tend_terminals(true, window, cx);
+        self.tend_terminals(terminals_changed, window, cx);
         if terminals_changed {
             self.refresh_snapshot_mods(cx);
         }
@@ -2420,10 +2429,14 @@ impl AppWindow {
     }
 
     /// Reads each terminal's live folder, and its repo and branch for mods.
+    /// Each terminal's folder, and its repo and branch from the shared git
+    /// status (`git_status`): asked once per folder, again when its repo changes
+    /// on disk. One that isn't watched (another machine's, no repo) is asked again
+    /// when a command or an agent's turn ends there (a clone, a checkout).
     fn track_folders(&mut self, cx: &mut Context<Self>) {
         let home = mods::home().to_string_lossy().into_owned();
-        let mut todo: HashMap<(Option<String>, String), Vec<String>> = HashMap::new();
         let mut moved = false;
+        let mut changed = false;
         for (addr, rec) in &self.live {
             // Core's live folder of what runs there (any machine), else the shell's (local).
             let cwd = rec
@@ -2436,48 +2449,36 @@ impl AppWindow {
                 .or_else(|| rec.get("cwd").and_then(Value::as_str).map(str::to_owned));
             let Some(cwd) = cwd else { continue };
             let busy = busy(rec);
-            let last = self.folders_checked.get_mut(addr);
-            if recheck(last.as_deref(), &cwd, busy, self.window_active) {
-                moved |= self.cwds.get(addr) != Some(&cwd);
-                self.cwds.insert(addr.clone(), cwd.clone());
-                let repo = last.as_ref().is_none_or(|l| l.cwd != cwd || l.repo); // until git says otherwise
-                self.folders_checked.insert(addr.clone(), FolderCheck { at: Instant::now(), cwd: cwd.clone(), busy, repo });
-                // Another machine's terminal (`vps/t7`): git runs there.
-                todo.entry((addr.split_once('/').map(|(m, _)| m.to_owned()), cwd)).or_insert_with(Vec::new).push(addr.clone());
-            } else if let Some(last) = last {
-                last.busy = busy;
+            let ended = self.folders_busy.insert(addr.clone(), busy) == Some(true) && !busy;
+            moved |= self.cwds.get(addr) != Some(&cwd);
+            self.cwds.insert(addr.clone(), cwd.clone());
+            // Another machine's terminal (`vps/t7`): git runs there.
+            let on = addr.split_once('/').map(|(m, _)| m.to_owned());
+            let info = if on.is_none() && cwd == home {
+                Some(model::FolderInfo { top: cwd, branch: None })
+            } else {
+                let place = git_status::Place { on, folder: cwd.clone() };
+                let (info, unwatched) = git_status::read(&place, |v, _, lasting| (folder_info(v, &cwd), !lasting || v == &Value::Bool(false)));
+                if ended && unwatched {
+                    git_status::refresh(&place);
+                }
+                info
+            };
+            if let Some(info) = info
+                && self.model.folder_info.get(addr) != Some(&info)
+            {
+                self.model.folder_info.insert(addr.clone(), info);
+                changed = true;
             }
         }
-        self.folders_checked.retain(|a, _| self.live.contains_key(a));
-        // Refresh unnamed spaces when a terminal moves.
+        self.folders_busy.retain(|a, _| self.live.contains_key(a));
+        // Refresh unnamed spaces when a terminal moves; mods show its folder.
         if moved {
             self.save();
         }
-        // Once per machine and folder, however many terminals are there.
-        for ((on, cwd), addrs) in todo {
-            let home = home.clone();
-            cx.spawn(async move |this, cx| {
-                let asked = cwd.clone();
-                let (info, repo) = cx.background_executor().spawn(async move { folder_info(&asked, &home, on.as_deref()) }).await;
-                let _ = this.update(cx, |this, cx| {
-                    let mut changed = false;
-                    // Not one that moved on meanwhile: its own answer is coming.
-                    for addr in addrs.into_iter().filter(|a| this.cwds.get(a) == Some(&cwd)) {
-                        if let Some(check) = this.folders_checked.get_mut(&addr) {
-                            check.repo = repo;
-                        }
-                        if this.model.folder_info.get(&addr) != Some(&info) {
-                            this.model.folder_info.insert(addr, info.clone());
-                            changed = true;
-                        }
-                    }
-                    if changed {
-                        this.publish(cx);
-                        cx.notify();
-                    }
-                });
-            })
-            .detach();
+        if changed || moved {
+            self.publish(cx);
+            cx.notify();
         }
     }
 
@@ -3792,7 +3793,7 @@ impl AppWindow {
                 t.focus.focus(window, cx);
             }
         } else {
-            self.publish_shown_copies();
+            self.publish_shown_copies(cx);
         }
         cx.notify();
     }
@@ -4001,10 +4002,20 @@ impl AppWindow {
         self.rm_terminal(address, cx);
     }
 
-    /// Which copies are on screen, for `<mod>.<command>` (`mods::send_command`).
-    fn publish_shown_copies(&self) {
+    /// Which copies are on screen, for `<mod>.<command>` (`mods::send_command`)
+    /// and refreshes; one coming into view catches up on what changed meanwhile.
+    fn publish_shown_copies(&self, cx: &mut Context<Self>) {
         let (_, shown) = self.visible();
-        mods::set_shown_copies(shown.iter().filter_map(|(s, i)| self.copies.get(s).filter(|c| c.inst == *i)).map(|c| c.id).collect());
+        let fresh = mods::set_shown_copies(shown.iter().filter_map(|(s, i)| self.copies.get(s).filter(|c| c.inst == *i)).map(|c| c.id).collect());
+        if let Some(runtime) = &self.runtime {
+            for c in self.copies.values().filter(|c| fresh.contains(&c.id)) {
+                if let Some(root) = &c.root
+                    && (mods::take_missed(c.id) | mods::snapshot_changed(c.id))
+                {
+                    let _ = runtime.refresh(root, cx);
+                }
+            }
+        }
     }
 
     /// Closes an overlay; a kept window stays closed on the next start too.
@@ -4026,7 +4037,7 @@ impl AppWindow {
             if o.layout.is_some() {
                 self.sync(window, cx);
             } else {
-                self.publish_shown_copies();
+                self.publish_shown_copies(cx);
             }
             // The keyboard never ends up nowhere: back to a dialog still open,
             // else the pane, else the window (where the app's keys work). A
@@ -4070,6 +4081,13 @@ impl AppWindow {
             Request::OpenOverlay { id, spec } => self.open_overlay(id, spec, window, cx),
             Request::CloseOverlay { id } => self.close_overlay(&id, window, cx),
             Request::Refresh => self.refresh_mods(cx),
+            Request::Changed => self.refresh_snapshot_mods(cx),
+            Request::Git(update) => {
+                if git_status::apply(update) {
+                    self.track_folders(cx);
+                    self.refresh_snapshot_mods(cx);
+                }
+            }
             Request::Control { cmd, reply } => match cmd.get("wait").and_then(Value::as_str) {
                 Some(address) => self.wait_for(address, reply, cx),
                 None => {
@@ -4918,19 +4936,6 @@ fn overlay_layout(mut n: Node, overlay: &str) -> Node {
     n
 }
 
-/// What a terminal's folder last said about its repo, and what ran there then.
-struct FolderCheck {
-    at: Instant,
-    cwd: String,
-    busy: bool,
-    /// A repo, or git couldn't say (a machine unreachable): worth a look again.
-    repo: bool,
-}
-
-/// Changes made outside Herdr (a commit in another app): looked for this often,
-/// in repos, while the window is in front.
-const FOLDER_FALLBACK: Duration = Duration::from_secs(60);
-
 /// An agent working, or a program other than the shell in front (an agent
 /// between turns isn't, even started from a shell).
 fn busy(rec: &Value) -> bool {
@@ -4938,40 +4943,21 @@ fn busy(rec: &Value) -> bool {
     rec["status"] == "working" || !(program("shell") || program("agent"))
 }
 
-/// Whether to ask a terminal's folder for its repo and branch again: only when
-/// the answer could have changed. It moved, a command or an agent's turn just
-/// ended there (a checkout, a commit), or a repo's fallback is due.
-fn recheck(last: Option<&FolderCheck>, cwd: &str, busy: bool, active: bool) -> bool {
-    let Some(last) = last else { return true };
-    last.cwd != cwd || (last.busy && !busy) || (active && last.repo && last.at.elapsed() > FOLDER_FALLBACK)
-}
-
 /// Set once the app starts quitting, the OS ending the session included: the
 /// saved layout stays as it was.
 pub static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// The repo a folder is in (a worktree counts as its main checkout's), else the
-/// folder itself, and the branch; and whether it is a repo (or git couldn't say).
-fn folder_info(cwd: &str, home: &str, on: Option<&str>) -> (model::FolderInfo, bool) {
-    let none = model::FolderInfo { top: cwd.into(), branch: None };
-    if on.is_none() && cwd == home {
-        return (none, false);
+/// A folder's checkout and branch from its git status (`None` while unknown):
+/// not a repo, or git couldn't say, is the folder itself.
+fn folder_info(status: &Value, cwd: &str) -> Option<model::FolderInfo> {
+    match status {
+        Value::Null => None,
+        Value::Object(o) => Some(model::FolderInfo {
+            top: o.get("root").and_then(Value::as_str).unwrap_or(cwd).to_owned(),
+            branch: o.get("branch").and_then(Value::as_str).map(str::to_owned),
+        }),
+        _ => Some(model::FolderInfo { top: cwd.into(), branch: None }),
     }
-    let args = ["-C", cwd, "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"].map(str::to_owned);
-    let ran = match on {
-        Some(m) => mods::run_remote(m, "git", &args, None).ok().map(|(code, out, err)| (code == 0, out, err)),
-        None => crate::spawn::command("git").args(&args).output().ok().map(|o| (o.status.success(), o.stdout, o.stderr)),
-    };
-    let Some((true, out, _)) = ran else {
-        // Only git's own "no" means no repo; a failed run, a repo without commits
-        // or one git won't read are asked again.
-        let no = ran.is_some_and(|(_, _, err)| String::from_utf8_lossy(&err).to_lowercase().contains("not a git repository"));
-        return (none, !no);
-    };
-    let out: Vec<String> = String::from_utf8_lossy(&out).lines().map(str::to_owned).collect();
-    let [top, head] = out.as_slice() else { return (none, true) };
-    let branch = (head != "HEAD").then(|| head.clone());
-    (model::FolderInfo { top: top.clone(), branch }, true)
 }
 
 fn terminal_block<'a>(chrome: &'a Node, focused: Option<&str>) -> Option<&'a Node> {
@@ -6695,19 +6681,15 @@ export default class Probe extends View {
     }
 
     #[test]
-    fn a_folder_is_asked_again_only_when_its_answer_could_have_changed() {
-        use super::{FOLDER_FALLBACK, FolderCheck, recheck};
-        use std::time::{Duration, Instant};
-        let checked = |busy, repo, ago: Duration| FolderCheck { at: Instant::now() - ago, cwd: "/src".into(), busy, repo };
-        let (now, later) = (Duration::ZERO, FOLDER_FALLBACK + Duration::from_secs(1));
-        assert!(recheck(None, "/src", false, false), "never asked");
-        assert!(!recheck(Some(&checked(false, true, now)), "/src", false, true), "nothing happened");
-        assert!(recheck(Some(&checked(false, true, now)), "/elsewhere", false, false), "it moved");
-        assert!(recheck(Some(&checked(true, true, now)), "/src", false, false), "a command or turn ended");
-        assert!(!recheck(Some(&checked(false, true, now)), "/src", true, true), "one started");
-        assert!(recheck(Some(&checked(false, true, later)), "/src", false, true), "a repo, a minute on, in front");
-        assert!(!recheck(Some(&checked(false, true, later)), "/src", false, false), "not while the window is behind");
-        assert!(!recheck(Some(&checked(false, false, later)), "/src", false, true), "not a repo: never on a timer");
+    fn folder_info_comes_from_the_git_status() {
+        use serde_json::json;
+        assert_eq!(super::folder_info(&serde_json::Value::Null, "/src/x"), None, "not known yet");
+        let none = super::folder_info(&json!(false), "/src/x").unwrap();
+        assert_eq!((none.top.as_str(), none.branch), ("/src/x", None));
+        let repo = super::folder_info(&json!({ "root": "/src", "branch": "main" }), "/src/x").unwrap();
+        assert_eq!((repo.top.as_str(), repo.branch.as_deref()), ("/src", Some("main")));
+        let detached = super::folder_info(&json!({ "root": "/src", "branch": null }), "/src/x").unwrap();
+        assert_eq!(detached.branch, None);
     }
 
     #[test]
