@@ -704,6 +704,9 @@ impl Vt {
                 win32: Default::default(),
             };
             vt.apply_theme();
+            // The update above only read the default colors: a terminal
+            // attached in a hidden tab holds no screen copy until drawn.
+            vt.release_frame_caches();
             vt
         }
     }
