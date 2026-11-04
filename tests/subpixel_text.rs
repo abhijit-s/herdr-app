@@ -273,6 +273,53 @@ fn check_faces(text_system: &std::sync::Arc<dyn PlatformTextSystem>) {
     }
 }
 
+// A full terminal screen at 1x: 220 columns by 50 rows of 12 px text.
+struct Screen {
+    subpixel: bool,
+}
+
+impl Render for Screen {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let subpixel = self.subpixel;
+        canvas(
+            |_, _, _| {},
+            move |_, _, window, cx| {
+                let printable: Vec<char> = (' '..='~').collect();
+                for row in 0..50 {
+                    let text: String = (0..220).map(|col| printable[(row * 7 + col * 13) % printable.len()]).collect();
+                    let top = point(px(0.), px(15. * row as f32));
+                    let run = TextRun { len: text.len(), font: font("JetBrains Mono"), color: rgb(LIGHT).into(), background_color: None, underline: None, strikethrough: None };
+                    let line = window.text_system().shape_line(text.into(), px(12.), &[run], None);
+                    window.with_glyph_thicken(Some(30), |window| window.with_glyph_subpixel(subpixel, |window| line.paint(top, px(15.), TextAlign::Left, None, window, cx).unwrap()));
+                }
+            },
+        )
+        .size_full()
+    }
+}
+
+/// The first 1x frame of a full screen, which rasterises every glyph (the
+/// window opened at 2x, whose tiles don't serve 1x), against the next.
+fn time_first_frame(cx: &mut HeadlessAppContext) {
+    for subpixel in [false, true] {
+        let window = cx.open_window(size(px(1600.), px(760.)), |_, cx| cx.new(|_| Screen { subpixel })).unwrap();
+        cx.simulate_scale_factor_change(window.into(), 1.0);
+        let [first, second] = [0, 1].map(|_| {
+            cx.update_window(window.into(), |_, window, cx| {
+                window.refresh();
+                let start = std::time::Instant::now();
+                let _ = window.draw(cx);
+                start.elapsed().as_secs_f64() * 1e3
+            })
+            .unwrap()
+        });
+        let mode = if subpixel { "subpixel" } else { "grayscale" };
+        let image = cx.update_window(window.into(), |_, window, _| window.render_to_image().unwrap()).unwrap();
+        let inked = image.pixels().filter(|p| p.0[0] > 0x40).count();
+        println!("full screen 220x50, {mode}: first frame {first:.1} ms, next {second:.1} ms ({inked} inked px)");
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn main() {
     let platform_text_system = gpui_platform::current_platform(true).text_system();
@@ -294,6 +341,7 @@ fn main() {
     assert!(at_1x > 1000, "subpixel again at 1x");
     check_advances(&platform_text_system);
     check_faces(&platform_text_system);
+    time_first_frame(&mut cx);
     time_rasterising(&platform_text_system);
 }
 
