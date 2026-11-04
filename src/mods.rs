@@ -394,6 +394,8 @@ pub enum Request {
     Refresh,
     /// Copies whose reads changed re-render (`snapshot_changed`).
     Changed,
+    /// A look at a folder's git status finished.
+    Git(crate::git_status::Update),
     /// From `herdr-app do` / `herdr-app status` (control.rs); answer on `reply`.
     Control { cmd: Value, reply: std::sync::mpsc::Sender<Value> },
 }
@@ -560,7 +562,8 @@ thread_local! {
     /// not act on the person's keys).
     static SHOWN_COPIES: RefCell<std::collections::HashSet<u64>> = RefCell::new(std::collections::HashSet::new());
     static LIVE_READS: RefCell<HashMap<u64, Weak<RefCell<LiveReads>>>> = RefCell::new(HashMap::new());
-    /// How often each thing mods read has changed: a snapshot key, `shared\0<key>`.
+    /// How often each thing mods read has changed: a snapshot key, `shared\0<key>`,
+    /// a folder's git status (`git_status::Place::read_key`).
     static REVISIONS: RefCell<HashMap<String, u64>> = RefCell::new(HashMap::new());
     /// Copies passed over by a refresh while hidden: refreshed once shown.
     static MISSED: RefCell<std::collections::HashSet<u64>> = RefCell::new(std::collections::HashSet::new());
@@ -788,6 +791,16 @@ pub fn from_host(v: &HostValue) -> Value {
 }
 
 pub const DECLARATIONS: &str = include_str!("../defaults/herdr.d.ts");
+
+/// `(folder, { on })`: the folder as given, without a trailing slash.
+fn git_place(a: &gpui_shell::HostArguments) -> Result<crate::git_status::Place, HostError> {
+    let folder = a.string(0)?;
+    let folder = if folder.len() > 1 { folder.trim_end_matches('/') } else { folder };
+    if folder.is_empty() {
+        return Err(HostError::new("gitStatus needs a folder"));
+    }
+    Ok(crate::git_status::Place { on: opt_str(a.get(1), "on").filter(|m| !m.is_empty()), folder: folder.to_owned() })
+}
 
 fn strings(v: Option<&HostValue>) -> Vec<String> {
     v.and_then(HostValue::as_array).map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect()).unwrap_or_default()
@@ -1145,6 +1158,27 @@ fn module(inst: Instance, copy: u64) -> HostModule {
         .async_function("watchFolder", |a| {
             let path = a.string(0)?.to_owned();
             Ok(async move { crate::files::next_change(path).await.map(|v| to_host(&json!(v))).map_err(HostError::new) })
+        })
+        .function("gitStatus", {
+            let reads = reads.clone();
+            move |a| {
+                let place = git_place(a)?;
+                let files = a.get(1).and_then(|o| o.get("files")).and_then(HostValue::as_bool).unwrap_or(false);
+                record(&reads, &place.read_key());
+                Ok(crate::git_status::read(&place, |v, revision| to_host(&crate::git_status::shown(v, revision, files))))
+            }
+        })
+        .async_function("nextGitStatus", |a| {
+            let place = git_place(a)?;
+            let options = a.get(1);
+            let files = options.and_then(|o| o.get("files")).and_then(HostValue::as_bool).unwrap_or(false);
+            let after = options.and_then(|o| o.get("after")).and_then(HostValue::as_number).map(|n| n as u64);
+            let next = crate::git_status::next(&place, after, files);
+            Ok(async move { next.recv().await.map(|v| to_host(&v)).map_err(|_| HostError::new("herdr-app is shutting down")) })
+        })
+        .function("refreshGitStatus", |a| {
+            crate::git_status::refresh(&git_place(a)?);
+            Ok(HostValue::Null)
         })
         .async_function("nextCommand", move |_| {
             let rx = commands.clone();
