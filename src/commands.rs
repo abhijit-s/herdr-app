@@ -63,6 +63,8 @@ pub const COMMANDS: &[Command] = &[
     cmd("pane.focus", &[opt("pane"), opt("terminal")], "Focus a pane (or the pane showing a terminal)."),
     cmd("pane.go", &[req("direction")], "Focus the pane or focusable mod to the \"left\", \"right\", \"up\" or \"down\"."),
     cmd("pane.swap", &[req("direction")], "Swap the focused pane with its neighbor in a direction."),
+    cmd("pane.arrange", &[req("mode"), opt("tab")],
+        "Rearrange a tab's panes (default: the shown tab) evenly: \"tiled\" (a grid), \"bsp\" (each pane takes half of what's left, right then down), \"master\" (the focused pane on the left half, the rest stacked on the right), \"columns\", \"rows\", or \"next\" (the mode after the tab's last one, from tiled). Panes keep their terminals and go in reading order (top to bottom, then left to right); a zoomed pane unzooms."),
     cmd("focus.toggle_follows_mouse", &[], "Turn focus follows mouse on or off (settings.json's focus_follows_mouse): the pointer resting on a terminal pane focuses it."),
     cmd("terminal.peek", &[req("terminal")], "Peek at a running terminal over the tab, with keep-as-tab and close controls."),
     cmd("terminal.show", &[opt("terminal"), opt("pane")], "Show a terminal in a pane for now, in place of its own (no terminal: back)."),
@@ -137,7 +139,7 @@ pub fn validate_args(c: &Command, args: &Value) -> Result<(), String> {
                 return Err(format!("{}: unknown argument(s): {}; valid arguments: {valid}", c.name, unknown.join(", ")));
             }
             for (key, value) in args {
-                if matches!(key.as_str(), "id" | "pane" | "space" | "terminal") && !value.is_string() && !value.is_null() {
+                if matches!(key.as_str(), "id" | "pane" | "space" | "tab" | "terminal") && !value.is_string() && !value.is_null() {
                     return Err(format!("{}: argument {key} must be a string (or null to omit it)", c.name));
                 }
             }

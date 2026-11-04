@@ -34,6 +34,8 @@ const NAMED = [
   ["focus.toggle_follows_mouse", {}, "Pane", "Toggle focus follows mouse", "hover pointer mouse focus"],
   ...["left", "right", "up", "down"].map((d) => ["pane.go", { direction: d }, "Pane", `Focus pane ${d}`, "move go"]),
   ...["left", "right", "up", "down"].map((d) => ["pane.swap", { direction: d }, "Pane", `Swap pane ${d}`, "move"]),
+  ["pane.arrange", { mode: "next" }, "Pane", "Next pane arrangement", "layout tile tiling cycle even"],
+  ...["tiled", "bsp", "master", "columns", "rows"].map((m) => ["pane.arrange", { mode: m }, "Pane", `Arrange panes: ${m}`, "layout tile tiling grid even"]),
   ["space.new", {}, "Space", "New space", "workspace"],
   ["space.rename", {}, "Space", "Rename space", "workspace"],
   ["space.close", {}, "Space", "Close space", "workspace kill"],

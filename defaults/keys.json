@@ -19,6 +19,7 @@
     "alt-shift-j": "pane.swap:down",
     "alt-shift-k": "pane.swap:up",
     "alt-shift-l": "pane.swap:right",
+    "ctrl-shift-space": "pane.arrange:next",
     "ctrl-+": "app.zoom_in",
     "ctrl--": "app.zoom_out",
     "ctrl-0": "app.zoom_reset",

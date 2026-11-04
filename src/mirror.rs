@@ -50,6 +50,8 @@ struct TabView {
     before: Vec<String>,
     zoomed: Option<String>,
     settled: Option<u64>,
+    #[serde(default)]
+    arrange: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -129,7 +131,7 @@ impl Document {
                 .map(|t| {
                     let mut root = t.root.clone();
                     map_node(&mut root, &map);
-                    Tab { id: map(&t.id), name: t.name.clone(), root, focused: None, before: vec![], zoomed: None, settled: None }
+                    Tab { id: map(&t.id), name: t.name.clone(), root, focused: None, before: vec![], zoomed: None, settled: None, arrange: None }
                 })
                 .collect(),
         });
@@ -145,7 +147,7 @@ impl View {
             active: model.active.clone(),
             recent: model.recent.clone(),
             spaces: model.spaces.iter().map(|s| (s.id.clone(), s.active.clone())).collect(),
-            tabs: model.tabs().map(|t| (t.id.clone(), TabView { focused: t.focused.clone(), before: t.before.clone(), zoomed: t.zoomed.clone(), settled: t.settled })).collect(),
+            tabs: model.tabs().map(|t| (t.id.clone(), TabView { focused: t.focused.clone(), before: t.before.clone(), zoomed: t.zoomed.clone(), settled: t.settled, arrange: t.arrange.map(|m| m.name().to_owned()) })).collect(),
             attention: model.agents.iter().map(|(a, s)| (a.clone(), Seen { word: s.word.clone(), seen: s.seen })).collect(),
         }
     }
@@ -202,6 +204,7 @@ impl View {
                     t.zoomed = v.zoomed.clone().filter(|id| t.root.find(id).is_some());
                     t.before = v.before.iter().filter(|id| t.root.find(id).is_some()).cloned().collect();
                     t.settled = v.settled;
+                    t.arrange = v.arrange.as_deref().and_then(crate::arrange::Mode::parse);
                 }
                 if t.focused.is_none() {
                     t.focused = t.root.panes().first().map(|n| n.id.clone());
@@ -239,6 +242,23 @@ mod tests {
         view.apply(&mut other);
         assert_eq!(other.tab("t").unwrap().zoomed.as_deref(), Some("p"));
         assert_eq!(other.tab("t").unwrap().settled, Some(12));
+    }
+
+    #[test]
+    fn a_tabs_arrange_mode_is_this_screens_and_survives_a_restart() {
+        let mut m = model();
+        m.split("p", Axis::Row, "q", "t2");
+        m.arrange_tab("t", crate::arrange::Mode::Rows).unwrap();
+        let text = serde_json::to_string(&View::capture(&m)).unwrap();
+        let mut other = Model::default();
+        Document::capture(&m, None).replace(&mut other, None);
+        assert_eq!(other.tab("t").unwrap().arrange, None, "not in the shared document");
+        serde_json::from_str::<View>(&text).unwrap().apply(&mut other);
+        assert_eq!(other.tab("t").unwrap().arrange, Some(crate::arrange::Mode::Rows));
+        // Views saved before the field existed still load.
+        let old = text.replace(",\"arrange\":\"rows\"", "");
+        assert!(!old.contains("arrange"));
+        assert!(serde_json::from_str::<View>(&old).is_ok());
     }
     #[test]
     fn remote_roundtrip_qualifies_only_identity_not_mod_props() {

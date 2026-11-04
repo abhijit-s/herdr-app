@@ -22,6 +22,8 @@ pub struct Tab {
     /// Put away (ms since the epoch): out of the lists, still running. Comes
     /// back when it's shown or one of its agents needs the person.
     pub settled: Option<u64>,
+    /// How pane.arrange last arranged it on this screen; `next` goes on from it.
+    pub arrange: Option<crate::arrange::Mode>,
 }
 
 /// A place to work, plus the folder its new terminals start in.
@@ -123,6 +125,7 @@ impl Tab {
             root: Node::container(id, Axis::Row, vec![pane]),
             zoomed: None,
             settled: None,
+            arrange: None,
         }
     }
 
@@ -343,6 +346,21 @@ impl Model {
         tab.root = root;
         tab.focus(source);
         true
+    }
+
+    /// Rebuilds a tab's panes in `mode` (pane.arrange), the focused one as
+    /// master. Terminals, mod panes and focus stay; a zoomed pane unzooms.
+    pub fn arrange_tab(&mut self, tab: &str, mode: crate::arrange::Mode) -> Result<(), String> {
+        let machine = self.space_of(tab).and_then(|s| s.machine.clone());
+        let Some(t) = self.tab(tab) else { return Err(format!("no tab {tab:?}")) };
+        crate::arrange::check(&t.root)?;
+        let (root, master) = (t.root.clone(), t.focused_pane());
+        let root = crate::arrange::arrange(&root, mode, master.as_deref(), || self.fresh_id_on("s", machine.as_deref()));
+        let t = self.tab_mut(tab).unwrap();
+        t.root = root;
+        t.zoomed = None;
+        t.arrange = Some(mode);
+        Ok(())
     }
 
     /// Removes a pane. Returns what else closed: the tab, and the space if it was its last.
@@ -609,6 +627,7 @@ pub fn space_json(m: &Model, p: &Space, index: usize, branch: Option<&str>, home
                 "status": m.rollup(&addresses(&c.root)),
                 "panes": c.root.panes().len(),
                 "zoomed": c.zoomed.is_some(),
+                "arrange": c.arrange.map(crate::arrange::Mode::name),
                 "settled": c.settled.is_some(),
                 "settled_at": c.settled,
                 "changed_at": m.changed_at(c),
@@ -809,6 +828,29 @@ mod tests {
             assert!(!m.move_pane(source, target, None));
             assert_eq!(format!("{:?}", m.spaces), before);
         }
+    }
+
+    #[test]
+    fn arranging_a_tab_keeps_terminals_and_focus_and_persists_like_a_split() {
+        use crate::arrange::Mode;
+        let mut m = model_with_one();
+        m.split("x1", Axis::Row, "x2", "t2");
+        m.split("x2", Axis::Column, "x3", "t3");
+        m.split("x3", Axis::Row, "x4", "t4");
+        m.focus_pane("x2");
+        m.tab_mut("c1").unwrap().zoomed = Some("x2".into());
+        let shared = crate::mirror::Document::capture(&m, None);
+        assert!(m.arrange_tab("c1", Mode::Master).is_ok());
+        let tab = m.tab("c1").unwrap();
+        assert_eq!((tab.zoomed.as_deref(), tab.arrange, tab.root.id.as_str()), (None, Some(Mode::Master), "c1"));
+        assert_eq!(tab.root.children()[0].id, "x2", "the focused pane is master");
+        assert_eq!(m.focused_pane().as_deref(), Some("x2"));
+        for (pane, address) in [("x1", "t1"), ("x2", "t2"), ("x3", "t3"), ("x4", "t4")] {
+            assert_eq!(m.address_of(pane).as_deref(), Some(address));
+        }
+        // The new tree is the shared document's, as a manual split's is.
+        assert_ne!(crate::mirror::Document::capture(&m, None), shared);
+        assert!(m.arrange_tab("nope", Mode::Rows).is_err());
     }
 
     #[test]

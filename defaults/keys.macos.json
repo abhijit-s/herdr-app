@@ -30,6 +30,7 @@
     "cmd-alt-shift-right": "pane.swap:right",
     "cmd-alt-shift-up": "pane.swap:up",
     "cmd-alt-shift-down": "pane.swap:down",
+    "cmd-shift-space": "pane.arrange:next",
     "f2": "tab.rename",
     "shift-f2": "space.rename",
     "cmd-/": "app.help",
