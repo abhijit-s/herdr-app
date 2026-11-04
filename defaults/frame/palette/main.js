@@ -36,6 +36,7 @@ const NAMED = [
   ...["left", "right", "up", "down"].map((d) => ["pane.swap", { direction: d }, "Pane", `Swap pane ${d}`, "move"]),
   ["pane.arrange", { mode: "next" }, "Pane", "Next pane arrangement", "layout tile tiling cycle even"],
   ...["tiled", "bsp", "master", "columns", "rows"].map((m) => ["pane.arrange", { mode: m }, "Pane", `Arrange panes: ${m}`, "layout tile tiling grid even"]),
+  ["pane.arrange", { mode: "off" }, "Pane", "Arrange panes: off", "layout tile tiling manual stop auto"],
   ["space.new", {}, "Space", "New space", "workspace"],
   ["space.rename", {}, "Space", "Rename space", "workspace"],
   ["space.close", {}, "Space", "Close space", "workspace kill"],

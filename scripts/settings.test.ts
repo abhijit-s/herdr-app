@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 
-// The Settings window's Text page without a window or a core: its steppers
+// The Settings window's Text and Look pages without a window or a core: their steppers
 // and what a click writes to settings.json.
 class Element {
   nodes: Element[] = [];
@@ -54,8 +54,8 @@ function find(root: Element, id: string): Element {
   return undefined as any;
 }
 
-/** Clicks `id` on the Text page with `person` in settings.json; what gets written. */
-function click(person: Record<string, any>, shown: Record<string, any>, id: string, real: string[] = []) {
+/** Clicks `id` on the Text page (or `page`) with `person` in settings.json; what gets written. */
+function click(person: Record<string, any>, shown: Record<string, any>, id: string, real: string[] = [], page = "text") {
   composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, letter_spacing: 0, ui_scale_ranges: { ui_zoom: [0.75, 1.5], ui_text_scale: [0.8, 1.3] }, ...shown };
   const view = new Settings();
   view.person = person;
@@ -65,7 +65,7 @@ function click(person: Record<string, any>, shown: Record<string, any>, id: stri
     written = structuredClone(person);
     edit(written);
   };
-  const button = find(view.text(new Proxy({}, { get: () => "#000000" })), id);
+  const button = find(view[page](new Proxy({}, { get: () => "#000000" }), {}), id);
   if (real.includes("shown?")) return button;
   expect(button).toBeDefined();
   button.calls.on_click[0](null, {});
@@ -214,6 +214,13 @@ test("text smoothing pickers write subpixel and leave grayscale out, terminal an
   expect(pick({ text_rendering: "subpixel" }, "st-tr-Grayscale")).toEqual({});
   expect(pick({}, "st-uitr-Subpixel")).toEqual({ ui_text_rendering: "subpixel" });
   expect(pick({ ui_text_rendering: "subpixel", text_rendering: "subpixel" }, "st-uitr-Grayscale")).toEqual({ text_rendering: "subpixel" });
+});
+
+test("the new tabs arrangement writes its mode and leaves off out", () => {
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "look");
+  expect(pick({}, "st-da-BSP")).toEqual({ default_arrange: "bsp" });
+  expect(pick({ default_arrange: "bsp" }, "st-da-Tiled")).toEqual({ default_arrange: "tiled" });
+  expect(pick({ default_arrange: "rows", zoom: 1.1 }, "st-da-Off")).toEqual({ zoom: 1.1 });
 });
 
 test("subpixel order shows only while either text is subpixel, and leaves rgb out", () => {

@@ -1040,6 +1040,7 @@ impl AppWindow {
             match loaded {
                 Ok(p) => {
                     self.person = p;
+                    self.model.default_arrange = self.person.default_arrange();
                     let _ = std::fs::remove_file(file("settings.error"));
                 }
                 Err(e) => self.report("settings", &e),
@@ -2721,8 +2722,7 @@ impl AppWindow {
         // A split stays on the machine of the pane it splits (else its space's).
         let on = target_addr.and_then(|a| a.split_once('/').map(|(m, _)| m.to_owned())).or_else(|| self.machine_of(&space));
         let new = self.model.fresh_id_on("p", on.as_deref());
-        let mut root = self.model.tab(&ctx).expect("target tab").root.clone();
-        root.split(&target, axis, Node::block(new.clone(), Content::Terminal { terminal: String::new() }), "initial-size".into());
+        let Some(root) = self.model.split_tree(&target, axis, Node::block(new.clone(), Content::Terminal { terminal: String::new() })) else { return Err(format!("cannot split {target:?}")) };
         let size = self.model.active_tab().filter(|tab| tab.id == ctx)
             .and_then(|_| self.initial_size(&root, &new, window));
         let addr = self.spawn(argv, cwd, &space, &ctx, on.as_deref(), size, window)?;
@@ -3284,9 +3284,13 @@ impl AppWindow {
                 let Some(tab) = tab.filter(|t| self.model.tab(t).is_some()) else { return self.fail("pane.arrange: no such tab") };
                 let mode = match Self::arg(a, "mode").unwrap_or_default() {
                     "next" => Mode::next(self.model.tab(&tab).and_then(|t| t.arrange)),
+                    "off" => {
+                        self.model.tab_mut(&tab).unwrap().arrange = None;
+                        return self.answer(Ok(json!({ "ok": true, "tab": tab, "mode": "off" })));
+                    }
                     other => match Mode::parse(other) {
                         Some(mode) => mode,
-                        None => return self.fail(format!("pane.arrange mode is tiled, bsp, master, columns, rows or next, not {other:?}")),
+                        None => return self.fail(format!("pane.arrange mode is tiled, bsp, master, columns, rows, next or off, not {other:?}")),
                     },
                 };
                 let r = self.model.arrange_tab(&tab, mode).map(|()| json!({ "ok": true, "tab": tab, "mode": mode.name() }));
@@ -6030,6 +6034,114 @@ export default class Scale extends View {
         assert!(run(cx, "pane.arrange", json!({ "mode": "spiral" }))["error"].as_str().unwrap().contains("not \"spiral\""));
         assert!(run(cx, "pane.arrange", json!({ "mode": "rows", "tab": "nope" }))["error"].is_string());
         assert!(run(cx, "pane.arrange", json!({}))["error"].as_str().unwrap().contains("needs mode"));
+    }
+
+    #[test]
+    fn a_tab_with_a_mode_arranges_again_on_split_and_close_until_turned_off() {
+        in_own_process("auto_arrange");
+    }
+
+    /// Tab t starts as one terminal pane a in bsp. Mod panes split and close
+    /// (no core needed); every split and close runs bsp again, a dragged size
+    /// lasts until the next one, `off` makes splits plain, and settings.json's
+    /// `default_arrange` gives new tabs a mode.
+    #[gpui::test]
+    fn auto_arrange(cx: &mut gpui::TestAppContext) {
+        use crate::arrange::Mode;
+        use crate::layout::{Axis, Node, Size};
+        use crate::model::Tab;
+        use serde_json::json;
+        if !running_alone("auto_arrange") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        let run = |cx: &mut gpui::VisualTestContext, command: &str, args: serde_json::Value| {
+            let reply = view.update_in(cx, |this, window, cx| this.run_as(command, args, false, window, cx));
+            cx.run_until_parked();
+            reply
+        };
+        view.update_in(cx, |this, _, _| {
+            this.documents.entry(String::new()).or_default().available = true;
+            this.model.add_space("s", "", "/tmp", Tab::new("t", "", "a", "ta"));
+            this.model.select_tab("t");
+        });
+        // The tree with each pane named as the test knows it.
+        let names = std::rc::Rc::new(std::cell::RefCell::new(vec![("a".to_owned(), "a".to_owned())]));
+        let shape = |cx: &mut gpui::VisualTestContext, tab: &str| {
+            fn draw(n: &Node, names: &[(String, String)]) -> String {
+                match n.axis() {
+                    Some(axis) => {
+                        let inner: Vec<String> = n.children().iter().map(|c| draw(c, names)).collect();
+                        format!("{}[{}]", if axis == Axis::Row { "R" } else { "C" }, inner.join(" "))
+                    }
+                    None => names.iter().find(|(id, _)| *id == n.id).map_or_else(|| n.id.clone(), |(_, name)| name.clone()),
+                }
+            }
+            let names = names.borrow().clone();
+            view.update(cx, |this, _| draw(&this.model.tab(tab).unwrap().root, &names))
+        };
+        let split = |cx: &mut gpui::VisualTestContext, direction: &str, name: &str| {
+            let reply = run(cx, "pane.split", json!({ "direction": direction, "mod": "unused" }));
+            let id = reply["pane"].as_str().unwrap_or_else(|| panic!("{reply}")).to_owned();
+            names.borrow_mut().push((id.clone(), name.to_owned()));
+            view.update(cx, |this, _| assert_eq!(this.model.focused_pane(), Some(id.clone()), "focus goes to the new pane {name}"));
+            id
+        };
+        let focused = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.model.focused_pane().unwrap());
+
+        assert_eq!(run(cx, "pane.arrange", json!({ "mode": "bsp" }))["mode"], "bsp");
+        let b = split(cx, "right", "b");
+        assert_eq!(shape(cx, "t"), "R[a b]");
+        let c = split(cx, "right", "c");
+        assert_eq!(shape(cx, "t"), "R[a C[b c]]");
+        // From a, down: the new pane comes right after a and takes half of what's left.
+        run(cx, "pane.focus", json!({ "pane": "a" }));
+        let d = split(cx, "down", "d");
+        assert_eq!(shape(cx, "t"), "R[a C[d R[b c]]]");
+        // A dragged divider stays while nothing comes or goes.
+        view.update(cx, |this, _| this.model.tab_mut("t").unwrap().root.children_mut().unwrap()[0].size = Some(Size::Weight { weight: 2.5 }));
+        run(cx, "pane.focus", json!({ "pane": b }));
+        run(cx, "pane.swap", json!({ "direction": "left" }));
+        assert_eq!(shape(cx, "t"), "R[b C[d R[a c]]]", "a swap keeps the shape");
+        view.update(cx, |this, _| assert_eq!(this.model.tab("t").unwrap().root.children()[0].size, Some(Size::Weight { weight: 2.5 })));
+        // Closing evens the sizes and goes on in the swapped order.
+        run(cx, "pane.close", json!({ "pane": d }));
+        assert_eq!(shape(cx, "t"), "R[b C[a c]]");
+        view.update(cx, |this, _| {
+            let tab = this.model.tab("t").unwrap();
+            assert!(tab.root.walk().iter().all(|n| n.size.is_none()));
+            assert_eq!(tab.arrange, Some(Mode::Bsp), "the mode stays");
+        });
+        assert_eq!(focused(cx), b, "focus goes back as a plain close's does");
+        // The arranged tree is the shared document's.
+        view.update(cx, |this, _| {
+            let shared = serde_json::to_value(crate::mirror::Document::capture(&this.model, None)).unwrap();
+            assert_eq!(shared["spaces"][0]["tabs"][0]["root"], serde_json::to_value(&this.model.tab("t").unwrap().root).unwrap());
+        });
+        // Off: plain splits again, the tree left as it was.
+        assert_eq!(run(cx, "pane.arrange", json!({ "mode": "off" })), json!({ "ok": true, "tab": "t", "mode": "off" }));
+        assert_eq!(shape(cx, "t"), "R[b C[a c]]");
+        view.update(cx, |this, _| assert_eq!(this.model.tab("t").unwrap().arrange, None));
+        run(cx, "pane.focus", json!({ "pane": c }));
+        split(cx, "right", "e");
+        assert_eq!(shape(cx, "t"), "R[b C[a R[c e]]]");
+        // `next` after off starts again from tiled.
+        assert_eq!(run(cx, "pane.arrange", json!({ "mode": "next" }))["mode"], "tiled");
+
+        // default_arrange: tabs made from now on start in it.
+        std::fs::write(crate::settings::path(), r#"{ "default_arrange": "columns" }"#).unwrap();
+        view.update_in(cx, |this, window, cx| this.reload_config(window, cx));
+        let tab = run(cx, "tab.new", json!({ "mod": "unused" }));
+        let tab = tab["tab"].as_str().unwrap_or_else(|| panic!("{tab}")).to_owned();
+        view.update(cx, |this, _| {
+            assert_eq!(this.model.tab(&tab).unwrap().arrange, Some(Mode::Columns));
+            assert_eq!(this.model.tab("t").unwrap().arrange, Some(Mode::Tiled), "tabs already there keep theirs");
+        });
+        split(cx, "down", "f");
+        split(cx, "down", "g");
+        let first = view.update(cx, |this, _| this.model.tab(&tab).unwrap().root.panes()[0].id.clone());
+        names.borrow_mut().push((first, "x".into()));
+        assert_eq!(shape(cx, &tab), "R[x f g]");
     }
 
     #[test]

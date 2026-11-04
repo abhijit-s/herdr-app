@@ -96,6 +96,8 @@ pub struct Model {
     seq: u64,
     /// Where each terminal works now: its repo (worktrees included) and branch.
     pub folder_info: HashMap<String, FolderInfo>,
+    /// The mode tabs made on this screen start in (settings.json `default_arrange`).
+    pub default_arrange: Option<crate::arrange::Mode>,
 }
 
 /// Herdr's attention priority: blocked > done > working > idle > nothing.
@@ -279,7 +281,8 @@ impl Model {
         (p.tabs.iter().position(|x| x.id == c.id).unwrap_or(0) + 1).to_string()
     }
 
-    pub fn add_space(&mut self, id: &str, name: &str, folder: &str, ctx: Tab) {
+    pub fn add_space(&mut self, id: &str, name: &str, folder: &str, mut ctx: Tab) {
+        ctx.arrange = ctx.arrange.or(self.default_arrange);
         let active = Some(ctx.id.clone());
         self.spaces.push(Space { id: id.to_owned(), name: name.to_owned(), folder: folder.to_owned(), machine: None, tabs: vec![ctx], active });
         self.recent.retain(|r| r.name != name);
@@ -287,7 +290,8 @@ impl Model {
     }
 
     /// Adds a tab after the space's selected one and selects it (not the space).
-    pub fn add_tab(&mut self, space: &str, ctx: Tab) -> bool {
+    pub fn add_tab(&mut self, space: &str, mut ctx: Tab) -> bool {
+        ctx.arrange = ctx.arrange.or(self.default_arrange);
         let Some(p) = self.space_mut(space) else { return false };
         let at = p.active.as_deref().and_then(|a| p.tabs.iter().position(|c| c.id == a)).map_or(p.tabs.len(), |i| i + 1);
         let id = ctx.id.clone();
@@ -303,16 +307,41 @@ impl Model {
 
     /// Splits a pane with any block: a terminal, or a mod (a viewer beside the shell).
     pub fn split_with(&mut self, target: &str, axis: Axis, block: Node) -> bool {
-        let machine = self.space_of(target).and_then(|s| s.machine.clone());
-        let container = self.fresh_id_on("s", machine.as_deref());
         let new_pane = block.id.clone();
-        let Some(c) = self.tab_of_mut(target) else { return false };
-        if !c.root.split(target, axis, block, container) {
-            return false;
-        }
+        let Some(root) = self.split_tree(target, axis, block) else { return false };
+        let c = self.tab_of_mut(target).unwrap();
+        c.root = root;
         c.zoomed = None;
         c.focus(&new_pane);
         true
+    }
+
+    /// The tree of `target`'s tab with `block` split beside it, left as is.
+    /// In a tab with a mode the mode runs again, the new pane right after
+    /// `target` in reading order.
+    pub fn split_tree(&mut self, target: &str, axis: Axis, block: Node) -> Option<Node> {
+        let machine = self.space_of(target).and_then(|s| s.machine.clone());
+        let container = self.fresh_id_on("s", machine.as_deref());
+        let new_pane = block.id.clone();
+        let tab = self.tab_of(target)?;
+        let mut order = pane_order(&tab.root);
+        let mut root = tab.root.clone();
+        if !root.split(target, axis, block, container) {
+            return None;
+        }
+        let at = order.iter().position(|p| p == target).map_or(order.len(), |i| i + 1);
+        order.insert(at, new_pane);
+        let mode = tab.arrange;
+        Some(self.rearranged(root, mode, &order, machine.as_deref()))
+    }
+
+    /// `root` rebuilt in `mode` with its panes in `order`, for a tab whose
+    /// panes came or went; as it is without a mode, or holding other blocks.
+    fn rearranged(&mut self, root: Node, mode: Option<crate::arrange::Mode>, order: &[String], machine: Option<&str>) -> Node {
+        match mode {
+            Some(mode) if crate::arrange::check(&root).is_ok() => crate::arrange::arrange_in(&root, order, mode, None, || self.fresh_id_on("s", machine)),
+            _ => root,
+        }
     }
 
     /// Rearranges existing panes in one tab without changing their terminal addresses.
@@ -365,8 +394,17 @@ impl Model {
 
     /// Removes a pane. Returns what else closed: the tab, and the space if it was its last.
     pub fn remove_pane(&mut self, pane_id: &str) -> (bool, bool) {
-        let Some(c) = self.tab_of_mut(pane_id) else { return (false, false) };
-        c.root.remove(pane_id);
+        let machine = self.space_of(pane_id).and_then(|s| s.machine.clone());
+        let Some(c) = self.tab_of(pane_id) else { return (false, false) };
+        let (id, mode) = (c.id.clone(), c.arrange);
+        let order: Vec<String> = pane_order(&c.root).into_iter().filter(|p| p != pane_id).collect();
+        let mut root = c.root.clone();
+        root.remove(pane_id);
+        if !root.panes().is_empty() {
+            root = self.rearranged(root, mode, &order, machine.as_deref());
+        }
+        let c = self.tab_mut(&id).unwrap();
+        c.root = root;
         if c.zoomed.as_deref() == Some(pane_id) {
             c.zoomed = None;
         }
@@ -572,6 +610,11 @@ impl Model {
     }
 
 
+}
+
+/// A tab's pane ids in reading order (`arrange::reading_order`).
+fn pane_order(root: &Node) -> Vec<String> {
+    crate::arrange::reading_order(root).iter().map(|n| n.id.clone()).collect()
 }
 
 pub fn pane(id: &str, address: &str) -> Node {
@@ -851,6 +894,94 @@ mod tests {
         // The new tree is the shared document's, as a manual split's is.
         assert_ne!(crate::mirror::Document::capture(&m, None), shared);
         assert!(m.arrange_tab("nope", Mode::Rows).is_err());
+    }
+
+    /// The tab's tree as a compact string: R[..] row, C[..] column, pane ids.
+    fn shape(n: &Node) -> String {
+        match n.axis() {
+            Some(axis) => {
+                let inner: Vec<String> = n.children().iter().map(shape).collect();
+                format!("{}[{}]", if axis == Axis::Row { "R" } else { "C" }, inner.join(" "))
+            }
+            None => n.id.clone(),
+        }
+    }
+
+    #[test]
+    fn a_tab_with_a_mode_arranges_again_when_a_pane_comes_or_goes() {
+        use crate::arrange::Mode;
+        use crate::layout::Size;
+        let mut m = model_with_one();
+        let tab = |m: &Model| shape(&m.tab("c1").unwrap().root);
+        m.arrange_tab("c1", Mode::Bsp).unwrap();
+        m.split("x1", Axis::Row, "x2", "t2");
+        m.split("x2", Axis::Row, "x3", "t3");
+        assert_eq!(tab(&m), "R[x1 C[x2 x3]]", "each split takes half of what's left");
+        // Split down from x1: the new pane follows x1, whatever the direction.
+        m.focus_pane("x1");
+        assert!(m.split("x1", Axis::Column, "x4", "t4"));
+        assert_eq!(tab(&m), "R[x1 C[x4 R[x2 x3]]]");
+        assert_eq!(m.focused_pane().as_deref(), Some("x4"), "focus goes to the new pane");
+        assert_eq!(m.address_of("x4").as_deref(), Some("t4"));
+        // A drag's sizes stay until the next pane comes or goes, which evens them.
+        m.tab_mut("c1").unwrap().root.children_mut().unwrap()[0].size = Some(Size::Weight { weight: 3.0 });
+        m.focus_pane("x2");
+        assert!(m.remove_pane("x4") == (false, false));
+        assert_eq!(tab(&m), "R[x1 C[x2 x3]]", "closing arranges again");
+        assert!(m.tab("c1").unwrap().root.walk().iter().all(|n| n.size.is_none()));
+        assert_eq!(m.focused_pane().as_deref(), Some("x2"));
+        assert_eq!(m.tab("c1").unwrap().arrange, Some(Mode::Bsp));
+        // A swap keeps the mode; the next split goes on in the swapped order.
+        m.tab_mut("c1").unwrap().root.swap("x1", "x3");
+        m.split("x3", Axis::Row, "x5", "t5");
+        assert_eq!(tab(&m), "R[x3 C[x5 R[x2 x1]]]");
+        // Without a mode, splits and closes are plain again.
+        m.tab_mut("c1").unwrap().arrange = None;
+        m.split("x1", Axis::Column, "x6", "t6");
+        assert_eq!(tab(&m), "R[x3 C[x5 R[x2 C[x1 x6]]]]");
+        m.remove_pane("x5");
+        assert_eq!(tab(&m), "R[x3 R[x2 C[x1 x6]]]");
+    }
+
+    #[test]
+    fn master_mode_keeps_its_master_and_tiled_fills_the_grid_as_panes_come() {
+        use crate::arrange::Mode;
+        let mut m = model_with_one();
+        let tab = |m: &Model| shape(&m.tab("c1").unwrap().root);
+        m.arrange_tab("c1", Mode::Master).unwrap();
+        m.split("x1", Axis::Row, "x2", "t2");
+        m.split("x2", Axis::Row, "x3", "t3");
+        assert_eq!(tab(&m), "R[x1 C[x2 x3]]", "the focused new pane doesn't take over as master");
+        m.split("x1", Axis::Row, "x4", "t4");
+        assert_eq!(tab(&m), "R[x1 C[x4 x2 x3]]", "split from the master: first in the stack");
+        m.remove_pane("x1");
+        assert_eq!(tab(&m), "R[x4 C[x2 x3]]", "the next in reading order becomes master");
+        m.arrange_tab("c1", Mode::Tiled).unwrap();
+        m.split("x3", Axis::Row, "x5", "t5");
+        assert_eq!(tab(&m), "R[C[R[x4 x2] R[x3 x5]]]");
+        m.split("x4", Axis::Column, "x6", "t6");
+        assert_eq!(tab(&m), "R[C[R[x4 x6 x2] R[x3 x5]]]");
+        // A tab holding a block that isn't a pane is left as the split made it.
+        let stray = Node::new("x", crate::layout::Kind::Stack { children: vec![], active: None, header: None });
+        m.tab_mut("c1").unwrap().root.children_mut().unwrap().push(stray);
+        m.split("x5", Axis::Row, "x7", "t7");
+        assert!(m.tab("c1").unwrap().root.find("x7").is_some());
+        assert_eq!(m.tab("c1").unwrap().root.children().len(), 2);
+    }
+
+    #[test]
+    fn new_tabs_start_in_the_default_mode() {
+        use crate::arrange::Mode;
+        let mut m = model_with_one();
+        assert_eq!(m.tab("c1").unwrap().arrange, None);
+        m.default_arrange = Some(Mode::Columns);
+        m.add_tab("p1", Tab::new("c2", "b", "x2", "t2"));
+        m.add_space("p2", "web", "/w", Tab::new("c3", "c", "x3", "t3"));
+        assert_eq!(m.tab("c2").unwrap().arrange, Some(Mode::Columns));
+        assert_eq!(m.tab("c3").unwrap().arrange, Some(Mode::Columns));
+        m.split("x2", Axis::Column, "x4", "t4");
+        assert_eq!(shape(&m.tab("c2").unwrap().root), "R[x2 x4]");
+        assert_eq!(m.tab("c1").unwrap().arrange, None, "tabs already there keep theirs");
     }
 
     #[test]
