@@ -84,6 +84,7 @@ impl AppWindow {
             "maximized": window.is_maximized(),
             "fullscreen": window.is_fullscreen(),
             "active": self.window_active,
+            "scale_factor": window.scale_factor(),
         })
     }
 
