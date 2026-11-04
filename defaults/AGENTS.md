@@ -641,7 +641,9 @@ What's about the user, never a look:
 - `sounds`: `{ "enabled": true, "done": "<file>", "blocked": "<file>" }`.
   When an agent needs the person, or finishes while they aren't looking at
   it, Herdr plays a sound and (unless they're looking) posts a toast that
-  goes there when clicked. `done` / `blocked` replace the bundled MP3s
+  goes there when clicked. Alerts of one kind within 3 seconds of the last
+  share one toast ("3 agents finished", names newest first; a click goes to
+  the newest). `done` / `blocked` replace the bundled MP3s
   (path absolute or relative to `~/.config/herdr-app`). Changes apply live,
   including the Play buttons in Settings > Alerts.
 - `system_notifications`: `"background"` (default), `"always"` or `"off"`.
@@ -1040,6 +1042,7 @@ All of it is in `herdr.d.ts`. In short:
   drops Herdr's border, corners and shadow so the mod draws its own.
   `notify({ title, body, level, icon, timeout })` posts a notification, drawn by the `toast` mod
   in an overlay as wide as its content (200 to 340 px) and 40 px high, 72 with a body (blank text is none).
+  At most 5 toasts show: a sixth closes the oldest.
 - Windows (`kind: "window"`): stay open until closed, over the layout and
   under dialogs; a press the mod doesn't stop drags it (stop it on your
   controls, like a title bar's buttons), it stays where dropped, and the one

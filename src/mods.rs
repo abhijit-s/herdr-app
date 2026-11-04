@@ -562,6 +562,9 @@ thread_local! {
     /// not act on the person's keys).
     static SHOWN_COPIES: RefCell<std::collections::HashSet<u64>> = RefCell::new(std::collections::HashSet::new());
     static LIVE_READS: RefCell<HashMap<u64, Weak<RefCell<LiveReads>>>> = RefCell::new(HashMap::new());
+    /// Each loaded copy's props, which the window can replace without
+    /// reloading the copy (`set_props`).
+    static LIVE_PROPS: RefCell<HashMap<u64, Weak<RefCell<Value>>>> = RefCell::new(HashMap::new());
     /// How often each thing mods read has changed: a snapshot key, `shared\0<key>`,
     /// a folder's git status (`git_status::Place::read_key`).
     static REVISIONS: RefCell<HashMap<String, u64>> = RefCell::new(HashMap::new());
@@ -693,6 +696,12 @@ pub fn snapshot_changed(copy: u64) -> bool {
             REVISIONS.with_borrow(|r| reads.borrow_mut().changed(r))
         })
     })
+}
+
+/// Gives a loaded copy new props, read by its next render (the caller
+/// refreshes it). Returns whether the copy is still loaded.
+pub fn set_props(copy: u64, props: Value) -> bool {
+    LIVE_PROPS.with_borrow(|copies| copies.get(&copy).and_then(Weak::upgrade).map(|p| *p.borrow_mut() = props).is_some())
 }
 
 /// Delivers `command` to every shown copy of `mod`. Returns whether any listens.
@@ -960,6 +969,11 @@ fn module(inst: Instance, copy: u64) -> HostModule {
         copies.insert(copy, Rc::downgrade(&reads));
     });
     let props = inst.props.clone();
+    let live_props = Rc::new(RefCell::new(inst.props.clone()));
+    LIVE_PROPS.with_borrow_mut(|copies| {
+        copies.retain(|_, props| props.strong_count() > 0);
+        copies.insert(copy, Rc::downgrade(&live_props));
+    });
     let feedback_frame = inst.name == "frame-feedback";
     let feedback_from = inst.props.get("from").and_then(Value::as_str).unwrap_or("person").to_owned();
     let feedback_layout = inst.props.get("layout").and_then(Value::as_str).unwrap_or("other").to_owned();
@@ -1142,7 +1156,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
             let reads = reads.clone();
             move |_| Ok(float.as_ref().map_or(HostValue::Null, |id| read(&reads, "floats", |s| s.floats.get(id).unwrap_or(&Value::Null))))
         })
-        .function("props", move |_| Ok(to_host(&props)))
+        .function("props", move |_| Ok(to_host(&live_props.borrow())))
         .function("shared", {
             let reads = reads.clone();
             move |a| {

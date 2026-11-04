@@ -42,6 +42,61 @@ const TOAST_MIN_WIDTH: f32 = 200.0;
 const TOAST_MAX_WIDTH: f32 = 340.0;
 const TOAST_HEIGHT: f32 = 40.0;
 const TOAST_HEIGHT_WITH_BODY: f32 = 72.0;
+/// The most toasts shown at once: one more closes the oldest.
+const TOAST_LIMIT: usize = 5;
+/// Agent alerts of one kind this close together share a toast.
+const ALERT_JOIN: Duration = Duration::from_secs(3);
+/// The most agents a shared alert toast names; the rest are counted.
+const ALERT_NAMES: usize = 4;
+
+/// How long a toast stays: its `timeout`, else longer for errors and warnings.
+fn toast_timeout(notification: &Value) -> Duration {
+    let ms = notification.get("timeout").and_then(Value::as_f64).unwrap_or(match notification.get("level").and_then(Value::as_str) {
+        Some("error" | "warning") => 8000.0,
+        _ => 5000.0,
+    });
+    Duration::from_millis(ms as u64)
+}
+
+/// An agent alert's toast, which alerts of the same kind arriving soon after
+/// join instead of stacking a toast each ("3 agents finished").
+struct AlertToast {
+    alert: model::Alert,
+    /// Newest first, each agent once.
+    agents: Vec<AlertedAgent>,
+    /// When the last alert joined.
+    joined: Instant,
+}
+
+#[derive(Clone)]
+struct AlertedAgent {
+    address: String,
+    name: String,
+    /// "space / tab".
+    place: Option<String>,
+}
+
+impl AlertToast {
+    /// What the toast mod draws. One agent: its name and place, as ever. More:
+    /// how many and who, newest first. A click goes to the newest.
+    fn notification(&self) -> Value {
+        let newest = &self.agents[0];
+        let (title, body) = match self.agents.len() {
+            1 => (crate::alert::title(self.alert, &newest.name), json!(newest.place)),
+            n => {
+                let names: Vec<&str> = self.agents.iter().take(ALERT_NAMES).map(|a| a.name.as_str()).collect();
+                let more = n.saturating_sub(ALERT_NAMES);
+                let body = if more > 0 { format!("{} and {more} more", names.join(", ")) } else { names.join(", ") };
+                (crate::alert::merged_title(self.alert, n), json!(body))
+            }
+        };
+        let level = if self.alert.needs_you() { "error" } else { "info" };
+        json!({
+            "title": title, "body": body, "level": level,
+            "action": { "name": "agent.focus", "args": { "terminal": newest.address } },
+        })
+    }
+}
 
 /// One line without a body, two with one: a body as the toast mod draws one
 /// (text that isn't blank, or anything else JavaScript calls true).
@@ -402,6 +457,8 @@ struct Overlay {
     /// The app's own screen (a `frame-` mod: What's new, the welcome): only
     /// its own close ends it, never a layout switch.
     frame: bool,
+    /// An agent alert's toast, which alerts of the same kind can join.
+    alert: Option<AlertToast>,
 }
 
 struct Drag {
@@ -2216,12 +2273,44 @@ impl AppWindow {
         if alert.needs_you() && settings.dock_bounce && !self.window_active {
             window.request_attention();
         }
-        let level = if alert.needs_you() { "error" } else { "info" };
-        let notification = json!({
-            "title": note.title(), "body": note.place, "level": level,
-            "action": { "name": "agent.focus", "args": { "terminal": addr } },
-        });
-        self.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": notification }), window, cx);
+        let agent = AlertedAgent { address: addr.to_owned(), name: note.name, place: note.place };
+        if self.join_alert_toast(alert, agent.clone(), cx) {
+            return;
+        }
+        let toast = AlertToast { alert, agents: vec![agent], joined: Instant::now() };
+        let id = mods::new_overlay_id();
+        self.open_overlay(id.clone(), json!({ "kind": "toast", "notification": toast.notification() }), window, cx);
+        if let Some(o) = self.overlays.iter_mut().find(|o| o.id == id) {
+            o.alert = Some(toast);
+        }
+    }
+
+    /// Puts an alert in the toast of an alert of the same kind that came
+    /// moments ago, so a wave of agents finishing is one toast, redrawn, not one
+    /// mod loaded per agent. Returns whether such a toast took it.
+    fn join_alert_toast(&mut self, alert: model::Alert, agent: AlertedAgent, cx: &mut Context<Self>) -> bool {
+        let now = Instant::now();
+        let Some(o) = self.overlays.iter_mut().rev().find(|o| o.alert.as_ref().is_some_and(|t| t.alert == alert && now.duration_since(t.joined) < ALERT_JOIN)) else {
+            return false;
+        };
+        let Some(toast) = o.alert.as_mut() else { return false };
+        toast.agents.retain(|a| a.address != agent.address);
+        toast.agents.insert(0, agent);
+        toast.joined = now;
+        let mut props = toast.notification();
+        props["overlay"] = json!(o.id);
+        o.expires = Some(now + toast_timeout(&props));
+        o.size.height = toast_height(&props);
+        let slot = o.slot.clone();
+        if let Some(copy) = self.copies.get_mut(&slot) {
+            copy.inst.props = props.clone();
+            mods::set_props(copy.id, props);
+            if let (Some(runtime), Some(root)) = (&self.runtime, &copy.root) {
+                let _ = runtime.refresh(root, cx);
+            }
+        }
+        cx.notify();
+        true
     }
 
     /// The error toast for an `alert_command` that didn't start or failed:
@@ -3644,10 +3733,7 @@ impl AppWindow {
         if kind == OverlayKind::Window && place.is_none() && spec.get("at").is_some_and(|v| v.get("x").is_some()) {
             place = Some(at);
         }
-        let timeout = props.get("timeout").and_then(Value::as_f64).unwrap_or(match props.get("level").and_then(Value::as_str) {
-            Some("error" | "warning") => 8000.0,
-            _ => 5000.0,
-        });
+        let timeout = toast_timeout(&props);
         let slot = format!("overlay:{id}");
         // The frame takes the keyboard first, so a mod that focuses itself while loading wins.
         let focus = cx.focus_handle();
@@ -3677,7 +3763,7 @@ impl AppWindow {
             slot,
             at,
             size,
-            expires: (kind == OverlayKind::Toast).then(|| Instant::now() + Duration::from_millis(timeout as u64)),
+            expires: (kind == OverlayKind::Toast).then(|| Instant::now() + timeout),
             focus,
             layout,
             top,
@@ -3687,7 +3773,11 @@ impl AppWindow {
             place,
             key: key.clone(),
             frame: spec.get("mod").and_then(Value::as_str).is_some_and(|m| m.starts_with("frame-")),
+            alert: None,
         });
+        if kind == OverlayKind::Toast {
+            self.close_toasts_past_limit(window, cx);
+        }
         if let Some(k) = &key {
             if spec.get("keep").and_then(Value::as_bool) == Some(true) {
                 movable::keep(&self.layout_name, k, &spec);
@@ -3706,6 +3796,14 @@ impl AppWindow {
             self.publish_shown_copies(cx);
         }
         cx.notify();
+    }
+
+    /// A burst of toasts shows the newest few: past `TOAST_LIMIT`, the oldest close.
+    fn close_toasts_past_limit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let toasts: Vec<String> = self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).map(|o| o.id.clone()).collect();
+        for id in toasts.iter().take(toasts.len().saturating_sub(TOAST_LIMIT)) {
+            self.close_overlay(id, window, cx);
+        }
     }
 
     fn peek_terminal(&mut self, address: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -5806,7 +5904,7 @@ export default class Scale extends View {
             }));
         };
         alert_with(AlertCommand::Argv(vec!["/nonexistent/herdr-notify".into()]), cx);
-        assert_eq!(toasts(cx), 3, "two alert toasts and one error toast");
+        assert_eq!(toasts(cx), 2, "one alert toast (the second alert joined it) and one error toast");
         assert_eq!(cx.shown_system_notifications().len(), 2, "both fell back");
 
         alert_with(AlertCommand::Shell("/nonexistent/herdr-notify -s done".into()), cx);
@@ -5817,12 +5915,138 @@ export default class Scale extends View {
             cx.run_until_parked();
         }
         cx.run_until_parked();
-        assert_eq!(toasts(cx), 6, "two more alert toasts, one more error toast for the new command");
+        assert_eq!(toasts(cx), 3, "the alerts joined the same toast, one more error toast for the new command");
         view.update(cx, |this, _| {
             assert!(this.alert_command_errors.iter().any(|why| why.contains("command not found (exit 127)")), "{:?}", this.alert_command_errors);
             assert_eq!(this.alert_command_errors.len(), 1, "cleared when alert_command changed");
             assert!(this.notified.contains("t1"));
         });
+    }
+
+    #[test]
+    fn an_alert_toast_names_one_agent_and_counts_more() {
+        use super::{AlertToast, AlertedAgent};
+        use crate::model::Alert;
+        use serde_json::json;
+        let agent = |n: usize| AlertedAgent { address: format!("t{n}"), name: format!("a{n}"), place: Some(format!("s / tab{n}")) };
+        let one = AlertToast { alert: Alert::Done, agents: vec![agent(1)], joined: std::time::Instant::now() };
+        assert_eq!(
+            one.notification(),
+            json!({ "title": "a1 finished", "body": "s / tab1", "level": "info", "action": { "name": "agent.focus", "args": { "terminal": "t1" } } }),
+            "one agent's toast is as it always was"
+        );
+        let three = AlertToast { alert: Alert::Blocked, agents: (1..=3).rev().map(agent).collect(), ..one };
+        let n = three.notification();
+        assert_eq!((n["title"].as_str(), n["body"].as_str(), n["level"].as_str()), (Some("3 agents need you"), Some("a3, a2, a1"), Some("error")));
+        assert_eq!(n["action"]["args"]["terminal"], "t3", "a click goes to the newest");
+        let seven = AlertToast { alert: Alert::Error, agents: (1..=7).rev().map(agent).collect(), ..three };
+        let n = seven.notification();
+        assert_eq!((n["title"].as_str(), n["body"].as_str()), (Some("7 agents hit an error"), Some("a7, a6, a5, a4 and 3 more")));
+    }
+
+    #[test]
+    fn alerts_close_together_share_a_toast_and_toasts_are_capped() {
+        in_own_process("alert_toasts");
+    }
+
+    /// A wave of agents finishing is one toast, redrawn with each, not a toast
+    /// each; another kind of alert, or one after the wave, gets its own; at
+    /// most `TOAST_LIMIT` toasts show, the newest.
+    #[gpui::test]
+    fn alert_toasts(cx: &mut gpui::TestAppContext) {
+        use super::{ALERT_JOIN, OverlayKind, TOAST_LIMIT};
+        use crate::model::Alert;
+        use serde_json::json;
+        if !running_alone("alert_toasts") {
+            return;
+        }
+        // The shipped toast mod, its root keyed by its title so the test can see what it draws.
+        let shipped = include_str!("../defaults/mods/toast/main.js");
+        let keyed = shipped.replace(r#".id("toast")"#, r#".id(`toast-${p.title}`)"#);
+        assert_ne!(keyed, shipped, "the toast mod changed shape: key its root again");
+        let (view, cx) = open_window(cx, "toast", &keyed, json!({ "id": "pane", "type": "block" }));
+        cx.run_until_parked();
+        let alert = |addr: &str, kind: Alert, cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                this.person.sounds.enabled = false;
+                this.live.insert(addr.into(), json!({ "name": format!("agent {addr}") }));
+                this.alert(addr, kind, None, false, window, cx);
+            }));
+            cx.run_until_parked();
+        };
+        let toasts = |cx: &mut gpui::VisualTestContext| {
+            view.update(cx, |this, _| this.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).map(|o| o.id.clone()).collect::<Vec<_>>())
+        };
+
+        alert("t1", Alert::Done, cx);
+        assert_eq!(toasts(cx).len(), 1);
+        assert!(cx.debug_bounds("toast-agent t1 finished").is_some(), "one agent: its own toast");
+        let first = toasts(cx)[0].clone();
+        for addr in ["t2", "t3", "t2"] {
+            alert(addr, Alert::Done, cx);
+        }
+        assert_eq!(toasts(cx), vec![first.clone()], "the wave joined the first toast, no new mod loaded");
+        assert!(cx.debug_bounds("toast-3 agents finished").is_some(), "the toast redrew with the count, each agent once");
+        assert!(cx.debug_bounds("toast-agent t1 finished").is_none());
+        let props = view.update(cx, |this, _| this.copies[&format!("overlay:{first}")].inst.props.clone());
+        assert_eq!(props["body"], "agent t2, agent t3, agent t1", "newest first");
+        assert_eq!(props["action"]["args"]["terminal"], "t2", "a click goes to the newest");
+        assert_eq!(props["overlay"], first.as_str(), "it can still close itself");
+
+        alert("t4", Alert::Blocked, cx);
+        assert_eq!(toasts(cx).len(), 2, "needing the person is another kind of alert");
+
+        view.update(cx, |this, _| {
+            for o in &mut this.overlays {
+                if let Some(t) = &mut o.alert {
+                    t.joined -= ALERT_JOIN;
+                }
+            }
+        });
+        alert("t5", Alert::Done, cx);
+        assert_eq!(toasts(cx).len(), 3, "after the wave, a finish gets a toast of its own");
+
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            for i in 0..4 {
+                this.open_overlay(format!("n{i}"), json!({ "kind": "toast", "notification": { "title": format!("note {i}") } }), window, cx);
+            }
+        }));
+        cx.run_until_parked();
+        let shown = toasts(cx);
+        assert_eq!(shown.len(), TOAST_LIMIT);
+        assert!(!shown.contains(&first) && shown.ends_with(&["n0".into(), "n1".into(), "n2".into(), "n3".into()]), "the oldest closed: {shown:?}");
+        assert!(cx.debug_bounds("toast-3 agents finished").is_none(), "its mod went with it");
+    }
+
+    #[test]
+    fn the_toast_clock_runs_only_while_a_toast_is_up() {
+        in_own_process("toast_clock");
+    }
+
+    /// No mod root wakes for toasts it doesn't have: the clock starts with a
+    /// toast and stops once the last one has left.
+    #[gpui::test]
+    fn toast_clock(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("toast_clock") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "probe", "import { View, div } from \"gpui-kit\";\nexport default class P extends View { render() { return div(); } }", json!({ "id": "probe", "type": "block", "content": { "mod": "probe" } }));
+        cx.run_until_parked();
+        let roots: Vec<_> = view.update(cx, |this, _| this.copies.values().filter_map(|c| c.root.clone()).collect());
+        assert!(!roots.is_empty(), "no mod loaded");
+        let running = |cx: &mut gpui::VisualTestContext| roots.iter().filter(|r| r.read_with(cx, |r, _| r.toast_clock_running())).count();
+        assert_eq!(running(cx), 0, "no toasts, no clock");
+        let root = roots[0].clone();
+        cx.update(|window, cx| root.update(cx, |r, cx| r.push_toast(gpui_shell::ToastRequest::new("Saved"), window, cx)));
+        assert_eq!(running(cx), 1, "a toast starts its root's clock, and only its");
+        cx.executor().advance_clock(gpui_shell::ToastRequest::DEFAULT_TIMEOUT / 2);
+        cx.run_until_parked();
+        assert_eq!((running(cx), root.read_with(cx, |r, _| r.toast_count())), (1, 1), "still up, still ticking");
+        cx.executor().advance_clock(gpui_shell::ToastRequest::DEFAULT_TIMEOUT * 2);
+        cx.run_until_parked();
+        assert_eq!(root.read_with(cx, |r, _| r.toast_count()), 0, "the toast timed out and left");
+        assert_eq!(running(cx), 0, "and the clock stopped with it");
     }
 
     #[test]
