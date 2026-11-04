@@ -2092,8 +2092,10 @@ impl AppWindow {
         self.forget_gone_popped();
         self.closing_terminals.retain(|addr, completed| !*completed || self.live.contains_key(addr));
         // A new sub-agent changes only this list; mods that show teams need to redraw.
+        // A listing that changed nothing as the app shows it (an agent's spinning
+        // title, stripped above) is an ordinary tick, not news for the mods.
         let terminals_changed = mods::publish_terminals(list);
-        self.tend_terminals(true, window, cx);
+        self.tend_terminals(terminals_changed, window, cx);
         if terminals_changed {
             self.refresh_snapshot_mods(cx);
         }
