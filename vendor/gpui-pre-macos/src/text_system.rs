@@ -107,6 +107,20 @@ struct MacTextSystemState {
     // rasteriser that reads them (`lcd`).
     embedded_fonts: HashMap<String, &'static [u8]>,
     lcd: parking_lot::Mutex<crate::lcd::Rasterizer>,
+    // HERDR: each font's subpixel growth (`lcd::fit`), by font, size in device
+    // pixels and what it draws like; and which way each glyph grows outward
+    // (`lcd::Samples::outward`).
+    subpixel_weights: parking_lot::Mutex<HashMap<(FontId, u32, SubpixelMatch), crate::lcd::Weight>>,
+    subpixel_outward: parking_lot::Mutex<HashMap<(FontId, GlyphId), f32>>,
+}
+
+/// HERDR: what a font's subpixel glyphs are calibrated to draw like:
+/// CoreGraphics' grayscale through thicken's smoothing levels, or at a
+/// color's dilation.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum SubpixelMatch {
+    Thicken,
+    Dilation(u8),
 }
 
 impl MacTextSystem {
@@ -124,6 +138,8 @@ impl MacTextSystem {
             font_ids_by_weighted_name: HashMap::default(),
             embedded_fonts: HashMap::default(),
             lcd: Default::default(),
+            subpixel_weights: Default::default(),
+            subpixel_outward: Default::default(),
         }))
     }
 }
@@ -663,51 +679,101 @@ impl MacTextSystemState {
 
     /// HERDR: a coverage per color channel, BGRA, from swash (`lcd`), or None
     /// when swash can't open the face or draw the glyph. The outline grows,
-    /// across and along the rows, as far as draws it like CoreGraphics'
-    /// grayscale (`lcd::Samples::growth`): at `thicken`'s strength through
-    /// smoothing levels made continuous (`lcd::thicken_level`), else at the
-    /// color's `dilation` exactly.
+    /// across and along the rows, by its font's one growth (`subpixel_weight`):
+    /// at `thicken`'s strength through smoothing levels made continuous
+    /// (`lcd::thicken_level`), else at the color's `dilation` exactly.
     fn rasterize_subpixel_glyph(
         &self,
         params: &RenderGlyphParams,
         glyph_bounds: Bounds<DevicePixels>,
         bitmap_size: Size<DevicePixels>,
     ) -> Option<Vec<u8>> {
-        let embolden = self.subpixel_growth(params);
-        self.render_subpixel(params, glyph_bounds, bitmap_size, embolden)
+        let level = params.thicken.map_or(params.dilation as f32, crate::lcd::thicken_level);
+        let growth = self.subpixel_weight(params).at(level);
+        let sign = self.subpixel_outward(params);
+        self.render_subpixel(params, glyph_bounds, bitmap_size, growth.map(|g| sign * g))
     }
 
-    /// HERDR: the glyph drawn by CoreGraphics' grayscale and by swash plain
-    /// and grown each way, all at one sample per pixel in CoreGraphics' box;
-    /// for thicken, CoreGraphics at smoothing levels 0 and 4 (strengths 0 and
-    /// 255), interpolated (`lcd::Weight`).
-    fn subpixel_growth(&self, params: &RenderGlyphParams) -> [f32; 2] {
-        let level = params.thicken.map_or(params.dilation as f32, crate::lcd::thicken_level);
-        let fallback = crate::lcd::Weight::FALLBACK.at(level);
-        let gray_params = |thicken| RenderGlyphParams { subpixel_rendering: false, thicken, ..params.clone() };
-        let Ok(bounds) = self.raster_bounds(&gray_params(params.thicken)) else { return fallback };
-        let gray = |thicken| {
-            self.rasterize_glyph(&gray_params(thicken), bounds)
-                .ok()
-                .map(|(_, bytes)| bytes.iter().map(|&a| a as f32 / 255.0).collect::<Vec<f32>>())
+    /// HERDR: the growth for every glyph of `params`' font at its size: fitted
+    /// once over printable ASCII (`lcd::fit`), for thicken against
+    /// CoreGraphics at smoothing levels 0 and 4 (strengths 0 and 255),
+    /// interpolated (`lcd::Weight`).
+    fn subpixel_weight(&self, params: &RenderGlyphParams) -> crate::lcd::Weight {
+        let matching = match params.thicken {
+            Some(_) => SubpixelMatch::Thicken,
+            None => SubpixelMatch::Dilation(params.dilation),
         };
+        let key = (params.font_id, (f32::from(params.font_size) * params.scale_factor).to_bits(), matching);
+        if let Some(weight) = self.subpixel_weights.lock().get(&key) {
+            return *weight;
+        }
+        let weight = self.calibrate_subpixel(params).unwrap_or(crate::lcd::Weight::FALLBACK);
+        self.subpixel_weights.lock().insert(key, weight);
+        weight
+    }
+
+    fn calibrate_subpixel(&self, params: &RenderGlyphParams) -> Option<crate::lcd::Weight> {
+        // Lowercase counts twice, as it fills most text: fitted over printable
+        // ASCII evenly, Geist 13 inks 2% over grayscale on interface text;
+        // over lowercase alone, 1 to 3% under.
+        let glyphs: Vec<(crate::lcd::Samples, RenderGlyphParams, Bounds<DevicePixels>, usize)> = ('!'..='~')
+            .filter_map(|ch| Some((self.glyph_for_char(params.font_id, ch)?, if ch.is_ascii_lowercase() { 2 } else { 1 })))
+            .filter_map(|(glyph_id, count)| {
+                let params = RenderGlyphParams { glyph_id, subpixel_variant: point(0, 0), subpixel_rendering: false, ..params.clone() };
+                let bounds = self.raster_bounds(&params).ok().filter(|bounds| bounds.size.width.0 > 0 && bounds.size.height.0 > 0)?;
+                Some((self.subpixel_samples(&params, bounds)?, params, bounds, count))
+            })
+            .collect();
+        let growth = |thicken: Option<u8>| {
+            let grays: Vec<Option<Vec<f32>>> = glyphs
+                .iter()
+                .map(|(_, params, bounds, _)| {
+                    let (_, bytes) = self.rasterize_glyph(&RenderGlyphParams { thicken, ..params.clone() }, *bounds).ok()?;
+                    Some(bytes.iter().map(|&a| a as f32 / 255.0).collect())
+                })
+                .collect();
+            let pairs: Vec<(&crate::lcd::Samples, &[f32])> = glyphs
+                .iter()
+                .zip(&grays)
+                .filter_map(|((samples, _, _, count), gray)| Some(std::iter::repeat_n((samples, gray.as_deref()?), *count)))
+                .flatten()
+                .collect();
+            crate::lcd::fit(&pairs)
+        };
+        match params.thicken {
+            Some(_) => Some(crate::lcd::Weight::between(growth(Some(0))?, growth(Some(255))?)),
+            None => growth(None).map(crate::lcd::Weight::steady),
+        }
+    }
+
+    /// HERDR: 1, or -1 for a glyph swash grows inward (`lcd::Samples::outward`).
+    fn subpixel_outward(&self, params: &RenderGlyphParams) -> f32 {
+        let key = (params.font_id, params.glyph_id);
+        if let Some(sign) = self.subpixel_outward.lock().get(&key) {
+            return *sign;
+        }
+        let gray_params = RenderGlyphParams { subpixel_variant: point(0, 0), subpixel_rendering: false, ..params.clone() };
+        let sign = self
+            .raster_bounds(&gray_params)
+            .ok()
+            .filter(|bounds| bounds.size.width.0 > 0 && bounds.size.height.0 > 0)
+            .and_then(|bounds| self.subpixel_samples(&gray_params, bounds))
+            .map_or(1.0, |samples| samples.outward());
+        self.subpixel_outward.lock().insert(key, sign);
+        sign
+    }
+
+    /// HERDR: the glyph drawn by swash plain and grown each way, at one
+    /// sample per pixel in CoreGraphics' box.
+    fn subpixel_samples(&self, params: &RenderGlyphParams, bounds: Bounds<DevicePixels>) -> Option<crate::lcd::Samples> {
         let mut size = bounds.size;
         size.width += DevicePixels((params.subpixel_variant.x > 0) as i32);
         let probe = crate::lcd::Samples::PROBE;
-        let swash = [[0.0, 0.0], [probe, 0.0], [0.0, probe]].map(|embolden| {
+        let [plain, across, along] = [[0.0, 0.0], [probe, 0.0], [0.0, probe]].map(|embolden| {
             let glyph = self.subpixel_glyph(params, bounds.origin, size, embolden);
             self.lcd.lock().coverage(params.font_id, || self.face_source(params.font_id), &glyph)
         });
-        let [Some(plain), Some(across), Some(along)] = &swash else { return fallback };
-        let samples = crate::lcd::Samples { width: size.width.0 as usize, plain, grown: [across, along] };
-        let growth = |thicken| gray(thicken).and_then(|gray| samples.growth(&gray));
-        match params.thicken {
-            Some(_) => match (growth(Some(0)), growth(Some(255))) {
-                (Some(low), Some(high)) => crate::lcd::Weight::between(low, high).at(level),
-                _ => fallback,
-            },
-            None => growth(None).unwrap_or(fallback),
-        }
+        Some(crate::lcd::Samples { width: size.width.0 as usize, plain: plain?, grown: [across?, along?] })
     }
 
     fn subpixel_glyph(

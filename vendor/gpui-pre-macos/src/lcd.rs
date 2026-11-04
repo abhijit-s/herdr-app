@@ -45,10 +45,10 @@ pub fn thicken_level(strength: u8) -> f32 {
         })
 }
 
-/// How far a glyph's strokes grow, in device pixels, across and along the
+/// How far a font's strokes grow, in device pixels, across and along the
 /// rows, for swash to draw it as CoreGraphics' grayscale does through
 /// thicken's smoothing levels: `base` at level 0, `per_level` more for each
-/// level (`Samples::growth` at levels 0 and 4).
+/// level (`fit` at levels 0 and 4).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Weight {
     pub base: [f32; 2],
@@ -56,13 +56,18 @@ pub struct Weight {
 }
 
 impl Weight {
-    /// For a glyph swash can't calibrate: JetBrains Mono's at 12 px.
+    /// For a font swash can't calibrate: JetBrains Mono's at 12 px.
     pub const FALLBACK: Weight = Weight { base: [0.04, 0.12], per_level: [0.015, 0.015] };
 
-    /// From the growths that draw a glyph as CoreGraphics does at smoothing
+    /// From the growths that draw a font as CoreGraphics does at smoothing
     /// levels 0 and 4.
     pub fn between(low: [f32; 2], high: [f32; 2]) -> Weight {
         Weight { base: low, per_level: [(high[0] - low[0]) / 4.0, (high[1] - low[1]) / 4.0] }
+    }
+
+    /// The same growth at every level.
+    pub fn steady(growth: [f32; 2]) -> Weight {
+        Weight { base: growth, per_level: [0.0; 2] }
     }
 
     /// The growth across and along the rows at this smoothing level.
@@ -74,58 +79,77 @@ impl Weight {
 /// A glyph's swash coverage, 0 to 1 per pixel, in CoreGraphics' box of
 /// `width` pixels a row: plain, and grown by `Samples::PROBE` across the rows
 /// and along them.
-pub struct Samples<'a> {
+pub struct Samples {
     pub width: usize,
-    pub plain: &'a [f32],
-    pub grown: [&'a [f32]; 2],
+    pub plain: Vec<f32>,
+    pub grown: [Vec<f32>; 2],
 }
 
-impl Samples<'_> {
+impl Samples {
     /// How far the calibration's swash passes grow the glyph, each one way:
     /// small enough that coverage grows about linearly.
     pub const PROBE: f32 = 0.1;
     /// How much more a row's summed coverage counts than one pixel's when
-    /// fitting: the glyph's vertical profile comes first, its pixels break
+    /// fitting: the glyphs' vertical profiles come first, their pixels break
     /// ties. Anywhere from 10 to 100 fits alike.
     const ROW_WEIGHT: f64 = 30.0;
 
-    /// The growth across and along the rows that inks exactly as much as
-    /// CoreGraphics' `gray` and draws closest to it, row by row first, then
-    /// pixel by pixel, taking coverage as linear in the growth. CoreGraphics
-    /// grows glyphs more along the rows than across them (JetBrains Mono at
-    /// 12 px, pixel by pixel: about 0.04 by 0.12 px with no smoothing, 0.10 by
-    /// 0.18 at level 4), so one isotropic growth matched to its ink draws
-    /// glyphs short with heavy stems. A glyph whose two ways can't be told
-    /// apart (a dot) grows alike in both. A glyph whose winding swash reads
-    /// backwards (JetBrains Mono's `i`) gets a negative growth, which grows
-    /// it. None for a glyph either side draws empty.
-    pub fn growth(&self, gray: &[f32]) -> Option<[f32; 2]> {
-        let h = Self::PROBE as f64;
-        let gradients = self.grown.map(|grown| grown.iter().zip(self.plain).map(|(&g, &p)| (g as f64 - p as f64) / h).collect::<Vec<f64>>());
-        let inks = gradients.each_ref().map(|g| g.iter().sum::<f64>());
-        if !gray.iter().any(|&c| c > 0.0) || inks[0] + inks[1] == 0.0 {
-            return None;
+    /// 1, or -1 for a glyph whose winding swash reads backwards (JetBrains
+    /// Mono's `i`): a positive growth shrinks it.
+    pub fn outward(&self) -> f32 {
+        let ink: f32 = self.grown.iter().flat_map(|grown| grown.iter().zip(&self.plain).map(|(g, p)| g - p)).sum();
+        if ink < 0.0 { -1.0 } else { 1.0 }
+    }
+}
+
+/// One growth across and along the rows for a whole font: the one that inks
+/// the glyphs (each `Samples` beside CoreGraphics' grayscale of it) exactly as
+/// much as CoreGraphics does in all, and draws them closest to it, row by row
+/// first, then pixel by pixel, taking coverage as linear in the growth. Each
+/// glyph grows outward, by its `Samples::outward` times the growth. One
+/// growth for every glyph keeps stems alike: fitted per glyph, neighbouring
+/// glyphs' stems grew by different amounts. CoreGraphics grows glyphs more
+/// along the rows than across them, so one isotropic growth matched to its
+/// ink draws glyphs short with heavy stems. Glyphs whose two ways can't be
+/// told apart (dots) grow alike in both. None when every glyph draws empty.
+pub fn fit(glyphs: &[(&Samples, &[f32])]) -> Option<[f32; 2]> {
+    let h = Samples::PROBE as f64;
+    let (mut xx, mut xy, mut yy, mut bx, mut by) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    let (mut inks, mut ink) = ([0.0f64; 2], 0.0f64);
+    for &(samples, gray) in glyphs {
+        if !gray.iter().any(|&c| c > 0.0) {
+            continue;
         }
-        let residual: Vec<f64> = gray.iter().zip(self.plain).map(|(&c, &p)| c as f64 - p as f64).collect();
-        let ink: f64 = residual.iter().sum();
-        let rows = |v: &[f64]| -> Vec<f64> { v.chunks(self.width.max(1)).map(|row| row.iter().sum()).collect() };
+        let sign = samples.outward() as f64;
+        let gradients = samples.grown.each_ref().map(|grown| grown.iter().zip(&samples.plain).map(|(&g, &p)| sign * (g as f64 - p as f64) / h).collect::<Vec<f64>>());
+        let residual: Vec<f64> = gray.iter().zip(&samples.plain).map(|(&c, &p)| c as f64 - p as f64).collect();
+        let rows = |v: &[f64]| -> Vec<f64> { v.chunks(samples.width.max(1)).map(|row| row.iter().sum()).collect() };
         let dot = |a: &[f64], b: &[f64]| {
             let pixels: f64 = a.iter().zip(b).map(|(a, b)| a * b).sum();
             let rows: f64 = rows(a).iter().zip(rows(b)).map(|(a, b)| a * b).sum();
-            pixels + Self::ROW_WEIGHT * rows
+            pixels + Samples::ROW_WEIGHT * rows
         };
-        // Least squares under the ink constraint, by Lagrange: the
-        // gradients' Gram matrix bordered by their inks.
         let [gx, gy] = &gradients;
-        let (xx, xy, yy) = (dot(gx, gx), dot(gx, gy), dot(gy, gy));
-        let m = vec![vec![xx, xy, inks[0]], vec![xy, yy, inks[1]], vec![inks[0], inks[1], 0.0]];
-        let b = vec![dot(gx, &residual), dot(gy, &residual), ink];
-        match solve(m, b, 1e-6 * (xx + yy)) {
-            Some(x) => Some([x[0] as f32, x[1] as f32]),
-            None => {
-                let both = (ink / (inks[0] + inks[1])) as f32;
-                both.is_finite().then_some([both; 2])
-            }
+        xx += dot(gx, gx);
+        xy += dot(gx, gy);
+        yy += dot(gy, gy);
+        bx += dot(gx, &residual);
+        by += dot(gy, &residual);
+        inks[0] += gx.iter().sum::<f64>();
+        inks[1] += gy.iter().sum::<f64>();
+        ink += residual.iter().sum::<f64>();
+    }
+    if inks[0] + inks[1] == 0.0 {
+        return None;
+    }
+    // Least squares under the ink constraint, by Lagrange: the gradients'
+    // Gram matrix bordered by their inks.
+    let m = vec![vec![xx, xy, inks[0]], vec![xy, yy, inks[1]], vec![inks[0], inks[1], 0.0]];
+    match solve(m, vec![bx, by, ink], 1e-6 * (xx + yy)) {
+        Some(x) => Some([x[0] as f32, x[1] as f32]),
+        None => {
+            let both = (ink / (inks[0] + inks[1])) as f32;
+            both.is_finite().then_some([both; 2])
         }
     }
 }
@@ -242,7 +266,7 @@ pub struct Glyph {
     /// Where the pen starts right of the box's pixel grid, 0 to 1.
     pub shift: f32,
     /// How far the strokes grow across and along the rows, in device pixels
-    /// (`Samples::growth`).
+    /// (`fit`, by `Samples::outward`).
     pub embolden: [f32; 2],
     /// The box: its origin relative to the pen (y down) and size.
     pub origin: (i32, i32),
@@ -294,11 +318,16 @@ impl Rasterizer {
         if !scaler.scale_outline_into(glyph.glyph_id, &mut self.outline) {
             return None;
         }
+        // swash grows an outline right and up by twice the strength, its left
+        // and bottom edges fixed, as CoreGraphics' smoothing does; a
+        // backwards-wound glyph, grown by a negative strength, grows left and
+        // down instead. Moved back, it keeps its place among the rest.
         let [x, y] = glyph.embolden;
         if x != 0.0 || y != 0.0 {
             self.outline.embolden(x, y);
         }
-        self.outline.transform(&Transform::scale(columns as f32, 1.0));
+        let shift = Transform::translation(-2.0 * x.min(0.0), -2.0 * y.min(0.0));
+        self.outline.transform(&shift.then_scale(columns as f32, 1.0));
         let offset = Vector::new(glyph.shift * columns as f32, 0.0);
         let mut data = Vec::new();
         let placement = zeno::Mask::new(self.outline.path())
@@ -452,49 +481,73 @@ mod tests {
         (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5
     }
 
-    #[test]
-    fn growth_is_recovered_each_way_and_interpolated_by_level() {
-        // Two rows of three pixels whose coverage grows linearly: across
-        // the rows on a stem's sides, along them at its end.
+    fn samples(plain: &[f32], across: &[f32], along: &[f32], width: usize) -> Samples {
+        Samples { width, plain: plain.to_vec(), grown: [across.to_vec(), along.to_vec()] }
+    }
+
+    /// Two rows of three pixels whose coverage grows linearly: across the
+    /// rows on a stem's sides, along them at its end. `sign` -1 winds it
+    /// backwards.
+    fn stem(sign: f32) -> (Samples, impl Fn([f32; 2]) -> Vec<f32>) {
         let plain = [0.5, 1.0, 0.5, 0.0, 0.2, 0.0];
         let gx = [1.0, 0.0, 1.0, 0.0, 0.0, 0.0];
         let gy = [0.0, 0.0, 0.0, 0.3, 1.0, 0.3];
-        let at = |[x, y]: [f32; 2]| -> Vec<f32> { (0..plain.len()).map(|k| plain[k] + x * gx[k] + y * gy[k]).collect() };
-        let (across, along) = (at([Samples::PROBE, 0.0]), at([0.0, Samples::PROBE]));
-        let samples = Samples { width: 3, plain: &plain, grown: [&across, &along] };
-        let (low, high) = (samples.growth(&at([0.04, 0.12])).unwrap(), samples.growth(&at([0.10, 0.18])).unwrap());
+        let at = move |[x, y]: [f32; 2]| -> Vec<f32> { (0..plain.len()).map(|k| plain[k] + x * gx[k] + y * gy[k]).collect() };
+        let probe = Samples::PROBE * sign;
+        (samples(&plain, &at([probe, 0.0]), &at([0.0, probe]), 3), at)
+    }
+
+    #[test]
+    fn fit_recovers_each_way_and_interpolates_by_level() {
+        let (samples, at) = stem(1.0);
+        let (low, high) = (fit(&[(&samples, &at([0.04, 0.12]))]).unwrap(), fit(&[(&samples, &at([0.10, 0.18]))]).unwrap());
         assert!(close(low, [0.04, 0.12]), "{low:?}");
         assert!(close(high, [0.10, 0.18]), "{high:?}");
         let weight = Weight::between(low, high);
         assert!(close(weight.at(2.0), [0.07, 0.15]), "{weight:?}");
+        assert!(close(Weight::steady(low).at(3.0), low));
     }
 
     #[test]
-    fn growth_matches_ink_when_the_ways_look_alike() {
+    fn fit_gives_one_growth_for_the_whole_font() {
+        // Two glyphs CoreGraphics grows differently: the font's growth sits
+        // between theirs and inks as much as both together.
+        let (a, at_a) = stem(1.0);
+        let (b, at_b) = stem(1.0);
+        let (gray_a, gray_b) = (at_a([0.02, 0.10]), at_b([0.06, 0.14]));
+        let [x, y] = fit(&[(&a, &gray_a), (&b, &gray_b)]).unwrap();
+        assert!(0.02 < x && x < 0.06 && 0.10 < y && y < 0.14, "{x} {y}");
+        let ink = |v: &[f32]| v.iter().sum::<f32>();
+        let fitted = ink(&at_a([x, y])) + ink(&at_b([x, y]));
+        assert!((fitted - ink(&gray_a) - ink(&gray_b)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn fit_matches_ink_when_the_ways_look_alike() {
         // A dot: growing either way adds the same coverage, so it grows
         // alike both ways, as far as matches CoreGraphics' ink.
-        let plain = [0.5, 0.5];
-        let grown = [0.6, 0.6];
-        let gray = [0.62, 0.62];
-        let [x, y] = Samples { width: 2, plain: &plain, grown: [&grown, &grown] }.growth(&gray).unwrap();
+        let dot = samples(&[0.5, 0.5], &[0.6, 0.6], &[0.6, 0.6], 2);
+        let [x, y] = fit(&[(&dot, &[0.62, 0.62])]).unwrap();
         assert!((x - y).abs() < 1e-6 && (x - 0.06).abs() < 1e-5, "{x} {y}");
     }
 
     #[test]
-    fn growth_grows_backwards_wound_glyphs_outward() {
-        // swash reads the winding backwards: a positive growth shrinks it.
-        let plain = [0.5, 1.0, 0.5, 0.0, 0.5, 0.0];
-        let across = [0.4, 1.0, 0.4, 0.0, 0.5, 0.0];
-        let along = [0.5, 1.0, 0.5, 0.0, 0.4, 0.0];
-        let gray = [0.6, 1.0, 0.6, 0.0, 0.65, 0.0];
-        let [x, y] = Samples { width: 3, plain: &plain, grown: [&across, &along] }.growth(&gray).unwrap();
-        assert!(x < 0.0 && y < 0.0, "{x} {y}");
+    fn backwards_wound_glyphs_grow_outward_by_the_fonts_growth() {
+        // swash reads one glyph's winding backwards: a positive growth
+        // shrinks it. It still fits the font's growth, grown by -1 times it.
+        let (forwards, at_forwards) = stem(1.0);
+        let (backwards, at_backwards) = stem(-1.0);
+        assert_eq!((forwards.outward(), backwards.outward()), (1.0, -1.0));
+        let growth = [0.04, 0.12];
+        let fitted = fit(&[(&forwards, &at_forwards(growth)), (&backwards, &at_backwards(growth))]).unwrap();
+        assert!(close(fitted, growth), "{fitted:?}");
     }
 
     #[test]
-    fn growth_skips_empty_glyphs() {
-        let empty = [0.0f32; 3];
-        assert_eq!(Samples { width: 3, plain: &empty, grown: [&empty, &empty] }.growth(&empty), None);
+    fn fit_skips_empty_glyphs() {
+        let empty = samples(&[0.0; 3], &[0.0; 3], &[0.0; 3], 3);
+        assert_eq!(fit(&[(&empty, &[0.0; 3])]), None);
+        assert_eq!(fit(&[]), None);
     }
 
     #[test]

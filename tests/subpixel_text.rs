@@ -33,9 +33,9 @@ struct Text {
 }
 
 // The person's: terminals JetBrains Mono 12 at contrast 0.2 (font_thicken 30),
-// panels Geist 13 at contrast 0.3 (ui_font_thicken 192).
+// panels Geist 13 at contrast 0.2 (ui_font_thicken 192).
 const TERMINAL: Text = Text { name: "terminal", family: "JetBrains Mono", text: TERMINAL_TEXT, size: 12., contrast: 0.2 };
-const PANEL: Text = Text { name: "panel", family: "Geist", text: PANEL_TEXT, size: 13., contrast: 0.3 };
+const PANEL: Text = Text { name: "panel", family: "Geist", text: PANEL_TEXT, size: 13., contrast: 0.2 };
 const STRENGTHS: [u8; 5] = [0, 30, 112, 192, 255];
 const POLARITIES: [(u32, u32); 2] = [(LIGHT, DARK), (DARK, LIGHT)];
 /// How far subpixel ink may stray from grayscale's, thickened and plain.
@@ -524,6 +524,28 @@ fn shape_rows() -> Vec<ShapeRow> {
     rows
 }
 
+/// The glyphs with vertical stems, each between spaces, and how many stems
+/// each has.
+const STEMS: [(char, usize); 9] = [('l', 1), ('i', 1), ('n', 2), ('m', 3), ('h', 2), ('u', 2), ('1', 1), ('I', 1), ('|', 1)];
+
+fn stem_line() -> String {
+    STEMS.iter().flat_map(|&(ch, _)| [ch, ' ']).collect()
+}
+
+/// Below the shape rows: the stem line at each strength, each polarity,
+/// grayscale then subpixel.
+fn stem_rows() -> Vec<ShapeRow> {
+    let mut rows = Vec::new();
+    for thicken in SHAPE_STRENGTHS {
+        for (fg, bg) in POLARITIES {
+            for subpixel in [false, true] {
+                rows.push(ShapeRow { line: usize::MAX, thicken, fg, bg, subpixel });
+            }
+        }
+    }
+    rows
+}
+
 struct ShapeScene;
 
 impl Render for ShapeScene {
@@ -531,13 +553,14 @@ impl Render for ShapeScene {
         canvas(
             |_, _, _| {},
             |_, _, window, cx| {
-                for (i, row) in shape_rows().into_iter().enumerate() {
+                let stems = stem_line();
+                for (i, row) in shape_rows().into_iter().chain(stem_rows()).enumerate() {
                     let top = px(SHAPE_CELL.1 * i as f32);
                     window.paint_quad(fill(Bounds::new(point(px(0.), top), size(px(WIDTH), px(SHAPE_CELL.1))), rgb(row.bg)));
-                    let text = SHAPE_LINES[row.line];
+                    let text = SHAPE_LINES.get(row.line).copied().unwrap_or(&stems);
                     let run = TextRun { len: text.len(), font: font("JetBrains Mono"), color: rgb(row.fg).into(), background_color: None, underline: None, strikethrough: None };
                     window.with_font_weight_shift(0.0, |window| {
-                        let line = window.text_system().shape_line(text.into(), px(TERMINAL.size), &[run], None);
+                        let line = window.text_system().shape_line(text.to_string().into(), px(TERMINAL.size), &[run], None);
                         window.with_glyph_thicken(row.thicken, |window| {
                             window.with_glyph_contrast(TERMINAL.contrast, |window| {
                                 window.with_glyph_subpixel(row.subpixel, |window| {
@@ -594,22 +617,27 @@ fn vertical_moments(ink: &[Vec<f32>], column: usize) -> Option<(f32, f32)> {
 /// lines) stays within `ROW_TOLERANCE` of grayscale's, relative to the
 /// heaviest row (`PLAIN_ROW_TOLERANCE` with thicken off); the ascender rows
 /// (above the x-height) and the x-height band each within `BAND_TOLERANCE`;
-/// and the glyphs' mean vertical spread within `SPREAD_TOLERANCE` rows.
+/// the glyphs' mean vertical spread within `SPREAD_TOLERANCE` rows; the
+/// lines' total ink within `TOTAL_TOLERANCE`; and stems as even (`check_stems`).
 /// swash emboldened isotropically to grayscale's ink drew glyphs short with
 /// heavy stems: the x-height's top row 5 to 7% of the peak row light, the row
-/// above it 2 to 3% heavy.
+/// above it 2 to 3% heavy. One growth for the whole font leaves that row 2 to
+/// 4% light, where a growth fitted to each glyph matched it to 1.5% but grew
+/// neighbouring stems unevenly.
 fn check_shape(cx: &mut HeadlessAppContext) {
-    const ROW_TOLERANCE: f32 = 0.03;
+    const ROW_TOLERANCE: f32 = 0.04;
     const PLAIN_ROW_TOLERANCE: f32 = 0.05;
     const BAND_TOLERANCE: f32 = 3.0;
     const SPREAD_TOLERANCE: f32 = 0.04;
+    const TOTAL_TOLERANCE: f32 = 3.0;
     let rows = shape_rows();
-    let window = cx.open_window(size(px(WIDTH), px(SHAPE_CELL.1 * rows.len() as f32)), |_, cx| cx.new(|_| ShapeScene)).unwrap();
+    let stems = stem_rows();
+    let window = cx.open_window(size(px(WIDTH), px(SHAPE_CELL.1 * (rows.len() + stems.len()) as f32)), |_, cx| cx.new(|_| ShapeScene)).unwrap();
     cx.simulate_scale_factor_change(window.into(), 1.0);
     let image = cx.update_window(window.into(), |_, window, cx| draw(window, cx)).unwrap();
     save_shape_pngs(&image, &rows);
     let inks: Vec<Vec<Vec<f32>>> = rows.iter().enumerate().map(|(i, &row)| shape_ink(&image, i, row)).collect();
-    let mut failures = Vec::new();
+    let mut failures = check_stems(&image, rows.len(), &stems);
     // x-height of JetBrains Mono at 12 px is 6.6 px: its top lands in the
     // row 7 above the baseline; ascenders and capitals reach row 9.
     let baseline = SHAPE_BASELINE as usize;
@@ -656,11 +684,66 @@ fn check_shape(cx: &mut HeadlessAppContext) {
                 failures.push(format!("{label}: {name} ink {diff:+.1}% from grayscale (within {BAND_TOLERANCE}%)"));
             }
         }
+        if total_diff.abs() > TOTAL_TOLERANCE {
+            failures.push(format!("{label}: total ink {total_diff:+.1}% from grayscale (within {TOTAL_TOLERANCE}%)"));
+        }
         if mean_spread.abs() > SPREAD_TOLERANCE {
             failures.push(format!("{label}: glyphs' vertical spread {mean_spread:+.3} rows from grayscale (within {SPREAD_TOLERANCE})"));
         }
     }
     assert!(failures.is_empty(), "subpixel glyph shape against grayscale:\n{}", failures.join("\n"));
+}
+
+/// Stems as even as grayscale's: the width of each `STEMS` glyph's vertical
+/// stems, its ink summed over two rows of the x-height and its cell (with a
+/// pixel each side for the filter's spread) per row and stem, and the spread
+/// of those widths across the glyphs (standard deviation over mean). A font
+/// grown by one amount keeps grayscale's spread; glyphs grown by amounts fitted
+/// one by one give neighbouring glyphs different stems, which ink totals and
+/// row profiles don't see. Also the spread of each glyph's subpixel width over
+/// its grayscale width, which is 0 when every stem grows alike.
+fn check_stems(image: &image::RgbaImage, first: usize, rows: &[ShapeRow]) -> Vec<String> {
+    const STEM_TOLERANCE: f32 = 0.01;
+    let baseline = SHAPE_BASELINE as usize;
+    // Between the x-height's arches and the feet' serifs: every glyph's
+    // stems alone.
+    let band = baseline - 4..baseline - 2;
+    let mut failures = Vec::new();
+    for pair in rows.chunks(2).enumerate().map(|(k, pair)| (first + 2 * k, pair)) {
+        let (i, pair) = pair;
+        let widths = |i: usize, row: ShapeRow| -> Vec<f32> {
+            let ink = shape_ink(image, i, row);
+            STEMS
+                .iter()
+                .enumerate()
+                .map(|(k, &(_, stems))| {
+                    let x0 = (SHAPE_LEFT + SHAPE_CELL.0 * (2 * k) as f32) as usize;
+                    let sum: f32 = band.clone().map(|y| ink[y][x0 - 1..x0 + SHAPE_CELL.0 as usize + 1].iter().sum::<f32>()).sum();
+                    sum / (band.len() * stems) as f32
+                })
+                .collect()
+        };
+        let (gray, sub) = (widths(i, pair[0]), widths(i + 1, pair[1]));
+        let spread = |v: &[f32]| {
+            let mean = v.iter().sum::<f32>() / v.len() as f32;
+            (v.iter().map(|w| (w - mean).powi(2)).sum::<f32>() / v.len() as f32).sqrt() / mean
+        };
+        let ratios: Vec<f32> = sub.iter().zip(&gray).map(|(s, g)| s / g).collect();
+        let row = pair[0];
+        let label = format!("thicken {} {}", row.thicken.map_or("off".into(), |s| s.to_string()), if row.fg == DARK { "dark on light" } else { "light on dark" });
+        let (gray_spread, sub_spread, ratio_spread) = (spread(&gray), spread(&sub), spread(&ratios));
+        println!(
+            "stems, {label}: width spread grayscale {:.1}%, subpixel {:.1}%; subpixel over grayscale {:.1}% spread, {}",
+            gray_spread * 100.0,
+            sub_spread * 100.0,
+            ratio_spread * 100.0,
+            STEMS.iter().zip(gray.iter().zip(&sub)).map(|((ch, _), (g, s))| format!("{ch} {g:.2}/{s:.2}")).collect::<Vec<_>>().join(", ")
+        );
+        if sub_spread > gray_spread + STEM_TOLERANCE {
+            failures.push(format!("{label}: subpixel stem widths spread {:.1}% against grayscale's {:.1}% (within {:.1} points)", sub_spread * 100.0, gray_spread * 100.0, STEM_TOLERANCE * 100.0));
+        }
+    }
+    failures
 }
 
 fn save_shape_pngs(image: &image::RgbaImage, rows: &[ShapeRow]) {
