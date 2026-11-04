@@ -45,11 +45,7 @@ impl Said {
 
 impl Note {
     pub fn title(&self) -> String {
-        match self.alert {
-            Alert::Blocked => format!("{} needs you", self.name),
-            Alert::Error => format!("{} hit an error", self.name),
-            Alert::Done => format!("{} finished", self.name),
-        }
+        title(self.alert, &self.name)
     }
 
     fn state(&self) -> &'static str {
@@ -58,6 +54,24 @@ impl Note {
             Alert::Error => "error",
             Alert::Done => "done",
         }
+    }
+}
+
+/// "<name> needs you", "<name> hit an error" or "<name> finished".
+pub fn title(alert: Alert, name: &str) -> String {
+    match alert {
+        Alert::Blocked => format!("{name} needs you"),
+        Alert::Error => format!("{name} hit an error"),
+        Alert::Done => format!("{name} finished"),
+    }
+}
+
+/// The title of one toast for `count` agents with the same alert.
+pub fn merged_title(alert: Alert, count: usize) -> String {
+    match alert {
+        Alert::Blocked => format!("{count} agents need you"),
+        Alert::Error => format!("{count} agents hit an error"),
+        Alert::Done => format!("{count} agents finished"),
     }
 }
 
