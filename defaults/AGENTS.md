@@ -1026,7 +1026,10 @@ All of it is in `herdr.d.ts`. In short:
   accent_foreground, solid and solid_foreground (a primary button),
   selection, working, blocked, done, idle, unknown, ansi0..15; light and
   dark themes name the same ones), `settings()` (with `dark`: the
-  appearance now), `keys()`, `commands()` (every app
+  appearance now), `window()` (with `scale_factor`: device pixels per px
+  of the screen the window is on, 1 or 2, changing live as it moves to
+  another screen; round sizes to whole device pixels with it), `keys()`,
+  `commands()` (every app
   command, its arguments and what it does), `layouts()` (the layout names).
   `focused().agent` is the agent an agent block shows.
   `focused().space`/`tab` describe the current window context. With a layout terminal

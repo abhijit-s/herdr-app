@@ -242,7 +242,8 @@ export function commands(): { name: string; args: { name: string; required: bool
 
 /** The window, for layouts that draw their own title bar (`"titlebar": "none"`). `buttons`:
  *  the system draws no window buttons, so draw them (`window.minimize`, `window.maximize`,
- *  `window.close`); on macOS the traffic lights always stay. Live. */
+ *  `window.close`); on macOS the traffic lights always stay. `scale_factor`: device pixels per
+ *  px of the screen the window is on (1, or 2 on Retina), changing as it moves between screens. Live. */
 export function window(): {
   platform: "linux" | "macos" | "windows";
   titlebar: "system" | "none";
@@ -250,6 +251,7 @@ export function window(): {
   maximized: boolean;
   fullscreen: boolean;
   active: boolean;
+  scale_factor: number;
 };
 
 /** For a floating mod: where it sits now. `vertical` on the left/right edges, horizontal on

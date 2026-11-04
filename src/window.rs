@@ -5743,6 +5743,35 @@ export default class Scale extends View {
     }
 
     #[test]
+    fn mods_see_the_scale_of_the_screen_the_window_is_on() {
+        in_own_process("mod_scale_factor");
+    }
+
+    /// `window().scale_factor` follows the window between screens, and the
+    /// mods that read it redraw.
+    #[gpui::test]
+    fn mod_scale_factor(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("mod_scale_factor") {
+            return;
+        }
+        let main_js = r#"import { View, div } from "gpui-kit";
+import { window } from "herdr";
+export default class Scale extends View {
+  render() {
+    return div().child(div().id("scaled").w(10 * (window()?.scale_factor ?? 0)).h(10).flex_none());
+  }
+}"#;
+        let (_view, cx) = open_window(cx, "scale", main_js, json!({"id": "root", "type": "block", "content": {"mod": "scale"}}));
+        for scale in [2.0, 1.0, 2.0] {
+            cx.simulate_scale_factor_change(scale);
+            cx.run_until_parked();
+            let width = cx.debug_bounds("scaled").expect("no scaled").size.width;
+            assert_eq!(width, px(10.0 * scale), "at scale {scale}");
+        }
+    }
+
+    #[test]
     fn terminal_menu_is_a_root_layout_choice_that_roundtrips() {
         let mut root = super::default_layout("main");
         assert_eq!(root.terminal_menu, None);
