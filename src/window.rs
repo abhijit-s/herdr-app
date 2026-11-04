@@ -1522,6 +1522,10 @@ impl AppWindow {
                 TerminalEvent::ContextMenu(at) => {
                     this.open_menu("pane", json!({ "pane": block.trim_end_matches(SWAP), "terminal": addr }), Some(*at), window, cx)
                 }
+                TerminalEvent::Copied => {
+                    let note = json!({ "title": "Copied", "level": "success", "timeout": 1500 });
+                    this.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": note }), window, cx);
+                }
             });
             let focus = view.read(cx).focus_handle().clone();
             self.terms.insert(id, Term { view, address, focus, _sub: sub });
@@ -5662,6 +5666,59 @@ export default class Scale extends View {
         root.terminal_menu = Some("personal-menu".into());
         let restored: super::Node = serde_json::from_value(serde_json::to_value(&root).unwrap()).unwrap();
         assert_eq!(restored.terminal_menu.as_deref(), Some("personal-menu"));
+    }
+
+    #[test]
+    fn copy_on_select_says_copied_and_settings_presses_do_not() {
+        in_own_process("copied_toast");
+    }
+
+    /// Only a copied mouse selection says "Copied": not a click in the
+    /// terminal, and not presses on a Settings stepper drawn over it.
+    #[gpui::test]
+    fn copied_toast(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("copied_toast") {
+            return;
+        }
+        use gpui::{Modifiers, MouseButton};
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
+        cx.run_until_parked();
+        let line = "hello world ".repeat(20);
+        view.update(cx, |this, cx| {
+            let term = this.terms["pane"].view.clone();
+            term.update(cx, |t, cx| t.ingest(vec![crate::hc::Stream::Data(format!("{line}\r\n{line}\r\n").into_bytes())], cx));
+        });
+        cx.executor().advance_clock(std::time::Duration::from_millis(100));
+        cx.run_until_parked();
+        let copied = |cx: &mut gpui::VisualTestContext| {
+            view.update(cx, |this, _| this.overlays.iter().filter(|o| o.kind == super::OverlayKind::Toast).count())
+        };
+        let none = Modifiers::default();
+        let origin = view.update(cx, |this, _| this.bounds.borrow()["pane"].origin);
+        let (from, to) = (point(origin.x + px(12.), origin.y + px(10.)), point(origin.x + px(120.), origin.y + px(10.)));
+
+        cx.simulate_click(from, none);
+        cx.run_until_parked();
+        assert_eq!(copied(cx), 0, "a click selected nothing, yet said Copied");
+
+        cx.simulate_mouse_down(from, MouseButton::Left, none);
+        cx.simulate_mouse_move(to, Some(MouseButton::Left), none);
+        cx.simulate_mouse_up(to, MouseButton::Left, none);
+        cx.run_until_parked();
+        assert!(cx.read_from_clipboard().and_then(|c| c.text()).is_some_and(|t| t.contains("hello")), "the drag copied nothing");
+        assert_eq!(copied(cx), 1, "a copied selection says so once");
+
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.run_as("app.settings", json!({ "section": "text" }), false, window, cx);
+        }));
+        cx.run_until_parked();
+        let plus = cx.debug_bounds("st-text_contrast-plus").expect("no contrast stepper").center();
+        for _ in 0..3 {
+            cx.simulate_click(plus, none);
+            cx.run_until_parked();
+        }
+        assert_eq!(copied(cx), 1, "presses on a Settings stepper said Copied");
     }
 
     /// Runs `window::tests::<name>` alone in a test process of its own, on a
