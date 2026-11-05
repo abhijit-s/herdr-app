@@ -2089,7 +2089,7 @@ mod tests {
         let mut vt = Vt::new(8, 2);
         vt.set_theme(Theme { minimum_contrast: 1.6, ..theme() });
         let fg = Rgb(30, 31, 40);
-        for code in (0x2500..=0x259f).chain(0xe0b0..=0xe0d7).chain(0x1fb00..=0x1fbff).chain(0x1cc00..=0x1cebf).chain([0x23fa]) {
+        for code in (0x2500..=0x259f).chain(0xe0b0..=0xe0d7).chain(0x1fb00..=0x1fbff).chain(0x1cc00..=0x1cebf).chain((!cfg!(target_os = "macos")).then_some(0x23fa)) {
             let ch = char::from_u32(code).unwrap();
             vt.write(format!("\x1b[H\x1b[38;2;30;31;40;48;2;32;33;42m{ch}X").as_bytes());
             let frame = vt.frame();
@@ -2097,6 +2097,9 @@ mod tests {
             let text = frame.rows[0].iter().find(|c| c.text == "X").unwrap();
             assert_ne!(text.fg, fg, "ordinary text still gets contrast adjustment");
         }
+        // On macOS ⏺ is font text, contrast-adjusted as Ghostty adjusts it.
+        #[cfg(target_os = "macos")]
+        assert!(!preserves_graphics_color("\u{23fa}"));
         for code in [0x24ff, 0x25a0, 0xe0af, 0xe0d8, 0x1faff, 0x1fc00, 0x1cbff, 0x1cec0] {
             assert!(!preserves_graphics_color(&char::from_u32(code).unwrap().to_string()), "{code:x}");
         }
