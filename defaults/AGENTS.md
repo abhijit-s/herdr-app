@@ -161,13 +161,16 @@ the highlighted line shows where it will land.
   (Claude Code, Codex, OpenCode, Pi, Hermes and others: the manifests in
   `defaults/harnesses`, plus your own in `harnesses/*.toml` in the home
   folder, read at start) is an agent too, with `app` set to the manifest's
-  `id`. Its status is read off the bottom of its screen about twice a
-  second: needs-input prompts are `blocked`, a turn in progress `working`,
-  the empty prompt box `idle`; it starts `idle`, keeps its last status
-  while no rule matches, and an `idle` after `working` waits about a second
-  to be sure. This covers a backgrounded Claude Code session resumed into a
-  pane, which no longer reports. A 7501 report always wins; the entry goes
-  when the process in front stops being the agent or the terminal ends.
+  `id`. Its status is read off the bottom of its screen, or else its window
+  title, when either changes (checked about twice a second): needs-input
+  prompts are `blocked`, a turn in progress `working`, the empty prompt box
+  `idle`. It starts `idle` and keeps its last status while no rule matches,
+  except that `working` with no screen change for 30s becomes `idle`; an
+  `idle` after `working` waits about a second to be sure. Leaving `working`
+  ends a turn, so `done` and seen work as for reporting agents. This covers
+  a backgrounded Claude Code session resumed into a pane, which no longer
+  reports. A 7501 report always wins; the entry goes when the process in
+  front stops being the agent or the terminal ends.
 - **Sub-agents** are terminals an agent started with `hc run`: the core
   records the starter as `parent` (see `terminals()`). They belong to their
   parent's tab without a pane; the `agents` mod shows them,

@@ -1,12 +1,13 @@
 //! Agents that don't report their status (OSC 7501), recognised by their
-//! foreground process and read off their screen.
+//! foreground process and read off their screen and window title.
 //!
 //! The rules are data: each `defaults/harnesses/*.toml` is a tuios harness
 //! manifest, and `harnesses/*.toml` in the home folder adds or replaces one by
-//! `id`. Only `[detect]` and `[screen]` are read; the other sections a tuios
-//! manifest carries are ignored, so one is ported by copying it. The matcher
-//! follows tuios's (`internal/harness`): the same regions, gates, priorities and
-//! case folding, so a rule means here what it means there.
+//! `id`. Only `[detect]`, `[screen]` and `[title]` are read; the other sections
+//! a tuios manifest carries are ignored, so one is ported by copying it. The
+//! matcher follows tuios's (`internal/harness`): the same regions, gates,
+//! priorities, case folding and loader refusals, so a rule means here what it
+//! means there.
 //!
 //! A real 7501 report always wins: `Watcher::update` looks only at terminals
 //! without one.
@@ -14,6 +15,7 @@
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -23,6 +25,12 @@ include!(concat!(env!("OUT_DIR"), "/harnesses.rs"));
 /// The lines from the bottom a manifest's rules see when it doesn't say.
 const DEFAULT_LINES: usize = 6;
 const MAX_REGION_LINES: usize = 200;
+/// Limits on what a manifest may ask of a scan that runs on the UI thread.
+const MAX_PATTERN_BYTES: usize = 512;
+const MAX_GATE_DEPTH: usize = 8;
+/// A bare name shorter than this ("pi", "amp") needs `[detect.require]`: a
+/// false positive labels an innocent pane as an agent.
+const GENERIC_NAME_LIMIT: usize = 5;
 
 /// An idle reading on a working pane is published once it held for
 /// `IDLE_CONFIRM_COUNT` more looks at least `IDLE_CONFIRM_INTERVAL` apart, or
@@ -32,6 +40,10 @@ const MAX_REGION_LINES: usize = 200;
 const IDLE_CONFIRM_INTERVAL: Duration = Duration::from_millis(100);
 const IDLE_CONFIRM_COUNT: u32 = 3;
 const IDLE_CONFIRM_CAP: Duration = Duration::from_millis(700);
+/// A working pane whose screen hasn't changed for this long, with no rule
+/// saying anything, has stopped: tuios's stall heuristic and its default. It
+/// is what ends a turn for a harness with no idle rule.
+const STALL: Duration = Duration::from_secs(30);
 
 /// Programs that run an agent as a script rather than being one: only their
 /// run token is read as identity (tuios `ProcInfo.RunToken`).
@@ -49,7 +61,9 @@ pub struct Manifest {
     #[serde(default)]
     detect: Detect,
     #[serde(default)]
-    screen: Screen,
+    screen: Rules,
+    #[serde(default)]
+    title: Rules,
 }
 
 /// Any one predicate matching is enough (tuios `Detect`).
@@ -69,7 +83,7 @@ struct Detect {
 
 /// Corroboration a bare-name match needs. tuios checks the resolved
 /// executable; the core reports only the process name and argv, so the name
-/// stands in for `exe_base` and a path-like argv[0] for `exe_glob`.
+/// stands in for `exe_base` and a path-like name or argv[0] for `exe_glob`.
 #[derive(Deserialize, Default)]
 struct Require {
     #[serde(default)]
@@ -78,8 +92,9 @@ struct Require {
     exe_glob: Vec<String>,
 }
 
+/// A `[screen]` or `[title]` block.
 #[derive(Deserialize, Default)]
-struct Screen {
+struct Rules {
     #[serde(default)]
     enabled: bool,
     #[serde(default)]
@@ -141,6 +156,11 @@ enum Region {
     AbovePromptBox,
     LastAbovePromptBox,
     AfterLastRule,
+    /// A title rule reading the window title.
+    Title,
+    /// A title rule reading OSC 9;4 progress, which the core doesn't pass on:
+    /// it never matches.
+    Progress,
 }
 
 impl Region {
@@ -162,19 +182,29 @@ impl Region {
         })
     }
 
+    fn parse_title(name: &str) -> Result<Region, String> {
+        match name.trim().to_lowercase().as_str() {
+            "" | "osc_title" => Ok(Region::Title),
+            "osc_progress" => Ok(Region::Progress),
+            other => Err(format!("region {other:?}: a title rule reads osc_title or osc_progress")),
+        }
+    }
+
     /// The span of `tail` the region covers; None when it isn't on the screen.
-    fn bounds(self, tail: &[String]) -> Option<(usize, usize)> {
+    /// `boxed` is `prompt_box(tail)`, found once per scan.
+    fn bounds(self, tail: &[String], boxed: Option<(usize, usize)>) -> Option<(usize, usize)> {
         match self {
             Region::Tail => Some((0, tail.len())),
             Region::Bottom(n) => Some((tail.len().saturating_sub(n), tail.len())),
-            Region::PromptBox => prompt_box(tail).map(|(top, bottom)| (top + 1, bottom)),
-            Region::AbovePromptBox => prompt_box(tail).map(|(top, _)| (0, top)),
+            Region::PromptBox => boxed.map(|(top, bottom)| (top + 1, bottom)),
+            Region::AbovePromptBox => boxed.map(|(top, _)| (0, top)),
             Region::LastAbovePromptBox => {
-                let (top, _) = prompt_box(tail)?;
+                let (top, _) = boxed?;
                 (0..top).rev().find(|&i| !tail[i].trim().is_empty()).map(|i| (i, i + 1))
             }
             // With no rule on screen nothing marks older output as settled.
             Region::AfterLastRule => Some((tail.iter().rposition(|l| is_box_border(l)).map_or(0, |i| i + 1), tail.len())),
+            Region::Title | Region::Progress => None,
         }
     }
 }
@@ -193,6 +223,96 @@ fn prompt_box(tail: &[String]) -> Option<(usize, usize)> {
     Some((borders.next()?, bottom))
 }
 
+/// A title substring must stand as its own token (tuios `containsToken`):
+/// "codex" in "~/src/codex-playground" is not the program saying anything.
+fn contains_token(hay: &str, needle: &str) -> bool {
+    let token = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.');
+    let (Some(&head), Some(&tail)) = (needle.as_bytes().first(), needle.as_bytes().last()) else { return false };
+    let bytes = hay.as_bytes();
+    hay.match_indices(needle).any(|(i, _)| {
+        let end = i + needle.len();
+        (!token(head) || i == 0 || !token(bytes[i - 1])) && (!token(tail) || end == bytes.len() || !token(bytes[end]))
+    })
+}
+
+fn contains(hay: &str, needle: &str) -> bool {
+    hay.contains(needle)
+}
+
+/// Rewrites a Go RE2 pattern for Rust's regex: `\s \d \w \b` and their
+/// negations are ASCII in RE2 and Unicode in Rust, so a rule written against
+/// tuios would decide differently on a screen with non-ASCII digits or spaces.
+fn ascii_classes(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len() + 16);
+    let mut chars = pattern.chars().peekable();
+    let mut in_class = false;
+    let mut class_start = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                let Some(e) = chars.next() else {
+                    out.push('\\');
+                    break;
+                };
+                let swap = match (in_class, e) {
+                    (false, 's') => "[\\t\\n\\f\\r ]",
+                    (false, 'S') => "[^\\t\\n\\f\\r ]",
+                    (false, 'd') => "[0-9]",
+                    (false, 'D') => "[^0-9]",
+                    (false, 'w') => "[0-9A-Za-z_]",
+                    (false, 'W') => "[^0-9A-Za-z_]",
+                    (false, 'b') => "(?-u:\\b)",
+                    (false, 'B') => "(?-u:\\B)",
+                    (true, 's') => "\\t\\n\\f\\r ",
+                    (true, 'd') => "0-9",
+                    (true, 'w') => "0-9A-Za-z_",
+                    _ => "",
+                };
+                if swap.is_empty() {
+                    out.push('\\');
+                    out.push(e);
+                } else {
+                    out.push_str(swap);
+                }
+                class_start = false;
+            }
+            '[' if !in_class => {
+                in_class = true;
+                class_start = true;
+                out.push('[');
+                if chars.peek() == Some(&'^') {
+                    out.push(chars.next().unwrap());
+                }
+            }
+            '[' if chars.peek() == Some(&':') => {
+                // A POSIX class inside a bracket class, `[[:alpha:]]`.
+                out.push('[');
+                for p in chars.by_ref() {
+                    out.push(p);
+                    if p == ']' {
+                        break;
+                    }
+                }
+                class_start = false;
+            }
+            '[' => {
+                // RE2 has no nested classes: a `[` inside one is literal.
+                out.push_str("\\[");
+                class_start = false;
+            }
+            ']' if in_class && !class_start => {
+                in_class = false;
+                out.push(']');
+            }
+            _ => {
+                out.push(c);
+                class_start = false;
+            }
+        }
+    }
+    out
+}
+
 impl Gate {
     fn positive(&self) -> bool {
         !(self.all.is_empty() && self.any.is_empty() && self.regex.is_empty() && self.all_of.is_empty() && self.any_of.is_empty())
@@ -203,8 +323,8 @@ impl Gate {
     }
 
     fn compile(&mut self, fold_case: bool, depth: usize) -> Result<(), String> {
-        if depth > 8 {
-            return Err("gates nest deeper than 8".into());
+        if depth > MAX_GATE_DEPTH {
+            return Err(format!("gates nest deeper than {MAX_GATE_DEPTH}"));
         }
         if fold_case {
             for s in self.all.iter_mut().chain(&mut self.any).chain(&mut self.not) {
@@ -212,7 +332,16 @@ impl Gate {
             }
         }
         // Multi-line, as tuios compiles them: `^` and `$` are each line's ends.
-        let compile = |list: &[String]| list.iter().map(|p| Regex::new(&format!("(?m){p}")).map_err(|e| format!("regex {p:?}: {e}"))).collect::<Result<Vec<_>, _>>();
+        let compile = |list: &[String]| {
+            list.iter()
+                .map(|p| {
+                    if p.len() > MAX_PATTERN_BYTES {
+                        return Err(format!("pattern {p:?} is {} bytes, limit {MAX_PATTERN_BYTES}", p.len()));
+                    }
+                    Regex::new(&format!("(?m){}", ascii_classes(p))).map_err(|e| format!("regex {p:?}: {e}"))
+                })
+                .collect::<Result<Vec<_>, _>>()
+        };
         self.patterns = compile(&self.regex)?;
         self.not_patterns = compile(&self.not_regex)?;
         for (name, veto, groups) in [("all_of", false, &mut self.all_of), ("any_of", false, &mut self.any_of), ("none_of", true, &mut self.none_of)] {
@@ -227,15 +356,15 @@ impl Gate {
         Ok(())
     }
 
-    fn matches(&self, hay: &str, folded: &str) -> bool {
-        self.all.iter().all(|s| folded.contains(s.as_str()))
-            && (self.any.is_empty() || self.any.iter().any(|s| folded.contains(s.as_str())))
-            && !self.not.iter().any(|s| folded.contains(s.as_str()))
+    fn matches(&self, hay: &str, folded: &str, has: fn(&str, &str) -> bool) -> bool {
+        self.all.iter().all(|s| has(folded, s))
+            && (self.any.is_empty() || self.any.iter().any(|s| has(folded, s)))
+            && !self.not.iter().any(|s| has(folded, s))
             && self.patterns.iter().all(|r| r.is_match(hay))
             && !self.not_patterns.iter().any(|r| r.is_match(hay))
-            && self.all_of.iter().all(|g| g.matches(hay, folded))
-            && (self.any_of.is_empty() || self.any_of.iter().any(|g| g.matches(hay, folded)))
-            && !self.none_of.iter().any(|g| g.matches(hay, folded))
+            && self.all_of.iter().all(|g| g.matches(hay, folded, has))
+            && (self.any_of.is_empty() || self.any_of.iter().any(|g| g.matches(hay, folded, has)))
+            && !self.none_of.iter().any(|g| g.matches(hay, folded, has))
     }
 
     /// Whether every path to a match carries a pattern: what an idle rule
@@ -243,6 +372,34 @@ impl Gate {
     /// any word in any output.
     fn proves_shape(&self) -> bool {
         !self.regex.is_empty() || self.all_of.iter().any(Gate::proves_shape) || (!self.any_of.is_empty() && self.any_of.iter().all(Gate::proves_shape))
+    }
+}
+
+/// The Agent word for a rule's state.
+fn word(state: &str) -> &'static str {
+    match state {
+        "needs_input" => "blocked",
+        "working" => "working",
+        _ => "idle",
+    }
+}
+
+/// A foreground process as detection reads it, worked out once for every
+/// manifest it's tried against.
+struct Process<'a> {
+    comm: String,
+    argv0: String,
+    run: Option<(String, Vec<String>)>,
+    paths: Vec<&'a str>,
+}
+
+impl<'a> Process<'a> {
+    fn new(name: &'a str, argv: &'a [String]) -> Process<'a> {
+        let comm = base_name(name);
+        let first = argv.first().map(|a| a.as_str()).unwrap_or_default();
+        let run = run_token(&comm, argv).map(|r| (base_name(r), segments(r)));
+        let paths = [name, first].into_iter().filter(|p| p.contains('/') || p.contains('\\')).collect();
+        Process { comm, argv0: base_name(first), run, paths }
     }
 }
 
@@ -256,76 +413,105 @@ impl Manifest {
         for list in [&mut d.comm, &mut d.argv0, &mut d.argv_path, &mut d.exe_glob, &mut d.require.exe_base, &mut d.require.exe_glob] {
             *list = list.iter().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect();
         }
-        let fold = m.screen.fold_case;
-        for (i, r) in m.screen.rule.iter_mut().enumerate() {
-            let at = |e: String| format!("{name}: screen rule {i}: {e}");
-            if !matches!(r.state.as_str(), "working" | "needs_input" | "idle") {
-                return Err(at(format!("state {:?} is not working, needs_input or idle", r.state)));
-            }
-            r.area = Region::parse(&r.region).map_err(at)?;
-            if r.state == "idle" && r.area != Region::PromptBox && !r.gate.proves_shape() {
-                return Err(at("an idle rule must read region = \"prompt_box\" or carry a regex that pins the input box".into()));
-            }
-            r.gate.compile(fold, 0).map_err(at)?;
+        if d.comm.is_empty() && d.argv0.is_empty() && d.argv_path.is_empty() && d.exe_glob.is_empty() {
+            return Err(format!("{name}: manifest {:?} matches nothing", m.id));
         }
-        // Highest priority first; ties go to the rule declared first.
-        m.screen.rule.sort_by_key(|r| std::cmp::Reverse(r.priority));
+        if d.require.exe_base.is_empty() && d.require.exe_glob.is_empty()
+            && let Some(n) = d.comm.iter().chain(&d.argv0).find(|n| n.len() < GENERIC_NAME_LIMIT)
+        {
+            return Err(format!("{name}: manifest {:?} matches on the generic name {n:?} alone; add a [detect.require] block", m.id));
+        }
+        if m.screen.lines == 0 {
+            m.screen.lines = DEFAULT_LINES;
+        }
+        if m.screen.lines > MAX_REGION_LINES {
+            return Err(format!("{name}: screen lines {}, limit {MAX_REGION_LINES}", m.screen.lines));
+        }
+        let lines = m.screen.lines;
+        for (block, rules, title) in [("screen", &mut m.screen, false), ("title", &mut m.title, true)] {
+            let fold = rules.fold_case;
+            for (i, r) in rules.rule.iter_mut().enumerate() {
+                let at = |e: String| format!("{name}: {block} rule {i}: {e}");
+                if !matches!(r.state.as_str(), "working" | "needs_input" | "idle") {
+                    return Err(at(format!("state {:?} is not working, needs_input or idle", r.state)));
+                }
+                r.area = if title { Region::parse_title(&r.region) } else { Region::parse(&r.region) }.map_err(at)?;
+                if let Region::Bottom(n) = r.area
+                    && n > lines
+                {
+                    return Err(at(format!("region reads past the {lines} lines the manifest reads; raise [screen] lines")));
+                }
+                if !title && r.state == "idle" && r.area != Region::PromptBox && !r.gate.proves_shape() {
+                    return Err(at("an idle rule must read region = \"prompt_box\" or carry a regex that pins the input box".into()));
+                }
+                r.gate.compile(fold, 0).map_err(at)?;
+            }
+            // Highest priority first; ties go to the rule declared first.
+            rules.rule.sort_by_key(|r| std::cmp::Reverse(r.priority));
+        }
         Ok(m)
     }
 
-    /// How many non-empty lines from the bottom its rules read (0: none).
+    /// How many non-empty lines from the bottom its screen rules read (0: none).
     pub fn lines(&self) -> usize {
-        match (self.screen.enabled, self.screen.lines) {
-            (false, _) => 0,
-            (true, 0) => DEFAULT_LINES,
-            (true, n) => n,
-        }
+        if self.screen.enabled { self.screen.lines } else { 0 }
     }
 
-    /// The Agent word the best matching rule names, or None: a rule that
-    /// stops matching after an update must degrade to no opinion, never to a
-    /// guess.
+    /// The Agent word the best matching screen rule names, or None: a rule
+    /// that stops matching after an update must degrade to no opinion, never
+    /// to a guess.
     pub fn classify(&self, tail: &[String]) -> Option<&'static str> {
+        self.screen_rule(tail).map(|r| word(&r.state))
+    }
+
+    fn screen_rule(&self, tail: &[String]) -> Option<&Rule> {
         if self.lines() == 0 || tail.is_empty() {
             return None;
         }
-        let rule = self.screen.rule.iter().find(|r| {
+        let boxed = prompt_box(tail);
+        // Each region's text, joined and folded once per scan.
+        let mut texts: Vec<(Region, String, Option<String>)> = Vec::new();
+        self.screen.rule.iter().find(|r| {
             // tuios's dialog rules need its box finder, which isn't ported.
             if r.show == "dialog" || !r.gate.positive() {
                 return false;
             }
-            let Some((lo, hi)) = r.area.bounds(tail) else { return false };
-            let hay = tail[lo..hi].join("\n");
-            if hay.is_empty() {
-                return false;
-            }
-            let folded = if self.screen.fold_case { hay.to_lowercase() } else { hay.clone() };
-            r.gate.matches(&hay, &folded)
-        })?;
-        Some(match rule.state.as_str() {
-            "needs_input" => "blocked",
-            "working" => "working",
-            _ => "idle",
+            let at = match texts.iter().position(|(region, ..)| *region == r.area) {
+                Some(at) => at,
+                None => {
+                    let hay = r.area.bounds(tail, boxed).map(|(lo, hi)| tail[lo..hi].join("\n")).unwrap_or_default();
+                    let folded = self.screen.fold_case.then(|| hay.to_lowercase());
+                    texts.push((r.area, hay, folded));
+                    texts.len() - 1
+                }
+            };
+            let (_, hay, folded) = &texts[at];
+            !hay.is_empty() && r.gate.matches(hay, folded.as_deref().unwrap_or(hay), contains)
         })
     }
 
-    fn identifies(&self, name: &str, argv: &[String]) -> bool {
+    /// The Agent word the best matching title rule names, or None.
+    pub fn classify_title(&self, title: &str) -> Option<&'static str> {
+        if !self.title.enabled || title.is_empty() {
+            return None;
+        }
+        let folded = if self.title.fold_case { Cow::Owned(title.to_lowercase()) } else { Cow::Borrowed(title) };
+        self.title.rule.iter().find(|r| r.area == Region::Title && r.gate.positive() && r.gate.matches(title, &folded, contains_token)).map(|r| word(&r.state))
+    }
+
+    fn identifies(&self, p: &Process) -> bool {
         let d = &self.detect;
-        let comm = base_name(name);
-        let argv0 = argv.first().map(|a| a.as_str()).unwrap_or_default();
-        let run = run_token(&comm, argv);
         let has = |list: &[String], v: &str| !v.is_empty() && list.iter().any(|s| s == v);
-        let paths: Vec<&str> = [name, argv0].into_iter().filter(|p| p.contains('/') || p.contains('\\')).collect();
         let required = (d.require.exe_base.is_empty() && d.require.exe_glob.is_empty())
-            || has(&d.require.exe_base, &comm)
-            || d.require.exe_glob.iter().any(|g| paths.iter().any(|p| glob_path(g, p)));
-        if required && (has(&d.comm, &comm) || has(&d.argv0, &base_name(argv0)) || run.is_some_and(|r| has(&d.argv0, &base_name(r)))) {
+            || has(&d.require.exe_base, &p.comm)
+            || d.require.exe_glob.iter().any(|g| p.paths.iter().any(|path| glob_path(g, path)));
+        if required && (has(&d.comm, &p.comm) || has(&d.argv0, &p.argv0) || p.run.as_ref().is_some_and(|(base, _)| has(&d.argv0, base))) {
             return true;
         }
-        if d.exe_glob.iter().any(|g| paths.iter().any(|p| glob_path(g, p))) {
+        if d.exe_glob.iter().any(|g| p.paths.iter().any(|path| glob_path(g, path))) {
             return true;
         }
-        run.is_some_and(|r| d.argv_path.iter().any(|want| package_named(&segments(r), &segments(want))))
+        p.run.as_ref().is_some_and(|(_, segs)| d.argv_path.iter().any(|want| package_named(segs, &segments(want))))
     }
 }
 
@@ -377,27 +563,54 @@ fn package_named(have: &[String], want: &[String]) -> bool {
 fn glob_path(pattern: &str, path: &str) -> bool {
     let pat = segments(pattern);
     let segs = segments(path);
-    if pattern.starts_with('/') {
-        return glob_segments(&pat, &segs);
+    // `**` in front is what "any suffix" means.
+    let any_suffix = !pattern.starts_with('/') && pat.first().is_none_or(|p| p != "**");
+    let pat: Vec<&str> = any_suffix.then_some("**").into_iter().chain(pat.iter().map(String::as_str)).collect();
+    // matched[j]: the pattern so far matches the first j components. Linear
+    // in pattern times path, however many `**` a person writes.
+    let mut matched = vec![false; segs.len() + 1];
+    matched[0] = true;
+    for p in pat {
+        if p == "**" {
+            for j in 1..=segs.len() {
+                matched[j] |= matched[j - 1];
+            }
+        } else {
+            for j in (1..=segs.len()).rev() {
+                matched[j] = matched[j - 1] && glob_one(p.as_bytes(), segs[j - 1].as_bytes());
+            }
+            matched[0] = false;
+        }
     }
-    (0..=segs.len()).any(|i| glob_segments(&pat, &segs[i..]))
+    matched[segs.len()]
 }
 
-fn glob_segments(pat: &[String], segs: &[String]) -> bool {
-    match pat.split_first() {
-        None => segs.is_empty(),
-        Some((p, rest)) if p == "**" => (0..=segs.len()).any(|i| glob_segments(rest, &segs[i..])),
-        Some((p, rest)) => segs.split_first().is_some_and(|(s, more)| glob_one(p.as_bytes(), s.as_bytes()) && glob_segments(rest, more)),
-    }
-}
-
+/// One component against `*` and `?`, backtracking only to the last `*`, so
+/// at worst pattern times name.
 fn glob_one(p: &[u8], s: &[u8]) -> bool {
-    match p.split_first() {
-        None => s.is_empty(),
-        Some((b'*', rest)) => (0..=s.len()).any(|i| glob_one(rest, &s[i..])),
-        Some((b'?', rest)) => !s.is_empty() && glob_one(rest, &s[1..]),
-        Some((c, rest)) => s.first() == Some(c) && glob_one(rest, &s[1..]),
+    let (mut pi, mut si) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while si < s.len() {
+        match p.get(pi) {
+            Some(b'*') => {
+                star = Some((pi, si));
+                pi += 1;
+            }
+            Some(&c) if c == b'?' || c == s[si] => {
+                pi += 1;
+                si += 1;
+            }
+            _ => match star {
+                Some((sp, ss)) => {
+                    pi = sp + 1;
+                    si = ss + 1;
+                    star = Some((sp, ss + 1));
+                }
+                None => return false,
+            },
+        }
     }
+    p[pi..].iter().all(|&c| c == b'*')
 }
 
 /// Every manifest, highest priority first, then by id, so two that match one
@@ -425,9 +638,16 @@ impl Registry {
         (Registry { manifests: by_id }, errors)
     }
 
-    /// The manifest naming a foreground process (core's `name` and `argv`).
+    /// The index of the manifest naming a foreground process (core's `name`
+    /// and `argv`).
+    fn identify_index(&self, name: &str, argv: &[String]) -> Option<usize> {
+        let process = Process::new(name, argv);
+        self.manifests.iter().position(|m| m.identifies(&process))
+    }
+
+    #[cfg(test)]
     pub fn identify(&self, name: &str, argv: &[String]) -> Option<&Manifest> {
-        self.manifests.iter().find(|m| m.identifies(name, argv))
+        self.identify_index(name, argv).map(|i| &self.manifests[i])
     }
 
     #[cfg(test)]
@@ -462,24 +682,52 @@ pub fn registry() -> &'static Registry {
     })
 }
 
-/// One unreported agent's published word and its idle reading in waiting.
+/// What the app has of a terminal's screen: how many times it was written
+/// (output or resize; the screen can only have changed when this moves) and
+/// its window title as the program set it.
+pub struct Screen {
+    pub writes: u64,
+    pub title: String,
+}
+
+/// One unreported agent: its published word, its idle reading in waiting,
+/// when its screen last changed, and the turns it finished.
 struct Watch {
-    harness: String,
+    harness: usize,
     word: &'static str,
     idle_since: Option<(Instant, Instant, u32)>,
+    changed: Instant,
+    /// The screen's write count and the verdict read from it.
+    looked: Option<(u64, Option<&'static str>)>,
+    /// Turn numbers carry on from core's and the shared seen turn, so a
+    /// finished turn is newer than anything already seen.
+    base_turn: u64,
+    turns: u64,
 }
 
 impl Watch {
     /// Until a rule says otherwise the agent is taken to be at rest.
-    fn new(harness: &str) -> Watch {
-        Watch { harness: harness.to_owned(), word: "idle", idle_since: None }
+    fn new(harness: usize, base_turn: u64, now: Instant) -> Watch {
+        Watch { harness, word: "idle", idle_since: None, changed: now, looked: None, base_turn, turns: 0 }
+    }
+
+    fn turn(&self) -> u64 {
+        self.base_turn + self.turns
     }
 
     /// Takes one look's verdict and returns the word to publish. No opinion
-    /// keeps the last word; idle on a working pane waits to be confirmed.
+    /// keeps the last word, except that work with no sign of life for
+    /// `STALL` has stopped; idle on a working pane waits to be confirmed.
+    /// Leaving `working` finishes a turn.
     fn observe(&mut self, verdict: Option<&'static str>, now: Instant) -> &'static str {
+        let was = self.word;
         match verdict {
-            None => self.idle_since = None,
+            None => {
+                self.idle_since = None;
+                if self.word == "working" && now.duration_since(self.changed) >= STALL {
+                    self.word = "idle";
+                }
+            }
             Some("idle") if self.word == "working" => match &mut self.idle_since {
                 None => self.idle_since = Some((now, now, 0)),
                 Some((started, last, confirmations)) => {
@@ -498,41 +746,87 @@ impl Watch {
                 self.word = word;
             }
         }
+        if self.word != was {
+            self.changed = now;
+            if was == "working" {
+                self.turns += 1;
+            }
+        }
         self.word
     }
+}
+
+/// One unreported agent's state as the app shows it.
+#[derive(Debug, PartialEq)]
+pub struct Unreported {
+    pub word: &'static str,
+    pub harness: String,
+    pub turn: u64,
 }
 
 /// The agents without a 7501 report whose foreground process a manifest names.
 #[derive(Default)]
 pub struct Watcher {
+    /// Each terminal's foreground record and the manifest it matched, so a
+    /// process is identified once, not every tick.
+    detected: HashMap<String, (Value, Option<usize>)>,
     watching: HashMap<String, Watch>,
 }
 
 impl Watcher {
     /// Looks at core's live terminal records once: for each unreported agent,
-    /// its word and harness id. `tail(address, lines)` reads a terminal's last
-    /// non-empty screen lines. A terminal that reports, ends, or stops running
-    /// the agent drops out.
-    pub fn update(&mut self, registry: &Registry, live: &HashMap<String, Value>, now: Instant, mut tail: impl FnMut(&str, usize) -> Vec<String>) -> HashMap<String, (&'static str, String)> {
-        let mut words = HashMap::new();
+    /// its state. `screen(address)` says what the app has of a terminal's
+    /// screen; `tail(address, lines)` reads its last non-empty lines, only
+    /// when the screen changed. A terminal that reports, ends, or stops
+    /// running the agent drops out.
+    pub fn update(&mut self, registry: &Registry, live: &HashMap<String, Value>, now: Instant, mut screen: impl FnMut(&str) -> Option<Screen>, mut tail: impl FnMut(&str, usize) -> Vec<String>) -> HashMap<String, Unreported> {
+        let mut out = HashMap::new();
+        self.detected.retain(|a, _| live.contains_key(a));
         for (addr, rec) in live {
             if rec.get("status").is_some_and(|s| !s.is_null()) || rec["state"] != "live" {
                 continue;
             }
             let Some(fg) = rec.get("foreground") else { continue };
-            let argv: Vec<String> = fg["argv"].as_array().into_iter().flatten().filter_map(|a| a.as_str().map(str::to_owned)).collect();
-            let Some(m) = registry.identify(fg["name"].as_str().unwrap_or_default(), &argv) else { continue };
-            let watch = self.watching.entry(addr.clone()).or_insert_with(|| Watch::new(&m.id));
-            if watch.harness != m.id {
-                *watch = Watch::new(&m.id);
+            let index = match self.detected.get(addr) {
+                Some((seen, index)) if seen == fg => *index,
+                _ => {
+                    let argv: Vec<String> = fg["argv"].as_array().into_iter().flatten().filter_map(|a| a.as_str().map(str::to_owned)).collect();
+                    let index = registry.identify_index(fg["name"].as_str().unwrap_or_default(), &argv);
+                    self.detected.insert(addr.clone(), (fg.clone(), index));
+                    index
+                }
+            };
+            let Some(index) = index else { continue };
+            let m = &registry.manifests[index];
+            let watch = self.watching.entry(addr.clone()).or_insert_with(|| Watch::new(index, base_turn(rec), now));
+            if watch.harness != index {
+                *watch = Watch::new(index, base_turn(rec), now);
             }
-            let lines = m.lines();
-            let verdict = if lines == 0 { None } else { m.classify(&tail(addr, lines)) };
-            words.insert(addr.clone(), (watch.observe(verdict, now), m.id.clone()));
+            let verdict = match screen(addr) {
+                Some(s) if watch.looked.is_some_and(|(writes, _)| writes == s.writes) => watch.looked.and_then(|(_, v)| v),
+                Some(s) => {
+                    watch.changed = now;
+                    let lines = m.lines();
+                    let verdict = (if lines == 0 { None } else { m.classify(&tail(addr, lines)) }).or_else(|| m.classify_title(&s.title));
+                    watch.looked = Some((s.writes, verdict));
+                    verdict
+                }
+                None => None,
+            };
+            let word = watch.observe(verdict, now);
+            out.insert(addr.clone(), Unreported { word, harness: m.id.clone(), turn: watch.turn() });
         }
-        self.watching.retain(|a, _| words.contains_key(a));
-        words
+        self.watching.retain(|a, _| out.contains_key(a));
+        out
     }
+}
+
+/// Where an unreported agent's turns start: past core's turn and the turn the
+/// person last saw, so a turn it finishes now reads as unseen.
+fn base_turn(rec: &Value) -> u64 {
+    let turn = rec.get("turn").and_then(Value::as_u64).unwrap_or(0);
+    let seen = rec.pointer("/labels/herdr.seen").and_then(Value::as_str).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+    turn.max(seen)
 }
 
 #[cfg(test)]

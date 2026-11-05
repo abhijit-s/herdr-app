@@ -110,6 +110,8 @@ struct Grid {
 pub struct TerminalView {
     pub address: String,
     pub title: String,
+    /// The title as the program set it, spinner and all (`title` is as shown).
+    raw_title: String,
     pub ended: Option<String>,
     /// The core connection dropped; waiting to reattach.
     pub lost: bool,
@@ -254,6 +256,7 @@ impl TerminalView {
         let mut view = TerminalView {
             address: address.clone(),
             title: address.clone(),
+            raw_title: String::new(),
             ended: None,
             lost: false,
             selecting: false,
@@ -416,6 +419,7 @@ impl TerminalView {
 
     /// Its title as shown (see `shown_title`); news only when that changed.
     fn set_title(&mut self, title: &str, cx: &mut Context<Self>) {
+        title.clone_into(&mut self.raw_title);
         let shown = shown_title(title);
         if shown != self.title {
             self.title = shown.to_owned();
@@ -456,6 +460,11 @@ impl TerminalView {
     /// The screen's last `n` non-empty lines (`Vt::tail_text`).
     pub fn tail_text(&self, n: usize) -> Vec<String> {
         self.grid.borrow().vt.tail_text(n)
+    }
+
+    /// What an agent's screen rules need to know before reading it (harness.rs).
+    pub fn screen(&self) -> crate::harness::Screen {
+        crate::harness::Screen { writes: self.grid.borrow().vt.writes, title: self.raw_title.clone() }
     }
 
     pub fn detach(&self) {

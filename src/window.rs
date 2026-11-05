@@ -2245,12 +2245,13 @@ impl AppWindow {
         let visible: HashSet<String> = self.visible_addresses().into_iter().collect();
         let mut alerts = Vec::new();
         let terms = &self.terms;
-        let unreported = self.unreported.update(crate::harness::registry(), &self.live, Instant::now(), |addr, lines| {
-            terms.values().find(|t| t.address == addr).map(|t| t.view.read(cx).tail_text(lines)).unwrap_or_default()
+        let view = |addr: &str| terms.values().find(|t| t.address == addr).map(|t| t.view.read(cx));
+        let unreported = self.unreported.update(crate::harness::registry(), &self.live, Instant::now(), |addr| view(addr).map(|v| v.screen()), |addr, lines| {
+            view(addr).map(|v| v.tail_text(lines)).unwrap_or_default()
         });
         for (addr, rec) in &self.live {
             let (word, app) = match unreported.get(addr) {
-                Some((word, harness)) => (Some((*word).to_owned()), Some(harness.clone())),
+                Some(u) => (Some(u.word.to_owned()), Some(u.harness.clone())),
                 None => (
                     rec.get("status").and_then(Value::as_str).map(str::to_owned),
                     rec.get("report").and_then(|r| r.get("app")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned),
@@ -2267,7 +2268,8 @@ impl AppWindow {
                 cx.dismiss_system_notification(&crate::alert::tag(addr));
             }
             changed |= self.model.set_word(addr, word, app, looking);
-            let turn = rec.get("turn").and_then(Value::as_u64).unwrap_or(0);
+            // An agent read off its screen counts its own turns (harness.rs).
+            let turn = unreported.get(addr).map_or_else(|| rec.get("turn").and_then(Value::as_u64).unwrap_or(0), |u| u.turn);
             let label = rec.pointer("/labels/herdr.seen").and_then(Value::as_str).and_then(|s| s.parse::<u64>().ok());
             changed |= self.model.set_turn(addr, turn, label.max(self.written_seen.get(addr).copied()));
         }
