@@ -592,7 +592,7 @@ impl TerminalView {
                 RowOp::Bg { from, to, color } => format!("bg {from}..{to} {color:?}"),
                 RowOp::Sprite { x, text, color } => format!("sprite {x} {text} {color:?}"),
                 RowOp::Icon { x, offset, glyph, size, color, .. } => format!("icon {x} {offset:?} {glyph:?} {size:?} {color:?}"),
-                RowOp::Text { x, line } => format!("text {x} {line:?}"),
+                RowOp::Text { x, offset, line } => format!("text {x} {offset:?} {line:?}"),
             }).collect();
             format!("{cells:?} {:?} {}", p.cursor, ops.join(" | "))
         }).collect();
@@ -1532,8 +1532,17 @@ fn whole_pixels(width: Pixels, scale: f32) -> Pixels {
     px((f32::from(width) * scale).floor().max(1.0) / scale)
 }
 
-// Force-width shaping moves glyph origins, but does not resize fallback glyphs.
-fn fallback_size(c: &vt::Cell, font: &Font, width: Pixels, ts: &gpui::WindowTextSystem) -> Option<Pixels> {
+/// A fallback glyph fitted to its cell: drawn at `size`, with its ink at
+/// `ink`, from the cell's top left.
+struct Fit {
+    size: Pixels,
+    ink: Bounds<Pixels>,
+}
+
+/// Fits a fallback glyph (one the terminal font lacks) whose ink spills out of
+/// its cell, as Ghostty fits symbols (`.size = .fit`): measured by its ink,
+/// not its advance, which a symbol's ink often overflows.
+fn fallback_fit(c: &vt::Cell, font: &Font, cell: Size<Pixels>, ts: &gpui::WindowTextSystem) -> Option<Fit> {
     if c.wide || c.text.is_ascii() {
         return None;
     }
@@ -1545,7 +1554,36 @@ fn fallback_size(c: &vt::Cell, font: &Font, width: Pixels, ts: &gpui::WindowText
     }
     let run = TextRun { len: c.text.len(), font: font.clone(), ..Default::default() };
     let line = ts.shape_line(c.text.clone().into(), size, &[run], None);
-    (line.width() > width).then(|| size * f32::from(width) / f32::from(line.width()))
+    let ink = glyph_ink(&line, first, cell.height, ts)?;
+    let fitted = fit_ink(ink, cell);
+    (fitted != ink).then(|| Fit { size: size * (f32::from(fitted.size.width) / f32::from(ink.size.width)), ink: fitted })
+}
+
+/// The ink of `line`'s first glyph (`c`), with the line painted at a cell's
+/// top left: its typographic bounds about the line's baseline.
+fn glyph_ink(line: &ShapedLine, c: char, height: Pixels, ts: &gpui::WindowTextSystem) -> Option<Bounds<Pixels>> {
+    let run = line.runs.first()?;
+    let glyph = run.glyphs.first()?;
+    let b = ts.typographic_bounds(run.font_id, line.font_size, c).ok()?;
+    if b.size.width <= px(0.) || b.size.height <= px(0.) {
+        return None;
+    }
+    let baseline = (height - line.ascent - line.descent) / 2. + line.ascent;
+    Some(Bounds::new(point(glyph.position.x + b.origin.x, baseline - b.origin.y - b.size.height), b.size))
+}
+
+/// Ghostty's fit: ink larger than the cell shrinks about its center until it
+/// fits, then ink still past an edge moves inside (the left and top first).
+fn fit_ink(ink: Bounds<Pixels>, cell: Size<Pixels>) -> Bounds<Pixels> {
+    let scale = (f32::from(cell.width) / f32::from(ink.size.width)).min(f32::from(cell.height) / f32::from(ink.size.height)).min(1.0);
+    let mut fitted = ink;
+    if scale < 1.0 {
+        fitted.size = size(ink.size.width * scale, ink.size.height * scale);
+        fitted.origin = ink.center() - point(fitted.size.width, fitted.size.height) / 2.;
+    }
+    fitted.origin.x = fitted.origin.x.min(cell.width - fitted.size.width).max(px(0.));
+    fitted.origin.y = fitted.origin.y.min(cell.height - fitted.size.height).max(px(0.));
+    fitted
 }
 
 /// One piece of a row's drawing, in cells from the row's start.
@@ -1553,7 +1591,7 @@ enum RowOp {
     Bg { from: usize, to: usize, color: Hsla },
     Sprite { x: usize, text: String, color: Hsla },
     Icon { x: usize, offset: Point<Pixels>, font: FontId, glyph: GlyphId, size: Pixels, color: Hsla },
-    Text { x: usize, line: ShapedLine },
+    Text { x: usize, offset: Point<Pixels>, line: ShapedLine },
 }
 
 /// A row's drawing as last painted, with the cells and ligature cursor column
@@ -1646,10 +1684,10 @@ fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, cursor: Option<usize>, fade: Fa
             ops.push(RowOp::Icon { x: start, offset: point(px(left), px(baseline)), font, glyph: GlyphId(icon.id), size, color });
             continue;
         }
-        let fitted_size = fallback_size(c, &text_font, cell.width, window.text_system());
+        let fit = fallback_fit(c, &text_font, cell, window.text_system());
         let mut text = if c.text.is_empty() { " ".to_owned() } else { c.text.clone() };
         // Shape the cursor cell separately, so its plain glyph doesn't cover a ligature.
-        if !c.wide && fitted_size.is_none() && cursor != Some(start) {
+        if !c.wide && fit.is_none() && cursor != Some(start) {
             while x < row.len() {
                 let d = &row[x];
                 let same = !d.wide
@@ -1661,7 +1699,7 @@ fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, cursor: Option<usize>, fade: Fa
                     && d.underline == c.underline
                     && d.strike == c.strike;
                 // Bundled fallback icons are fitted separately from the text run.
-                if !same || cursor == Some(x) || (d.text.is_empty() && !d.underline && !d.strike) || crate::sprites::is_sprite(&d.text) || fallback_icon(&d.text, &text_font, window.text_system()).is_some() || fallback_size(d, &text_font, cell.width, window.text_system()).is_some() {
+                if !same || cursor == Some(x) || (d.text.is_empty() && !d.underline && !d.strike) || crate::sprites::is_sprite(&d.text) || fallback_icon(&d.text, &text_font, window.text_system()).is_some() || fallback_fit(d, &text_font, cell, window.text_system()).is_some() {
                     break;
                 }
                 text.push_str(if d.text.is_empty() { " " } else { &d.text });
@@ -1683,8 +1721,11 @@ fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, cursor: Option<usize>, fade: Fa
             strikethrough: c.strike.then(|| StrikethroughStyle { thickness: px(1.0), color: Some(color) }),
         };
         let force = (!c.wide).then_some(cell.width);
-        let line = window.text_system().shape_line(text.into(), fitted_size.unwrap_or_else(|| px(crate::settings::font_size())), &[run], force);
-        ops.push(RowOp::Text { x: start, line });
+        let line = window.text_system().shape_line(text.into(), fit.as_ref().map_or_else(|| px(crate::settings::font_size()), |f| f.size), &[run], force);
+        let offset = fit
+            .and_then(|fit| Some(fit.ink.origin - glyph_ink(&line, c.text.chars().next()?, cell.height, window.text_system())?.origin))
+            .unwrap_or_default();
+        ops.push(RowOp::Text { x: start, offset, line });
     }
     ops
 }
@@ -1844,8 +1885,8 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, w
                 RowOp::Icon { x, offset, font, glyph, size, color } => {
                     let _ = window.paint_glyph(at(*x, y) + *offset, *font, *glyph, *size, *color);
                 }
-                RowOp::Text { x, line } => {
-                    let _ = line.paint(at(*x, y), cell.height, TextAlign::Left, None, window, cx);
+                RowOp::Text { x, offset, line } => {
+                    let _ = line.paint(at(*x, y) + *offset, cell.height, TextAlign::Left, None, window, cx);
                 }
             }
         }
@@ -3008,7 +3049,7 @@ mod tests {
                             if wide { row.push(vt::Cell::default()); }
                             row.push(vt::Cell { text: "a".into(), fg: vt::Rgb(255, 255, 255), ..Default::default() });
                             for op in row_ops(&row, cell, None, Default::default(), window) {
-                                if let RowOp::Text { x, line } = op {
+                                if let RowOp::Text { x, line, .. } = op {
                                     line.paint(point(px(4.) + cell.width * x as f32, cell.height * y as f32), cell.height, TextAlign::Left, None, window, cx).unwrap();
                                 }
                             }
@@ -3038,7 +3079,7 @@ mod tests {
                 .map(|text| vt::Cell { text: text.into(), ..Default::default() }).collect();
             let ops = row_ops(&row, cell_size(window), None, Default::default(), window);
             let text: Vec<_> = ops.iter().filter_map(|op| match op {
-                RowOp::Text { x, line } => Some((*x, line.font_size)),
+                RowOp::Text { x, line, .. } => Some((*x, line.font_size)),
                 _ => None,
             }).collect();
             assert_eq!(text.len(), 7, "oversized fallback must break a same-style run");
@@ -3070,6 +3111,74 @@ mod tests {
                 assert_eq!(outside, 0, "row {y} glyph must fit its {slots} cell(s)");
             }
         }).unwrap();
+        crate::settings::set((*original).clone());
+    }
+
+    #[test]
+    fn fallback_ink_fits_its_cell_as_ghostty_fits_symbols() {
+        use super::*;
+        let cell = size(px(7.2), px(15.));
+        let ink = |x: f32, y: f32, w: f32, h: f32| Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
+        let close = |a: Bounds<Pixels>, b: Bounds<Pixels>| {
+            let d = [a.origin.x - b.origin.x, a.origin.y - b.origin.y, a.size.width - b.size.width, a.size.height - b.size.height];
+            assert!(d.iter().all(|d| f32::from(*d).abs() < 1e-3), "{a:?} != {b:?}");
+        };
+        // ZedMono Nerd Font Mono at 12px: ⏺ and ◐ overflow a 6px advance.
+        // Each shrinks to the cell's width about its center, flush with the cell.
+        close(fit_ink(ink(2.34, 3.0, 7.32, 7.32), cell), ink(0.0, 3.06, 7.2, 7.2));
+        close(fit_ink(ink(2.088, 3.0, 7.824, 7.824), cell), ink(0.0, 3.312, 7.2, 7.2));
+        // Ink inside its cell stays as the font draws it.
+        assert_eq!(fit_ink(ink(0.29, 4.0, 6.64, 7.45), cell), ink(0.29, 4.0, 6.64, 7.45));
+        // Ink that fits but sits past an edge moves inside, unscaled.
+        close(fit_ink(ink(3.0, -1.0, 6.0, 6.0), cell), ink(1.2, 0.0, 6.0, 6.0));
+        // Ink taller than the cell shrinks to its height.
+        close(fit_ink(ink(0.0, 0.0, 6.0, 30.0), cell), ink(1.5, 0.0, 3.0, 15.0));
+    }
+
+    // CoreText itself (not MacPlatform, which needs the main thread), with
+    // the system's own fallback fonts, which every Mac has.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_fallback_symbols_are_fitted_by_their_ink() {
+        use super::*;
+        assert!(!crate::sprites::is_sprite("\u{23fa}"), "⏺ draws from the fonts, as in Ghostty");
+        let system = Arc::new(TextSystem::new(Arc::new(gpui_macos::MacTextSystem::new())));
+        system.add_fonts(crate::settings::BUNDLED_FONTS.iter().map(|b| std::borrow::Cow::Borrowed(*b)).collect()).unwrap();
+        let ts = WindowTextSystem::new(system);
+        let original = crate::settings::get();
+        let mut settings = (*original).clone();
+        settings.font_family = crate::settings::DEFAULT_FONT.into();
+        settings.font_size = 12.;
+        settings.font_fallbacks = None;
+        crate::settings::set(settings);
+        let font = cell_font(false, false);
+        let advance = ts.advance(ts.resolve_font(&font), px(12.), 'M').unwrap().width;
+        let natural = |text: &str| {
+            let run = TextRun { len: text.len(), font: font.clone(), ..Default::default() };
+            let line = ts.shape_line(text.to_string().into(), px(12.), &[run], None);
+            glyph_ink(&line, text.chars().next().unwrap(), px(15.), &ts).unwrap()
+        };
+        for text in ["\u{23fa}", "\u{25d0}"] {
+            let ink = natural(text);
+            let c = vt::Cell { text: text.into(), ..Default::default() };
+            // A cell narrower than the ink, though not than every advance.
+            let cell = size(ink.size.width * 0.75, px(15.));
+            let fit = fallback_fit(&c, &font, cell, &ts).unwrap_or_else(|| panic!("{text} must be fitted"));
+            assert!((f32::from(fit.ink.size.width - cell.width)).abs() < 0.01, "{text}: as wide as its cell, {fit:?}", fit = fit.ink);
+            assert!(fit.ink.origin.x >= px(0.) && fit.ink.right() <= cell.width + px(0.01), "{text}: inside its cell");
+            // Where the drawn line puts the ink, with the row's offset.
+            let run = TextRun { len: text.len(), font: font.clone(), ..Default::default() };
+            let line = ts.shape_line(text.to_string().into(), fit.size, &[run], Some(cell.width));
+            let drawn = glyph_ink(&line, text.chars().next().unwrap(), cell.height, &ts).unwrap();
+            assert!((f32::from(drawn.size.width - fit.ink.size.width)).abs() < 0.05, "{text}: drawn at the fitted size");
+            // Wide characters keep their two cells' natural size.
+            assert!(fallback_fit(&vt::Cell { wide: true, ..c.clone() }, &font, cell, &ts).is_none());
+            // In a cell wider than its ink, it stays as the font draws it.
+            let roomy = size(advance.max(ink.right()) + px(1.), px(15.));
+            if ink.origin.x >= px(0.) {
+                assert!(fallback_fit(&c, &font, roomy, &ts).is_none(), "{text}: unfitted in room, {ink:?} {roomy:?}");
+            }
+        }
         crate::settings::set((*original).clone());
     }
 
@@ -3117,7 +3226,7 @@ mod tests {
         window.update(cx, |_, window, _| {
             let ops = row_ops(&row, size(px(8.), px(16.)), None, Default::default(), window);
             let runs: Vec<_> = ops.iter().filter_map(|op| match op {
-                RowOp::Text { x, line } => Some((*x, line.text.as_ref())),
+                RowOp::Text { x, line, .. } => Some((*x, line.text.as_ref())),
                 _ => None,
             }).collect();
             assert_eq!(runs, vec![(0, "a=>b 42")]);
@@ -3143,7 +3252,7 @@ mod tests {
             ] {
                 let ops = row_ops(&row, size(px(8.), px(16.)), cursor, Default::default(), window);
                 let runs: Vec<_> = ops.iter().filter_map(|op| match op {
-                    RowOp::Text { x, line } => Some((*x, line.text.as_ref())),
+                    RowOp::Text { x, line, .. } => Some((*x, line.text.as_ref())),
                     _ => None,
                 }).collect();
                 assert_eq!(runs, expected, "cursor: {cursor:?}");
@@ -3201,7 +3310,7 @@ mod tests {
         window.update(cx, |_, window, _| {
             let ops = row_ops(&vt.frame().rows[0], size(px(8.), px(16.)), None, Default::default(), window);
             let runs: Vec<_> = ops.iter().filter_map(|op| match op {
-                RowOp::Text { x, line } => Some((*x, line.text.as_ref())),
+                RowOp::Text { x, line, .. } => Some((*x, line.text.as_ref())),
                 _ => None,
             }).collect();
             assert_eq!(runs, vec![(0, "a="), (2, ">"), (3, "b")]);
@@ -3225,7 +3334,7 @@ mod tests {
                 crate::settings::set(settings);
                 let ops = row_ops(&vt.frame().rows[0], size(px(8.), px(16.)), None, Default::default(), window);
                 let runs: Vec<_> = ops.iter().filter_map(|op| match op {
-                    RowOp::Text { x, line } => Some((*x, line.text.as_ref())),
+                    RowOp::Text { x, line, .. } => Some((*x, line.text.as_ref())),
                     _ => None,
                 }).collect();
                 assert_eq!(runs, vec![(0, "界"), (2, "->"), (4, "😀"), (6, "=>"), (8, "中"), (10, "!=x")]);
@@ -3262,7 +3371,7 @@ mod tests {
                         assert!(rendered.contains('\u{f10d}'));
                         assert!(!ops.iter().any(|op| matches!(op, super::RowOp::Icon { .. })));
                         let positions: Vec<_> = ops.iter().filter_map(|op| match op {
-                            super::RowOp::Text { x, line } => { assert!(!line.text.is_empty()); Some(*x) }
+                            super::RowOp::Text { x, line, .. } => { assert!(!line.text.is_empty()); Some(*x) }
                             super::RowOp::Icon { x, .. } => Some(*x),
                             _ => None,
                         }).collect();
@@ -3285,7 +3394,7 @@ mod tests {
                     }).collect();
                     let ops = super::row_ops(&row, gpui::size(gpui::px(8.0), gpui::px(16.0)), None, Default::default(), window);
                     assert_eq!(ops.len(), 1, "{text:?}");
-                    let super::RowOp::Text { x, line } = &ops[0] else { panic!("configured font was bypassed") };
+                    let super::RowOp::Text { x, line, .. } = &ops[0] else { panic!("configured font was bypassed") };
                     assert_eq!(*x, 0);
                     assert_eq!(line.text.as_ref(), text);
                 }
@@ -3356,7 +3465,7 @@ mod tests {
                     let ops = super::row_ops(&row, gpui::size(gpui::px(8.0), gpui::px(16.0)), None, Default::default(), window);
                     assert_eq!(ops.len(), 1, "U+{code:X}");
                     match &ops[0] {
-                        super::RowOp::Text { x, line } => { assert_eq!(*x, 0); assert_eq!(line.text.as_ref(), text); }
+                        super::RowOp::Text { x, line, .. } => { assert_eq!(*x, 0); assert_eq!(line.text.as_ref(), text); }
                         super::RowOp::Icon { x, .. } => assert_eq!(*x, 0),
                         super::RowOp::Sprite { x, text: rendered, .. } => { assert_eq!(*x, 0); assert_eq!(*rendered, text); }
                         _ => panic!("PUA cell was not rendered: U+{code:X}"),

@@ -159,13 +159,15 @@ fn braille(c: char, width: i32, height: i32) -> Option<Vec<[i32; 4]>> {
 }
 
 /// ⏺ (Claude Code marks every step with it): few terminal fonts have it, and
-/// the fallback may draw nothing.
+/// off macOS the fallback may draw nothing. macOS always has a font for it,
+/// so it draws from the fonts, fitted to its cell as other fallback symbols
+/// are, matching Ghostty.
 const RECORD: char = '\u{23FA}';
 
 pub fn is_sprite(text: &str) -> bool {
     let mut chars = text.chars();
     match (chars.next(), chars.next()) {
-        (Some(c), None) => lines(c).is_some() || blocks(c).is_some() || ('\u{2800}'..='\u{28FF}').contains(&c) || ('\u{E0B0}'..='\u{E0BF}').contains(&c) || c == RECORD,
+        (Some(c), None) => lines(c).is_some() || blocks(c).is_some() || ('\u{2800}'..='\u{28FF}').contains(&c) || ('\u{E0B0}'..='\u{E0BF}').contains(&c) || (c == RECORD && !cfg!(target_os = "macos")),
         _ => false,
     }
 }

@@ -60,6 +60,10 @@ pub(crate) use window::*;
 pub(crate) use text_system::*;
 
 pub use platform::MacPlatform;
+// HERDR: the text system alone, for tests that shape with CoreText off the
+// main thread (MacPlatform must be created on it).
+#[cfg(feature = "font-kit")]
+pub use text_system::MacTextSystem;
 pub use events::{OptionAsAlt, option_as_alt, set_option_as_alt};
 
 trait BoolExt {
