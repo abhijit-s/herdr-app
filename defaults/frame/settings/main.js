@@ -642,6 +642,7 @@ export default class Settings extends View {
       )
       .child(this.thicken(t, "font_thicken", "Thicken", "Terminal text as heavy whatever its color, as Ghostty's font-thicken does."))
       .child(this.contrast(t, "text_contrast", "Contrast", "Crisper edges on terminal text, at the same weight."))
+      .child(this.contrast(t, "unfocused_dim", "Dim when inactive", "Terminal text fades this far toward the background while Herdr isn't the active window."))
       .child(this.row(t, "Text smoothing", "Trial. Subpixel colors each edge by your display's stripes, on 1x displays; others stay grayscale.", this.choicePicker(t, "st-tr", "text_rendering", TEXT_RENDERINGS)))
       .when(this.person.text_rendering === "subpixel" || this.person.ui_text_rendering === "subpixel", (el) =>
         el.child(this.row(t, "Subpixel order", "Your display's color stripes, left to right. Most are RGB.", this.choicePicker(t, "st-so", "subpixel_order", SUBPIXEL_ORDERS))),
@@ -714,8 +715,8 @@ export default class Settings extends View {
       );
   }
 
-  // Text contrast (`key` is text_contrast for terminals, ui_text_contrast for
-  // the panels): 0 to 1 in steps of 0.1. Layouts don't set either. 0 is the
+  // A fraction (text_contrast for terminals, ui_text_contrast for the panels,
+  // unfocused_dim): 0 to 1 in steps of 0.1. Layouts don't set any. 0 is the
   // default, left out of settings.json.
   contrast(t, key, label, hint) {
     const now = Math.max(0, Math.min(1, this.person[key] ?? 0));

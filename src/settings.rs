@@ -437,6 +437,10 @@ pub struct Person {
     /// The same for the panels' text, apart from the terminals'.
     #[serde(skip_serializing_if = "is_zero")]
     pub ui_text_contrast: f32,
+    /// While the window isn't active, terminal text blends this fraction
+    /// toward the terminal background, 0 (off) to 1.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub unfocused_dim: f32,
     /// Trial: smooth terminal text with a coverage per color channel
     /// (subpixel, on 1x displays) rather than one (grayscale) (macOS).
     #[serde(skip_serializing_if = "TextRendering::is_grayscale")]
@@ -672,6 +676,7 @@ impl Default for Person {
             ui_font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
             text_contrast: 0.0,
             ui_text_contrast: 0.0,
+            unfocused_dim: 0.0,
             text_rendering: TextRendering::Grayscale,
             ui_text_rendering: TextRendering::Grayscale,
             subpixel_order: SubpixelOrder::Rgb,
@@ -713,6 +718,9 @@ pub struct Settings {
     pub text_contrast: f32,
     /// The panels' text's edge contrast, 0 (off) to 1.
     pub ui_text_contrast: f32,
+    /// How far terminal text fades toward the background while the window
+    /// isn't active, 0 (off) to 1.
+    pub unfocused_dim: f32,
     /// Terminal text's smoothing (subpixel only where the display allows).
     pub text_rendering: TextRendering,
     /// The panels' text's smoothing.
@@ -792,6 +800,7 @@ impl Default for Settings {
             ui_font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
             text_contrast: 0.0,
             ui_text_contrast: 0.0,
+            unfocused_dim: 0.0,
             text_rendering: TextRendering::Grayscale,
             ui_text_rendering: TextRendering::Grayscale,
             subpixel_order: SubpixelOrder::Rgb,
@@ -851,6 +860,7 @@ impl Settings {
             ui_font_thicken_strength: person.ui_font_thicken_strength,
             text_contrast: person.text_contrast,
             ui_text_contrast: person.ui_text_contrast,
+            unfocused_dim: person.unfocused_dim,
             text_rendering: person.text_rendering,
             ui_text_rendering: person.ui_text_rendering,
             subpixel_order: person.subpixel_order,
@@ -936,6 +946,9 @@ impl Settings {
         }
         if !(0.0..=1.0).contains(&self.ui_text_contrast) {
             out.push(format!("ui_text_contrast {} is outside 0..1", self.ui_text_contrast));
+        }
+        if !(0.0..=1.0).contains(&self.unfocused_dim) {
+            out.push(format!("unfocused_dim {} is outside 0..1", self.unfocused_dim));
         }
         if !(100..=900).contains(&self.ui_font_weight) {
             out.push(format!("ui_font_weight {} is outside 100..900", self.ui_font_weight));
@@ -1458,6 +1471,19 @@ mod tests {
             let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
             assert_eq!((settings.text_contrast, settings.ui_text_contrast), (0.0, value));
             assert_eq!(settings.problems().is_empty(), ok, "ui_text_contrast {value}");
+        }
+    }
+
+    #[test]
+    fn unfocused_dim_defaults_off_and_validates() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.unfocused_dim, 0.0);
+        assert_eq!(serde_json::to_value(&default).unwrap().get("unfocused_dim"), None);
+        for (value, ok) in [(0.0, true), (0.4, true), (1.0, true), (-0.1, false), (1.1, false)] {
+            let person: Person = serde_json::from_value(serde_json::json!({"unfocused_dim": value})).unwrap();
+            let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
+            assert_eq!(settings.unfocused_dim, value);
+            assert_eq!(settings.problems().is_empty(), ok, "unfocused_dim {value}");
         }
     }
 

@@ -6933,6 +6933,69 @@ export default class Probe extends View {
         }
     }
 
+    #[test]
+    fn terminal_text_dims_while_the_window_is_inactive() {
+        in_own_process("unfocused_dim");
+    }
+
+    /// With `unfocused_dim` set, blurring the window draws the terminal's text
+    /// again, faded toward its background; focused again, it draws exactly
+    /// what it drew before. Unset, blurring changes nothing.
+    #[gpui::test]
+    fn unfocused_dim(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use serde_json::json;
+        use std::time::Duration;
+        if !running_alone("unfocused_dim") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        view.update_in(cx, |this, window, cx| {
+            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                this.close_overlay(&id, window, cx);
+            }
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.select_tab("t");
+            this.run_as("pane.focus", json!({ "pane": "a" }), false, window, cx);
+        });
+        cx.run_until_parked();
+        let term = view.update(cx, |this, _| this.terms["a"].view.clone());
+        term.update(cx, |t, cx| t.ingest(vec![crate::hc::Stream::Data(b"\x1b[31mred \x1b[1mbold\x1b[0m plain \x1b[44m blue \x1b[0m".to_vec())], cx));
+        let settle = |cx: &mut gpui::VisualTestContext| {
+            cx.executor().advance_clock(Duration::from_millis(500));
+            cx.run_until_parked();
+        };
+        let drawing = |cx: &mut gpui::VisualTestContext| term.update(cx, |t, _| t.drawing().0);
+        let set_dim = |dim: f32, cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| {
+                this.person.unfocused_dim = dim;
+                this.apply_look(window, cx);
+            });
+        };
+        cx.update(|window, _| window.activate_window());
+        settle(cx);
+        let bright = drawing(cx);
+        assert!(bright.contains("red"), "not drawn: {bright}");
+
+        cx.deactivate_window();
+        settle(cx);
+        assert_eq!(drawing(cx), bright, "unset, blurring changed the drawing");
+
+        set_dim(0.5, cx);
+        settle(cx);
+        let dimmed = drawing(cx);
+        assert_ne!(dimmed, bright, "blurred with unfocused_dim, the text was not dimmed");
+        let bg = |d: &str| d.lines().flat_map(|l| l.split(" | ")).filter(|op| op.contains("bg ")).map(|op| op[op.find("bg ").unwrap()..].to_owned()).collect::<Vec<_>>();
+        assert_eq!(bg(&dimmed), bg(&bright), "backgrounds are not dimmed");
+
+        cx.update(|window, _| window.activate_window());
+        settle(cx);
+        assert_eq!(drawing(cx), bright, "focused again, the text is not at full brightness");
+    }
+
     /// `terminal.popup` starts the program as `hc run --bg --no-parent` would
     /// (`--rm` unless it waits), peeks at it at once, and a waiter gets its
     /// exit code when it finishes, after which the terminal is removed.
