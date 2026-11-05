@@ -104,7 +104,7 @@ struct Grid {
     painted: Vec<PaintedRow>,
     /// Font size, cell size, cell font, loaded fonts, ligature, thickening and
     /// dimming settings used to draw.
-    painted_with: (u32, Size<Pixels>, Font, u16, u64, bool, Option<u8>, (Rgb, u32)),
+    painted_with: (u32, Size<Pixels>, Font, u16, u32, u64, bool, Option<u8>, (Rgb, u32)),
 }
 
 pub struct TerminalView {
@@ -281,7 +281,7 @@ impl TerminalView {
                 thumb: None,
                 track: None,
                 painted: Vec::new(),
-                painted_with: (0, Size::default(), font(""), 0, 0, false, None, (Rgb::default(), 0)),
+                painted_with: (0, Size::default(), font(""), 0, 0, 0, false, None, (Rgb::default(), 0)),
             })),
             focus: cx.focus_handle(),
             was_focused: false,
@@ -1472,6 +1472,9 @@ fn cell_font(bold: bool, italic: bool) -> Font {
     let s = crate::settings::get();
     f.weight = FontWeight(if bold { s.bold_weight() } else { s.font_weight.clamp(100, 900) } as f32);
     f.style = if italic { FontStyle::Italic } else { FontStyle::Normal };
+    if !s.font_fallbacks.is_empty() {
+        f.fallbacks = Some(FontFallbacks::from_fonts(s.font_fallbacks.clone()));
+    }
     f
 }
 
@@ -1592,7 +1595,8 @@ fn keep_rows(
 /// text in runs of one style (wide characters, sprites and icons on their own).
 fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, cursor: Option<usize>, fade: Fade, window: &mut Window) -> Vec<RowOp> {
     crate::bench::count(&crate::bench::ROWS);
-    let ligatures = crate::settings::get().font_ligatures;
+    let settings = crate::settings::get();
+    let (ligatures, faint) = (settings.font_ligatures, settings.faint_alpha());
     let mut ops = Vec::new();
     let mut x = 0;
     while x < row.len() {
@@ -1618,7 +1622,7 @@ fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, cursor: Option<usize>, fade: Fa
         }
         let mut color = fade.of(c.fg);
         if c.faint {
-            color.a = 0.6;
+            color.a = faint;
         }
         if crate::sprites::is_sprite(&c.text) {
             ops.push(RowOp::Sprite { x: start, text: c.text.clone(), color });
@@ -1773,12 +1777,13 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, w
     // rebuilds the rows that changed, not the whole screen.
     let ligatures = crate::settings::get().font_ligatures;
     let cursor = frame.cursor_cell.filter(|_| ligatures);
-    // The whole cell font and the bold weight, so a weight change redraws kept rows too.
+    // The whole cell font (its fallbacks too), the bold weight and the faint
+    // opacity, so changing any of them redraws kept rows too.
     // A window-wide dim is the window's veil (`AppWindow::render`), not the text's.
     let settings = crate::settings::get();
     let dim = if window.is_window_active() || settings.unfocused_dim_scope != crate::settings::DimScope::Text { 0.0 } else { settings.unfocused_dim };
     let fade = Fade { toward: frame.bg, dim };
-    let with = (crate::settings::font_size().to_bits(), cell, cell_font(false, false), crate::settings::get().bold_weight(), crate::settings::fonts_added(), ligatures, glyph_thicken(), (fade.toward, dim.to_bits()));
+    let with = (crate::settings::font_size().to_bits(), cell, cell_font(false, false), crate::settings::get().bold_weight(), settings.faint_alpha().to_bits(), crate::settings::fonts_added(), ligatures, glyph_thicken(), (fade.toward, dim.to_bits()));
     let mut last = std::mem::take(&mut grid.borrow_mut().painted);
     if grid.borrow().painted_with != with {
         last.clear();
@@ -3926,6 +3931,22 @@ mod tests {
             crate::settings::set(settings.clone());
             assert_eq!(super::cell_font(true, false).weight, gpui::FontWeight(expected));
             assert_eq!(super::cell_font(false, true).weight, gpui::FontWeight(250.0));
+        }
+        crate::settings::set((*original).clone());
+    }
+
+    #[test]
+    fn every_cell_font_falls_back_to_the_font_fallbacks() {
+        let original = crate::settings::get();
+        let mut settings = (*original).clone();
+        settings.font_fallbacks = Vec::new();
+        crate::settings::set(settings.clone());
+        assert_eq!(super::cell_font(false, false).fallbacks, None);
+        settings.font_fallbacks = vec!["ZedMono Nerd Font Mono".into(), "Menlo".into()];
+        crate::settings::set(settings);
+        for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
+            let fallbacks = super::cell_font(bold, italic).fallbacks.expect("fallbacks");
+            assert_eq!(fallbacks.fallback_list(), ["ZedMono Nerd Font Mono", "Menlo"]);
         }
         crate::settings::set((*original).clone());
     }

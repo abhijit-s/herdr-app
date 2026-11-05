@@ -418,6 +418,10 @@ pub struct Person {
     /// `font_weight` when that is heavier.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub font_weight_bold: Option<u16>,
+    /// Families terminal text takes characters from, in order, when its own
+    /// font lacks them, before the system's (macOS).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub font_fallbacks: Vec<String>,
     /// Enable programming ligatures in terminal fonts.
     pub font_ligatures: bool,
     /// Thicken terminal text as Ghostty's `font-thicken` does: the same for
@@ -441,6 +445,10 @@ pub struct Person {
     /// The same for the panels' text, apart from the terminals'.
     #[serde(skip_serializing_if = "is_zero")]
     pub ui_text_contrast: f32,
+    /// Faint (SGR 2) terminal text's opacity, 0 to 1, as Ghostty's
+    /// `faint-opacity`.
+    #[serde(skip_serializing_if = "is_faint_default")]
+    pub faint_opacity: f32,
     /// While the window isn't active, it fades this fraction toward the
     /// background, 0 (off) to 1.
     #[serde(skip_serializing_if = "is_zero")]
@@ -666,6 +674,13 @@ fn is_zero(v: &f32) -> bool {
     *v == 0.0
 }
 
+/// Ghostty's `faint-opacity` default.
+pub const FAINT_OPACITY_DEFAULT: f32 = 0.5;
+
+fn is_faint_default(v: &f32) -> bool {
+    *v == FAINT_OPACITY_DEFAULT
+}
+
 pub const FOLLOW_DELAY_DEFAULT_MS: u32 = 150;
 pub const FOLLOW_DELAY_MAX_MS: u32 = 2000;
 
@@ -713,6 +728,7 @@ impl Default for Person {
             line_height: None,
             font_weight: None,
             font_weight_bold: None,
+            font_fallbacks: Vec::new(),
             font_ligatures: false,
             font_thicken: false,
             font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
@@ -720,6 +736,7 @@ impl Default for Person {
             ui_font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
             text_contrast: 0.0,
             ui_text_contrast: 0.0,
+            faint_opacity: FAINT_OPACITY_DEFAULT,
             unfocused_dim: 0.0,
             unfocused_dim_scope: DimScope::Window,
             unfocused_dim_color: None,
@@ -755,6 +772,8 @@ pub struct Settings {
     pub font_weight: u16,
     /// The weight bold terminal text draws at; unset, see `bold_weight`.
     pub font_weight_bold: Option<u16>,
+    /// Families terminal text falls back to, before the system's.
+    pub font_fallbacks: Vec<String>,
     pub font_ligatures: bool,
     pub font_thicken: bool,
     pub font_thicken_strength: u16,
@@ -764,6 +783,8 @@ pub struct Settings {
     pub text_contrast: f32,
     /// The panels' text's edge contrast, 0 (off) to 1.
     pub ui_text_contrast: f32,
+    /// Faint terminal text's opacity, as written (`faint_alpha` reads it).
+    pub faint_opacity: f32,
     /// How far the window fades toward the background while it isn't
     /// active, 0 (off) to 1.
     pub unfocused_dim: f32,
@@ -843,6 +864,7 @@ impl Default for Settings {
             line_height: 1.15,
             font_weight: 500,
             font_weight_bold: None,
+            font_fallbacks: Vec::new(),
             font_ligatures: false,
             font_thicken: false,
             font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
@@ -850,6 +872,7 @@ impl Default for Settings {
             ui_font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
             text_contrast: 0.0,
             ui_text_contrast: 0.0,
+            faint_opacity: FAINT_OPACITY_DEFAULT,
             unfocused_dim: 0.0,
             unfocused_dim_scope: DimScope::Window,
             unfocused_dim_color: None,
@@ -905,6 +928,7 @@ impl Settings {
             line_height: look.line_height.or(person.line_height).unwrap_or(d.line_height),
             font_weight: look.font_weight.or(person.font_weight).unwrap_or(d.font_weight),
             font_weight_bold: look.font_weight_bold.or(person.font_weight_bold),
+            font_fallbacks: person.font_fallbacks.clone(),
             font_ligatures: person.font_ligatures,
             font_thicken: person.font_thicken,
             font_thicken_strength: person.font_thicken_strength,
@@ -912,6 +936,7 @@ impl Settings {
             ui_font_thicken_strength: person.ui_font_thicken_strength,
             text_contrast: person.text_contrast,
             ui_text_contrast: person.ui_text_contrast,
+            faint_opacity: person.faint_opacity,
             unfocused_dim: person.unfocused_dim,
             unfocused_dim_scope: person.unfocused_dim_scope,
             unfocused_dim_color: person.unfocused_dim_color.clone(),
@@ -1007,6 +1032,9 @@ impl Settings {
         }
         if !(0.0..=1.0).contains(&self.ui_text_contrast) {
             out.push(format!("ui_text_contrast {} is outside 0..1", self.ui_text_contrast));
+        }
+        if !(0.0..=1.0).contains(&self.faint_opacity) {
+            out.push(format!("faint_opacity {} is outside 0..1", self.faint_opacity));
         }
         if !(0.0..=1.0).contains(&self.unfocused_dim) {
             out.push(format!("unfocused_dim {} is outside 0..1", self.unfocused_dim));
@@ -1214,6 +1242,11 @@ impl Settings {
     /// terminals' grids.
     pub fn ui_glyph_thicken(&self) -> Option<u8> {
         self.ui_font_thicken.then(|| self.ui_font_thicken_strength.min(255) as u8)
+    }
+
+    /// The opacity faint terminal text draws at: `faint_opacity` within 0..1.
+    pub fn faint_alpha(&self) -> f32 {
+        self.faint_opacity.clamp(0.0, 1.0)
     }
 
     /// The weight bold terminal text draws at: `font_weight_bold`, else 700
@@ -1538,6 +1571,30 @@ mod tests {
             assert_eq!((settings.text_contrast, settings.ui_text_contrast), (0.0, value));
             assert_eq!(settings.problems().is_empty(), ok, "ui_text_contrast {value}");
         }
+    }
+
+    #[test]
+    fn faint_opacity_defaults_to_ghosttys_half_and_validates() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.faint_opacity, 0.5);
+        assert_eq!(serde_json::to_value(&default).unwrap().get("faint_opacity"), None);
+        assert_eq!(Settings::default().faint_alpha(), 0.5);
+        for (value, alpha, ok) in [(0.0, 0.0, true), (0.6, 0.6, true), (1.0, 1.0, true), (-0.1, 0.0, false), (1.5, 1.0, false)] {
+            let person: Person = serde_json::from_value(serde_json::json!({"faint_opacity": value})).unwrap();
+            let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
+            assert_eq!((settings.faint_opacity, settings.faint_alpha()), (value, alpha));
+            assert_eq!(settings.problems().is_empty(), ok, "faint_opacity {value}");
+        }
+    }
+
+    #[test]
+    fn font_fallbacks_default_empty_and_keep_their_order() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert!(default.font_fallbacks.is_empty());
+        assert_eq!(serde_json::to_value(&default).unwrap().get("font_fallbacks"), None);
+        let person: Person = serde_json::from_value(serde_json::json!({"font_fallbacks": ["ZedMono Nerd Font Mono", "Menlo"]})).unwrap();
+        let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
+        assert_eq!(settings.font_fallbacks, ["ZedMono Nerd Font Mono", "Menlo"]);
     }
 
     #[test]

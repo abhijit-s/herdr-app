@@ -347,6 +347,23 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Files: `src/resume.rs` (rule, rewrite, ids, session lookup, `Tracker`, tests), `src/programs.rs` (`resume` on `Entry`, `resume_rule`, `bad_resume_rules`, test `resume_rules_are_checked_and_a_persons_empty_rule_turns_one_off`), `src/window.rs` (`track_resume`, `resume_plan`, `offer_resume`, `resume_sessions`, the two commands, window test `resume_offer`), `src/commands.rs`, `src/settings.rs` (`ResumeAgents`), `defaults/programs.json`, `defaults/AGENTS.md`, `defaults/herdr.d.ts`, `defaults/frame/settings/main.js`, `defaults/frame/palette/main.js`, `scripts/settings.test.ts`, `src/SKILL.md`, `docs/commands.md`
 - Upstream: none yet
 
+### Faint opacity
+
+`feat/faint-and-fallbacks` (branched from `master`, fork only): `faint_opacity` in settings.json (0 to 1, default 0.5) is the opacity faint (SGR 2) terminal text draws at, Ghostty's `faint-opacity` with its default. Upstream draws faint text at a fixed 0.6, which measured brighter than Ghostty beside it (brightest dim pixel 125 against Ghostty's 108, fg 195 on bg 33). `Settings::faint_alpha` clamps it; a value outside 0..1 is a `problems()` entry. `row_ops` sets faint cells' alpha from it, and `painted_with` carries it so a change redraws kept rows.
+
+- Settings window: a "Faint text" stepper (steps of 0.1, through the `contrast` helper, which takes the default to leave out of settings.json) under "Contrast" in the Text page's "Terminal text" group. Layouts don't set it.
+- Files: `src/settings.rs` (`FAINT_OPACITY_DEFAULT`, `faint_alpha`, test `faint_opacity_defaults_to_ghosttys_half_and_validates`), `src/terminal.rs` (`row_ops`, `paint_grid`), `defaults/AGENTS.md`, `defaults/frame/settings/main.js`, `scripts/settings.test.ts`, `src/mods/render_tests.rs`
+- Upstream: none yet
+
+### Terminal font fallbacks
+
+`feat/faint-and-fallbacks` (branched from `master`, fork only): `font_fallbacks` in settings.json (a list of family names, default empty) are the families terminal text takes a character from, in order, when its font lacks it, before the system's cascade (macOS). Without it CoreText picks for itself: U+23FA, Claude Code's message bullet, comes from STIX Two Math as a small dot, where Ghostty draws a full circle from its own fallback, ZedMono Nerd Font Mono. `cell_font` puts them on every terminal font (regular, bold, italic) as GPUI `FontFallbacks`; GPUI's macOS text system turns them into the font's `kCTFontCascadeListAttribute`, ahead of the system defaults, and the cascade survives the fork's variable-weight copies (`at_weight`). The cell font is part of `painted_with` and GPUI's font and layout caches key on the whole `Font`, so a change reshapes every row. Fallback glyphs keep the grid: runs are shaped with the cell width forced per character, and `fallback_size` shrinks a fallback glyph wider than its cell. A family that isn't installed is skipped by CoreText. Linux and Windows don't apply GPUI fallbacks yet.
+
+- Verified with a probe on `MacTextSystem` (not kept: it needs the font installed): "a⏺b" in bundled JetBrains Mono at 400 and 700 shapes U+23FA from `STIXTwoMath-Regular` without fallbacks and from `ZedMonoNFM` with `["ZedMono Nerd Font Mono"]`; the glyph stays at its cell's x.
+- Settings window: doesn't set it.
+- Files: `src/settings.rs` (test `font_fallbacks_default_empty_and_keep_their_order`), `src/terminal.rs` (`cell_font`, test `every_cell_font_falls_back_to_the_font_fallbacks`), `defaults/AGENTS.md`
+- Upstream: none yet
+
 ### Rejected text experiments
 
 Two text-quality experiments measured against the shipped thicken, contrast and weight settings, and not kept. The numbers are here so neither is tried again without a new reason.
