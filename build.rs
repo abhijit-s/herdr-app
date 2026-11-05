@@ -1,6 +1,6 @@
 //! Embeds the default mods (defaults/mods/**), the program icons
-//! (defaults/icons/*) and the frame's mods (defaults/frame/**) so Herdr can
-//! install them.
+//! (defaults/icons/*), the frame's mods (defaults/frame/**) and the agent
+//! harness manifests (defaults/harnesses/*) so Herdr can install or read them.
 //!
 //! Worktrees may share one target dir, and with it this script and its output.
 //! So nothing here names this checkout: paths are relative to the package and
@@ -38,6 +38,7 @@ fn main() {
     embed(&base, "defaults/mods", "DEFAULT_MODS", "default_mods.rs");
     embed(&base, "defaults/icons", "DEFAULT_ICONS", "default_icons.rs");
     embed(&base, "defaults/frame", "FRAME_MODS", "frame_mods.rs");
+    embed(&base, "defaults/harnesses", "HARNESSES", "harnesses.rs");
 
     // Windows takes the window, taskbar and Start menu icon from the program file.
     #[cfg(windows)]

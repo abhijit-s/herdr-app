@@ -591,6 +591,8 @@ pub struct AppWindow {
     window_active: bool,
     /// Agents with a system notification up (alert.rs), taken down once seen.
     notified: HashSet<String>,
+    /// Agents that don't report (OSC 7501), read off their screens (harness.rs).
+    unreported: crate::harness::Watcher,
     /// Why `alert_command` didn't start, each said once in a toast.
     alert_command_errors: HashSet<String>,
     /// The system's appearance; a layout with a light and a dark theme follows it.
@@ -692,6 +694,7 @@ impl AppWindow {
             pane_history: Vec::new(),
             window_active: true,
             notified: HashSet::new(),
+            unreported: Default::default(),
             alert_command_errors: HashSet::new(),
             system_dark: is_dark(window.appearance()),
             file_events: crate::files::watch(&mods::app_dir()),
@@ -1715,7 +1718,7 @@ impl AppWindow {
         for addr in looking {
             let Some(a) = self.model.agents.get(&addr) else { continue };
             let turn = a.turn;
-            if a.word.is_none() || !self.live.contains_key(&addr) || self.looked.get(&addr) == Some(&turn) {
+            if a.word.is_none() || !self.live.contains_key(&addr) || self.unreported.owns(&addr) || self.looked.get(&addr) == Some(&turn) {
                 continue;
             }
             self.looked.insert(addr.clone(), turn);
@@ -2241,9 +2244,19 @@ impl AppWindow {
         let mut changed = self.reconcile(window, cx);
         let visible: HashSet<String> = self.visible_addresses().into_iter().collect();
         let mut alerts = Vec::new();
+        let terms = &self.terms;
+        let view = |addr: &str| terms.values().find(|t| t.address == addr).map(|t| t.view.read(cx));
+        let unreported = self.unreported.update(crate::harness::registry(), &self.live, Instant::now(), |addr| view(addr).map(|v| v.writes()), |addr, lines| {
+            view(addr).map(|v| (v.tail_text(lines), v.raw_title().to_owned())).unwrap_or_default()
+        });
         for (addr, rec) in &self.live {
-            let word = rec.get("status").and_then(Value::as_str).map(str::to_owned);
-            let app = rec.get("report").and_then(|r| r.get("app")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+            let (word, app) = match unreported.get(addr) {
+                Some(u) => (Some(u.word.to_owned()), Some(u.harness.clone())),
+                None => (
+                    rec.get("status").and_then(Value::as_str).map(str::to_owned),
+                    rec.get("report").and_then(|r| r.get("app")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned),
+                ),
+            };
             let looking = visible.contains(addr) && self.window_active;
             let prev = self.model.agents.get(addr).and_then(|a| a.word.clone());
             let child = rec.get("parent").and_then(Value::as_str).is_some_and(|p| !p.is_empty());
@@ -2257,7 +2270,11 @@ impl AppWindow {
             changed |= self.model.set_word(addr, word, app, looking);
             let turn = rec.get("turn").and_then(Value::as_u64).unwrap_or(0);
             let label = rec.pointer("/labels/herdr.seen").and_then(Value::as_str).and_then(|s| s.parse::<u64>().ok());
-            changed |= self.model.set_turn(addr, turn, label.max(self.written_seen.get(addr).copied()));
+            // Core counts no turns for an agent read off its screen, so the
+            // shared seen turn can't say whether one was seen: this app's own
+            // seen flag does (`Model::status`).
+            let seen_turn = if unreported.contains_key(addr) { None } else { label.max(self.written_seen.get(addr).copied()) };
+            changed |= self.model.set_turn(addr, turn, seen_turn);
         }
         self.written_seen.retain(|a, _| self.live.contains_key(a));
         for gone in self.notified.extract_if(|a| !self.live.contains_key(a)) {
