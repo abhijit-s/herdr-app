@@ -60,6 +60,11 @@ const DIM_SCOPES = [
   ["window", "Window"],
   ["text", "Text"],
 ];
+const RESUME_AGENTS = [
+  ["ask", "Ask"],
+  ["auto", "Auto"],
+  ["off", "Off"],
+];
 const SYSTEM_NOTIFICATIONS = [
   ["background", "When away"],
   ["always", "Always"],
@@ -968,6 +973,15 @@ export default class Settings extends View {
               else p.dock_bounce = true;
             }, cx),
           ),
+        ),
+      )
+      .child(this.heading(t, "After a restart"))
+      .child(
+        this.row(
+          t,
+          "Resume agents after restart",
+          "Agents that ran in terminals now back to a plain shell, such as Claude Code: Ask shows a note to resume them, Auto resumes them, Off leaves the shells.",
+          this.choicePicker(t, "st-ra", "resume_agents", RESUME_AGENTS),
         ),
       );
   }

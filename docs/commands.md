@@ -194,6 +194,21 @@ End a terminal and its sub-agents.
 |---|---|
 | `terminal` | yes |
 
+## `session.resume`
+
+Resume the recorded agents (programs with a `resume` rule in programs.json, such as Claude Code) whose terminals are back to a bare shell, typically after a restart: types `cd <folder> && <command>` into each (default: every one; terminal: just that one). Asks first unless confirmed; scripts pass confirmed: true. Skips, and says why, a terminal not running, running something else, or sharing its session with another.
+
+| Argument | Required |
+|---|---|
+| `terminal` | no |
+| `confirmed` | no |
+
+## `session.saved`
+
+List the recorded agents session.resume would bring back, each with its terminal, where, folder, command line and session, and whether it can be resumed now (ready, else why not).
+
+No arguments.
+
 ## `space.select`
 
 Show a space (by position or id).

@@ -240,3 +240,10 @@ test("subpixel order shows only while either text is subpixel, and leaves rgb ou
   expect(pick({ text_rendering: "subpixel" }, "st-so-BGR")).toEqual({ text_rendering: "subpixel", subpixel_order: "bgr" });
   expect(pick({ text_rendering: "subpixel", subpixel_order: "bgr" }, "st-so-RGB")).toEqual({ text_rendering: "subpixel" });
 });
+
+test("resume agents after restart sits on the alerts page, writes auto or off and leaves ask out", () => {
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "alerts");
+  expect(pick({}, "st-ra-Auto")).toEqual({ resume_agents: "auto" });
+  expect(pick({ resume_agents: "auto" }, "st-ra-Off")).toEqual({ resume_agents: "off" });
+  expect(pick({ resume_agents: "off", zoom: 1.1 }, "st-ra-Ask")).toEqual({ zoom: 1.1 });
+});

@@ -50,6 +50,9 @@ pub const COMMANDS: &[Command] = &[
     cmd("terminal.right_click", &[req("to"), opt("terminal")], "Where right-clicks in a terminal (default: the focused one) go when its program takes the mouse: \"program\" or \"menu\" (Herdr's, the default). Shift+right-click is always the menu."),
     cmd("terminal.pin", &[req("terminal"), req("pinned")], "Pin an agent to the top of the agent lists (pinned true) or unpin it (false). Pins are kept with the terminal, so every Herdr client shows them, and end with it."),
     cmd("terminal.kill", &[req("terminal")], "End a terminal and its sub-agents."),
+    cmd("session.resume", &[opt("terminal"), opt("confirmed")],
+        "Resume the recorded agents (programs with a `resume` rule in programs.json, such as Claude Code) whose terminals are back to a bare shell, typically after a restart: types `cd <folder> && <command>` into each (default: every one; terminal: just that one). Asks first unless confirmed; scripts pass confirmed: true. Skips, and says why, a terminal not running, running something else, or sharing its session with another."),
+    cmd("session.saved", &[], "List the recorded agents session.resume would bring back, each with its terminal, where, folder, command line and session, and whether it can be resumed now (ready, else why not)."),
     // What you see.
     cmd("space.select", &[opt("index"), opt("id")], "Show a space (by position or id)."),
     cmd("space.next", &[], "Show the next space."),
