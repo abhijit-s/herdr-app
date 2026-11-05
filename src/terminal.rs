@@ -38,7 +38,7 @@ fn dimmed(fg: Rgb, bg: Rgb, dim: f32) -> Rgb {
 }
 
 /// How far text fades toward the terminal's background: `unfocused_dim`
-/// while the window isn't active, else not at all.
+/// while the window isn't active and the dim is the text's, else not at all.
 #[derive(Clone, Copy, Default)]
 struct Fade {
     toward: Rgb,
@@ -1774,7 +1774,9 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, w
     let ligatures = crate::settings::get().font_ligatures;
     let cursor = frame.cursor_cell.filter(|_| ligatures);
     // The whole cell font and the bold weight, so a weight change redraws kept rows too.
-    let dim = if window.is_window_active() { 0.0 } else { crate::settings::get().unfocused_dim };
+    // A window-wide dim is the window's veil (`AppWindow::render`), not the text's.
+    let settings = crate::settings::get();
+    let dim = if window.is_window_active() || settings.unfocused_dim_scope != crate::settings::DimScope::Text { 0.0 } else { settings.unfocused_dim };
     let fade = Fade { toward: frame.bg, dim };
     let with = (crate::settings::font_size().to_bits(), cell, cell_font(false, false), crate::settings::get().bold_weight(), crate::settings::fonts_added(), ligatures, glyph_thicken(), (fade.toward, dim.to_bits()));
     let mut last = std::mem::take(&mut grid.borrow_mut().painted);

@@ -55,6 +55,11 @@ const ARRANGES = [
   ["columns", "Columns"],
   ["rows", "Rows"],
 ];
+// What unfocused_dim fades; Window is the default, left out of settings.json.
+const DIM_SCOPES = [
+  ["window", "Window"],
+  ["text", "Text"],
+];
 const SYSTEM_NOTIFICATIONS = [
   ["background", "When away"],
   ["always", "Always"],
@@ -537,6 +542,10 @@ export default class Settings extends View {
       .child(div().pt(10).pb(6).text_size(12.5).font_medium().text_color(t.muted).child("Light"))
       .child(this.themePicker(t, true))
       .child(div().h(18))
+      .child(this.heading(t, "Inactive window"))
+      .child(this.contrast(t, "unfocused_dim", "Dim when inactive", "Fades this far toward the background while Herdr isn't the active window."))
+      .child(this.row(t, "Dim", "The whole window, or only terminal text.", this.choicePicker(t, "st-ds", "unfocused_dim_scope", DIM_SCOPES)))
+      .child(div().h(18))
       .child(this.heading(t, "Mouse"))
       .child(this.followsMouse(t, cx))
       .child(div().h(18))
@@ -642,7 +651,6 @@ export default class Settings extends View {
       )
       .child(this.thicken(t, "font_thicken", "Thicken", "Terminal text as heavy whatever its color, as Ghostty's font-thicken does."))
       .child(this.contrast(t, "text_contrast", "Contrast", "Crisper edges on terminal text, at the same weight."))
-      .child(this.contrast(t, "unfocused_dim", "Dim when inactive", "Terminal text fades this far toward the background while Herdr isn't the active window."))
       .child(this.row(t, "Text smoothing", "Trial. Subpixel colors each edge by your display's stripes, on 1x displays; others stay grayscale.", this.choicePicker(t, "st-tr", "text_rendering", TEXT_RENDERINGS)))
       .when(this.person.text_rendering === "subpixel" || this.person.ui_text_rendering === "subpixel", (el) =>
         el.child(this.row(t, "Subpixel order", "Your display's color stripes, left to right. Most are RGB.", this.choicePicker(t, "st-so", "subpixel_order", SUBPIXEL_ORDERS))),

@@ -223,6 +223,14 @@ test("the new tabs arrangement writes its mode and leaves off out", () => {
   expect(pick({ default_arrange: "rows", zoom: 1.1 }, "st-da-Off")).toEqual({ zoom: 1.1 });
 });
 
+test("dim when inactive sits on the look page, its scope writes text and leaves window out", () => {
+  expect(click({}, {}, "st-unfocused_dim-plus", [], "look")).toEqual({ unfocused_dim: 0.1 });
+  expect(click({ unfocused_dim: 0.3 }, {}, "st-unfocused_dim-minus", [], "look")).toEqual({ unfocused_dim: 0.2 });
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "look");
+  expect(pick({ unfocused_dim: 0.3 }, "st-ds-Text")).toEqual({ unfocused_dim: 0.3, unfocused_dim_scope: "text" });
+  expect(pick({ unfocused_dim: 0.3, unfocused_dim_scope: "text" }, "st-ds-Window")).toEqual({ unfocused_dim: 0.3 });
+});
+
 test("subpixel order shows only while either text is subpixel, and leaves rgb out", () => {
   const shown = (person: Record<string, any>) => click(person, {}, "st-so-BGR", ["choicePicker", "shown?"]) !== undefined;
   expect(shown({})).toBe(false);

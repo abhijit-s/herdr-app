@@ -5278,6 +5278,7 @@ impl Render for AppWindow {
         window.set_glyph_subpixel(settings::get().ui_text_rendering.subpixel());
         gpui::set_subpixel_bgr(settings::get().subpixel_order == settings::SubpixelOrder::Bgr);
         window.set_font_weight_shift(settings::get().ui_weight_shift());
+        window.set_veil(inactive_veil(window.is_window_active()));
         // A terminal the person clicked into becomes the focused pane.
         let clicked = self
             .terms
@@ -5395,6 +5396,15 @@ impl Render for AppWindow {
             .child(pane_drag)
             .child(crate::bench::frame_end())
     }
+}
+
+/// What covers the whole window: while it isn't active, with `unfocused_dim`
+/// over the window, `unfocused_dim_color` (else the background) at that
+/// alpha, above every panel, overlay and tooltip, so everything fades evenly.
+fn inactive_veil(active: bool) -> Option<Hsla> {
+    let s = settings::get();
+    let toward = s.dim_color().unwrap_or_else(|| c("background"));
+    (!active && s.unfocused_dim > 0.0 && s.unfocused_dim_scope == settings::DimScope::Window).then(|| Hsla { a: s.unfocused_dim.min(1.0), ..toward })
 }
 
 fn invalidate_asset(path: &std::path::Path, window: &mut Window, cx: &mut gpui::App) {
@@ -6938,8 +6948,8 @@ export default class Probe extends View {
         in_own_process("unfocused_dim");
     }
 
-    /// With `unfocused_dim` set, blurring the window draws the terminal's text
-    /// again, faded toward its background; focused again, it draws exactly
+    /// With `unfocused_dim` set over terminal text, blurring the window draws
+    /// the terminal's text again, faded toward its background; focused again, it draws exactly
     /// what it drew before. Unset, blurring changes nothing.
     #[gpui::test]
     fn unfocused_dim(cx: &mut gpui::TestAppContext) {
@@ -6972,6 +6982,7 @@ export default class Probe extends View {
         let set_dim = |dim: f32, cx: &mut gpui::VisualTestContext| {
             view.update_in(cx, |this, window, cx| {
                 this.person.unfocused_dim = dim;
+                this.person.unfocused_dim_scope = crate::settings::DimScope::Text;
                 this.apply_look(window, cx);
             });
         };
@@ -6994,6 +7005,110 @@ export default class Probe extends View {
         cx.update(|window, _| window.activate_window());
         settle(cx);
         assert_eq!(drawing(cx), bright, "focused again, the text is not at full brightness");
+    }
+
+    #[test]
+    fn the_whole_window_dims_while_inactive() {
+        in_own_process("unfocused_dim_window");
+    }
+
+    /// With `unfocused_dim` over the window (the default scope), blurring lays
+    /// one quad of the background at that alpha over the whole window, above
+    /// every other primitive (a toast's included), and leaves the terminal's
+    /// text as it was. Focused again, the quad is gone.
+    #[gpui::test]
+    fn unfocused_dim_window(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use serde_json::json;
+        use std::time::Duration;
+        if !running_alone("unfocused_dim_window") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        view.update_in(cx, |this, window, cx| {
+            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                this.close_overlay(&id, window, cx);
+            }
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.select_tab("t");
+            this.run_as("pane.focus", json!({ "pane": "a" }), false, window, cx);
+            this.open_overlay("toast".into(), json!({ "kind": "toast", "notification": { "title": "On top?", "body": "", "level": "info" } }), window, cx);
+            this.person.unfocused_dim = 0.4;
+            this.apply_look(window, cx);
+        });
+        cx.run_until_parked();
+        let term = view.update(cx, |this, _| this.terms["a"].view.clone());
+        term.update(cx, |t, cx| t.ingest(vec![crate::hc::Stream::Data(b"\x1b[31mred\x1b[0m plain".to_vec())], cx));
+        let settle = |cx: &mut gpui::VisualTestContext| {
+            cx.executor().advance_clock(Duration::from_millis(500));
+            cx.run_until_parked();
+        };
+        // The quads of this veil, and whether each is above every other primitive.
+        let veils = |veil: super::Hsla, cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| {
+                let viewport = window.viewport_size().scale(window.scale_factor());
+                let orders = window.painted_orders();
+                window.painted_quads().into_iter()
+                    .filter(|q| q.background == gpui::Background::from(veil))
+                    .map(|q| {
+                        assert_eq!(q.bounds.origin, gpui::Point::default(), "the veil starts at the window's corner");
+                        assert_eq!(q.bounds.size, viewport, "the veil covers the window");
+                        orders.iter().filter(|o| **o >= q.order).count() == 1
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        cx.update(|window, _| window.activate_window());
+        settle(cx);
+        assert!(view.update(cx, |this, _| this.overlays.iter().any(|o| o.id == "toast")), "the toast is open");
+        let bright = term.update(cx, |t, _| t.drawing().0);
+        assert!(bright.contains("red"), "not drawn: {bright}");
+        let background = super::Hsla { a: 0.4, ..super::c("background") };
+        let grey = super::Hsla { a: 0.4, ..crate::settings::parse_hex("#4d4d4d").unwrap() };
+        assert_eq!(veils(background, cx), Vec::<bool>::new(), "active, nothing is veiled");
+
+        cx.deactivate_window();
+        settle(cx);
+        assert_eq!(veils(background, cx), vec![true], "inactive, one veil of the background above everything");
+        assert_eq!(term.update(cx, |t, _| t.drawing().0), bright, "the text isn't dimmed a second time");
+
+        view.update_in(cx, |this, window, cx| {
+            this.person.unfocused_dim_color = Some("#4d4d4d".into());
+            this.apply_look(window, cx);
+        });
+        settle(cx);
+        assert_eq!((veils(background, cx), veils(grey, cx)), (vec![], vec![true]), "the veil takes unfocused_dim_color");
+        assert_eq!(term.update(cx, |t, _| t.drawing().0), bright);
+
+        cx.update(|window, _| window.activate_window());
+        settle(cx);
+        assert_eq!(veils(grey, cx), Vec::<bool>::new(), "focused again, the veil is gone");
+        assert_eq!(term.update(cx, |t, _| t.drawing().0), bright);
+    }
+
+    /// The veil is painted after the deferred draws, whatever their priority.
+    #[gpui::test]
+    fn the_veil_covers_deferred_draws(cx: &mut gpui::TestAppContext) {
+        struct Layers;
+        impl Render for Layers {
+            fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                window.set_veil(Some(gpui::hsla(0.0, 0.0, 0.0, 0.25)));
+                div().size_full().bg(gpui::red()).child(gpui::deferred(div().size_full().bg(gpui::blue())).with_priority(usize::MAX))
+            }
+        }
+        let window = cx.add_window(|_, _| Layers);
+        cx.run_until_parked();
+        window.update(cx, |_, window, _| {
+            let quads = window.painted_quads();
+            let top = quads.iter().max_by_key(|q| q.order).unwrap();
+            assert_eq!(top.background, gpui::Background::from(gpui::hsla(0.0, 0.0, 0.0, 0.25)));
+            assert_eq!(window.painted_orders().iter().filter(|o| **o >= top.order).count(), 1);
+            let blue = quads.iter().find(|q| q.background == gpui::Background::from(gpui::blue())).expect("the deferred draw is painted");
+            assert!(blue.order < top.order);
+        }).unwrap();
     }
 
     /// `terminal.popup` starts the program as `hc run --bg --no-parent` would
