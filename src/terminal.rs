@@ -462,9 +462,14 @@ impl TerminalView {
         self.grid.borrow().vt.tail_text(n)
     }
 
-    /// What an agent's screen rules need to know before reading it (harness.rs).
-    pub fn screen(&self) -> crate::harness::Screen {
-        crate::harness::Screen { writes: self.grid.borrow().vt.writes, title: self.raw_title.clone() }
+    /// The screen's write stamp (`Vt::writes`): whether it changed.
+    pub fn writes(&self) -> u64 {
+        self.grid.borrow().vt.writes
+    }
+
+    /// The title as the program set it, spinner and all.
+    pub fn raw_title(&self) -> &str {
+        &self.raw_title
     }
 
     pub fn detach(&self) {

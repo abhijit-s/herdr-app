@@ -145,7 +145,7 @@ fn needs_input_outranks_working_which_outranks_idle() {
 fn idle_is_published_on_a_working_pane_only_once_it_holds() {
     let t0 = Instant::now();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
-    let mut w = Watch::new(0, 0, t0);
+    let mut w = Watch::new(0, t0);
     assert_eq!(w.observe(None, at(0)), "idle", "at rest until a rule says otherwise");
     assert_eq!(w.observe(Some("working"), at(0)), "working");
     assert_eq!(w.observe(Some("idle"), at(10)), "working", "one idle frame is not a finished turn");
@@ -155,13 +155,13 @@ fn idle_is_published_on_a_working_pane_only_once_it_holds() {
     assert_eq!(w.observe(Some("idle"), at(300)), "working");
     assert_eq!(w.observe(Some("idle"), at(400)), "idle", "three confirmations 100ms apart");
 
-    let mut w = Watch::new(0, 0, t0);
+    let mut w = Watch::new(0, t0);
     w.observe(Some("working"), at(0));
     assert_eq!(w.observe(Some("idle"), at(0)), "working");
     assert_eq!(w.observe(Some("idle"), at(500)), "working", "500ms ticks confirm once each");
     assert_eq!(w.observe(Some("idle"), at(1000)), "idle", "the cap publishes it");
 
-    let mut w = Watch::new(0, 0, t0);
+    let mut w = Watch::new(0, t0);
     w.observe(Some("blocked"), at(0));
     assert_eq!(w.observe(Some("idle"), at(1)), "idle", "only a working pane can flap");
     assert_eq!(w.observe(None, at(2)), "idle", "no opinion keeps the last word");
@@ -177,9 +177,9 @@ fn the_watcher_lists_unreported_agents_and_drops_them_when_they_go() {
     let blocked = vec!["Do you want to proceed?".to_owned(), "❯ 1. Yes".to_owned(), "  2. No".to_owned()];
     let mut w = Watcher::default();
     let mut live = HashMap::from([("t1".to_owned(), record(Value::Null, "claude", &["claude"])), ("t2".to_owned(), record(json!("working"), "claude", &["claude"])), ("t3".to_owned(), record(Value::Null, "zsh", &["-zsh"]))]);
-    let update = |w: &mut Watcher, live: &HashMap<String, Value>| w.update(&r, live, Instant::now(), |_| Some(Screen { writes: 1, title: String::new() }), |_, _| blocked.clone());
+    let update = |w: &mut Watcher, live: &HashMap<String, Value>| w.update(&r, live, Instant::now(), |_| Some(1), |_, _| (blocked.clone(), String::new()));
     let words = update(&mut w, &live);
-    assert_eq!(words.get("t1"), Some(&Unreported { word: "blocked", harness: "claude-code".into(), turn: 0 }));
+    assert_eq!(words.get("t1"), Some(&Unreported { word: "blocked", harness: "claude-code".into() }));
     assert!(!words.contains_key("t2"), "a 7501 report wins");
     assert!(!words.contains_key("t3"), "a shell is not an agent");
 
@@ -368,16 +368,16 @@ fn title_rules_classify_tuios_titles() {
 #[test]
 fn a_working_pane_with_no_sign_of_life_stops() {
     let t0 = Instant::now();
-    let mut w = Watch::new(0, 0, t0);
+    let mut w = Watch::new(0, t0);
     w.observe(Some("working"), t0);
     assert_eq!(w.observe(None, t0 + STALL - Duration::from_secs(1)), "working");
     assert_eq!(w.observe(None, t0 + STALL), "idle", "silent for the stall interval");
 
-    let mut w = Watch::new(0, 0, t0);
+    let mut w = Watch::new(0, t0);
     w.observe(Some("blocked"), t0);
     assert_eq!(w.observe(None, t0 + STALL * 10), "blocked", "a question waits for the person however long it takes");
 
-    let mut w = Watch::new(0, 0, t0);
+    let mut w = Watch::new(0, t0);
     w.observe(Some("working"), t0);
     assert_eq!(w.observe(Some("working"), t0 + STALL * 2), "working", "a rule that still sees work is the answer");
 }
@@ -391,9 +391,9 @@ fn the_watcher_reads_a_screen_only_when_it_changed_and_stalls_on_silence() {
     let reads = std::cell::Cell::new(0);
     let working = vec!["  read src/main.ts".to_owned(), "  Working...".to_owned(), ">".to_owned()];
     let mut look = |writes: u64, at: Instant| {
-        w.update(&r, &live, at, |_| Some(Screen { writes, title: String::new() }), |_, _| {
+        w.update(&r, &live, at, |_| Some(writes), |_, _| {
             reads.set(reads.get() + 1);
-            working.clone()
+            (working.clone(), String::new())
         })
     };
     let pi = r.get("pi").unwrap();
@@ -406,41 +406,53 @@ fn the_watcher_reads_a_screen_only_when_it_changed_and_stalls_on_silence() {
     // Pi has no screen idle rule: once its screen stops showing a turn,
     // silence is what ends it.
     let mut w = Watcher::default();
-    let quiet = |w: &mut Watcher, writes: u64, lines: Vec<String>, at: Instant| w.update(&r, &live, at, |_| Some(Screen { writes, title: String::new() }), |_, _| lines.clone());
+    let quiet = |w: &mut Watcher, writes: u64, lines: Vec<String>, at: Instant| w.update(&r, &live, at, |_| Some(writes), |_, _| (lines.clone(), String::new()));
     assert_eq!(quiet(&mut w, 1, working.clone(), t0)["t1"].word, "working");
     assert_eq!(quiet(&mut w, 2, vec!["all done".into()], t0 + Duration::from_secs(1))["t1"].word, "working", "no opinion keeps the word for now");
     assert_eq!(quiet(&mut w, 2, vec![], t0 + Duration::from_secs(1) + STALL)["t1"].word, "idle", "then silence ends the turn");
 }
 
+/// What `tend_terminals` does with one terminal on one tick: the word from
+/// the watcher when it owns the terminal, else core's, and core's turn with
+/// the shared seen turn only for a terminal that reports.
+fn tick(model: &mut crate::model::Model, watcher: &Watcher, addr: &str, word: &str, core_turn: u64, label: Option<u64>, looking: bool) {
+    model.set_word(addr, Some(word.into()), None, looking);
+    model.set_turn(addr, core_turn, if watcher.owns(addr) { None } else { label });
+}
+
 #[test]
-fn a_finished_turn_counts_past_core_and_the_seen_turn() {
+fn an_unreported_agent_is_seen_locally_and_a_report_takes_over_cleanly() {
     let r = bundled();
-    let mut rec = record(Value::Null, "claude", &["claude"]);
-    rec["turn"] = 4.into();
-    rec["labels"] = json!({ "herdr.seen": "6" });
-    let live = HashMap::from([("t1".to_owned(), rec)]);
     let box_ = "────────────────────────────────────────\n❯\n────────────────────────────────────────";
     let working = format!("✻ Thinking… (12s · ↑ 1.2k tokens)\n{box_}\n  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt");
-    let screens = [working.as_str(), box_, box_, box_];
+    let mut rec = record(Value::Null, "claude", &["claude"]);
+    rec["turn"] = 4.into();
+    rec["labels"] = json!({ "herdr.seen": "4" });
+    let mut live = HashMap::from([("t1".to_owned(), rec)]);
     let mut w = Watcher::default();
-    let t0 = Instant::now();
-    let mut turns = Vec::new();
-    for (i, screen) in screens.iter().enumerate() {
-        let lines: Vec<String> = screen.lines().map(str::to_owned).collect();
-        let u = w.update(&r, &live, t0 + Duration::from_millis(500 * i as u64), |_| Some(Screen { writes: i as u64, title: String::new() }), |_, _| lines.clone());
-        turns.push((u["t1"].word, u["t1"].turn));
-    }
-    assert_eq!(turns, [("working", 6), ("working", 6), ("working", 6), ("idle", 7)], "the turn ends once idle is confirmed, newer than the seen turn 6");
-
-    // As the model shows it: unseen until the person looks.
     let mut model = crate::model::Model::default();
-    model.set_word("t1", Some("working".into()), None, false);
-    model.set_turn("t1", 6, Some(6));
-    model.set_word("t1", Some("idle".into()), None, false);
-    model.set_turn("t1", 7, Some(6));
-    assert_eq!(model.status("t1"), Some("done"));
-    model.set_turn("t1", 7, Some(7));
-    assert_eq!(model.status("t1"), Some("idle"), "seen");
+    let t0 = Instant::now();
+    let mut words = Vec::new();
+    for (i, screen) in [working.as_str(), box_, box_, box_].iter().enumerate() {
+        let lines: Vec<String> = screen.lines().map(str::to_owned).collect();
+        let u = w.update(&r, &live, t0 + Duration::from_millis(500 * i as u64), |_| Some(i as u64), |_, _| (lines.clone(), String::new()));
+        assert!(w.owns("t1"));
+        tick(&mut model, &w, "t1", u["t1"].word, 4, Some(4), false);
+        words.push((u["t1"].word, model.status("t1")));
+    }
+    assert_eq!(words, [("working", Some("working")), ("working", Some("working")), ("working", Some("working")), ("idle", Some("done"))], "a turn finished unwatched is done, though core's turn never moved");
+    model.mark_seen(&["t1".to_owned()]);
+    assert_eq!(model.status("t1"), Some("idle"), "seen here, with nothing written to the shared label");
+
+    // Its hooks start reporting: core's turns and the label decide again.
+    live.get_mut("t1").unwrap()["status"] = "working".into();
+    assert!(w.update(&r, &live, t0 + Duration::from_secs(3), |_| Some(9), |_, _| (vec![], String::new())).is_empty());
+    assert!(!w.owns("t1"));
+    tick(&mut model, &w, "t1", "working", 4, Some(4), false);
+    tick(&mut model, &w, "t1", "idle", 5, Some(4), false);
+    assert_eq!(model.status("t1"), Some("done"), "the first reported turn is unseen: the label never ran ahead");
+    tick(&mut model, &w, "t1", "idle", 5, Some(5), false);
+    assert_eq!(model.status("t1"), Some("idle"));
 }
 
 #[test]
@@ -449,6 +461,12 @@ fn rules_read_digits_spaces_and_words_as_ascii_like_re2() {
     assert_eq!(ascii_classes(r"[^\s─-]\S"), r"[^\t\n\f\r ─-][^\t\n\f\r ]");
     assert_eq!(ascii_classes(r"[]a]\x{276F}\\d"), r"[]a]\x{276F}\\d", "a leading ] and escaped backslashes stay");
     assert_eq!(ascii_classes(r"[[:alpha:]\d]"), r"[[:alpha:]0-9]");
+    assert_eq!(ascii_classes(r"[^\S─]"), r"[^[^\t\n\f\r ]─]", "a negated class nests inside a bracket");
+    assert_eq!(ascii_classes(r"[a--b&&c~~]"), r"[a-\-b\&\&c\~\~]", "Rust's set operators stay characters");
+    let re = Regex::new(&ascii_classes(r"^[a&&b]+$")).unwrap();
+    assert!(re.is_match("a&b") && !re.is_match("c"));
+    let re = Regex::new(&ascii_classes(r"^[\W]$")).unwrap();
+    assert!(re.is_match("é") && !re.is_match("_"), "RE2's \\W is non-ASCII-word, so é is in it");
     let re = Regex::new(&ascii_classes(r"^\d+$")).unwrap();
     assert!(re.is_match("42"));
     assert!(!re.is_match("٤٢"), "Arabic-Indic digits are not \\d in RE2");

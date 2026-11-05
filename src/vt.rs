@@ -508,8 +508,10 @@ pub struct Vt {
     /// The width and colors they were read with: a change reads every row.
     seen_with: (u16, u64),
     placements_cache: RefCell<Option<Vec<Placement>>>,
-    /// Bumped by every write and resize: the screen can only have changed
-    /// when this moved (harness.rs reads an agent's screen only then).
+    /// Stamped by every write and resize from one process-wide counter, so a
+    /// terminal reconnected to a new `Vt` never repeats a stamp: the screen
+    /// can only have changed when this moved (harness.rs reads an agent's
+    /// screen only then).
     pub writes: u64,
     /// Whether the program wants win32 key events (Ghostty doesn't track it).
     pub win32: crate::win32_keys::Win32Input,
@@ -660,6 +662,11 @@ const SCROLLBACK_MAX_LINES: usize = 10_000;
 const SCROLLBACK_MAX_BYTES: usize = 5 * 1024 * 1024;
 /// Units per pixel for selection gestures (see `select`).
 const SUBPIXEL: f32 = 64.0;
+
+fn next_write() -> u64 {
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+}
 
 impl Vt {
     pub fn new(cols: u16, rows: u16) -> Vt {
@@ -1274,7 +1281,7 @@ impl Vt {
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
-        self.writes += 1;
+        self.writes = next_write();
         self.placements_cache.get_mut().take();
         self.win32.watch(bytes);
         unsafe { ghostty_terminal_vt_write(self.term, bytes.as_ptr(), bytes.len()) };
@@ -1293,7 +1300,7 @@ impl Vt {
         if cols == 0 || rows == 0 {
             return;
         }
-        self.writes += 1;
+        self.writes = next_write();
         self.placements_cache.get_mut().take();
         self.cols = cols;
         self.rows = rows;

@@ -166,8 +166,10 @@ the highlighted line shows where it will land.
   prompts are `blocked`, a turn in progress `working`, the empty prompt box
   `idle`. It starts `idle` and keeps its last status while no rule matches,
   except that `working` with no screen change for 30s becomes `idle`; an
-  `idle` after `working` waits about a second to be sure. Leaving `working`
-  ends a turn, so `done` and seen work as for reporting agents. This covers
+  `idle` after `working` waits about a second to be sure. A turn it ends
+  while you aren't looking shows `done` until you look; that is kept in
+  the app, not shared with other clients through `herdr.seen`, and isn't
+  remembered across a restart. This covers
   a backgrounded Claude Code session resumed into a pane, which no longer
   reports. A 7501 report always wins; the entry goes when the process in
   front stops being the agent or the terminal ends.

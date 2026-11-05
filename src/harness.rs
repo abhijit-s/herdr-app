@@ -247,6 +247,7 @@ fn ascii_classes(pattern: &str) -> String {
     let mut chars = pattern.chars().peekable();
     let mut in_class = false;
     let mut class_start = false;
+    let mut prev_dash = false;
     while let Some(c) = chars.next() {
         match c {
             '\\' => {
@@ -266,6 +267,10 @@ fn ascii_classes(pattern: &str) -> String {
                     (true, 's') => "\\t\\n\\f\\r ",
                     (true, 'd') => "0-9",
                     (true, 'w') => "0-9A-Za-z_",
+                    // A negated class inside a bracket nests, which Rust allows.
+                    (true, 'S') => "[^\\t\\n\\f\\r ]",
+                    (true, 'D') => "[^0-9]",
+                    (true, 'W') => "[^0-9A-Za-z_]",
                     _ => "",
                 };
                 if swap.is_empty() {
@@ -275,10 +280,12 @@ fn ascii_classes(pattern: &str) -> String {
                     out.push_str(swap);
                 }
                 class_start = false;
+                prev_dash = false;
             }
             '[' if !in_class => {
                 in_class = true;
                 class_start = true;
+                prev_dash = false;
                 out.push('[');
                 if chars.peek() == Some(&'^') {
                     out.push(chars.next().unwrap());
@@ -294,19 +301,36 @@ fn ascii_classes(pattern: &str) -> String {
                     }
                 }
                 class_start = false;
+                prev_dash = false;
             }
             '[' => {
                 // RE2 has no nested classes: a `[` inside one is literal.
                 out.push_str("\\[");
                 class_start = false;
+                prev_dash = false;
             }
             ']' if in_class && !class_start => {
                 in_class = false;
                 out.push(']');
+                prev_dash = false;
+            }
+            // Rust reads `--`, `&&` and `~~` in a bracket as set operations;
+            // RE2 reads them as characters.
+            '&' | '~' if in_class => {
+                out.push('\\');
+                out.push(c);
+                class_start = false;
+                prev_dash = false;
+            }
+            '-' if in_class && prev_dash => {
+                out.push_str("\\-");
+                class_start = false;
+                prev_dash = false;
             }
             _ => {
                 out.push(c);
                 class_start = false;
+                prev_dash = c == '-' && in_class;
             }
         }
     }
@@ -682,43 +706,26 @@ pub fn registry() -> &'static Registry {
     })
 }
 
-/// What the app has of a terminal's screen: how many times it was written
-/// (output or resize; the screen can only have changed when this moves) and
-/// its window title as the program set it.
-pub struct Screen {
-    pub writes: u64,
-    pub title: String,
-}
-
 /// One unreported agent: its published word, its idle reading in waiting,
-/// when its screen last changed, and the turns it finished.
+/// and when its screen last changed.
 struct Watch {
     harness: usize,
     word: &'static str,
     idle_since: Option<(Instant, Instant, u32)>,
     changed: Instant,
-    /// The screen's write count and the verdict read from it.
+    /// The screen's write stamp (`Vt::writes`) and the verdict read from it.
     looked: Option<(u64, Option<&'static str>)>,
-    /// Turn numbers carry on from core's and the shared seen turn, so a
-    /// finished turn is newer than anything already seen.
-    base_turn: u64,
-    turns: u64,
 }
 
 impl Watch {
     /// Until a rule says otherwise the agent is taken to be at rest.
-    fn new(harness: usize, base_turn: u64, now: Instant) -> Watch {
-        Watch { harness, word: "idle", idle_since: None, changed: now, looked: None, base_turn, turns: 0 }
-    }
-
-    fn turn(&self) -> u64 {
-        self.base_turn + self.turns
+    fn new(harness: usize, now: Instant) -> Watch {
+        Watch { harness, word: "idle", idle_since: None, changed: now, looked: None }
     }
 
     /// Takes one look's verdict and returns the word to publish. No opinion
     /// keeps the last word, except that work with no sign of life for
     /// `STALL` has stopped; idle on a working pane waits to be confirmed.
-    /// Leaving `working` finishes a turn.
     fn observe(&mut self, verdict: Option<&'static str>, now: Instant) -> &'static str {
         let was = self.word;
         match verdict {
@@ -748,9 +755,6 @@ impl Watch {
         }
         if self.word != was {
             self.changed = now;
-            if was == "working" {
-                self.turns += 1;
-            }
         }
         self.word
     }
@@ -761,7 +765,6 @@ impl Watch {
 pub struct Unreported {
     pub word: &'static str,
     pub harness: String,
-    pub turn: u64,
 }
 
 /// The agents without a 7501 report whose foreground process a manifest names.
@@ -775,11 +778,12 @@ pub struct Watcher {
 
 impl Watcher {
     /// Looks at core's live terminal records once: for each unreported agent,
-    /// its state. `screen(address)` says what the app has of a terminal's
-    /// screen; `tail(address, lines)` reads its last non-empty lines, only
-    /// when the screen changed. A terminal that reports, ends, or stops
-    /// running the agent drops out.
-    pub fn update(&mut self, registry: &Registry, live: &HashMap<String, Value>, now: Instant, mut screen: impl FnMut(&str) -> Option<Screen>, mut tail: impl FnMut(&str, usize) -> Vec<String>) -> HashMap<String, Unreported> {
+    /// its state. `writes(address)` is a terminal's write stamp, None when
+    /// the app has no screen for it; `read(address, lines)` reads its last
+    /// non-empty lines and its title as the program set it, only when the
+    /// stamp moved. A terminal that reports, ends, or stops running the agent
+    /// drops out.
+    pub fn update(&mut self, registry: &Registry, live: &HashMap<String, Value>, now: Instant, mut writes: impl FnMut(&str) -> Option<u64>, mut read: impl FnMut(&str, usize) -> (Vec<String>, String)) -> HashMap<String, Unreported> {
         let mut out = HashMap::new();
         self.detected.retain(|a, _| live.contains_key(a));
         for (addr, rec) in live {
@@ -798,35 +802,34 @@ impl Watcher {
             };
             let Some(index) = index else { continue };
             let m = &registry.manifests[index];
-            let watch = self.watching.entry(addr.clone()).or_insert_with(|| Watch::new(index, base_turn(rec), now));
+            let watch = self.watching.entry(addr.clone()).or_insert_with(|| Watch::new(index, now));
             if watch.harness != index {
-                *watch = Watch::new(index, base_turn(rec), now);
+                *watch = Watch::new(index, now);
             }
-            let verdict = match screen(addr) {
-                Some(s) if watch.looked.is_some_and(|(writes, _)| writes == s.writes) => watch.looked.and_then(|(_, v)| v),
-                Some(s) => {
+            let verdict = match writes(addr) {
+                Some(stamp) if watch.looked.is_some_and(|(seen, _)| seen == stamp) => watch.looked.and_then(|(_, v)| v),
+                Some(stamp) => {
                     watch.changed = now;
-                    let lines = m.lines();
-                    let verdict = (if lines == 0 { None } else { m.classify(&tail(addr, lines)) }).or_else(|| m.classify_title(&s.title));
-                    watch.looked = Some((s.writes, verdict));
+                    let (tail, title) = read(addr, m.lines());
+                    let verdict = m.classify(&tail).or_else(|| m.classify_title(&title));
+                    watch.looked = Some((stamp, verdict));
                     verdict
                 }
                 None => None,
             };
             let word = watch.observe(verdict, now);
-            out.insert(addr.clone(), Unreported { word, harness: m.id.clone(), turn: watch.turn() });
+            out.insert(addr.clone(), Unreported { word, harness: m.id.clone() });
         }
         self.watching.retain(|a, _| out.contains_key(a));
         out
     }
-}
 
-/// Where an unreported agent's turns start: past core's turn and the turn the
-/// person last saw, so a turn it finishes now reads as unseen.
-fn base_turn(rec: &Value) -> u64 {
-    let turn = rec.get("turn").and_then(Value::as_u64).unwrap_or(0);
-    let seen = rec.pointer("/labels/herdr.seen").and_then(Value::as_str).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-    turn.max(seen)
+    /// Whether a terminal's state comes from here. Its turns aren't core's, so
+    /// whether the person saw one stays in this app and never reaches the
+    /// shared `herdr.seen` label.
+    pub fn owns(&self, address: &str) -> bool {
+        self.watching.contains_key(address)
+    }
 }
 
 #[cfg(test)]

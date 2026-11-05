@@ -1718,7 +1718,7 @@ impl AppWindow {
         for addr in looking {
             let Some(a) = self.model.agents.get(&addr) else { continue };
             let turn = a.turn;
-            if a.word.is_none() || !self.live.contains_key(&addr) || self.looked.get(&addr) == Some(&turn) {
+            if a.word.is_none() || !self.live.contains_key(&addr) || self.unreported.owns(&addr) || self.looked.get(&addr) == Some(&turn) {
                 continue;
             }
             self.looked.insert(addr.clone(), turn);
@@ -2246,8 +2246,8 @@ impl AppWindow {
         let mut alerts = Vec::new();
         let terms = &self.terms;
         let view = |addr: &str| terms.values().find(|t| t.address == addr).map(|t| t.view.read(cx));
-        let unreported = self.unreported.update(crate::harness::registry(), &self.live, Instant::now(), |addr| view(addr).map(|v| v.screen()), |addr, lines| {
-            view(addr).map(|v| v.tail_text(lines)).unwrap_or_default()
+        let unreported = self.unreported.update(crate::harness::registry(), &self.live, Instant::now(), |addr| view(addr).map(|v| v.writes()), |addr, lines| {
+            view(addr).map(|v| (v.tail_text(lines), v.raw_title().to_owned())).unwrap_or_default()
         });
         for (addr, rec) in &self.live {
             let (word, app) = match unreported.get(addr) {
@@ -2268,10 +2268,13 @@ impl AppWindow {
                 cx.dismiss_system_notification(&crate::alert::tag(addr));
             }
             changed |= self.model.set_word(addr, word, app, looking);
-            // An agent read off its screen counts its own turns (harness.rs).
-            let turn = unreported.get(addr).map_or_else(|| rec.get("turn").and_then(Value::as_u64).unwrap_or(0), |u| u.turn);
+            let turn = rec.get("turn").and_then(Value::as_u64).unwrap_or(0);
             let label = rec.pointer("/labels/herdr.seen").and_then(Value::as_str).and_then(|s| s.parse::<u64>().ok());
-            changed |= self.model.set_turn(addr, turn, label.max(self.written_seen.get(addr).copied()));
+            // Core counts no turns for an agent read off its screen, so the
+            // shared seen turn can't say whether one was seen: this app's own
+            // seen flag does (`Model::status`).
+            let seen_turn = if unreported.contains_key(addr) { None } else { label.max(self.written_seen.get(addr).copied()) };
+            changed |= self.model.set_turn(addr, turn, seen_turn);
         }
         self.written_seen.retain(|a, _| self.live.contains_key(a));
         for gone in self.notified.extract_if(|a| !self.live.contains_key(a)) {
