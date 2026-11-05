@@ -419,7 +419,8 @@ pub struct Person {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub font_weight_bold: Option<u16>,
     /// Families terminal text takes characters from, in order, when its own
-    /// font lacks them, before the system's (macOS).
+    /// font lacks them, before the system's. Nerd Font icons (private use)
+    /// the font lacks come from the bundled symbols font regardless.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub font_fallbacks: Vec<String>,
     /// Enable programming ligatures in terminal fonts.
@@ -772,8 +773,9 @@ pub struct Settings {
     pub font_weight: u16,
     /// The weight bold terminal text draws at; unset, see `bold_weight`.
     pub font_weight_bold: Option<u16>,
-    /// Families terminal text falls back to, before the system's.
-    pub font_fallbacks: Vec<String>,
+    /// Families terminal text falls back to, before the system's; built once
+    /// here so every cell font shares it. None when there are none.
+    pub font_fallbacks: Option<gpui::FontFallbacks>,
     pub font_ligatures: bool,
     pub font_thicken: bool,
     pub font_thicken_strength: u16,
@@ -864,7 +866,7 @@ impl Default for Settings {
             line_height: 1.15,
             font_weight: 500,
             font_weight_bold: None,
-            font_fallbacks: Vec::new(),
+            font_fallbacks: None,
             font_ligatures: false,
             font_thicken: false,
             font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
@@ -928,7 +930,7 @@ impl Settings {
             line_height: look.line_height.or(person.line_height).unwrap_or(d.line_height),
             font_weight: look.font_weight.or(person.font_weight).unwrap_or(d.font_weight),
             font_weight_bold: look.font_weight_bold.or(person.font_weight_bold),
-            font_fallbacks: person.font_fallbacks.clone(),
+            font_fallbacks: (!person.font_fallbacks.is_empty()).then(|| gpui::FontFallbacks::from_fonts(person.font_fallbacks.clone())),
             font_ligatures: person.font_ligatures,
             font_thicken: person.font_thicken,
             font_thicken_strength: person.font_thicken_strength,
@@ -1594,7 +1596,8 @@ mod tests {
         assert_eq!(serde_json::to_value(&default).unwrap().get("font_fallbacks"), None);
         let person: Person = serde_json::from_value(serde_json::json!({"font_fallbacks": ["ZedMono Nerd Font Mono", "Menlo"]})).unwrap();
         let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
-        assert_eq!(settings.font_fallbacks, ["ZedMono Nerd Font Mono", "Menlo"]);
+        assert_eq!(settings.font_fallbacks.unwrap().fallback_list(), ["ZedMono Nerd Font Mono", "Menlo"]);
+        assert_eq!(Settings::compose(&default, &crate::layout::Look::default(), true).font_fallbacks, None);
     }
 
     #[test]

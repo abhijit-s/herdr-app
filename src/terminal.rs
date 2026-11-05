@@ -104,7 +104,7 @@ struct Grid {
     painted: Vec<PaintedRow>,
     /// Font size, cell size, cell font, loaded fonts, ligature, thickening and
     /// dimming settings used to draw.
-    painted_with: (u32, Size<Pixels>, Font, u16, u32, u64, bool, Option<u8>, (Rgb, u32)),
+    painted_with: PaintedWith,
 }
 
 pub struct TerminalView {
@@ -1472,9 +1472,7 @@ fn cell_font(bold: bool, italic: bool) -> Font {
     let s = crate::settings::get();
     f.weight = FontWeight(if bold { s.bold_weight() } else { s.font_weight.clamp(100, 900) } as f32);
     f.style = if italic { FontStyle::Italic } else { FontStyle::Normal };
-    if !s.font_fallbacks.is_empty() {
-        f.fallbacks = Some(FontFallbacks::from_fonts(s.font_fallbacks.clone()));
-    }
+    f.fallbacks = s.font_fallbacks.clone();
     f
 }
 
@@ -1691,6 +1689,27 @@ fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, cursor: Option<usize>, fade: Fa
     ops
 }
 
+/// What a grid's kept row drawings were built with: the font size, cell, the
+/// whole cell font (its fallbacks too), the bold weight, the faint opacity,
+/// fonts added, ligatures, thickening and the text dim. A change in any
+/// rebuilds every row.
+type PaintedWith = (u32, Size<Pixels>, Font, u16, u32, u64, bool, Option<u8>, (Rgb, u32));
+
+fn painted_with(cell: Size<Pixels>, fade: Fade) -> PaintedWith {
+    let s = crate::settings::get();
+    (
+        crate::settings::font_size().to_bits(),
+        cell,
+        cell_font(false, false),
+        s.bold_weight(),
+        s.faint_alpha().to_bits(),
+        crate::settings::fonts_added(),
+        s.font_ligatures,
+        glyph_thicken(),
+        (fade.toward, fade.dim.to_bits()),
+    )
+}
+
 /// font_thicken's strength, when on: the terminal's glyphs thicken alike
 /// whatever their color, as Ghostty's do, where macOS otherwise thickens
 /// light text on dark more than dark text on light.
@@ -1777,13 +1796,11 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, w
     // rebuilds the rows that changed, not the whole screen.
     let ligatures = crate::settings::get().font_ligatures;
     let cursor = frame.cursor_cell.filter(|_| ligatures);
-    // The whole cell font (its fallbacks too), the bold weight and the faint
-    // opacity, so changing any of them redraws kept rows too.
     // A window-wide dim is the window's veil (`AppWindow::render`), not the text's.
     let settings = crate::settings::get();
     let dim = if window.is_window_active() || settings.unfocused_dim_scope != crate::settings::DimScope::Text { 0.0 } else { settings.unfocused_dim };
     let fade = Fade { toward: frame.bg, dim };
-    let with = (crate::settings::font_size().to_bits(), cell, cell_font(false, false), crate::settings::get().bold_weight(), settings.faint_alpha().to_bits(), crate::settings::fonts_added(), ligatures, glyph_thicken(), (fade.toward, dim.to_bits()));
+    let with = painted_with(cell, fade);
     let mut last = std::mem::take(&mut grid.borrow_mut().painted);
     if grid.borrow().painted_with != with {
         last.clear();
@@ -3939,15 +3956,33 @@ mod tests {
     fn every_cell_font_falls_back_to_the_font_fallbacks() {
         let original = crate::settings::get();
         let mut settings = (*original).clone();
-        settings.font_fallbacks = Vec::new();
+        settings.font_fallbacks = None;
         crate::settings::set(settings.clone());
         assert_eq!(super::cell_font(false, false).fallbacks, None);
-        settings.font_fallbacks = vec!["ZedMono Nerd Font Mono".into(), "Menlo".into()];
+        settings.font_fallbacks = Some(gpui::FontFallbacks::from_fonts(vec!["ZedMono Nerd Font Mono".into(), "Menlo".into()]));
         crate::settings::set(settings);
         for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
             let fallbacks = super::cell_font(bold, italic).fallbacks.expect("fallbacks");
             assert_eq!(fallbacks.fallback_list(), ["ZedMono Nerd Font Mono", "Menlo"]);
         }
+        crate::settings::set((*original).clone());
+    }
+
+    #[test]
+    fn kept_rows_rebuild_when_faint_opacity_or_font_fallbacks_change() {
+        let original = crate::settings::get();
+        let mut settings = (*original).clone();
+        let key = |settings: &crate::settings::Settings| {
+            crate::settings::set(settings.clone());
+            super::painted_with(gpui::size(gpui::px(8.0), gpui::px(16.0)), Default::default())
+        };
+        let before = key(&settings);
+        assert_eq!(key(&settings), before);
+        settings.faint_opacity = 0.7;
+        let faint = key(&settings);
+        assert_ne!(faint, before);
+        settings.font_fallbacks = Some(gpui::FontFallbacks::from_fonts(vec!["Menlo".into()]));
+        assert_ne!(key(&settings), faint);
         crate::settings::set((*original).clone());
     }
 }

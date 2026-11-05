@@ -227,7 +227,7 @@ impl PlatformTextSystem for MacTextSystem {
             // HERDR: a variable face (one file with a weight axis, like the
             // bundled JetBrains Mono, Geist or the system font) is the only
             // candidate for every weight, so draw it at the weight asked for.
-            let font_id = lock.at_weight(font_id, font.weight).unwrap_or(font_id);
+            let font_id = lock.at_weight(font_id, font).unwrap_or(font_id);
             lock.font_selections.insert(font.clone(), font_id);
             Ok(font_id)
         }
@@ -351,7 +351,7 @@ impl MacTextSystemState {
         for font in family.fonts() {
             let mut font = font.load()?;
 
-            apply_features_and_fallbacks(&mut font, features, fallbacks)?;
+            apply_features_and_fallbacks(&mut font, features, fallbacks, None)?;
             // This block contains a precautionary fix to guard against loading fonts
             // that might cause panics due to `.unwrap()`s up the chain.
             {
@@ -453,9 +453,11 @@ impl MacTextSystemState {
         self.fonts[font_id.0].glyph_for_char(ch).map(GlyphId)
     }
 
-    /// HERDR: `font_id` drawn at `weight` on its `wght` axis, or None when
-    /// the face has no weight axis.
-    fn at_weight(&mut self, font_id: FontId, weight: FontWeight) -> Option<FontId> {
+    /// HERDR: `font_id` drawn at `font`'s weight on its `wght` axis, or None
+    /// when the face has no weight axis. Its fallbacks are asked for at that
+    /// weight too: the copy would keep the cascade built at the face's own.
+    fn at_weight(&mut self, font_id: FontId, font: &Font) -> Option<FontId> {
+        let weight = font.weight;
         const WGHT: i64 = 0x7767_6874;
         let base = self.fonts[font_id.0].native_font();
         let key = |k| unsafe { CFString::wrap_under_get_rule(k) };
@@ -493,11 +495,17 @@ impl MacTextSystemState {
                 descriptor.as_concrete_TypeRef(),
             ))
         };
+        let mut weighted = unsafe { FontKitFont::from_native_font(&native) };
+        if font.fallbacks.as_ref().is_some_and(|f| !f.fallback_list().is_empty()) {
+            if let Err(e) = apply_features_and_fallbacks(&mut weighted, &font.features, font.fallbacks.as_ref(), Some(weight.0)) {
+                log::warn!("fallbacks for {name:?} at weight {}: {e}", weight.0);
+            }
+        }
         let id = FontId(self.fonts.len());
         self.font_ids_by_weighted_base.insert((font_id, rounded), id);
         self.font_ids_by_weighted_name.insert((name.clone(), rounded), id);
         self.postscript_names_by_font_id.insert(id, name);
-        self.fonts.push(unsafe { FontKitFont::from_native_font(&native) });
+        self.fonts.push(weighted);
         Some(id)
     }
 

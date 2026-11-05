@@ -31,10 +31,14 @@ use font_kit::font::Font as FontKitFont;
 use gpui::{FontFallbacks, FontFeatures};
 use std::ptr;
 
+/// HERDR: `weight` (CSS 100..900), when given, is the weight fallbacks are
+/// asked for, in place of the face's own: a variable face drawn at another
+/// weight (`at_weight`) reports the weight it was loaded at.
 pub fn apply_features_and_fallbacks(
     font: &mut FontKitFont,
     features: &FontFeatures,
     fallbacks: Option<&FontFallbacks>,
+    weight: Option<f32>,
 ) -> anyhow::Result<()> {
     unsafe {
         let mut keys = vec![kCTFontFeatureSettingsAttribute];
@@ -43,7 +47,7 @@ pub fn apply_features_and_fallbacks(
             && !fallbacks.fallback_list().is_empty()
         {
             keys.push(kCTFontCascadeListAttribute);
-            values.push(generate_fallback_array(fallbacks, font));
+            values.push(generate_fallback_array(fallbacks, font, weight));
         }
         let attrs = CFDictionaryCreate(
             kCFAllocatorDefault,
@@ -99,7 +103,17 @@ fn generate_feature_array(features: &FontFeatures) -> CFMutableArrayRef {
     }
 }
 
-fn generate_fallback_array(fallbacks: &FontFallbacks, font: &mut FontKitFont) -> CFMutableArrayRef {
+/// HERDR: a CSS weight on CoreText's normalized weight trait scale (-1..1),
+/// the mapping font-kit reads CoreText's traits back with: 400 is 0, 700 is 0.4.
+pub fn normalized_weight(css: f32) -> f64 {
+    const TRAITS: [f32; 9] = [-0.7, -0.5, -0.23, 0.0, 0.2, 0.3, 0.4, 0.6, 0.8];
+    let at = (css.clamp(100.0, 900.0) - 100.0) / 100.0;
+    let (lo, frac) = (at.floor() as usize, at.fract());
+    let hi = (lo + 1).min(TRAITS.len() - 1);
+    f64::from(TRAITS[lo] + (TRAITS[hi] - TRAITS[lo]) * frac)
+}
+
+fn generate_fallback_array(fallbacks: &FontFallbacks, font: &mut FontKitFont, weight: Option<f32>) -> CFMutableArrayRef {
     unsafe {
         let symbolic_traits = font.native_font().symbolic_traits();
         let all_traits = font.native_font().all_traits();
@@ -109,7 +123,7 @@ fn generate_fallback_array(fallbacks: &FontFallbacks, font: &mut FontKitFont) ->
             let name = CFString::from(user_fallback.as_str());
 
             let traits_keys = [kCTFontWeightTrait, kCTFontSlantTrait];
-            let weight_value = CFNumber::from(all_traits.normalized_weight());
+            let weight_value = CFNumber::from(weight.map_or_else(|| all_traits.normalized_weight(), normalized_weight));
             let slant_value = CFNumber::from(if (symbolic_traits & kCTFontItalicTrait) != 0 {
                 1.0
             } else {
@@ -188,4 +202,14 @@ unsafe extern "C" {
         font: CTFontRef,
         languagePrefList: CFArrayRef,
     ) -> CFArrayRef;
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn css_weights_map_onto_coretexts_weight_trait() {
+        for (css, normalized) in [(100.0, -0.7), (400.0, 0.0), (450.0, 0.1), (700.0, 0.4), (900.0, 0.8), (50.0, -0.7), (1000.0, 0.8)] {
+            assert!((super::normalized_weight(css) - normalized).abs() < 1e-6, "{css}");
+        }
+    }
 }
