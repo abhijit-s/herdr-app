@@ -302,6 +302,13 @@ Metal gains what Zed's Linux and Windows backends have: a BGRA `Subpixel` atlas 
 - Files: `vendor/gpui-pre-macos/src/{lcd.rs,text_system.rs,window.rs,gpui_macos.rs}`, `vendor/gpui-pre-macos/Cargo.toml` (`swash`, `memmap2`), `vendor/gpui-pre-apple/{src/metal_atlas.rs,src/metal_renderer.rs,src/shaders.metal,build.rs,vendor/gpui/src/scene.rs}`, `vendor/gpui-pre/src/{scene.rs,window.rs,platform.rs,platform/test/window.rs,app/headless_app_context.rs}`, `src/settings.rs`, `src/terminal.rs`, `src/window.rs`, `defaults/AGENTS.md`, `defaults/frame/settings/main.js`, `scripts/settings.test.ts`, `tests/subpixel_text.rs`. The filter's, `thicken_level`'s, `Weight`'s and `Samples::growth`'s unit tests run with `cargo test -p gpui-pre-macos --lib lcd`.
 - Upstream: fork only, trial
 
+### Render tests clean up their folders
+
+`fix/render-test-folders` (fork only): each render test stages the shipped mods in `/var/tmp/herdr-render-<pid>-<n>` (short, for macOS socket path limits) and removes it on drop. A mod's localStorage write runs on the executor and recreates the folder if it lands after that drop, so `describe_with_values` runs the executor until parked once the window closes, and no folder outlives its test.
+
+- Files: `src/mods/render_tests.rs` (`describe_with_values`)
+- Upstream: none yet
+
 ### Rejected text experiments
 
 Two text-quality experiments measured against the shipped thicken, contrast and weight settings, and not kept. The numbers are here so neither is tried again without a new reason.

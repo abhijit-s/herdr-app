@@ -250,6 +250,9 @@ fn describe_with_values(
         Ok(second)
     })?;
     window.update(cx, |_, window, _| window.remove_window())?;
+    // localStorage writes land on the executor: let them finish while the
+    // staged folder is still there, or they recreate it after its drop.
+    cx.run_until_parked();
     assert!(calls.borrow().unexpected.is_empty(), "{entry}: {:?}", calls.borrow().unexpected);
     result
 }
