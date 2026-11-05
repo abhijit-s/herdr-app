@@ -663,7 +663,7 @@ From a shell:
 ```sh
 herdr-app do tab.new --name "fix login" --argv '["claude"]' --task "look at the login bug"
 herdr-app do pane.split:right
-herdr-app ls          # spaces, their tabs and terminals (sub-agents under their parent)
+herdr-app ls          # spaces, their tabs (with each tab's arrange mode) and terminals (sub-agents under their parent)
 herdr-app status      # what's on screen: layout, focus, overlays, zoom, errors from files and mods
 herdr-app commands    # every command and its arguments
 herdr-app popup --wait -- make test   # a command in a popup; exits with its exit code

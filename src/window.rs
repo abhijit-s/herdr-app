@@ -4280,7 +4280,7 @@ impl AppWindow {
                     .iter()
                     .map(|c| {
                         let terms: Vec<Value> = c.root.terminals().iter().filter_map(|n| Some(terminal(&n.id, n.terminal()?))).collect();
-                        json!({ "id": c.id, "name": Model::tab_name(p, c), "active": Some(&c.id) == active.as_ref(), "settled": c.settled.is_some(), "terminals": terms })
+                        json!({ "id": c.id, "name": Model::tab_name(p, c), "active": Some(&c.id) == active.as_ref(), "settled": c.settled.is_some(), "arrange": c.arrange.map(crate::arrange::Mode::name), "terminals": terms })
                     })
                     .collect();
                 json!({ "id": p.id, "name": m.space_name(p, &home()), "folder": p.folder, "machine": p.machine, "active": m.active.as_deref() == Some(&p.id), "tabs": tabs })
@@ -6057,6 +6057,7 @@ export default class Scale extends View {
             view.update(cx, |this, _| {
                 let tab = this.model.tab("t").unwrap();
                 assert_eq!(tab.arrange.map(crate::arrange::Mode::name), Some(want));
+                assert_eq!(this.world()["spaces"][0]["tabs"][0]["arrange"], json!(want), "herdr-app ls shows the mode");
                 assert_eq!(tab.zoomed, None);
                 assert_eq!(this.model.focused_pane().as_deref(), Some("b"), "{want}");
                 assert_eq!(this.model.active_tab().map(|t| t.id.as_str()), Some("t"));
