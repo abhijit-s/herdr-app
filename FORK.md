@@ -309,6 +309,16 @@ Fork only, merged with `feat/font-weight-bold`: each render test stages the ship
 - Files: `src/mods/render_tests.rs` (`describe_with_values`)
 - Upstream: none yet
 
+### Handlers inside list rows
+
+`feat/vlist-row-handlers` (branched from `master`, fork only): a row a lazy list's item renderer returns (`v_virtual_list`, `h_virtual_list`, `uniform_list`, `list`) may register its own handlers: `on_click`, `on_hover`, `on_mouse_down`/`on_mouse_up` (any button), `on_mouse_move`, `on_action`, `on_open_change` and the rest of gpui-kit's handler methods, on the row and on anything inside it, including a `HoverCard`'s trigger and content. `cx.stop_propagation()` in a row's handler keeps the press from the list's `on_item_click`, which still works as before. Upstream refuses all of these with an error naming `on_item_click`, because a handler belongs to the snapshot that registered it and a row is rebuilt every frame, so per-row handlers would pile up for as long as the view stood.
+
+Each batch the item renderer describes records its handlers into a callback generation of its own (`render_virtual_items`) and commits it with a `CallbackLease` that retires the generation on drop. Every row of the batch holds the lease from a no-op mouse-move listener (`holding`), which GPUI keeps from a painted element until the next frame's listeners replace it, so a batch lives exactly as long as its rows are on screen. The measuring pass's batch is never painted and is released when layout drops it, and a batch that registered nothing takes no lease and no wrapper. A handler belongs to the row it was drawn into, so a press after a scroll reaches the row now under the pointer. Layout-phase renderers other than a list's item renderer (a dock's chrome, a registered component's element callback) still refuse handlers, with a message that no longer points at `on_item_click`.
+
+- Row state a handler changes (hovered, pressed, dragging) lives on the view, keyed by the list's `get_key`: a row remembers nothing between frames. A `HoverCard` in a row keeps its open state in GPUI's window state under its id, so its id must be unique per row (`card-${key}`).
+- Files: `vendor/gpui-kit/crates/shell/src/engine/quickjs/mod.rs` (`InteractiveLayoutGuard`, `render_virtual_items`, `layout_handler_refusal`), `vendor/gpui-kit/crates/shell/src/snapshot.rs` (`CallbackLease`), `vendor/gpui-kit/crates/shell/src/spec.rs` (`ItemSpecs::lease`), `vendor/gpui-kit/crates/shell/src/materialize/components/virtual_list.rs` (`render_range`, `holding`), `vendor/gpui-kit/crates/shell/src/typings.rs` (`on_item_click`, `v_virtual_list`), `vendor/gpui-kit/crates/shell/src/{materialize.rs,engine/mod.rs}` (docs), `vendor/gpui-kit/crates/shell/src/tests/render.rs` (tests `a_row_registers_handlers_of_its_own`, `a_rows_handler_fires_for_the_row_under_the_pointer_after_a_scroll`, `a_rows_hover_and_mouse_handlers_see_the_row_they_are_on`, `a_rows_own_handlers_do_not_accumulate_while_it_is_scrolled`, `a_hover_card_inside_a_row_opens_and_its_content_handles_a_click`), `src/mods/lifecycle_tests.rs` (test `virtual_list_rows_carry_their_own_handlers`)
+- Upstream: none yet
+
 ### Rejected text experiments
 
 Two text-quality experiments measured against the shipped thicken, contrast and weight settings, and not kept. The numbers are here so neither is tried again without a new reason.

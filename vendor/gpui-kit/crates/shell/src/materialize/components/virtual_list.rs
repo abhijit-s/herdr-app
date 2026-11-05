@@ -12,11 +12,12 @@
 //! along with what confines it. This file is about the two decisions the
 //! confinement forced.
 //!
-//! # A row cannot register a handler
+//! # A row's handlers live as long as the row
 //!
-//! The natural script for a list is `row.on_click(...)`, one handler per row.
-//! It cannot work here, and the reason is worth writing down because it is not
-//! obvious from either side.
+//! HERDR: the natural script for a list is `row.on_click(...)`, one handler
+//! per row, and it works — but not with the lifetime every other handler has,
+//! and the reason is worth writing down because it is not obvious from either
+//! side.
 //!
 //! Callbacks belong to the snapshot that registered them: a generation is
 //! opened when a script render begins, committed when it succeeds, and retired
@@ -27,20 +28,25 @@
 //! JavaScript functions in the arena, unreachable and unreleased, for as long
 //! as the view stood.
 //!
-//! So registering one is refused where it is written, and the list carries a
-//! single `on_item_click((key, cx) => …)` instead — registered from the view's
-//! `render()`, in the ordinary way, with the ordinary lifetime. The key comes
-//! from the list's required `get_key(index)` and is captured with the hit box.
-//! An event delivered from an older frame therefore still identifies the item
-//! that owned that box rather than whichever item later moved into its index.
+//! So each batch the item renderer describes opens a generation of its own,
+//! and commits it with a [`CallbackLease`] that retires it on drop. Every row
+//! of the batch holds the lease from a listener (see [`holding`]), and a
+//! listener is what GPUI keeps from a painted element until the next frame's
+//! replaces it. A batch therefore lives exactly as long as its rows are on
+//! screen; the batch base only measures is never painted and is released when
+//! layout drops it. A handler always belongs to the row it was drawn into, so a
+//! press after a scroll reaches the row now under the pointer, and a press
+//! delivered from an older frame reaches the row that frame drew.
 //!
-//! What it does not cover is a row with *several* independently clickable
-//! parts. Doing that properly needs a callback generation scoped to a batch of
-//! items — opened when the batch is described, retired when the next batch
-//! replaces it — which is a lifetime `CallbackArena` does not have today. The
-//! shape is recorded in the implementation plan as P9; nothing here forecloses
-//! it, and the refusal above becomes an ordinary registration against the
-//! batch's generation when it exists.
+//! The list also carries `on_item_click((key, cx) => …)`, registered from the
+//! view's `render()` in the ordinary way. The key comes from the list's
+//! required `get_key(index)` and is captured with the hit box. An event
+//! delivered from an older frame therefore still identifies the item that
+//! owned that box rather than whichever item later moved into its index. A
+//! row's own handler runs first, in the ordinary bubble order, so
+//! `cx.stop_propagation()` there keeps the press from `on_item_click`.
+//!
+//! [`CallbackLease`]: crate::snapshot::CallbackLease
 //!
 //! # The geometry is base's, the pairing is by name
 //!
@@ -266,6 +272,11 @@ pub(in crate::materialize) fn render_range(
             .zip(described.keys())
             .map(|(root, key)| {
                 let item = materialize_subtree(&runtime, described.arena(), *root, window, cx);
+                // HERDR: see "A row's handlers live as long as the row".
+                let item = match described.lease() {
+                    Some(lease) => holding(item, Rc::clone(lease)),
+                    None => item,
+                };
                 if handlers.is_empty() {
                     item
                 } else {
@@ -274,6 +285,26 @@ pub(in crate::materialize) fn render_range(
             })
             .collect()
     })
+}
+
+/// HERDR: keeps the handlers a row registered callable for as long as the row
+/// can deliver an event.
+///
+/// A listener is the one thing GPUI keeps from a painted element until the next
+/// frame replaces it, so the lease rides on one. A row that is only measured is
+/// never painted, and its share of the lease drops with the element.
+///
+/// `size_full` for the reason [`clickable`] gives: the row's own box under the
+/// definite space base places it in, and its content under the min-content
+/// space base measures it in.
+fn holding(item: AnyElement, lease: Rc<crate::snapshot::CallbackLease>) -> AnyElement {
+    div()
+        .size_full()
+        .child(item)
+        .on_mouse_move(move |_, _, _| {
+            let _ = &lease;
+        })
+        .into_any_element()
 }
 
 /// The list-level handlers a row reports through. Both are optional, and a

@@ -78,8 +78,9 @@
 //! layout and costs a frame. It describes a *window* rather than a collection,
 //! which is the trade virtualization is; it never enters the script's
 //! `render`, so the counter above still means what it says; and it runs under
-//! `ScopePhase::Layout`, which forbids `notify`, forbids creating retained
-//! state, and refuses to register a handler. See `crate::materialize`.
+//! `ScopePhase::Layout`, which forbids `notify` and creating retained state.
+//! HERDR: the handlers its rows register belong to that batch of rows and are
+//! retired with the frame that painted them. See `crate::materialize`.
 //!
 //! # What this seam is, and what it is not
 //!
