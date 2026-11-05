@@ -325,6 +325,16 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Files: `vendor/gpui-kit/crates/shell/src/engine/quickjs/mod.rs` (`InteractiveLayoutGuard`, `render_virtual_items`, `layout_handler_refusal`), `vendor/gpui-kit/crates/shell/src/snapshot.rs` (`CallbackLease`), `vendor/gpui-kit/crates/shell/src/spec.rs` (`ItemSpecs::lease`), `vendor/gpui-kit/crates/shell/src/materialize/components/virtual_list.rs` (`render_range`, `holding`), `vendor/gpui-kit/crates/shell/src/typings.rs` (`on_item_click`, `v_virtual_list`), `vendor/gpui-kit/crates/shell/src/{materialize.rs,engine/mod.rs}` (docs), `vendor/gpui-kit/crates/shell/src/tests/render.rs` (tests `a_row_registers_handlers_of_its_own`, `a_rows_handler_fires_for_the_row_under_the_pointer_after_a_scroll`, `a_rows_hover_and_mouse_handlers_see_the_row_they_are_on`, `a_rows_own_handlers_do_not_accumulate_while_it_is_scrolled`, `a_hover_card_inside_a_row_opens_and_its_content_handles_a_click`), `src/mods/lifecycle_tests.rs` (test `virtual_list_rows_carry_their_own_handlers`)
 - Upstream: none yet
 
+### Dim when inactive
+
+`feat/unfocused-dim` (branched from `master`, fork only): `unfocused_dim` in settings.json (0 to 1, default 0, off), as Rex does. While the Herdr window isn't the active one, each terminal's text, sprites, fallback icons and link underlines blend that fraction toward the terminal's background. Backgrounds, selection and find highlights (painted from the frame, outside the text's colours), the cursor and the panels keep their colours. The switch is instant both ways, with no fade.
+
+- `paint_grid` reads GPUI's `window.is_window_active()` rather than the window's polled `window_active`: GPUI refreshes the whole window when activation changes, so the paint already reruns at the moment of the change, where the poll would lag by up to 400 ms.
+- The dim is applied while a row's drawing is built (`row_ops`, through `Fade`), since shaped lines carry their colours. The effective dim and the background it fades toward are part of `painted_with`, so a change of either rebuilds every row once and a steady state reuses the kept rows as before.
+- Settings window: a "Dim when inactive" stepper (steps of 0.1) on the Text page under Terminal text, through the same `contrast` helper as `text_contrast`. Layouts don't set it.
+- Files: `src/settings.rs` (test `unfocused_dim_defaults_off_and_validates`), `src/terminal.rs` (`dimmed`, `Fade`, `paint_grid`, test `dimming_blends_text_toward_the_background`), `src/window.rs` (test `terminal_text_dims_while_the_window_is_inactive`), `defaults/AGENTS.md`, `defaults/frame/settings/main.js`
+- Upstream: none yet
+
 ### Rejected text experiments
 
 Two text-quality experiments measured against the shipped thicken, contrast and weight settings, and not kept. The numbers are here so neither is tried again without a new reason.
