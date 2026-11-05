@@ -185,6 +185,14 @@ test("contrast steps by 0.1 within 0 to 1, terminal and interface apart", () => 
   expect(click({ ui_text_contrast: 0.2, text_contrast: 0.5 }, {}, "st-ui_text_contrast-minus")).toEqual({ ui_text_contrast: 0.1, text_contrast: 0.5 });
 });
 
+test("faint opacity steps by 0.1 within 0 to 1 and leaves Ghostty's 0.5 out", () => {
+  expect(click({}, {}, "st-faint_opacity-plus")).toEqual({ faint_opacity: 0.6 });
+  expect(click({}, {}, "st-faint_opacity-minus")).toEqual({ faint_opacity: 0.4 });
+  expect(click({ faint_opacity: 0.6 }, {}, "st-faint_opacity-minus")).toEqual({});
+  expect(click({ faint_opacity: 1 }, {}, "st-faint_opacity-plus")).toEqual({ faint_opacity: 1 });
+  expect(click({ faint_opacity: 0.1 }, {}, "st-faint_opacity-minus")).toEqual({ faint_opacity: 0 });
+});
+
 test("interface thicken strength shows only while it's on, and steps by 16 within 0 to 255", () => {
   expect(() => click({}, {}, "st-ui_font_thicken_strength-minus")).toThrow();
   expect(() => click({ font_thicken: true }, {}, "st-ui_font_thicken_strength-minus")).toThrow();
