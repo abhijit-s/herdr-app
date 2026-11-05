@@ -1195,6 +1195,50 @@ impl Vt {
         Some(Row { text, spots, wraps: self.wraps(y) })
     }
 
+    /// The last `n` lines of the screen that carry anything, top to bottom,
+    /// trailing blanks trimmed: what an agent's screen rules read (harness.rs).
+    /// Reads the grid itself, not the render state a hidden terminal released.
+    pub fn tail_text(&self, n: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        for y in (0..u32::from(self.rows)).rev() {
+            if out.len() >= n {
+                break;
+            }
+            let Some(mut r) = self.grid_ref(GHOSTTY_POINT_TAG_ACTIVE, 0, y) else { continue };
+            let mut line = String::new();
+            for x in 0..self.cols {
+                r.x = x;
+                let mut cps = [0u32; 16];
+                let mut len = 0usize;
+                let spacer = unsafe {
+                    let mut cell: GhosttyCell = Default::default();
+                    ghostty_grid_ref_cell(&r, &mut cell);
+                    let mut wide: GhosttyCellWide = GHOSTTY_CELL_WIDE_NARROW;
+                    ghostty_cell_get(cell, GHOSTTY_CELL_DATA_WIDE, &mut wide as *mut _ as *mut c_void);
+                    let spacer = wide == GHOSTTY_CELL_WIDE_SPACER_TAIL || wide == GHOSTTY_CELL_WIDE_SPACER_HEAD;
+                    if !spacer {
+                        ghostty_grid_ref_graphemes(&r, cps.as_mut_ptr(), cps.len(), &mut len);
+                    }
+                    spacer
+                };
+                if spacer {
+                    continue;
+                }
+                let before = line.len();
+                line.extend(cps[..len.min(cps.len())].iter().filter_map(|c| char::from_u32(*c)));
+                if line.len() == before {
+                    line.push(' ');
+                }
+            }
+            let line = line.trim_end_matches([' ', '\t']);
+            if !line.is_empty() {
+                out.push(line.to_owned());
+            }
+        }
+        out.reverse();
+        out
+    }
+
     /// The link `find` sees in `text` at spot `at`.
     fn link_in(&self, text: &str, spots: &[Spot], top: u32, at: usize, find: &mut impl FnMut(&str, usize, bool) -> Option<std::ops::Range<usize>>, joined: bool) -> Option<LinkHit> {
         let (target, chosen): (String, Vec<&Spot>) = match spots[at].uri.clone() {
@@ -2026,6 +2070,19 @@ mod tests {
         assert!(f.rows[0][0].wide, "also after a reset");
         assert_eq!(f.rows[0][0].text, "\u{270d}\u{fe0f}");
         assert_eq!(f.rows[0][2].text, "!");
+    }
+
+    #[test]
+    fn tail_text_is_the_last_lines_that_carry_anything() {
+        let mut vt = Vt::new(20, 6);
+        vt.write("old\r\n❯ 中文 ok   \r\n\r\n───\r\nend".as_bytes());
+        assert_eq!(vt.tail_text(3), ["❯ 中文 ok", "───", "end"], "blank rows skipped, a wide character read once");
+        assert_eq!(vt.tail_text(10), ["old", "❯ 中文 ok", "───", "end"]);
+        for i in 0..30 {
+            vt.write(format!("\r\nline {i}").as_bytes());
+        }
+        vt.scroll_viewport(-10);
+        assert_eq!(vt.tail_text(1), ["line 29"], "the live screen, wherever the person scrolled");
     }
 
     #[test]

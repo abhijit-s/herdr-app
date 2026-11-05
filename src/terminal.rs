@@ -453,6 +453,11 @@ impl TerminalView {
             && self.search_input.as_ref().is_some_and(|input| input.read(cx).focus_handle(cx).is_focused(window))
     }
 
+    /// The screen's last `n` non-empty lines (`Vt::tail_text`).
+    pub fn tail_text(&self, n: usize) -> Vec<String> {
+        self.grid.borrow().vt.tail_text(n)
+    }
+
     pub fn detach(&self) {
         let g = self.grid.borrow();
         if let Some(ch) = g.channel {

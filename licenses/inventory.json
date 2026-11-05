@@ -186,6 +186,14 @@
       ]
     },
     {
+      "name": "Agent harness manifests (defaults/harnesses), from tuios; their rules derive from herdr's agent manifests",
+      "source": "https://github.com/Gaurav-Gosain/tuios/tree/b58d85aa1254becefd598cc2640af126a2e49e98/internal/harness/manifests (MIT); herdr's src/detect/manifests (Apache-2.0)",
+      "files": [
+        "defaults/harnesses/LICENSE-tuios.txt",
+        "defaults/harnesses/LICENSE-herdr.txt"
+      ]
+    },
+    {
       "name": "Herdr logo artwork",
       "source": "Ram path adapted from https://github.com/herdrdev/herdr/blob/HEAD/assets/logo.svg (Apache-2.0). Herdr 98 artwork is drawn by defaults/mods/win98/art/generate.ts, under the app's Apache-2.0 license.",
       "files": [

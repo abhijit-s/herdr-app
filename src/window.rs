@@ -591,6 +591,8 @@ pub struct AppWindow {
     window_active: bool,
     /// Agents with a system notification up (alert.rs), taken down once seen.
     notified: HashSet<String>,
+    /// Agents that don't report (OSC 7501), read off their screens (harness.rs).
+    unreported: crate::harness::Watcher,
     /// Why `alert_command` didn't start, each said once in a toast.
     alert_command_errors: HashSet<String>,
     /// The system's appearance; a layout with a light and a dark theme follows it.
@@ -692,6 +694,7 @@ impl AppWindow {
             pane_history: Vec::new(),
             window_active: true,
             notified: HashSet::new(),
+            unreported: Default::default(),
             alert_command_errors: HashSet::new(),
             system_dark: is_dark(window.appearance()),
             file_events: crate::files::watch(&mods::app_dir()),
@@ -2241,9 +2244,18 @@ impl AppWindow {
         let mut changed = self.reconcile(window, cx);
         let visible: HashSet<String> = self.visible_addresses().into_iter().collect();
         let mut alerts = Vec::new();
+        let terms = &self.terms;
+        let unreported = self.unreported.update(crate::harness::registry(), &self.live, Instant::now(), |addr, lines| {
+            terms.values().find(|t| t.address == addr).map(|t| t.view.read(cx).tail_text(lines)).unwrap_or_default()
+        });
         for (addr, rec) in &self.live {
-            let word = rec.get("status").and_then(Value::as_str).map(str::to_owned);
-            let app = rec.get("report").and_then(|r| r.get("app")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+            let (word, app) = match unreported.get(addr) {
+                Some((word, harness)) => (Some((*word).to_owned()), Some(harness.clone())),
+                None => (
+                    rec.get("status").and_then(Value::as_str).map(str::to_owned),
+                    rec.get("report").and_then(|r| r.get("app")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned),
+                ),
+            };
             let looking = visible.contains(addr) && self.window_active;
             let prev = self.model.agents.get(addr).and_then(|a| a.word.clone());
             let child = rec.get("parent").and_then(Value::as_str).is_some_and(|p| !p.is_empty());

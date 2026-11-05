@@ -9,6 +9,7 @@ mod control;
 mod core_bin;
 mod files;
 mod git_status;
+mod harness;
 mod hc;
 mod keys;
 mod layout;

@@ -157,6 +157,17 @@ the highlighted line shows where it will land.
   `working`, `blocked`, `idle`, or `done` = finished while the user wasn't
   looking (it becomes `idle` once they look). A space's and a tab's
   status is the most urgent of its agents: blocked > done > working > idle.
+  A terminal with no 7501 report whose foreground process is a known agent
+  (Claude Code, Codex, OpenCode, Pi, Hermes and others: the manifests in
+  `defaults/harnesses`, plus your own in `harnesses/*.toml` in the home
+  folder, read at start) is an agent too, with `app` set to the manifest's
+  `id`. Its status is read off the bottom of its screen about twice a
+  second: needs-input prompts are `blocked`, a turn in progress `working`,
+  the empty prompt box `idle`; it starts `idle`, keeps its last status
+  while no rule matches, and an `idle` after `working` waits about a second
+  to be sure. This covers a backgrounded Claude Code session resumed into a
+  pane, which no longer reports. A 7501 report always wins; the entry goes
+  when the process in front stops being the agent or the terminal ends.
 - **Sub-agents** are terminals an agent started with `hc run`: the core
   records the starter as `parent` (see `terminals()`). They belong to their
   parent's tab without a pane; the `agents` mod shows them,
