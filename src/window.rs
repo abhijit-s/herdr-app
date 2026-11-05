@@ -449,6 +449,8 @@ struct Overlay {
     fit: bool,
     /// A click beside it doesn't close it (the first-run welcome).
     modal: bool,
+    /// An error or warning toast: the toast cap closes these last.
+    urgent: bool,
     /// `frame: "none"`: no border, corners, shadow or background; the mod draws its own.
     bare: bool,
     /// A window: where its top left is (None: centered) and its name (`key`).
@@ -3806,6 +3808,7 @@ impl AppWindow {
             props = json!({});
         }
         props["overlay"] = json!(id);
+        let urgent = kind == OverlayKind::Toast && matches!(props.get("level").and_then(Value::as_str), Some("error" | "warning"));
         let num = |k: &str, d: f32| spec.get(k).and_then(Value::as_f64).map_or(d, |v| v as f32);
         let size = match kind {
             // No width: as wide as its content, between the toast bounds.
@@ -3860,6 +3863,7 @@ impl AppWindow {
             top,
             fit,
             modal: spec.get("modal").and_then(Value::as_bool).unwrap_or(false),
+            urgent,
             bare: spec.get("frame").and_then(Value::as_str) == Some("none"),
             place,
             key: key.clone(),
@@ -3889,11 +3893,17 @@ impl AppWindow {
         cx.notify();
     }
 
-    /// A burst of toasts shows the newest few: past `TOAST_LIMIT`, the oldest close.
+    /// A burst of toasts shows at most `TOAST_LIMIT`: past it, the oldest
+    /// close, routine ones before errors and warnings, so a burst of
+    /// "finished" toasts can't push out an error nobody has read yet.
     fn close_toasts_past_limit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let toasts: Vec<String> = self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).map(|o| o.id.clone()).collect();
-        for id in toasts.iter().take(toasts.len().saturating_sub(TOAST_LIMIT)) {
-            self.close_overlay(id, window, cx);
+        let toasts: Vec<(String, bool)> = self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).map(|o| (o.id.clone(), o.urgent)).collect();
+        let excess = toasts.len().saturating_sub(TOAST_LIMIT);
+        let routine = toasts.iter().filter(|(_, urgent)| !urgent);
+        let urgent = toasts.iter().filter(|(_, urgent)| *urgent);
+        let closing: Vec<String> = routine.chain(urgent).take(excess).map(|(id, _)| id.clone()).collect();
+        for id in closing {
+            self.close_overlay(&id, window, cx);
         }
     }
 
@@ -6279,7 +6289,8 @@ export default class Scale extends View {
 
     /// A wave of agents finishing is one toast, redrawn with each, not a toast
     /// each; another kind of alert, or one after the wave, gets its own; at
-    /// most `TOAST_LIMIT` toasts show, the newest.
+    /// most `TOAST_LIMIT` toasts show, the newest, except that errors and
+    /// warnings outlast routine toasts.
     #[gpui::test]
     fn alert_toasts(cx: &mut gpui::TestAppContext) {
         use super::{ALERT_JOIN, OverlayKind, TOAST_LIMIT};
@@ -6323,6 +6334,7 @@ export default class Scale extends View {
 
         alert("t4", Alert::Blocked, cx);
         assert_eq!(toasts(cx).len(), 2, "needing the person is another kind of alert");
+        let needs_you = toasts(cx)[1].clone();
 
         view.update(cx, |this, _| {
             for o in &mut this.overlays {
@@ -6343,6 +6355,7 @@ export default class Scale extends View {
         let shown = toasts(cx);
         assert_eq!(shown.len(), TOAST_LIMIT);
         assert!(!shown.contains(&first) && shown.ends_with(&["n0".into(), "n1".into(), "n2".into(), "n3".into()]), "the oldest closed: {shown:?}");
+        assert!(shown.contains(&needs_you), "routine toasts close before an older one that needs the person: {shown:?}");
         assert!(cx.debug_bounds("toast-3 agents finished").is_none(), "its mod went with it");
     }
 
