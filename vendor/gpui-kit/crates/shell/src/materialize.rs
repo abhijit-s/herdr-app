@@ -41,9 +41,10 @@
 //! * **It is scoped.** Item rendering runs under [`ScopePhase::Layout`], which
 //!   forbids `cx.notify()` (a re-render requested from inside layout is a loop),
 //!   forbids creating retained state, and runs on the render-time budget.
-//! * **It registers nothing.** Callbacks cannot be registered from an item
-//!   renderer — see [`components::virtual_list`] for why, and for what a script
-//!   uses instead.
+//! * **Its handlers die with its rows.** HERDR: a handler registered from an
+//!   item renderer belongs to that batch of rows rather than to the snapshot,
+//!   and is retired when the frame that painted them is replaced — see
+//!   [`components::virtual_list`].
 //! * **It owns no arena.** Each batch describes itself into a temporary
 //!   [`SpecArena`] that is materialized through [`materialize_subtree`] and
 //!   dropped before the call returns, so nothing a row described outlives the

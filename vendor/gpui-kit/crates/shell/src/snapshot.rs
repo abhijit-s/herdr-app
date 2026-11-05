@@ -155,3 +155,36 @@ impl Drop for SnapshotInner {
         }
     }
 }
+
+/// HERDR: the handlers one batch of lazy-list rows registered, released when
+/// the last element holding the batch is dropped.
+///
+/// A list's item renderer runs on every frame the list is laid out, so its
+/// handlers cannot belong to the [`RenderSnapshot`] that registered the
+/// renderer: that snapshot stands for thousands of frames. Each batch records
+/// its handlers into a generation of its own instead, and every row the batch
+/// produced holds this lease from a listener in the frame's event table. GPUI
+/// replaces that table when the next frame paints, so a batch lives exactly as
+/// long as its rows are on screen, and a batch that was only measured, never
+/// painted, is released as soon as layout drops its elements.
+pub(crate) struct CallbackLease {
+    generation: u64,
+    runtime: Weak<ShellRuntime>,
+}
+
+impl CallbackLease {
+    pub(crate) fn new(runtime: &Rc<ShellRuntime>, generation: u64) -> Rc<Self> {
+        Rc::new(Self {
+            generation,
+            runtime: Rc::downgrade(runtime),
+        })
+    }
+}
+
+impl Drop for CallbackLease {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.upgrade() {
+            runtime.retire_callbacks(self.generation);
+        }
+    }
+}

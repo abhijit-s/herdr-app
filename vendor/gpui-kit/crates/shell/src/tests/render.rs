@@ -10055,8 +10055,8 @@ fn a_virtual_lists_handlers_do_not_accumulate_while_it_is_scrolled(cx: &mut Test
     );
 
     // Forty passes over the item renderer — two per frame, one to measure and
-    // one to place. Each describes twenty rows. If a row could register a
-    // handler, or if a batch's descriptions outlived the frame that drew them,
+    // one to place. Each describes twenty rows, none of which registers a
+    // handler. If a batch's descriptions outlived the frame that drew them,
     // this is where it would show.
     for step in 0..20 {
         scroll_by(&mut context, if step % 2 == 0 { -60. } else { 40. });
@@ -10083,25 +10083,284 @@ fn a_virtual_lists_handlers_do_not_accumulate_while_it_is_scrolled(cx: &mut Test
     );
 }
 
-#[gpui::test]
-fn a_row_cannot_register_a_handler_of_its_own(cx: &mut TestAppContext) {
-    let (_runtime, _window, view, mut context) = mount_virtual_list(
-        cx,
-        "try { row.on_click(() => {}); } catch (error) { this.refused = String(error.message); }",
-    );
+/// HERDR: rows that carry handlers of their own, the way a card with a pin
+/// button, a hover state and a drag handle does.
+///
+/// Each 20px row is clickable as a whole, has a 20px-wide "pin" at its left
+/// edge that stops propagation, tracks hover, and records the left button's
+/// down, move and up. The list's own `on_item_click` sits around all of it.
+fn row_handlers_source() -> &'static str {
+    r#"
+import { div, View } from "gpui-kit";
+import { v_flex, h_flex, v_virtual_list } from "gpui-base";
 
+export default class Rows extends View {
+  init() {
+    this.row = "none";
+    this.item = "none";
+    this.pin = "none";
+    this.hovered = "none";
+    this.mouse = [];
+  }
+
+  render(cx) {
+    return v_flex()
+      .w(300)
+      .h(400)
+      .child(
+        v_flex()
+          .h(200)
+          .child(
+            v_virtual_list("rows", 500, 20, (index) => String(index), (range) => {
+              const items = [];
+              for (let index = range.start; index < range.end; index++) {
+                const key = String(index);
+                items.push(
+                  h_flex()
+                    .id(`row-${key}`)
+                    .h(20)
+                    .on_click((_event, cx) => { this.row = key; cx.notify(); })
+                    .on_hover((on, cx) => {
+                      if (on) this.hovered = key;
+                      else if (this.hovered === key) this.hovered = "none";
+                      cx.notify();
+                    })
+                    .on_mouse_down("left", () => { this.mouse.push(`down ${key}`); })
+                    .on_mouse_move((_event, cx) => {
+                      if (this.mouse.length > 0 && this.mouse[this.mouse.length - 1] !== `move ${key}`) {
+                        this.mouse.push(`move ${key}`);
+                        cx.notify();
+                      }
+                    })
+                    .on_mouse_up("left", (_event, cx) => { this.mouse.push(`up ${key}`); cx.notify(); })
+                    .child(
+                      div()
+                        .id(`pin-${key}`)
+                        .w(20)
+                        .h(20)
+                        .on_click((_event, cx) => {
+                          cx.stop_propagation();
+                          this.pin = key;
+                          cx.notify();
+                        }),
+                    )
+                    .child(`row ${key}`),
+                );
+              }
+              return items;
+            }).on_item_click((key, cx) => {
+              this.item = key;
+              cx.notify();
+            }),
+          ),
+      )
+      .child(`row ${this.row} item ${this.item} pin ${this.pin} hovered ${this.hovered} mouse ${this.mouse.join(",")}.`);
+  }
+}
+"#
+}
+
+#[gpui::test]
+fn a_row_registers_handlers_of_its_own(cx: &mut TestAppContext) {
+    let (_runtime, _window, view, mut context) = mount_list_source(cx, row_handlers_source());
+    redraw_and_read(&mut context, &view);
+
+    // The third row spans 40..60, its pin 0..20 across.
+    context.simulate_click(point(px(150.), px(50.)), Modifiers::default());
+    context.update(|window, cx| window.draw(cx).clear(cx));
     let tree = redraw_and_read(&mut context, &view);
     assert!(
-        tree.contains("refused"),
-        "the view reports what the row was told: {tree}"
+        tree.contains("row 2 item 2 pin none"),
+        "a click on the row reaches the row's own handler and then the list's: {tree}"
     );
-    let refused = tree
-        .split("refused ")
-        .nth(1)
-        .unwrap_or_else(|| panic!("no refusal in: {tree}"));
+
+    context.simulate_click(point(px(10.), px(70.)), Modifiers::default());
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let tree = redraw_and_read(&mut context, &view);
     assert!(
-        refused.contains("on_item_click"),
-        "the refusal must name what to use instead: {refused}"
+        tree.contains("row 2 item 2 pin 3"),
+        "a pin that stops propagation keeps the press from the row and from on_item_click: \
+         {tree}"
+    );
+}
+
+#[gpui::test]
+fn a_rows_handler_fires_for_the_row_under_the_pointer_after_a_scroll(cx: &mut TestAppContext) {
+    let (_runtime, _window, view, mut context) = mount_list_source(cx, row_handlers_source());
+    redraw_and_read(&mut context, &view);
+
+    // Ten rows down: the box that held row 2 now holds row 12.
+    scroll_by(&mut context, -200.);
+    redraw_and_read(&mut context, &view);
+    context.simulate_click(point(px(150.), px(50.)), Modifiers::default());
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let tree = redraw_and_read(&mut context, &view);
+    assert!(
+        tree.contains("row 12 item 12"),
+        "the handler must belong to the row drawn under the pointer, not to the index: {tree}"
+    );
+
+    context.simulate_click(point(px(10.), px(10.)), Modifiers::default());
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let tree = redraw_and_read(&mut context, &view);
+    assert!(
+        tree.contains("pin 10 "),
+        "a nested handler follows the scroll too: {tree}"
+    );
+}
+
+#[gpui::test]
+fn a_rows_hover_and_mouse_handlers_see_the_row_they_are_on(cx: &mut TestAppContext) {
+    let (_runtime, _window, view, mut context) = mount_list_source(cx, row_handlers_source());
+    redraw_and_read(&mut context, &view);
+
+    context.simulate_mouse_move(point(px(150.), px(30.)), None, Modifiers::default());
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let tree = redraw_and_read(&mut context, &view);
+    assert!(
+        tree.contains("hovered 1 "),
+        "resting on the second row reports it hovered: {tree}"
+    );
+
+    // A drag from row 1 to row 3: down on one row, moves over the next ones,
+    // up on the last, each reported by the row under the pointer.
+    context.simulate_mouse_down(
+        point(px(150.), px(30.)),
+        gpui::MouseButton::Left,
+        Modifiers::default(),
+    );
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    for y in [45., 55., 70.] {
+        context.simulate_mouse_move(
+            point(px(150.), px(y)),
+            gpui::MouseButton::Left,
+            Modifiers::default(),
+        );
+        context.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    context.simulate_mouse_up(
+        point(px(150.), px(70.)),
+        gpui::MouseButton::Left,
+        Modifiers::default(),
+    );
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let tree = redraw_and_read(&mut context, &view);
+    assert!(
+        tree.contains("hovered 3 ") && tree.contains("mouse down 1,move 2,move 3,up 3."),
+        "hover follows the pointer and down, move and up each reach the row under it: {tree}"
+    );
+}
+
+#[gpui::test]
+fn a_rows_own_handlers_do_not_accumulate_while_it_is_scrolled(cx: &mut TestAppContext) {
+    let (runtime, _window, view, mut context) = mount_list_source(cx, row_handlers_source());
+    redraw_and_read(&mut context, &view);
+    let settled = runtime.live_callbacks();
+    // Frames that draw the same rows again replace one batch with the next.
+    for _ in 0..5 {
+        context.update(|window, cx| window.draw(cx).clear(cx));
+        redraw_and_read(&mut context, &view);
+    }
+    assert_eq!(
+        runtime.live_callbacks(),
+        settled,
+        "redrawing the same rows must leave the same number of handlers behind"
+    );
+
+    for step in 0..20 {
+        scroll_by(&mut context, if step % 2 == 0 { -60. } else { 40. });
+    }
+    for _ in 0..5 {
+        redraw_and_read(&mut context, &view);
+    }
+
+    // Six handlers a row and one batch of rows on screen. A window that
+    // scrolled to a fractional offset may hold a row more than one that did
+    // not; forty batches retained would be thousands of handlers.
+    let live = runtime.live_callbacks();
+    assert!(
+        live <= settled + 2 * 6,
+        "a batch's handlers must be released with the frame that painted them: {settled} \
+         settled, {live} after scrolling"
+    );
+}
+
+/// HERDR: a `HoverCard` in a row opens on its trigger after the delay, and a
+/// handler inside its content — registered by the row's batch — is callable
+/// while the card is on screen.
+#[gpui::test]
+fn a_hover_card_inside_a_row_opens_and_its_content_handles_a_click(cx: &mut TestAppContext) {
+    let source = r#"
+import { div, View } from "gpui-kit";
+import { v_flex, v_virtual_list, HoverCard } from "gpui-base";
+
+export default class Rows extends View {
+  init() {
+    this.hits = "none";
+    this.open = "none";
+  }
+
+  render(cx) {
+    return v_flex()
+      .w(400)
+      .h(400)
+      .child(
+        v_flex()
+          .h(200)
+          .child(
+            v_virtual_list("rows", 50, 40, (index) => String(index), (range) => {
+              const items = [];
+              for (let index = range.start; index < range.end; index++) {
+                const key = String(index);
+                items.push(
+                  HoverCard.new(`card-${key}`)
+                    .anchor("top_left")
+                    .open_delay(50)
+                    .close_delay(50)
+                    .on_open_change((open, cx) => { if (open) this.open = key; cx.notify(); })
+                    .trigger(div().w(300).h(40).child(`row ${key}`))
+                    .content(
+                      div()
+                        .id(`body-${key}`)
+                        .w(200)
+                        .h(100)
+                        .on_click((_event, cx) => { this.hits = key; cx.notify(); })
+                        .child(`body ${key}`),
+                    ),
+                );
+              }
+              return items;
+            }),
+          ),
+      )
+      .child(`hits ${this.hits} open ${this.open}.`);
+  }
+}
+"#;
+    let (_runtime, _window, view, mut context) = mount_list_source(cx, source);
+    redraw_and_read(&mut context, &view);
+    let settle = |context: &mut VisualTestContext| {
+        context
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(60));
+        context.run_until_parked();
+        context.update(|window, cx| window.draw(cx).clear(cx));
+        context.update(|window, cx| window.draw(cx).clear(cx));
+    };
+
+    // The second row's trigger spans 40..80; its card, pinned by its top left
+    // corner below the trigger, spans 80..180 down and 0..200 across.
+    context.simulate_mouse_move(point(px(150.), px(60.)), None, Modifiers::default());
+    settle(&mut context);
+    context.simulate_mouse_move(point(px(100.), px(130.)), None, Modifiers::default());
+    settle(&mut context);
+    context.simulate_click(point(px(100.), px(130.)), Modifiers::default());
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let tree = redraw_and_read(&mut context, &view);
+    assert!(
+        tree.contains("hits 1 open 1."),
+        "the row's card opens and a click inside it reaches the handler its row registered: \
+         {tree}"
     );
 }
 

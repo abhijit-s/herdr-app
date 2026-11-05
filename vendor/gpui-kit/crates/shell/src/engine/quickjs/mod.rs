@@ -1365,6 +1365,27 @@ fn queue_component_app_effect(
     true
 }
 
+/// HERDR: lets a renderer that runs during layout register handlers into a
+/// generation of its own, for as long as it runs.
+///
+/// Restores the previous permission on the way out and, unless the caller has
+/// committed the generation, discards it: a renderer that threw must not leave
+/// callable handlers behind.
+struct InteractiveLayoutGuard<'a> {
+    runtime: &'a ShellRuntime,
+    previous: bool,
+    active: bool,
+}
+
+impl Drop for InteractiveLayoutGuard<'_> {
+    fn drop(&mut self) {
+        self.runtime.interactive_inline_layout.set(self.previous);
+        if self.active {
+            self.runtime.callbacks.borrow_mut().abort();
+        }
+    }
+}
+
 pub struct ShellRuntime {
     /// Declared first because fields drop in declaration order and every
     /// `Persistent` handle must be released while the context still exists.
@@ -3254,6 +3275,9 @@ impl ShellRuntime {
     /// * The scope is [`ScopePhase::Layout`], which forbids `cx.notify()` —
     ///   a re-render requested from inside layout is a loop — along with
     ///   creating retained state, and runs on the render-time budget.
+    ///   HERDR: handlers are allowed, recorded into a generation of the
+    ///   batch's own and committed with the [`CallbackLease`] the rows hold;
+    ///   see [`crate::materialize::components::virtual_list`].
     /// * The batch describes itself into an arena of its own, swapped in for
     ///   the duration. The runtime's scratch arena belongs to whichever script
     ///   render is in progress; a batch writing into it would survive into that
@@ -3265,6 +3289,8 @@ impl ShellRuntime {
     ///   running one part-way through GPUI's layout pass is the last place it
     ///   belongs. Queued jobs wait for the event loop, as they would have
     ///   anyway.
+    ///
+    /// [`CallbackLease`]: crate::snapshot::CallbackLease
     pub(crate) fn render_virtual_items(
         self: &Rc<Self>,
         id: CallbackId,
@@ -3305,6 +3331,21 @@ impl ShellRuntime {
         // and every helper would need a second, list-only plumbing.
         scope::adopt(entry.registered_in);
 
+        // HERDR: the rows' own handlers go into a generation of this batch's,
+        // retired by the `CallbackLease` the rows hold once they leave the
+        // screen. A nested recording would mean this was reached from inside
+        // a script render, where no row can be built.
+        if self.callbacks.borrow().is_building() {
+            tracing::error!("item renderer {id} was reached while a render was being recorded");
+            return None;
+        }
+        let batch = self.callbacks.borrow_mut().begin();
+        let mut recording = InteractiveLayoutGuard {
+            runtime: self,
+            previous: self.interactive_inline_layout.replace(true),
+            active: true,
+        };
+
         let outer = std::mem::take(&mut *self.arena.borrow_mut());
         let described = self.with_js(|ctx| {
             let handler = entry.value.clone().restore(ctx)?;
@@ -3344,7 +3385,15 @@ impl ShellRuntime {
         let arena = std::mem::replace(&mut *self.arena.borrow_mut(), outer);
 
         match described {
-            Ok((roots, keys)) => Some(crate::spec::ItemSpecs::new(arena, roots, keys)),
+            Ok((roots, keys)) => {
+                // HERDR: a batch that registered nothing needs no lease.
+                let registered = self.callbacks.borrow().checkpoint() > 0;
+                self.callbacks.borrow_mut().commit();
+                recording.active = false;
+                drop(recording);
+                let lease = registered.then(|| crate::snapshot::CallbackLease::new(self, batch));
+                Some(crate::spec::ItemSpecs::new(arena, roots, keys, lease))
+            }
             Err(error) => {
                 tracing::error!("error in virtual list item renderer: {error}");
                 None
@@ -4910,20 +4959,8 @@ impl ShellRuntime {
             } else {
                 None
             };
-            struct CallbackGuard<'a> {
-                runtime: &'a ShellRuntime,
-                previous: bool,
-                active: bool,
-            }
-            impl Drop for CallbackGuard<'_> {
-                fn drop(&mut self) {
-                    self.runtime.interactive_inline_layout.set(self.previous);
-                    if self.active {
-                        self.runtime.callbacks.borrow_mut().abort();
-                    }
-                }
-            }
-            let mut callbacks = CallbackGuard {
+            // HERDR: shared with `render_virtual_items`.
+            let mut callbacks = InteractiveLayoutGuard {
                 runtime: self,
                 previous: self.interactive_inline_layout.replace(interactive),
                 active: interactive,
@@ -8073,12 +8110,7 @@ impl ShellRuntime {
                 if scope::current_phase() == Some(ScopePhase::Layout)
                     && !self.interactive_inline_layout.get()
                 {
-                    return Err(Exception::throw_type(
-                        ctx,
-                        "`on_action` cannot be registered from a virtual list's item \
-                         renderer: the rows are rebuilt every frame, so a handler \
-                         registered there would pile up for as long as the view stood",
-                    ));
+                    return Err(Exception::throw_type(ctx, &layout_handler_refusal(method)));
                 }
                 let action = args
                     .first_value()
@@ -8116,14 +8148,7 @@ impl ShellRuntime {
                 if scope::current_phase() == Some(ScopePhase::Layout)
                     && !self.interactive_inline_layout.get()
                 {
-                    return Err(Exception::throw_type(
-                        ctx,
-                        &format!(
-                            "`{method}` cannot be registered from a virtual list's item \
-                             renderer: the rows are rebuilt every frame, so a handler \
-                             registered there would pile up for as long as the view stood"
-                        ),
-                    ));
+                    return Err(Exception::throw_type(ctx, &layout_handler_refusal(method)));
                 }
                 let button = args
                     .first_value()
@@ -8194,31 +8219,19 @@ impl ShellRuntime {
             | "empty_group"
             | "drop_indicator"
             | "dock" => {
-                // A handler registered from inside a virtual list's item
-                // renderer has nowhere to live. Callbacks belong to the
-                // snapshot that registered them and are retired with it; the
-                // snapshot outlives thousands of frames, while the rows are
-                // rebuilt on every one — so twenty handlers a frame would
-                // accumulate, unreachable and unreleased, for as long as the
-                // description stood. Refused where it was written rather than
-                // leaked quietly. `on_item_click` on the list is the one
-                // handler that covers the rows, and it is registered from
-                // `render()` like every other.
+                // HERDR: a lazy list's item renderer records its rows' handlers
+                // into a batch generation of its own (`render_virtual_items`),
+                // so it sets `interactive_inline_layout` and passes. What still
+                // runs in `Layout` without one — a dock's chrome, a component's
+                // element callback — has no render pass to own a handler: the
+                // callback belongs to the snapshot that registered it, which
+                // stands for thousands of frames while these elements are
+                // rebuilt on each. Refused where it was written rather than
+                // leaked quietly.
                 if scope::current_phase() == Some(ScopePhase::Layout)
                     && !self.interactive_inline_layout.get()
                 {
-                    return Err(Exception::throw_type(
-                        ctx,
-                        &format!(
-                            "`{method}` cannot be registered from a virtual list's item \
-                             renderer: the rows are rebuilt every frame, so a handler \
-                             registered there would pile up for as long as the view stood. \
-                             Use `on_item_click((key, cx) => ...)` or \
-                             `on_item_secondary_click((key, event, cx) => ...)` on the list \
-                             itself, and read the row out of your own data with the stable key \
-                             it gives you"
-                        ),
-                    ));
+                    return Err(Exception::throw_type(ctx, &layout_handler_refusal(method)));
                 }
                 let saved = args.first_handler().ok_or_else(|| {
                     Exception::throw_type(ctx, &format!("{method}(handler) expects a function"))
@@ -8979,6 +8992,16 @@ impl<'js> FromJs<'js> for ItemKeyResolver {
 /// shared across every list in the description so several individually valid
 /// lists cannot bypass it.
 const MAX_VIRTUAL_ITEMS_PER_RENDER: usize = 1_000_000;
+
+/// HERDR: why a handler registered from a renderer that runs during layout,
+/// other than a lazy list's item renderer, is refused.
+fn layout_handler_refusal(method: &str) -> String {
+    format!(
+        "`{method}` cannot be registered here: this renderer runs during layout and its \
+         elements are rebuilt every frame with no render pass to own a handler. Register it \
+         from render(), or from a list's item renderer, whose rows own their handlers"
+    )
+}
 
 /// The guard both lazy-list constructors run before they allocate anything.
 ///

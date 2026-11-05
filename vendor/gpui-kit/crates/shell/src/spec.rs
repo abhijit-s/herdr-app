@@ -870,11 +870,29 @@ pub struct ItemSpecs {
     arena: SpecArena,
     roots: SmallVec<[SpecId; 16]>,
     keys: Vec<String>,
+    /// HERDR: the handlers the rows registered, if any. Every element built
+    /// from these rows must hold it for as long as it can deliver an event.
+    lease: Option<std::rc::Rc<crate::snapshot::CallbackLease>>,
 }
 
 impl ItemSpecs {
-    pub(crate) fn new(arena: SpecArena, roots: SmallVec<[SpecId; 16]>, keys: Vec<String>) -> Self {
-        Self { arena, roots, keys }
+    pub(crate) fn new(
+        arena: SpecArena,
+        roots: SmallVec<[SpecId; 16]>,
+        keys: Vec<String>,
+        lease: Option<std::rc::Rc<crate::snapshot::CallbackLease>>,
+    ) -> Self {
+        Self {
+            arena,
+            roots,
+            keys,
+            lease,
+        }
+    }
+
+    /// HERDR: see [`crate::snapshot::CallbackLease`].
+    pub(crate) fn lease(&self) -> Option<&std::rc::Rc<crate::snapshot::CallbackLease>> {
+        self.lease.as_ref()
     }
 
     pub fn arena(&self) -> &SpecArena {

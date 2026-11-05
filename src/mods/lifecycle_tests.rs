@@ -478,3 +478,59 @@ export default class extends View {
     cx.run_until_parked();
     window.update(cx, |_, window, _| window.remove_window()).unwrap();
 }
+
+#[gpui::test]
+fn virtual_list_rows_carry_their_own_handlers(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, point, px};
+    cx.update(gpui_shell::init);
+    // A card per row, as the agents sidebar draws them: the card notes a
+    // focus, its pin stops propagation, and hover swaps what the card shows.
+    let fixture = Fixture::new(r#"
+import { View, div } from "gpui-kit";
+import { v_flex, h_flex, v_virtual_list } from "gpui-base";
+import { note } from "fixture";
+export default class extends View {
+  init() { this.hovered = null; }
+  render() {
+    return v_flex().w(300).h(200).child(v_virtual_list("cards", 100, 40, (i) => `a${i}`, (range) => {
+      const rows = [];
+      for (let i = range.start; i < range.end; i++) {
+        const key = `a${i}`;
+        rows.push(h_flex().id(`card-${key}`).h(40)
+          .on_hover((on, cx) => { if (on) { this.hovered = key; note(`hover ${key}`); cx.notify(); } })
+          .on_click(() => note(`focus ${key}`))
+          .child(div().id(`pin-${key}`).w(20).h(20).on_click((_e, cx) => { cx.stop_propagation(); note(`pin ${key}`); }))
+          .child(this.hovered === key ? "pin" : key));
+      }
+      return rows;
+    }).on_item_click((key) => note(`item ${key}`)));
+  }
+}"#);
+    let notes = Rc::new(RefCell::new(Vec::new()));
+    let calls = notes.clone();
+    gpui_shell::policy::set_default(Policy::new().with_host_module(
+        HostModule::new("fixture").function("note", move |a| {
+            calls.borrow_mut().push(a.string(0)?.to_owned());
+            Ok(HostValue::Null)
+        })
+    ).unwrap());
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&fixture.0, window, cx).unwrap()));
+    let mut visual = VisualTestContext::from_window(*window.deref(), cx);
+    let frame = |visual: &mut VisualTestContext| {
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+    };
+    frame(&mut visual);
+    frame(&mut visual);
+
+    // The second card spans 40..80; its pin is the 20px square at its top left.
+    visual.simulate_mouse_move(point(px(150.), px(60.)), None, Modifiers::default());
+    frame(&mut visual);
+    visual.simulate_click(point(px(150.), px(60.)), Modifiers::default());
+    frame(&mut visual);
+    visual.simulate_click(point(px(10.), px(50.)), Modifiers::default());
+    frame(&mut visual);
+    // The test pointer starts at the window's origin, over the first card.
+    assert_eq!(*notes.borrow(), vec!["hover a0", "hover a1", "focus a1", "item a1", "pin a1"]);
+}

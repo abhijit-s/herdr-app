@@ -1509,20 +1509,12 @@ const ELEMENT_METHODS: &str = r#"    /**
      * key names the item that was pressed; the index would name whatever slid
      * into its place.
      *
-     * One handler for the list rather than one per row, and that is a limit
-     * rather than a shorthand: a handler registered inside the item renderer
-     * throws. Handlers belong to the render pass that registered them and are
-     * released with it; a row is rebuilt on every frame the list is scrolled,
-     * so a per-row handler would accumulate for as long as the view stood —
-     * twenty visible rows over a thousand frames is twenty thousand functions
-     * nothing can reach and nothing releases.
-     *
-     * The key is normally enough: the script already holds the data the row was
-     * built from. A row with several independently clickable parts needs a
-     * handler lifetime scoped to one batch of items, which this runtime does
-     * not have yet; when it does, this restriction lifts and `on_click` inside
-     * an item renderer starts working, with no change to anything written
-     * against `on_item_click`.
+     * One handler for the whole list, and the key is normally enough: the
+     * script already holds the data the row was built from. A row with several
+     * independently clickable parts registers its own handlers inside the item
+     * renderer — `on_click`, `on_hover`, `on_mouse_down` and the rest — and
+     * those run first, in the ordinary bubble order, so `cx.stop_propagation()`
+     * in a button's `on_click` keeps the press from reaching this handler.
      */
     on_item_click<Self extends Element>(this: Self, handler: (key: string, cx: Context) => void): Self;
     /**
@@ -2945,11 +2937,16 @@ const BASE: &str = r#"  /** A row. */
    * out, so the call happens from inside layout, twice per frame (once to
    * measure a representative row, once to place the visible ones).
    *
-   * Two consequences follow from that, and both are enforced rather than
-   * documented away:
+   * Two consequences follow from that:
    *
-   * * **No handlers inside the renderer.** `on_click` and the rest throw if
-   *   called there. Use `on_item_click` on the list — see its note for why.
+   * * **Handlers inside the renderer belong to the rows.** `on_click`,
+   *   `on_hover`, `on_mouse_down`, `on_mouse_move`, `on_mouse_up` and the rest
+   *   work on a row and on anything inside it, including a `HoverCard`'s
+   *   trigger and content. Each batch of rows owns the handlers it registered,
+   *   and they are released when the frame that painted those rows is
+   *   replaced, so a press always reaches the row it landed on, scrolled or
+   *   not. Row state the handlers change lives on the view, keyed by
+   *   `get_key`: a row is rebuilt every frame and remembers nothing.
    * * **No state inside the renderer.** `InputState.new()`, `cx.focus_handle()`
    *   and the rest throw there as they do in `render()`, and `cx.notify()` is
    *   refused: asking for a re-render from inside layout is a loop.
