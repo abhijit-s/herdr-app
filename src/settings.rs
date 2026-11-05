@@ -410,6 +410,10 @@ pub struct Person {
     /// The terminals' text weight, 100 to 900; bold text is at least 700.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub font_weight: Option<u16>,
+    /// The weight bold terminal text draws at, 100 to 900; unset, 700 or
+    /// `font_weight` when that is heavier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font_weight_bold: Option<u16>,
     /// Enable programming ligatures in terminal fonts.
     pub font_ligatures: bool,
     /// Thicken terminal text as Ghostty's `font-thicken` does: the same for
@@ -660,6 +664,7 @@ impl Default for Person {
             font_size: None,
             line_height: None,
             font_weight: None,
+            font_weight_bold: None,
             font_ligatures: false,
             font_thicken: false,
             font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
@@ -697,6 +702,8 @@ pub struct Settings {
     pub line_height: f32,
     /// The terminals' text weight (bold text is at least 700).
     pub font_weight: u16,
+    /// The weight bold terminal text draws at; unset, see `bold_weight`.
+    pub font_weight_bold: Option<u16>,
     pub font_ligatures: bool,
     pub font_thicken: bool,
     pub font_thicken_strength: u16,
@@ -777,6 +784,7 @@ impl Default for Settings {
             font_size: 14.0,
             line_height: 1.15,
             font_weight: 500,
+            font_weight_bold: None,
             font_ligatures: false,
             font_thicken: false,
             font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
@@ -835,6 +843,7 @@ impl Settings {
             font_size: look.font_size.or(person.font_size).unwrap_or(d.font_size),
             line_height: look.line_height.or(person.line_height).unwrap_or(d.line_height),
             font_weight: look.font_weight.or(person.font_weight).unwrap_or(d.font_weight),
+            font_weight_bold: look.font_weight_bold.or(person.font_weight_bold),
             font_ligatures: person.font_ligatures,
             font_thicken: person.font_thicken,
             font_thicken_strength: person.font_thicken_strength,
@@ -933,6 +942,9 @@ impl Settings {
         }
         if !(100..=900).contains(&self.font_weight) {
             out.push(format!("font_weight {} is outside 100..900", self.font_weight));
+        }
+        if let Some(bold) = self.font_weight_bold.filter(|w| !(100..=900).contains(w)) {
+            out.push(format!("font_weight_bold {bold} is outside 100..900"));
         }
         if !(-2.0..=10.0).contains(&self.letter_spacing) {
             out.push(format!("letter_spacing {} is outside -2..10", self.letter_spacing));
@@ -1123,6 +1135,13 @@ impl Settings {
     /// terminals' grids.
     pub fn ui_glyph_thicken(&self) -> Option<u8> {
         self.ui_font_thicken.then(|| self.ui_font_thicken_strength.min(255) as u8)
+    }
+
+    /// The weight bold terminal text draws at: `font_weight_bold`, else 700
+    /// or `font_weight` when that is heavier.
+    pub fn bold_weight(&self) -> u16 {
+        let weight = self.font_weight.clamp(100, 900);
+        self.font_weight_bold.map_or(weight.max(700), |bold| bold.clamp(100, 900))
     }
 
     /// How much heavier every run of the panels' text is shaped than it asks
@@ -1340,6 +1359,25 @@ mod tests {
         let look = crate::layout::Look { font_weight: Some(300), ..Default::default() };
         let person = Person { font_weight: Some(400), ..Person::default() };
         assert_eq!(Settings::compose(&person, &look, true).font_weight, 300);
+    }
+
+    #[test]
+    fn font_weight_bold_defaults_to_700_or_the_weight_and_validates_the_range() {
+        let compose = |person: serde_json::Value, look: crate::layout::Look| Settings::compose(&serde_json::from_value(person).unwrap(), &look, true);
+        let default = compose(serde_json::json!({}), Default::default());
+        assert_eq!((default.font_weight_bold, default.bold_weight()), (None, 700));
+        assert!(serde_json::to_value(Person::default()).unwrap().get("font_weight_bold").is_none());
+        for (weight, bold) in [(250, 700), (700, 700), (800, 800)] {
+            assert_eq!(compose(serde_json::json!({"font_weight": weight}), Default::default()).bold_weight(), bold);
+        }
+        for bold in [100, 550, 900, 50, 950] {
+            let settings = compose(serde_json::json!({"font_weight": 250, "font_weight_bold": bold}), Default::default());
+            assert_eq!(settings.font_weight_bold, Some(bold));
+            assert_eq!(settings.problems().is_empty(), (100..=900).contains(&bold));
+        }
+        assert_eq!(compose(serde_json::json!({"font_weight_bold": 550}), Default::default()).bold_weight(), 550);
+        let look = crate::layout::Look { font_weight_bold: Some(600), ..Default::default() };
+        assert_eq!(compose(serde_json::json!({"font_weight_bold": 550}), look).bold_weight(), 600);
     }
 
     #[test]
@@ -1658,7 +1696,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_thicken: true, font_thicken_strength: 30, ui_font_thicken: true, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: true, font_thicken_strength: 30, ui_font_thicken: true, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

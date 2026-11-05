@@ -573,6 +573,15 @@ export default class Settings extends View {
         if (next === DEFAULT_UI_FONT_WEIGHT) delete q.ui_font_weight;
         else q.ui_font_weight = next;
       }, cx);
+    // Unset, bold draws at 700 or the weight when that is heavier; stepping back there leaves it out of settings.json.
+    const boldAuto = Math.max(s.font_weight, 700);
+    const bold = s.font_weight_bold ?? boldAuto;
+    const boldStep = (d, cx) =>
+      this.change((q) => {
+        const next = Math.max(100, Math.min(900, (q.font_weight_bold ?? bold) + d));
+        if (next === boldAuto) delete q.font_weight_bold;
+        else q.font_weight_bold = next;
+      }, cx);
     const fontRow = (which, sizeKey, title, family, def, sizeNow) =>
       v_flex()
         .w_full()
@@ -621,6 +630,14 @@ export default class Settings extends View {
           "Weight",
           own("font_weight", s.font_weight, 500) ? "This layout sets its own; yours shows in the others." : "Bold text is at least 700.",
           this.stepper(t, "st-font_weight", `${s.font_weight}`, (_e, cx) => step("font_weight", s.font_weight, -25, 100, 900, cx), (_e, cx) => step("font_weight", s.font_weight, 25, 100, 900, cx)),
+        ),
+      )
+      .child(
+        this.row(
+          t,
+          "Bold weight",
+          own("font_weight_bold", s.font_weight_bold, null) ? "This layout sets its own; yours shows in the others." : "Unset, 700 or the weight when that is heavier.",
+          this.stepper(t, "st-font_weight_bold", `${bold}`, (_e, cx) => boldStep(-25, cx), (_e, cx) => boldStep(25, cx)),
         ),
       )
       .child(this.thicken(t, "font_thicken", "Thicken", "Terminal text as heavy whatever its color, as Ghostty's font-thicken does."))

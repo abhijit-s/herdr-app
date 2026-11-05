@@ -62,6 +62,14 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 - Files: `src/settings.rs`, `src/layout.rs`, `src/terminal.rs` (`cell_font`, `paint_grid`), `defaults/AGENTS.md`, `defaults/frame/settings/main.js`
 - Upstream: issue #134, pull request #332. Upstream's `font_ligatures` (#244) landed alongside it; the branch merges `upstream/master` to stay conflict-free.
 
+### Bold terminal weight
+
+`feat/font-weight-bold` (branched from `master`, fork only): `font_weight_bold` in settings.json or a layout's look (100 to 900) is the weight bold terminal cells draw at. Unset, bold draws at 700 or `font_weight` when that is heavier, so a light `font_weight` keeps a far heavier bold: at 250, bold jumps to 700 and inks about 9% heavier than Ghostty's bold. `Settings::bold_weight` resolves it; `cell_font` draws bold at it. Kept rows are keyed on the bold weight beside the regular cell font, so changing either redraws them.
+
+- Settings window: a "Bold weight" stepper (steps of 25) under "Weight" in the Text page's "Terminal text" group. Stepping back to the unset weight leaves the key out of settings.json; when the layout's look sets one, the row says so.
+- Files: `src/settings.rs` (`bold_weight`, test `font_weight_bold_defaults_to_700_or_the_weight_and_validates_the_range`), `src/layout.rs`, `src/terminal.rs` (`cell_font`, `paint_grid`, test `bold_cells_draw_at_the_bold_weight`), `defaults/AGENTS.md`, `defaults/frame/settings/main.js`, `src/mods/render_tests.rs`
+- Upstream: none yet
+
 ### Cell width and letter spacing
 
 `feat/terminal-letter-spacing` (issue #171, PR #336): `letter_spacing`, px at zoom 1 added to the cell width (-2 to 10, default 0), set in settings.json or a layout's look. The cell stays within half to one and a half of the font's advance, because gpui-pre's force-width pass treats a glyph less than half a cell past the previous letter as a combining mark. Needs a `HERDR:` change in `vendor/gpui-pre/src/text_system/line_layout.rs` (`apply_force_width_to_layout`): base glyphs always sit on their cells, where a 1px tolerance made text creep then jump whenever the cell width differs from the font's advance. gpui-pre's own tests don't build in this checkout, so the placement rule was checked with a standalone copy of the function.
