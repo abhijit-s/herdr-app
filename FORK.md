@@ -32,6 +32,9 @@ This file is the inventory of what diverges. Update it in the same commit that a
 
 Each merge of `upstream/master` into `master`, with the conflict choices worth remembering.
 
+- 2026-11-06, `e77f112..cfcf836` (12 commits: toast clock only while a toast shows #548, zoom follows agent navigation #568, sub-agents listed once #539, wide-character find highlight #587, `focused()` #554, menu and confirm dialog fixes #553 #570 #593, rename prompt #569, Linux XIM and window fixes #558 #601). Choices:
+  - `vt.rs` and `window.rs` keep the fork's tests beside upstream's new ones (`terminal_search_highlights_both_cells_of_a_wide_character`, `toast_clock`).
+  - Upstream's `Tab::focus` moves a zoom to the pane it focuses; the fork's splits clear the zoom before focusing, so arrange and bsp splits are unaffected.
 - 2026-11-05, `816d205..e77f112` (14 commits: release 0.1.13, exec time limits for mods, theme-name cards #437, palette scrolling #531, toast agent names #530, transient mods shared state #516, launch-folder fixes #511). Choices:
   - `exec_future` takes upstream's `limit` (`run_blocking`, `run_remote_with_limit`) and keeps the fork's `off_thread`, so tests still run the work when polled.
   - `render_tests.rs` keeps the fork's text-page tests beside upstream's `long_theme_names_stay_inside_their_card`.
