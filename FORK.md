@@ -243,6 +243,12 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 - Tests: `mods_see_the_scale_of_the_screen_the_window_is_on` runs `mod_scale_factor` in its own process: a mod sized by `window().scale_factor` redraws at 2, 1 and 2 as the test window's scale changes.
 - Upstream: none yet
 
+### Background launch for tests
+
+`HERDR_APP_BACKGROUND` (any value) opens the main window without focus and skips `cx.activate`, so a test or benchmark instance starts behind the person's windows instead of taking the keyboard; `scripts/bench.py` sets it. A window manager rule can then place it (the bare binary's app name is `herdr-app`, distinct from the bundle's `Herdr`). macOS doesn't draw windows on a hidden space, so drawing measurements and captures still need a visible one.
+
+- Files: `src/main.rs` (`open_main`), `scripts/bench.py`
+
 ### Pane arrangements
 
 `feat/pane-arrange` and `feat/auto-arrange` (branched from `master`, fork only for now): `pane.arrange {mode, tab?}` rebuilds a tab's existing panes (default: the shown tab) into a preset shape with even sizes, as tmux's `select-layout` and tuios's tiling modes do. Modes: `tiled` (grid, `ceil(sqrt(n))` across, row by row, a short last row's panes widen: tmux's tiled), `bsp` (dwindle: each pane takes half of what's left, splitting right, down, right…), `master` (the focused pane on the left half, the rest stacked on the right), `columns`, `rows`, `next` (the mode after the tab's last one, from `tiled`) and `off` (below). Panes keep their block whole (id, terminal or mod, name), so nothing restarts; only the row/column containers are new, and the tree is saved and synced like a manual split. Order is reading order (by top edge, then left edge, from the current sizes), which every mode's output preserves, so cycling never shuffles panes except that `master` moves the focused pane first. Focus stays; a zoomed pane unzooms. The tab's mode is this screen's choice (`TabView.arrange` in the saved view, not the shared document) and shows to mods as the tab's `arrange`. Keys: `cmd-shift-space` (macOS) and `ctrl-shift-space` (Linux, Windows) run `pane.arrange:next`; existing untouched key files get it through upstream's shipped-originals upgrade (f524898), edited ones need the line added. The palette lists "Next pane arrangement" and each mode.

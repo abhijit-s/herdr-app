@@ -208,8 +208,11 @@ fn main() {
 /// The main window, on a connected core.
 pub fn open_main(core: std::sync::Arc<hc::Core>, requests: async_channel::Receiver<mods::Request>, cx: &mut App) {
             let (window_bounds, display_id) = place::initial(cx);
+            // Test and benchmark runs open behind the person's windows, without taking focus.
+            let background = std::env::var_os("HERDR_APP_BACKGROUND").is_some();
             let options = WindowOptions {
                 window_bounds: Some(window_bounds),
+                focus: !background,
                 display_id,
                 // macOS: always see-through, so a layout can draw its own title bar
                 // live; the app drags the window (window/titlebar.rs).
@@ -226,5 +229,7 @@ pub fn open_main(core: std::sync::Arc<hc::Core>, requests: async_channel::Receiv
             };
             cx.open_window(options, |window, cx| cx.new(|cx| window::AppWindow::new(core, requests, window, cx)))
                 .expect("cannot open the Herdr window");
-            cx.activate(true);
+            if !background {
+                cx.activate(true);
+            }
 }
