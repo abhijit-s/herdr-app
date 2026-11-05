@@ -1215,6 +1215,8 @@ pub struct Window {
     glyph_subpixel: bool,
     // HERDR: the choice each frame's paint starts at (`set_glyph_subpixel`).
     base_glyph_subpixel: bool,
+    // HERDR: a color laid over the whole frame, above everything (`set_veil`).
+    veil: Option<Hsla>,
     #[cfg(any(test, feature = "test-support"))]
     presents: usize,
     pub(crate) next_frame: Frame,
@@ -2117,6 +2119,7 @@ impl Window {
             base_glyph_thicken: None,
             glyph_contrast: 0.,
             base_glyph_contrast: 0.,
+            veil: None,
             glyph_subpixel: false,
             base_glyph_subpixel: false,
             #[cfg(any(test, feature = "test-support"))]
@@ -2814,6 +2817,22 @@ impl Window {
     #[cfg(any(test, feature = "test-support"))]
     pub fn painted_quads(&self) -> Vec<Quad> {
         self.rendered_frame.scene.quads.clone()
+    }
+
+    /// HERDR: the draw order of every primitive in the most recently rendered
+    /// frame's scene, so tests can check what is painted on top.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn painted_orders(&self) -> Vec<crate::DrawOrder> {
+        let scene = &self.rendered_frame.scene;
+        (scene.shadows.iter().map(|p| p.order))
+            .chain(scene.quads.iter().map(|p| p.order))
+            .chain(scene.paths.iter().map(|p| p.order))
+            .chain(scene.underlines.iter().map(|p| p.order))
+            .chain(scene.monochrome_sprites.iter().map(|p| p.order))
+            .chain(scene.subpixel_sprites.iter().map(|p| p.order))
+            .chain(scene.polychrome_sprites.iter().map(|p| p.order))
+            .chain(scene.surfaces.iter().map(|p| p.order))
+            .collect()
     }
 
     /// Returns the underlines in the most recently rendered frame's scene.
@@ -3760,6 +3779,13 @@ impl Window {
             tooltip_element.paint(self, cx);
         }
 
+        // HERDR: the veil goes last, over the root, deferred draws, prompts,
+        // drags and tooltips alike. A quad has no hitbox: the mouse goes through.
+        if let Some(veil) = self.veil {
+            let bounds = Bounds::new(Point::default(), self.viewport_size());
+            self.paint_quad(crate::fill(bounds, veil));
+        }
+
         #[cfg(any(feature = "inspector", debug_assertions))]
         self.paint_inspector_hitbox(cx);
 
@@ -4187,6 +4213,13 @@ impl Window {
     /// as `set_glyph_thicken`.
     pub fn set_glyph_contrast(&mut self, contrast: f32) {
         self.base_glyph_contrast = contrast.clamp(0., 1.);
+    }
+
+    /// HERDR: a color painted over the whole window after everything else
+    /// this frame paints (tooltips included), or None. Set it while rendering,
+    /// as `set_glyph_thicken`; a change shows from the frame being drawn.
+    pub fn set_veil(&mut self, veil: Option<Hsla>) {
+        self.veil = veil;
     }
 
     /// HERDR: paints the monochrome glyphs in `f` with their coverage pulled

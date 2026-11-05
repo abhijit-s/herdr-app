@@ -437,10 +437,17 @@ pub struct Person {
     /// The same for the panels' text, apart from the terminals'.
     #[serde(skip_serializing_if = "is_zero")]
     pub ui_text_contrast: f32,
-    /// While the window isn't active, terminal text blends this fraction
-    /// toward the terminal background, 0 (off) to 1.
+    /// While the window isn't active, it fades this fraction toward the
+    /// background, 0 (off) to 1.
     #[serde(skip_serializing_if = "is_zero")]
     pub unfocused_dim: f32,
+    /// What `unfocused_dim` fades: the whole window, or terminal text only.
+    #[serde(skip_serializing_if = "DimScope::is_window")]
+    pub unfocused_dim_scope: DimScope,
+    /// The color the window fades toward (`"#rrggbb"`), else the theme's
+    /// background.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unfocused_dim_color: Option<String>,
     /// Trial: smooth terminal text with a coverage per color channel
     /// (subpixel, on 1x displays) rather than one (grayscale) (macOS).
     #[serde(skip_serializing_if = "TextRendering::is_grayscale")]
@@ -579,6 +586,22 @@ impl TextRendering {
     }
 }
 
+/// What `unfocused_dim` fades while the window isn't active: everything in
+/// it, or only the terminals' text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DimScope {
+    #[default]
+    Window,
+    Text,
+}
+
+impl DimScope {
+    fn is_window(&self) -> bool {
+        *self == DimScope::Window
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SubpixelOrder {
@@ -677,6 +700,8 @@ impl Default for Person {
             text_contrast: 0.0,
             ui_text_contrast: 0.0,
             unfocused_dim: 0.0,
+            unfocused_dim_scope: DimScope::Window,
+            unfocused_dim_color: None,
             text_rendering: TextRendering::Grayscale,
             ui_text_rendering: TextRendering::Grayscale,
             subpixel_order: SubpixelOrder::Rgb,
@@ -718,9 +743,13 @@ pub struct Settings {
     pub text_contrast: f32,
     /// The panels' text's edge contrast, 0 (off) to 1.
     pub ui_text_contrast: f32,
-    /// How far terminal text fades toward the background while the window
-    /// isn't active, 0 (off) to 1.
+    /// How far the window fades toward the background while it isn't
+    /// active, 0 (off) to 1.
     pub unfocused_dim: f32,
+    /// What that fades: the whole window, or terminal text only.
+    pub unfocused_dim_scope: DimScope,
+    /// The color the window fades toward, as written (`dim_color` reads it).
+    pub unfocused_dim_color: Option<String>,
     /// Terminal text's smoothing (subpixel only where the display allows).
     pub text_rendering: TextRendering,
     /// The panels' text's smoothing.
@@ -801,6 +830,8 @@ impl Default for Settings {
             text_contrast: 0.0,
             ui_text_contrast: 0.0,
             unfocused_dim: 0.0,
+            unfocused_dim_scope: DimScope::Window,
+            unfocused_dim_color: None,
             text_rendering: TextRendering::Grayscale,
             ui_text_rendering: TextRendering::Grayscale,
             subpixel_order: SubpixelOrder::Rgb,
@@ -861,6 +892,8 @@ impl Settings {
             text_contrast: person.text_contrast,
             ui_text_contrast: person.ui_text_contrast,
             unfocused_dim: person.unfocused_dim,
+            unfocused_dim_scope: person.unfocused_dim_scope,
+            unfocused_dim_color: person.unfocused_dim_color.clone(),
             text_rendering: person.text_rendering,
             ui_text_rendering: person.ui_text_rendering,
             subpixel_order: person.subpixel_order,
@@ -918,6 +951,13 @@ pub fn rgb(s: &str) -> Rgb {
 }
 
 impl Settings {
+    /// `unfocused_dim_color` when it's a `"#rrggbb"` color, else None (the
+    /// window fades toward the theme's background).
+    pub fn dim_color(&self) -> Option<Hsla> {
+        let color = self.unfocused_dim_color.as_deref()?;
+        (color.len() == 7 && color.starts_with('#')).then(|| parse_hex(color)).flatten()
+    }
+
     /// Problems an agent should hear about before the file is applied.
     pub fn problems(&self) -> Vec<String> {
         let mut out = Vec::new();
@@ -949,6 +989,11 @@ impl Settings {
         }
         if !(0.0..=1.0).contains(&self.unfocused_dim) {
             out.push(format!("unfocused_dim {} is outside 0..1", self.unfocused_dim));
+        }
+        if let Some(color) = &self.unfocused_dim_color
+            && self.dim_color().is_none()
+        {
+            out.push(format!("unfocused_dim_color {color:?} isn't a \"#rrggbb\" color; the window fades toward the background"));
         }
         if !(100..=900).contains(&self.ui_font_weight) {
             out.push(format!("ui_font_weight {} is outside 100..900", self.ui_font_weight));
@@ -1488,6 +1533,35 @@ mod tests {
     }
 
     #[test]
+    fn unfocused_dim_scope_defaults_to_the_window_and_refuses_others() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.unfocused_dim_scope, DimScope::Window);
+        assert_eq!(serde_json::to_value(&default).unwrap().get("unfocused_dim_scope"), None);
+        for (value, scope) in [("window", DimScope::Window), ("text", DimScope::Text)] {
+            let person: Person = serde_json::from_value(serde_json::json!({"unfocused_dim_scope": value})).unwrap();
+            assert_eq!(Settings::compose(&person, &crate::layout::Look::default(), true).unfocused_dim_scope, scope);
+        }
+        assert_eq!(serde_json::to_value(Person { unfocused_dim_scope: DimScope::Text, ..Person::default() }).unwrap()["unfocused_dim_scope"], "text");
+        for bad in [serde_json::json!({"unfocused_dim_scope": "panels"}), serde_json::json!({"unfocused_dim_scope": true})] {
+            assert!(serde_json::from_value::<Person>(bad.clone()).is_err(), "{bad} is refused");
+        }
+    }
+
+    #[test]
+    fn unfocused_dim_color_is_a_hex_color_or_the_background() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert_eq!(serde_json::to_value(&default).unwrap().get("unfocused_dim_color"), None);
+        let settings = Settings::compose(&default, &crate::layout::Look::default(), true);
+        assert_eq!((settings.dim_color(), settings.problems().is_empty()), (None, true));
+        for (value, ok) in [("#4d4d4d", true), ("#FFFFFF", true), ("4d4d4d", false), ("#4d4d4d80", false), ("#4d4", false), ("grey", false), ("#zzzzzz", false), ("", false)] {
+            let person: Person = serde_json::from_value(serde_json::json!({"unfocused_dim_color": value})).unwrap();
+            let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
+            assert_eq!(settings.dim_color(), ok.then(|| parse_hex(value).unwrap()), "{value}");
+            assert_eq!(settings.problems().iter().any(|p| p.contains("unfocused_dim_color")), !ok, "{value}");
+        }
+    }
+
+    #[test]
     fn ui_font_weight_defaults_to_normal_and_shifts_only_the_panels() {
         let default: Person = serde_json::from_str("{}").unwrap();
         assert_eq!(default.ui_font_weight, 400);
@@ -1722,7 +1796,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: true, font_thicken_strength: 30, ui_font_thicken: true, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: true, font_thicken_strength: 30, ui_font_thicken: true, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();
