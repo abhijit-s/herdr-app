@@ -84,7 +84,7 @@ struct Grid {
     painted: Vec<PaintedRow>,
     /// Font size, cell size, cell font, loaded fonts, ligature and thickening
     /// settings used to draw.
-    painted_with: (u32, Size<Pixels>, Font, u64, bool, Option<u8>),
+    painted_with: (u32, Size<Pixels>, Font, u16, u64, bool, Option<u8>),
 }
 
 pub struct TerminalView {
@@ -261,7 +261,7 @@ impl TerminalView {
                 thumb: None,
                 track: None,
                 painted: Vec::new(),
-                painted_with: (0, Size::default(), font(""), 0, false, None),
+                painted_with: (0, Size::default(), font(""), 0, 0, false, None),
             })),
             focus: cx.focus_handle(),
             was_focused: false,
@@ -1449,8 +1449,8 @@ fn ligature_features(enabled: bool) -> FontFeatures {
 fn cell_font(bold: bool, italic: bool) -> Font {
     let mut f = font(crate::settings::terminal_font());
     f.features = ligature_features(false);
-    let weight = crate::settings::get().font_weight.clamp(100, 900);
-    f.weight = FontWeight(if bold { weight.max(700) } else { weight } as f32);
+    let s = crate::settings::get();
+    f.weight = FontWeight(if bold { s.bold_weight() } else { s.font_weight.clamp(100, 900) } as f32);
     f.style = if italic { FontStyle::Italic } else { FontStyle::Normal };
     f
 }
@@ -1753,8 +1753,8 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, w
     // rebuilds the rows that changed, not the whole screen.
     let ligatures = crate::settings::get().font_ligatures;
     let cursor = frame.cursor_cell.filter(|_| ligatures);
-    // The whole cell font, so a weight change redraws kept rows too.
-    let with = (crate::settings::font_size().to_bits(), cell, cell_font(false, false), crate::settings::fonts_added(), ligatures, glyph_thicken());
+    // The whole cell font and the bold weight, so a weight change redraws kept rows too.
+    let with = (crate::settings::font_size().to_bits(), cell, cell_font(false, false), crate::settings::get().bold_weight(), crate::settings::fonts_added(), ligatures, glyph_thicken());
     let mut last = std::mem::take(&mut grid.borrow_mut().painted);
     if grid.borrow().painted_with != with {
         last.clear();
@@ -3878,5 +3878,19 @@ mod tests {
         assert_eq!(pages_to_lines(-0.5, 24), -12);
         assert_eq!(pages_to_lines(-0.5, 25), -13, "half of an odd row count rounds away from zero");
         assert_eq!(pages_to_lines(0.02, 24), 0);
+    }
+
+    #[test]
+    fn bold_cells_draw_at_the_bold_weight() {
+        let original = crate::settings::get();
+        let mut settings = (*original).clone();
+        settings.font_weight = 250;
+        for (bold, expected) in [(None, 700.0), (Some(550), 550.0)] {
+            settings.font_weight_bold = bold;
+            crate::settings::set(settings.clone());
+            assert_eq!(super::cell_font(true, false).weight, gpui::FontWeight(expected));
+            assert_eq!(super::cell_font(false, true).weight, gpui::FontWeight(250.0));
+        }
+        crate::settings::set((*original).clone());
     }
 }

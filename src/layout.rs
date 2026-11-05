@@ -168,6 +168,9 @@ pub struct Look {
     /// The terminals' text weight, 100 to 900.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font_weight: Option<u16>,
+    /// The weight bold terminal text draws at, 100 to 900.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_weight_bold: Option<u16>,
     /// Px (at zoom 1) added to (or, negative, taken from) the terminal cell width.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub letter_spacing: Option<f32>,

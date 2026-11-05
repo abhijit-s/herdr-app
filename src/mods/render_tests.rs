@@ -250,6 +250,9 @@ fn describe_with_values(
         Ok(second)
     })?;
     window.update(cx, |_, window, _| window.remove_window())?;
+    // localStorage writes land on the executor: let them finish while the
+    // staged folder is still there, or they recreate it after its drop.
+    cx.run_until_parked();
     assert!(calls.borrow().unexpected.is_empty(), "{entry}: {:?}", calls.borrow().unexpected);
     result
 }
@@ -378,7 +381,7 @@ fn terminal_text_rows_show_whose_value_is_in_use(cx: &mut TestAppContext) {
     for (person, overridden) in [("{}", 0), ("{font_weight: 300, line_height: 1.4, letter_spacing: 1}", 3)] {
         let setup = format!("this.load = async () => {{}}; this.person = {person};");
         let tree = describe(cx, &staged, "frame/settings", true, p.clone(), updates("current", "current"), Some(&setup)).unwrap();
-        for id in ["st-font_weight-plus", "st-line_height-plus", "st-letter_spacing-plus", "st-cw-Font", "st-cw-Whole pixels", "st-font_ligatures", "Terminal text"] {
+        for id in ["st-font_weight-plus", "st-font_weight_bold-plus", "st-line_height-plus", "st-letter_spacing-plus", "st-cw-Font", "st-cw-Whole pixels", "st-font_ligatures", "Terminal text"] {
             assert!(tree.contains(id), "missing {id}: {tree}");
         }
         assert_eq!(tree.matches(layout).count(), overridden, "{person}: {tree}");
