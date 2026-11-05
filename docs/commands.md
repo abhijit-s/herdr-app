@@ -302,7 +302,7 @@ Swap the focused pane with its neighbor in a direction.
 
 ## `pane.arrange`
 
-Rearrange a tab's panes (default: the shown tab) evenly: "tiled" (a grid), "bsp" (each pane takes half of what's left, right then down), "master" (the focused pane on the left half, the rest stacked on the right), "columns", "rows", "next" (the mode after the tab's last one, from tiled), or "off". Panes keep their terminals and go in reading order (top to bottom, then left to right); a zoomed pane unzooms. The tab keeps its mode: a pane split into it or closed in it arranges it again, a new pane right after the one it split. "off" clears the mode and leaves the panes where they are.
+Rearrange a tab's panes (default: the shown tab) evenly: "tiled" (a grid), "bsp" (each pane takes half of what's left, right then down), "master" (the focused pane on the left half, the rest stacked on the right), "columns", "rows", "next" (the mode after the tab's last one, from tiled), or "off". Panes keep their terminals and go in reading order (top to bottom, then left to right); a zoomed pane unzooms. The tab keeps its mode: a pane split into it or closed in it arranges it again, a new pane right after the one it split. In "bsp" the tree stays instead, as in tuios and bspwm: a split halves the pane it splits in the direction asked, and a closed pane's space goes back to the pane it was split with. "off" clears the mode and leaves the panes where they are.
 
 | Argument | Required |
 |---|---|

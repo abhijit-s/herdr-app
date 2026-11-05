@@ -317,8 +317,8 @@ impl Model {
     }
 
     /// The tree of `target`'s tab with `block` split beside it, left as is.
-    /// In a tab with a mode the mode runs again, the new pane right after
-    /// `target` in reading order.
+    /// In a tab with a mode other than `bsp` the mode runs again, the new pane
+    /// right after `target` in reading order; in `bsp` the two make a pair.
     pub fn split_tree(&mut self, target: &str, axis: Axis, block: Node) -> Option<Node> {
         let machine = self.space_of(target).and_then(|s| s.machine.clone());
         let container = self.fresh_id_on("s", machine.as_deref());
@@ -326,7 +326,8 @@ impl Model {
         let tab = self.tab_of(target)?;
         let mut order = pane_order(&tab.root);
         let mut root = tab.root.clone();
-        if !root.split(target, axis, block, container) {
+        let split = if tab.arrange == Some(crate::arrange::Mode::Bsp) { Node::split_pair } else { Node::split };
+        if !split(&mut root, target, axis, block, container) {
             return None;
         }
         let at = order.iter().position(|p| p == target).map_or(order.len(), |i| i + 1);
@@ -335,11 +336,22 @@ impl Model {
         Some(self.rearranged(root, mode, &order, machine.as_deref()))
     }
 
+    /// The axis for splitting `target` when nobody asked for one: in `bsp`,
+    /// across its parent (bspwm's spiral), so panes added one after another
+    /// dwindle rather than thin out side by side; otherwise side by side.
+    pub fn auto_axis(&self, target: &str) -> Axis {
+        let Some(tab) = self.tab_of(target) else { return Axis::Row };
+        match tab.root.parent_of(target) {
+            Some(p) if tab.arrange == Some(crate::arrange::Mode::Bsp) && p.children().len() > 1 && p.axis() == Some(Axis::Row) => Axis::Column,
+            _ => Axis::Row,
+        }
+    }
+
     /// `root` rebuilt in `mode` with its panes in `order`, for a tab whose
-    /// panes came or went; as it is without a mode, or holding other blocks.
+    /// panes came or went; as it is without a mode, in `bsp`, or holding other blocks.
     fn rearranged(&mut self, root: Node, mode: Option<crate::arrange::Mode>, order: &[String], machine: Option<&str>) -> Node {
         match mode {
-            Some(mode) if crate::arrange::check(&root).is_ok() => crate::arrange::arrange_in(&root, order, mode, None, || self.fresh_id_on("s", machine)),
+            Some(mode) if mode.rebuilds_on_change() && crate::arrange::check(&root).is_ok() => crate::arrange::arrange_in(&root, order, mode, None, || self.fresh_id_on("s", machine)),
             _ => root,
         }
     }
@@ -354,6 +366,7 @@ impl Model {
         if !tab.root.find(source).is_some_and(Node::is_pane) || !tab.root.find(target).is_some_and(Node::is_pane) {
             return false;
         }
+        let bsp = tab.arrange == Some(crate::arrange::Mode::Bsp);
         let mut root = tab.root.clone();
         if let Some(edge) = edge {
             use crate::layout::Edge;
@@ -362,7 +375,8 @@ impl Model {
             let axis = if matches!(edge, Edge::Left | Edge::Right) { Axis::Row } else { Axis::Column };
             let machine = self.space_of(source).and_then(|s| s.machine.clone());
             let container = self.fresh_id_on("s", machine.as_deref());
-            if !root.split(target, axis, pane, container) {
+            let split = if bsp { Node::split_pair } else { Node::split };
+            if !split(&mut root, target, axis, pane, container) {
                 return false;
             }
             if matches!(edge, Edge::Left | Edge::Top) {
@@ -908,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tab_with_a_mode_arranges_again_when_a_pane_comes_or_goes() {
+    fn bsp_splits_the_pane_asked_in_the_direction_asked_and_keeps_its_tree() {
         use crate::arrange::Mode;
         use crate::layout::Size;
         let mut m = model_with_one();
@@ -916,31 +930,70 @@ mod tests {
         m.arrange_tab("c1", Mode::Bsp).unwrap();
         m.split("x1", Axis::Row, "x2", "t2");
         m.split("x2", Axis::Row, "x3", "t3");
-        assert_eq!(tab(&m), "R[x1 C[x2 x3]]", "each split takes half of what's left");
-        // Split down from x1: the new pane follows x1, whatever the direction.
+        assert_eq!(tab(&m), "R[x1 R[x2 x3]]", "right twice: x2 and x3 share x2's half as a pair");
+        // Down from x1: x1 itself splits, the rest stays where it was.
         m.focus_pane("x1");
         assert!(m.split("x1", Axis::Column, "x4", "t4"));
-        assert_eq!(tab(&m), "R[x1 C[x4 R[x2 x3]]]");
+        assert_eq!(tab(&m), "R[C[x1 x4] R[x2 x3]]");
         assert_eq!(m.focused_pane().as_deref(), Some("x4"), "focus goes to the new pane");
         assert_eq!(m.address_of("x4").as_deref(), Some("t4"));
+        // A dragged size outlives later splits and closes.
+        m.tab_mut("c1").unwrap().root.children_mut().unwrap()[0].size = Some(Size::Weight { weight: 3.0 });
+        m.split("x3", Axis::Column, "x5", "t5");
+        assert_eq!(tab(&m), "R[C[x1 x4] R[x2 C[x3 x5]]]");
+        m.focus_pane("x2");
+        assert!(m.remove_pane("x4") == (false, false));
+        assert_eq!(tab(&m), "R[x1 R[x2 C[x3 x5]]]", "x4's space goes back to x1");
+        assert_eq!(m.focused_pane().as_deref(), Some("x2"));
+        // x2's goes to the pair it was split with, not to x1 before it.
+        m.remove_pane("x2");
+        assert_eq!(tab(&m), "R[x1 C[x3 x5]]");
+        let sizes: Vec<_> = m.tab("c1").unwrap().root.children().iter().map(|n| n.size).collect();
+        assert_eq!(sizes, [Some(Size::Weight { weight: 3.0 }), Some(Size::Weight { weight: 0.5 })], "x1 keeps 3, the pair's slot keeps its half");
+        assert_eq!(m.tab("c1").unwrap().arrange, Some(Mode::Bsp), "the mode stays");
+        // With no direction asked (an adopted terminal), panes dwindle.
+        assert_eq!(m.auto_axis("x5"), Axis::Row, "x5's parent stacks, so beside it");
+        assert_eq!(m.auto_axis("x1"), Axis::Column, "x1's parent is side by side, so below it");
+        m.split("x5", m.auto_axis("x5"), "x6", "t6");
+        m.split("x6", m.auto_axis("x6"), "x7", "t7");
+        assert_eq!(tab(&m), "R[x1 C[x3 R[x5 C[x6 x7]]]]");
+        // A pane dragged to an edge pairs up with the pane it lands beside.
+        assert!(m.move_pane("x6", "x5", Some(crate::layout::Edge::Right)));
+        assert_eq!(tab(&m), "R[x1 C[x3 R[R[x5 x6] x7]]]");
+        m.tab_mut("c1").unwrap().arrange = None;
+        assert_eq!(m.auto_axis("x1"), Axis::Row, "without bsp, side by side");
+    }
+
+    #[test]
+    fn a_tab_with_a_mode_arranges_again_when_a_pane_comes_or_goes() {
+        use crate::arrange::Mode;
+        use crate::layout::Size;
+        let mut m = model_with_one();
+        let tab = |m: &Model| shape(&m.tab("c1").unwrap().root);
+        m.arrange_tab("c1", Mode::Columns).unwrap();
+        m.split("x1", Axis::Row, "x2", "t2");
+        m.focus_pane("x1");
+        assert!(m.split("x1", Axis::Column, "x3", "t3"));
+        assert_eq!(tab(&m), "R[x1 x3 x2]", "columns whatever the direction, the new pane after x1");
+        assert_eq!(m.focused_pane().as_deref(), Some("x3"), "focus goes to the new pane");
         // A drag's sizes stay until the next pane comes or goes, which evens them.
         m.tab_mut("c1").unwrap().root.children_mut().unwrap()[0].size = Some(Size::Weight { weight: 3.0 });
         m.focus_pane("x2");
-        assert!(m.remove_pane("x4") == (false, false));
-        assert_eq!(tab(&m), "R[x1 C[x2 x3]]", "closing arranges again");
+        assert!(m.remove_pane("x3") == (false, false));
+        assert_eq!(tab(&m), "R[x1 x2]", "closing arranges again");
         assert!(m.tab("c1").unwrap().root.walk().iter().all(|n| n.size.is_none()));
         assert_eq!(m.focused_pane().as_deref(), Some("x2"));
-        assert_eq!(m.tab("c1").unwrap().arrange, Some(Mode::Bsp));
+        assert_eq!(m.tab("c1").unwrap().arrange, Some(Mode::Columns));
         // A swap keeps the mode; the next split goes on in the swapped order.
-        m.tab_mut("c1").unwrap().root.swap("x1", "x3");
-        m.split("x3", Axis::Row, "x5", "t5");
-        assert_eq!(tab(&m), "R[x3 C[x5 R[x2 x1]]]");
+        m.tab_mut("c1").unwrap().root.swap("x1", "x2");
+        m.split("x2", Axis::Column, "x5", "t5");
+        assert_eq!(tab(&m), "R[x2 x5 x1]");
         // Without a mode, splits and closes are plain again.
         m.tab_mut("c1").unwrap().arrange = None;
         m.split("x1", Axis::Column, "x6", "t6");
-        assert_eq!(tab(&m), "R[x3 C[x5 R[x2 C[x1 x6]]]]");
+        assert_eq!(tab(&m), "R[x2 x5 C[x1 x6]]");
         m.remove_pane("x5");
-        assert_eq!(tab(&m), "R[x3 R[x2 C[x1 x6]]]");
+        assert_eq!(tab(&m), "R[x2 C[x1 x6]]");
     }
 
     #[test]
