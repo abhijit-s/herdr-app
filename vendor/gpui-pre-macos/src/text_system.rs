@@ -36,7 +36,7 @@ use font_kit::{
 };
 use gpui::{
     Bounds, DevicePixels, Font, FontFallbacks, FontFeatures, FontId, FontMetrics, FontRun,
-    FontStyle, FontWeight, GlyphId, Hsla, LineLayout, Pixels, PlatformTextSystem,
+    FontStyle, FontWeight, GlyphId, GlyphThicken, Hsla, LineLayout, Pixels, PlatformTextSystem,
     RenderGlyphParams, Result, Rgba, SUBPIXEL_VARIANTS_X, ShapedGlyph, ShapedRun, SharedString,
     Size, TextRenderingMode, point, px, size, swap_rgba_pa_to_bgra,
 };
@@ -115,12 +115,13 @@ struct MacTextSystemState {
 }
 
 /// HERDR: what a font's subpixel glyphs are calibrated to draw like:
-/// CoreGraphics' grayscale through thicken's smoothing levels, or at a
-/// color's dilation.
+/// CoreGraphics' grayscale through thicken's smoothing levels, at a color's
+/// dilation, or unsmoothed.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum SubpixelMatch {
     Thicken,
     Dilation(u8),
+    Unsmoothed,
 }
 
 impl MacTextSystem {
@@ -555,7 +556,7 @@ impl MacTextSystemState {
 
         // Expand the bounds by 1 pixel on each side to give CG room for anti-aliasing,
         // HERDR: and 1 more for thickening, which Ghostty takes to add at most 1 pixel to an edge.
-        let room = if params.thicken.is_some() && !params.is_emoji { 2 } else { 1 };
+        let room = if params.thicken.strength().is_some() && !params.is_emoji { 2 } else { 1 };
         let bounds = bounds.dilate(DevicePixels(room));
         // HERDR: subpixel glyphs' filter spreads up to a pixel to each side.
         if params.subpixel_rendering && !params.is_emoji {
@@ -608,9 +609,9 @@ impl MacTextSystemState {
                 // HERDR: thickened glyphs in Ghostty's linear gray, which sets
                 // how its strength maps to CoreGraphics' smoothing.
                 let space = match params.thicken {
-                    Some(_) => unsafe { CGColorSpace::create_with_name(kCGColorSpaceLinearGray) }
+                    GlyphThicken::Strength(_) => unsafe { CGColorSpace::create_with_name(kCGColorSpaceLinearGray) }
                         .unwrap_or_else(CGColorSpace::create_device_gray),
-                    None => CGColorSpace::create_device_gray(),
+                    GlyphThicken::Auto | GlyphThicken::Off => CGColorSpace::create_device_gray(),
                 };
                 cx = CGContext::create_bitmap_context(
                     Some(bytes.as_mut_ptr() as *mut _),
@@ -645,12 +646,17 @@ impl MacTextSystemState {
             cx.set_allows_font_subpixel_quantization(false);
             cx.set_should_subpixel_quantize_fonts(false);
 
-            if let Some(strength) = params.thicken.filter(|_| !params.is_emoji) {
+            if let Some(strength) = params.thicken.strength().filter(|_| !params.is_emoji) {
                 // HERDR: Ghostty's font-thicken (font/face/coretext.zig): smoothing
                 // on, at a gray set by the strength rather than the text color.
                 cx.set_allows_font_smoothing(true);
                 cx.set_should_smooth_fonts(true);
                 cx.set_gray_fill_color(strength as CGFloat / 255.0, 1.0);
+            } else if params.thicken == GlyphThicken::Off && !params.is_emoji {
+                // HERDR: Ghostty's font-thicken = false: no smoothing, so no
+                // dilation, the same coverage for every text color.
+                cx.set_should_smooth_fonts(false);
+                cx.set_gray_fill_color(0.0, 1.0);
             } else if params.dilation > 0 {
                 let luminance = params.dilation as f64 * 0.25;
                 cx.set_should_smooth_fonts(true);
@@ -689,14 +695,15 @@ impl MacTextSystemState {
     /// when swash can't open the face or draw the glyph. The outline grows,
     /// across and along the rows, by its font's one growth (`subpixel_weight`):
     /// at `thicken`'s strength through smoothing levels made continuous
-    /// (`lcd::thicken_level`), else at the color's `dilation` exactly.
+    /// (`lcd::thicken_level`), with thicken off as CoreGraphics unsmoothed,
+    /// else at the color's `dilation` exactly.
     fn rasterize_subpixel_glyph(
         &self,
         params: &RenderGlyphParams,
         glyph_bounds: Bounds<DevicePixels>,
         bitmap_size: Size<DevicePixels>,
     ) -> Option<Vec<u8>> {
-        let level = params.thicken.map_or(params.dilation as f32, crate::lcd::thicken_level);
+        let level = params.thicken.strength().map_or(params.dilation as f32, crate::lcd::thicken_level);
         let growth = self.subpixel_weight(params).at(level);
         let sign = self.subpixel_outward(params);
         self.render_subpixel(params, glyph_bounds, bitmap_size, growth.map(|g| sign * g))
@@ -708,8 +715,9 @@ impl MacTextSystemState {
     /// interpolated (`lcd::Weight`).
     fn subpixel_weight(&self, params: &RenderGlyphParams) -> crate::lcd::Weight {
         let matching = match params.thicken {
-            Some(_) => SubpixelMatch::Thicken,
-            None => SubpixelMatch::Dilation(params.dilation),
+            GlyphThicken::Strength(_) => SubpixelMatch::Thicken,
+            GlyphThicken::Off => SubpixelMatch::Unsmoothed,
+            GlyphThicken::Auto => SubpixelMatch::Dilation(params.dilation),
         };
         let key = (params.font_id, (f32::from(params.font_size) * params.scale_factor).to_bits(), matching);
         if let Some(weight) = self.subpixel_weights.lock().get(&key) {
@@ -732,7 +740,7 @@ impl MacTextSystemState {
                 Some((self.subpixel_samples(&params, bounds)?, params, bounds, count))
             })
             .collect();
-        let growth = |thicken: Option<u8>| {
+        let growth = |thicken: GlyphThicken| {
             let grays: Vec<Option<Vec<f32>>> = glyphs
                 .iter()
                 .map(|(_, params, bounds, _)| {
@@ -749,8 +757,8 @@ impl MacTextSystemState {
             crate::lcd::fit(&pairs)
         };
         match params.thicken {
-            Some(_) => Some(crate::lcd::Weight::between(growth(Some(0))?, growth(Some(255))?)),
-            None => growth(None).map(crate::lcd::Weight::steady),
+            GlyphThicken::Strength(_) => Some(crate::lcd::Weight::between(growth(GlyphThicken::Strength(0))?, growth(GlyphThicken::Strength(255))?)),
+            GlyphThicken::Auto | GlyphThicken::Off => growth(params.thicken).map(crate::lcd::Weight::steady),
         }
     }
 

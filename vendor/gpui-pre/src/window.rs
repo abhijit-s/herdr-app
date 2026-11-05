@@ -14,7 +14,7 @@ use crate::{
     Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent,
     MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels,
     PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
-    PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
+    GlyphThicken, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
     RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
     SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size,
     StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
@@ -1203,10 +1203,10 @@ pub struct Window {
     // HERDR: the frame on screen has spinning sprites / their next step is due.
     presents_spinners: bool,
     spin_step_scheduled: bool,
-    // HERDR: the thickening strength `paint_glyph` uses (`with_glyph_thicken`).
-    glyph_thicken: Option<u8>,
-    // HERDR: the strength each frame's paint starts at (`set_glyph_thicken`).
-    base_glyph_thicken: Option<u8>,
+    // HERDR: the thickening `paint_glyph` uses (`with_glyph_thicken`).
+    glyph_thicken: GlyphThicken,
+    // HERDR: the thickening each frame's paint starts at (`set_glyph_thicken`).
+    base_glyph_thicken: GlyphThicken,
     // HERDR: the coverage contrast `paint_glyph` uses (`with_glyph_contrast`).
     glyph_contrast: f32,
     // HERDR: the contrast each frame's paint starts at (`set_glyph_contrast`).
@@ -2115,8 +2115,8 @@ impl Window {
             rendered_frame_size: None,
             presents_spinners: false,
             spin_step_scheduled: false,
-            glyph_thicken: None,
-            base_glyph_thicken: None,
+            glyph_thicken: GlyphThicken::Auto,
+            base_glyph_thicken: GlyphThicken::Auto,
             glyph_contrast: 0.,
             base_glyph_contrast: 0.,
             veil: None,
@@ -3760,7 +3760,7 @@ impl Window {
         // Now actually paint the elements.
         self.invalidator.set_phase(DrawPhase::Paint);
         // HERDR: every glyph painted this frame, deferred ones and tooltips
-        // too, starts at the window's strength; `with_glyph_thicken` nests.
+        // too, starts at the window's thickening; `with_glyph_thicken` nests.
         self.glyph_thicken = self.base_glyph_thicken;
         self.glyph_contrast = self.base_glyph_contrast;
         self.glyph_subpixel = self.base_glyph_subpixel;
@@ -4175,11 +4175,11 @@ impl Window {
         id
     }
 
-    /// HERDR: the thickening strength (as `with_glyph_thicken`) of the
-    /// glyphs a frame paints outside any `with_glyph_thicken`. Set it while
+    /// HERDR: the thickening (as `with_glyph_thicken`) of the glyphs a
+    /// frame paints outside any `with_glyph_thicken`. Set it while
     /// rendering, as `set_rem_size`.
-    pub fn set_glyph_thicken(&mut self, strength: Option<u8>) {
-        self.base_glyph_thicken = strength;
+    pub fn set_glyph_thicken(&mut self, thicken: GlyphThicken) {
+        self.base_glyph_thicken = thicken;
     }
 
     /// HERDR: every run this window shapes outside a `with_font_weight_shift`
@@ -4198,11 +4198,12 @@ impl Window {
         result
     }
 
-    /// HERDR: paints the monochrome glyphs in `f` thickened at `strength`
+    /// HERDR: paints the monochrome glyphs in `f` thickened at a strength
     /// (0 to 255) whatever their color, as Ghostty's `font-thicken` does,
-    /// or, with None, at the platform's color-dependent dilation.
-    pub fn with_glyph_thicken<R>(&mut self, strength: Option<u8>, f: impl FnOnce(&mut Self) -> R) -> R {
-        let outer = std::mem::replace(&mut self.glyph_thicken, strength);
+    /// with no font smoothing (`Off`), or, with `Auto`, at the platform's
+    /// color-dependent dilation.
+    pub fn with_glyph_thicken<R>(&mut self, thicken: GlyphThicken, f: impl FnOnce(&mut Self) -> R) -> R {
+        let outer = std::mem::replace(&mut self.glyph_thicken, thicken);
         let result = f(self);
         self.glyph_thicken = outer;
         result
@@ -4942,8 +4943,8 @@ impl Window {
         let subpixel_rendering = self.should_use_subpixel_rendering(font_id, font_size);
         let thicken = self.glyph_thicken;
         let dilation = match thicken {
-            Some(_) => 0,
-            None => self.text_system().glyph_dilation_for_color(color),
+            GlyphThicken::Auto => self.text_system().glyph_dilation_for_color(color),
+            GlyphThicken::Strength(_) | GlyphThicken::Off => 0,
         };
         let params = RenderGlyphParams {
             font_id,
@@ -5062,7 +5063,7 @@ impl Window {
             is_emoji: true,
             subpixel_rendering: false,
             dilation: 0,
-            thicken: None,
+            thicken: GlyphThicken::Auto,
             foreground: u32::from(color.to_rgb()).to_be_bytes(),
         };
         let uses_foreground = self.text_system().glyph_uses_foreground(&params);

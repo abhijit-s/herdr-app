@@ -42,6 +42,13 @@ const TEXT_RENDERINGS = [
   ["grayscale", "Grayscale"],
   ["subpixel", "Subpixel"],
 ];
+// font_thicken and ui_font_thicken: macOS smoothing by text color, Ghostty's
+// font-thicken, or smoothing off. Auto, the default, stays out of settings.json.
+const THICKENS = [
+  ["auto", "Auto"],
+  [true, "On"],
+  [false, "Off"],
+];
 const SUBPIXEL_ORDERS = [
   ["rgb", "RGB"],
   ["bgr", "BGR"],
@@ -632,7 +639,7 @@ export default class Settings extends View {
       .child(this.row(t, "Interface text size", "The panels' text only: spacing and icons keep their size.", scaleStepper("ui_text_scale", s.ui_text_scale)))
       .child(fontRow("ui_font", null, "Interface font", s.ui_font_family, DEFAULT_UI_FONT))
       .child(this.row(t, "Interface font weight", "Panels, tabs and popups. Bold text stays as much bolder; terminals keep theirs.", this.stepper(t, "st-ui_font_weight", `${uiWeight}`, (_e, cx) => uiWeightStep(-25, cx), (_e, cx) => uiWeightStep(25, cx))))
-      .child(this.thicken(t, "ui_font_thicken", "Thicken interface text", "Panels, tabs and popups as heavy whatever their color. Terminals follow their own."))
+      .child(this.thicken(t, "ui_font_thicken", "Thicken interface text", "Panels, tabs and popups as heavy whatever their color (On), or unsmoothed (Off). Terminals follow their own."))
       .child(this.contrast(t, "ui_text_contrast", "Interface contrast", "Crisper edges on the panels' text, at the same weight. Terminals follow their own."))
       .child(this.row(t, "Interface text smoothing", "Trial. Subpixel colors each edge by your display's stripes, on 1x displays; others stay grayscale.", this.choicePicker(t, "st-uitr", "ui_text_rendering", TEXT_RENDERINGS)))
       .child(div().h(18))
@@ -654,7 +661,7 @@ export default class Settings extends View {
           this.stepper(t, "st-font_weight_bold", `${bold}`, (_e, cx) => boldStep(-25, cx), (_e, cx) => boldStep(25, cx)),
         ),
       )
-      .child(this.thicken(t, "font_thicken", "Thicken", "Terminal text as heavy whatever its color, as Ghostty's font-thicken does."))
+      .child(this.thicken(t, "font_thicken", "Thicken", "Terminal text as heavy whatever its color (On), as Ghostty's font-thicken does, or unsmoothed (Off)."))
       .child(this.contrast(t, "text_contrast", "Contrast", "Crisper edges on terminal text, at the same weight."))
       .child(this.contrast(t, "faint_opacity", "Faint text", "How opaque dim (faint) terminal text draws. 0.5, as Ghostty's faint-opacity.", 0.5))
       .child(this.row(t, "Text smoothing", "Trial. Subpixel colors each edge by your display's stripes, on 1x displays; others stay grayscale.", this.choicePicker(t, "st-tr", "text_rendering", TEXT_RENDERINGS)))
@@ -694,10 +701,10 @@ export default class Settings extends View {
   }
 
   // Font thickening (`key` is font_thicken for terminals, ui_font_thicken for
-  // the panels): a toggle, then its strength while it's on. Layouts don't set
-  // either. Strength steps by 16 within 0..255, so it lands on each level macOS
-  // smoothing draws (about 112, 192, 224 and 255). Off and 255 are the defaults,
-  // left out of settings.json.
+  // the panels): Auto, On or Off, then the strength while it's On. Layouts
+  // don't set either. Strength steps by 16 within 0..255, so it lands on each
+  // level macOS smoothing draws (about 112, 192, 224 and 255). Auto and 255 are
+  // the defaults, left out of settings.json.
   thicken(t, key, label, hint) {
     const strengthKey = `${key}_strength`;
     const on = this.person[key] === true;
@@ -711,19 +718,7 @@ export default class Settings extends View {
       }, cx);
     return v_flex()
       .w_full()
-      .child(
-        this.row(
-          t,
-          label,
-          hint,
-          this.toggle(t, `st-${key}`, on, (_e, cx) =>
-            this.change((q) => {
-              if (q[key]) delete q[key];
-              else q[key] = true;
-            }, cx),
-          ),
-        ),
-      )
+      .child(this.row(t, label, hint, this.choicePicker(t, `st-${key}`, key, THICKENS)))
       .when(on, (el) =>
         el.child(this.row(t, "Thicken strength", "Like Ghostty's font-thicken-strength; 0 to 96 look the same.", this.stepper(t, `st-${strengthKey}`, `${strength}`, (_e, cx) => go(-16, cx), (_e, cx) => go(16, cx)))),
       );

@@ -149,13 +149,19 @@ test("terminal font weight steps by 25 within 100 to 900", () => {
   expect(click({ font_weight: 100 }, { font_weight: 100 }, "st-font_weight-minus")).toEqual({ font_weight: 100 });
 });
 
-test("the thicken toggle adds font_thicken, then removes it", () => {
-  expect(click({ font_size: 15 }, {}, "st-font_thicken")).toEqual({ font_size: 15, font_thicken: true });
-  expect(click({ font_size: 15, font_thicken: true }, {}, "st-font_thicken")).toEqual({ font_size: 15 });
+test("the thicken picker writes true or false, and Auto removes font_thicken", () => {
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"]);
+  expect(pick({ font_size: 15 }, "st-font_thicken-On")).toEqual({ font_size: 15, font_thicken: true });
+  expect(pick({ font_size: 15 }, "st-font_thicken-Off")).toEqual({ font_size: 15, font_thicken: false });
+  expect(pick({ font_thicken: true }, "st-font_thicken-Off")).toEqual({ font_thicken: false });
+  expect(pick({ font_size: 15, font_thicken: true }, "st-font_thicken-Auto")).toEqual({ font_size: 15 });
+  expect(pick({ font_thicken: false }, "st-font_thicken-Auto")).toEqual({});
 });
 
 test("thicken strength shows only while thickening, and steps by 16 within 0 to 255", () => {
   expect(() => click({}, {}, "st-font_thicken_strength-minus")).toThrow();
+  expect(() => click({ font_thicken: false }, {}, "st-font_thicken_strength-minus")).toThrow();
+  expect(() => click({ font_thicken: "auto" }, {}, "st-font_thicken_strength-minus")).toThrow();
   const on = { font_thicken: true };
   expect(click(on, {}, "st-font_thicken_strength-minus")).toEqual({ ...on, font_thicken_strength: 240 });
   expect(click({ ...on, font_thicken_strength: 96 }, {}, "st-font_thicken_strength-plus")).toEqual({ ...on, font_thicken_strength: 112 });
@@ -166,11 +172,13 @@ test("thicken strength shows only while thickening, and steps by 16 within 0 to 
   expect(click({ ...on, font_thicken_strength: 250 }, {}, "st-font_thicken_strength-plus")).toEqual(on);
 });
 
-test("the interface thicken toggle adds ui_font_thicken, then removes it, apart from the terminal's", () => {
-  expect(click({ font_size: 15 }, {}, "st-ui_font_thicken")).toEqual({ font_size: 15, ui_font_thicken: true });
-  expect(click({ ui_font_thicken: true }, {}, "st-ui_font_thicken")).toEqual({});
-  expect(click({ font_thicken: true }, {}, "st-ui_font_thicken")).toEqual({ font_thicken: true, ui_font_thicken: true });
-  expect(click({ ui_font_thicken: true }, {}, "st-font_thicken")).toEqual({ ui_font_thicken: true, font_thicken: true });
+test("the interface thicken picker writes ui_font_thicken apart from the terminal's", () => {
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"]);
+  expect(pick({ font_size: 15 }, "st-ui_font_thicken-On")).toEqual({ font_size: 15, ui_font_thicken: true });
+  expect(pick({ ui_font_thicken: true }, "st-ui_font_thicken-Off")).toEqual({ ui_font_thicken: false });
+  expect(pick({ ui_font_thicken: true }, "st-ui_font_thicken-Auto")).toEqual({});
+  expect(pick({ font_thicken: true }, "st-ui_font_thicken-Off")).toEqual({ font_thicken: true, ui_font_thicken: false });
+  expect(pick({ ui_font_thicken: true }, "st-font_thicken-Off")).toEqual({ ui_font_thicken: true, font_thicken: false });
 });
 
 test("contrast steps by 0.1 within 0 to 1, terminal and interface apart", () => {
@@ -196,6 +204,7 @@ test("faint opacity steps by 0.1 within 0 to 1 and leaves Ghostty's 0.5 out", ()
 test("interface thicken strength shows only while it's on, and steps by 16 within 0 to 255", () => {
   expect(() => click({}, {}, "st-ui_font_thicken_strength-minus")).toThrow();
   expect(() => click({ font_thicken: true }, {}, "st-ui_font_thicken_strength-minus")).toThrow();
+  expect(() => click({ ui_font_thicken: false }, {}, "st-ui_font_thicken_strength-minus")).toThrow();
   const on = { ui_font_thicken: true };
   expect(click(on, {}, "st-ui_font_thicken_strength-minus")).toEqual({ ...on, ui_font_thicken_strength: 240 });
   expect(click({ ...on, ui_font_thicken_strength: 96 }, {}, "st-ui_font_thicken_strength-plus")).toEqual({ ...on, ui_font_thicken_strength: 112 });
