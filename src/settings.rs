@@ -384,6 +384,10 @@ pub struct Person {
     /// Bounce the Dock icon when an agent needs you while Herdr is in the background.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub dock_bounce: bool,
+    /// What happens to recorded agents whose terminals are back to a shell
+    /// after Herdr starts or the core comes back (resume.rs).
+    #[serde(skip_serializing_if = "ResumeAgents::is_ask")]
+    pub resume_agents: ResumeAgents,
     /// A program run for each alert instead of the system notification (alert.rs).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alert_command: Option<AlertCommand>,
@@ -508,6 +512,22 @@ pub enum SystemNotifications {
 impl SystemNotifications {
     fn is_background(&self) -> bool {
         *self == SystemNotifications::Background
+    }
+}
+
+/// After a restart: offer to resume agents (a toast), resume them, or neither.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResumeAgents {
+    #[default]
+    Ask,
+    Auto,
+    Off,
+}
+
+impl ResumeAgents {
+    fn is_ask(&self) -> bool {
+        *self == ResumeAgents::Ask
     }
 }
 
@@ -682,6 +702,7 @@ impl Default for Person {
             sounds: Sounds::default(),
             system_notifications: SystemNotifications::Background,
             dock_bounce: false,
+            resume_agents: ResumeAgents::Ask,
             alert_command: None,
             focus_follows_mouse: false,
             focus_follows_mouse_delay_ms: FOLLOW_DELAY_DEFAULT_MS,
@@ -1796,7 +1817,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: true, font_thicken_strength: 30, ui_font_thicken: true, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: true, font_thicken_strength: 30, ui_font_thicken: true, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

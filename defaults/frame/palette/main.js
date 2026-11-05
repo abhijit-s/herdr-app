@@ -51,6 +51,7 @@ const NAMED = [
   ["terminal.paste", {}, "Terminal", "Paste", "clipboard"],
   ["agent.next", {}, "Agent", "Next agent", ""],
   ["agent.prev", {}, "Agent", "Previous agent", ""],
+  ["session.resume", {}, "Agent", "Resume sessions", "restore restart reboot claude continue"],
   ["window.minimize", {}, "Window", "Minimize window", ""],
   ["window.maximize", {}, "Window", "Maximize window", "restore"],
   ["window.close", {}, "Window", "Close window", "quit"],
@@ -71,7 +72,7 @@ const HIDDEN = new Set([
   "space.move", "tab.move", "space.select", "tab.select", "pane.focus", "terminal.keep",
   "terminal.park", "terminal.kill", "terminal.show", "agent.focus", "layout.set", "layout.toggle",
   "layout.show", "layout.hide", "layout.resize", "layout.select", "mod.open", "overlay.close",
-  "tab.settle", "tab.unsettle",
+  "tab.settle", "tab.unsettle", "session.saved",
   "app.palette", "app.hide", "app.hide_others", "app.show_all", "app.theme", "app.settings",
 ]);
 

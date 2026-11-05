@@ -43,6 +43,9 @@ struct Entry {
     /// How to start it, for an agent people can start from a menu (`knownAgents()`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     run: Vec<String>,
+    /// How to bring it back after a reboot (resume.rs); `{}` turns a shipped rule off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resume: Option<crate::resume::Rule>,
 }
 
 impl Entry {
@@ -57,6 +60,9 @@ impl Entry {
         }
         if !mine.run.is_empty() {
             self.run = mine.run;
+        }
+        if mine.resume.is_some() {
+            self.resume = mine.resume;
         }
     }
 }
@@ -169,12 +175,35 @@ pub fn load() -> Result<(), String> {
                 for (key, entry) in mine.programs {
                     table.programs.entry(key).or_default().over(entry);
                 }
-                Ok(())
+                bad_resume_rules(&mut table)
             }
         },
     };
     TABLE.with(|t| *t.borrow_mut() = table);
     result
+}
+
+/// Drops resume rules that don't hold up; Err names them.
+fn bad_resume_rules(table: &mut Table) -> Result<(), String> {
+    let mut bad = Vec::new();
+    for (key, e) in &mut table.programs {
+        if let Some(Err(why)) = e.resume.as_ref().map(crate::resume::Rule::check) {
+            bad.push(format!("programs.json: {key}.resume: {why}"));
+            e.resume = None;
+        }
+    }
+    if bad.is_empty() { Ok(()) } else { Err(bad.join("; ")) }
+}
+
+/// The program a command line runs, if it has a resume rule: `(key, name, rule)`.
+pub fn resume_rule(argv: &[String]) -> Option<(String, String, crate::resume::Rule)> {
+    TABLE.with(|t| {
+        let t = t.borrow();
+        let shown = resolve(&t, None, argv);
+        let key = shown["key"].as_str()?;
+        let rule = t.programs.get(key)?.resume.clone().filter(|r| !r.is_off())?;
+        Some((key.to_owned(), shown["name"].as_str().unwrap_or(key).to_owned(), rule))
+    })
 }
 
 /// How a terminal shows: from the agent's own report (`app`), else the
@@ -416,6 +445,31 @@ mod tests {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8(out.stdout).unwrap(), "herdr-has:issue57_function\nherdr-has:printf\n");
+    }
+
+    #[test]
+    fn resume_rules_are_checked_and_a_persons_empty_rule_turns_one_off() {
+        let mut shipped = t();
+        assert!(bad_resume_rules(&mut shipped).is_ok(), "shipped rules hold up");
+        let claude = shipped.programs["claude"].resume.clone().expect("Claude Code resumes");
+        let argv: Vec<String> = ["claude", "-c", "--model", "opus"].map(String::from).to_vec();
+        assert_eq!(crate::resume::rewrite(&argv, &claude, Some("s1")).unwrap(), ["claude", "--model", "opus", "--resume", "s1"]);
+        let resumable: Vec<&String> = shipped.programs.iter().filter(|(_, e)| e.resume.is_some()).map(|(k, _)| k).collect();
+        assert_eq!(resumable, ["claude"], "only rules whose session can be found without the agent's help");
+
+        let mine: Table = serde_json::from_str(r#"{ "programs": {
+            "claude": { "resume": {} },
+            "htop": { "resume": { "rerun": true } },
+            "bad": { "resume": { "append": ["$(x)"] } } } }"#).unwrap();
+        let mut table = t();
+        for (key, entry) in mine.programs {
+            table.programs.entry(key).or_default().over(entry);
+        }
+        let error = bad_resume_rules(&mut table).unwrap_err();
+        assert!(error.contains("bad.resume") && !error.contains("htop"), "{error}");
+        assert!(table.programs["bad"].resume.is_none());
+        assert!(table.programs["claude"].resume.as_ref().is_some_and(crate::resume::Rule::is_off));
+        assert!(serde_json::from_str::<Table>(r#"{ "programs": { "x": { "resume": { "typo": 1 } } } }"#).is_err(), "unknown fields are errors");
     }
 
     #[test]

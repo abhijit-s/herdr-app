@@ -637,6 +637,7 @@ The main ones:
   Terminals display Kitty graphics, including Unicode placeholder images used by
   programs such as yazi; partial images and scrolling follow the placeholder cells.
 - Agents: `agent.next`, `agent.prev`, `agent.focus {terminal}`.
+- Sessions: `session.saved` lists the recorded agents (programs with a `resume` rule in `programs.json`) with `terminal`, `where`, `program`, `name`, `cwd`, the resuming `argv`, `session`, `saved_ms`, and `ready` (its terminal is live and back to a bare shell) or `why` not. `session.resume {terminal?, confirmed?}` types `cd <cwd> && <argv>` (each word shell-quoted; PowerShell: `Set-Location`) into every ready one (or just `terminal`) and answers `{resumed, skipped: [{terminal, why}]}`; it asks the person first unless `confirmed`, and scripts must pass `confirmed: true` (`herdr-app do session.resume --confirmed true`). It never types into a terminal whose foreground isn't a shell, and skips a session two terminals share.
 - Layout: `layout.switch {name?}`, `layout.toggle {id}`, `layout.show {id}`, `layout.hide {id}`,
   `layout.resize {id, px | weight}`, `layout.select {stack, child}`, `layout.set {layout}`
   (personal tree edits; on shipped layouts only click/look fields change),
@@ -695,6 +696,7 @@ What's about the user, never a look:
   the newest). `done` / `blocked` replace the bundled MP3s
   (path absolute or relative to `~/.config/herdr-app`). Changes apply live,
   including the Play buttons in Settings > Alerts.
+- `resume_agents`: `"ask"` (default), `"auto"` or `"off"`: what happens after Herdr starts or reconnects to the core when recorded agents (see `resume` in Programs) are in terminals back to a bare shell, as after a reboot. `ask`: one toast, "Resume N sessions", whose click runs `session.resume`; `auto`: resumes them at once; `off`: leaves the shells (records are still kept, and `session.resume` still works). Settings > Alerts has it as "Resume agents after restart".
 - `system_notifications`: `"background"` (default), `"always"` or `"off"`.
   The same alerts also go to the system's notification center: titled as
   the toast, with "space / tab" as the body, one per agent (a newer alert
@@ -914,6 +916,17 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
   Invalid JSON is reported in `programs.error` (a valid file has no error).
 - It follows what runs in the terminal now (lazygit, nvim), else what it
   started with.
+- `resume`: how to bring the program back after a reboot, when herdr-core gives its kept terminal a fresh shell. While it runs, Herdr records the command line that resumes it in `data/resume.json` here; `session.resume` (and the toast `resume_agents` asks with) types it back in. Claude Code ships with one:
+
+  ```json
+  "claude": { "resume": {
+      "session": { "file": "~/.claude/sessions/{pid}.json", "field": "sessionId", "when": { "kind": "interactive" } },
+      "drop": { "--resume": 1, "-r": 1, "--session-id": 1, "--continue": 0, "-c": 0, "--fork-session": 0, "--from-pr": 1 },
+      "append": ["--resume", "{session_id}"] } }
+  ```
+
+  `drop` takes flags out of the command line it ran with (`--flag value`, `--flag=value`; the number is how many values it takes at most, and a value never starts with `-`), the rest (model, permissions) stays, then `append` is added, `{session_id}` being its session. The session comes from the agent's own report, a label on its terminal, `herdr.session.<program key>=<id>` (or, better, `<id>@<pid>` with the agent's process id, honored only for that process, so a label left from an earlier run never names a new one; an empty value clears it), which a hook sets with `hc label "$HC_TERMINAL_ID" herdr.session.claude=<id>`; else from `session.file` (`{pid}`: the program's process id; `~/`: the home of the machine it runs on, read there for terminals on other machines), whose `field` is the id and whose `when` fields must all match (a Claude Code `-p` run is `kind: "bg"`: not recorded). Ids must be at most 256 letters, digits or `_ . / : = + -`, not starting with `-`; others are refused, as is an `append` word with any other character. `{ "rerun": true }` resumes by running the same command line again (no shipped program has it); `"resume": {}` turns a shipped rule off. Claude Code writes its session file once, at start: after `/clear` or `/resume` inside it, only a hook's label names the new session. Codex, Cursor, OpenCode, Pi, Copilot, Gemini and the others have resume flags but no file that maps their process to a session: give them a rule with `append` (e.g. `"codex": { "resume": { "append": ["resume", "{session_id}"] } }`) and report the id from a hook.
+- A record goes when its program ends in a terminal that kept running (the person quit it), when its terminal goes while Herdr watches, or when another session replaces it; a reboot or core restart keeps it.
 
 ## Mods: `mods/<name>/`
 

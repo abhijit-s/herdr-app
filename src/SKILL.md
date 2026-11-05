@@ -54,6 +54,7 @@ including when `--argv` supplies a program. Without `--folder`, it follows the
 focused terminal's folder. If an inherited local folder was deleted, new spaces,
 tabs and splits retry in that machine's home. An explicit invalid folder
 still fails.
+After a reboot, agents with a `resume` rule (Claude Code) that ran in kept terminals can come back: `herdr-app do session.saved` lists them and whether each terminal is a bare shell again; `herdr-app do session.resume --confirmed true` types their resume command into those shells (`--terminal t7` for one). Never resume into a terminal the person is using.
 `hc machine ls` lists machines. Use `hc run --on vps ...`, `hc exec --on vps ...`
 and `hc file ... --on vps ...` for remote work, not your local file tools.
 

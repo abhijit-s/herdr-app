@@ -68,6 +68,8 @@ export function playSound(sound: string): null;
  *   terminal.right_click {to: "program" | "menu", terminal?} (right-clicks to a program that takes the mouse; Shift: the menu).
  *   terminal.scroll {lines | pages | to: "top" | "bottom", terminal?} (Herdr's view of the history: negative goes up; pages may be fractional).
  * Agents: agent.next, agent.prev (the agents list's order), agent.focus {terminal} (sub-agents too).
+ * Sessions: session.saved (recorded agents, each ready to resume or why not), session.resume {terminal?, confirmed?}
+ *   (types each ready one's command line into its bare shell; scripts pass confirmed: true).
  * Layout (the shown layout's nodes by id): layout.toggle|show|hide {id}, layout.resize {id, px | weight},
  *   layout.select {stack, child}, layout.set {layout} (personal trees; shipped layouts: click/look fields only), layout.switch {name?} (no name: the next one).
  *   layout.clone {name, as?} duplicates and switches; mod.clone {name, as?} duplicates a mod.

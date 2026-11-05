@@ -48,6 +48,9 @@ const TOAST_LIMIT: usize = 5;
 const ALERT_JOIN: Duration = Duration::from_secs(3);
 /// The most agents a shared alert toast names; the rest are counted.
 const ALERT_NAMES: usize = 4;
+/// How long after a start or reconnect terminals may still come back as bare
+/// shells and be offered for resuming.
+const RESUME_OFFER_WINDOW: Duration = Duration::from_secs(60);
 
 /// How long a toast stays: its `timeout`, else longer for errors and warnings.
 fn toast_timeout(notification: &Value) -> Duration {
@@ -541,6 +544,10 @@ pub struct AppWindow {
     /// Core's terminal records by address.
     live: HashMap<String, Value>,
     listed_once: bool,
+    /// Resumable programs on record (resume.rs).
+    resume: crate::resume::Tracker,
+    /// Since when an offer to resume them is due (after a start or reconnect).
+    resume_offer: Option<Instant>,
     /// Live folders by address (from the shell process).
     cwds: HashMap<String, String>,
     /// When each terminal's repo and branch were last read, and what it was doing.
@@ -650,6 +657,8 @@ impl AppWindow {
             watched: Watched::default(),
             live: HashMap::new(),
             listed_once: false,
+            resume: crate::resume::Tracker::load(&resume_path()),
+            resume_offer: Some(Instant::now()),
             cwds: HashMap::new(),
             folders_busy: HashMap::new(),
             born: RefCell::new(HashMap::new()),
@@ -982,6 +991,9 @@ impl AppWindow {
         }
         Self::note_core(&core);
         self.core = core.clone();
+        // Programs the old core lost may be shells now: offer them again.
+        self.resume.forget_seen();
+        self.resume_offer = Some(Instant::now());
         self.publish(cx);
         for t in self.terms.values() {
             t.view.update(cx, |v, cx| v.reattach(core.clone(), cx));
@@ -2253,6 +2265,7 @@ impl AppWindow {
             }
         }
         self.track_folders(cx);
+        self.track_resume(window, cx);
         for t in self.terms.values() {
             if self.live.get(&t.address).is_some_and(|r| r["pid"].as_u64().is_some()) {
                 t.view.update(cx, |v, cx| v.reattach_if_needed(self.core.clone(), cx));
@@ -2265,6 +2278,133 @@ impl AppWindow {
         } else if listed {
             self.publish(cx);
         }
+    }
+
+    /// Records the resumable programs running now (resume.rs), and once after
+    /// a start or reconnect offers to resume those whose terminals are bare
+    /// shells again, as `resume_agents` says.
+    fn track_resume(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (lookups, changed) = self.resume.observe(&self.live, crate::programs::resume_rule);
+        if changed {
+            self.save_resume();
+        }
+        for lookup in lookups {
+            let core = self.core.clone();
+            let job = cx.background_executor().spawn(async move {
+                let session = crate::resume::find_session(&lookup, &home(), |path, machine| match machine {
+                    None => std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}")),
+                    Some(m) => core
+                        .call("file.read", json!({ "path": path, "on": m }))
+                        .map(|r| r["text"].as_str().unwrap_or_default().to_owned())
+                        .map_err(|e| format!("{m}:{path}: {e:#}")),
+                });
+                (lookup, session)
+            });
+            cx.spawn_in(window, async move |this, cx| {
+                let (lookup, session) = job.await;
+                let _ = this.update(cx, |this, _| {
+                    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+                    if this.resume.found(&lookup, session, now) {
+                        this.save_resume();
+                    }
+                });
+            })
+            .detach();
+        }
+        self.offer_resume(window, cx);
+    }
+
+    fn save_resume(&self) {
+        if let Err(e) = self.resume.save(&resume_path()) {
+            tracing::warn!("resume records not saved: {e}");
+        }
+    }
+
+    /// The records that can be resumed now (of one terminal, when given), and
+    /// the others with why not.
+    fn resume_plan(&self, terminal: Option<&str>) -> (Vec<crate::resume::Record>, Vec<(crate::resume::Record, String)>) {
+        let is_shell = |argv: &[String]| crate::programs::of(None, argv)["shell"] == true;
+        let (mut ready, mut skipped) = (Vec::new(), Vec::new());
+        for (r, why) in self.resume.readiness(&self.live, is_shell) {
+            if terminal.is_some_and(|t| t != r.terminal) {
+                continue;
+            }
+            match why {
+                None => ready.push(r.clone()),
+                Some(why) => skipped.push((r.clone(), why)),
+            }
+        }
+        (ready, skipped)
+    }
+
+    fn offer_resume(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(since) = self.resume_offer else { return };
+        let (ready, _) = self.resume_plan(None);
+        if ready.is_empty() {
+            // Terminals of other machines come in late; after a while, nothing's due.
+            if since.elapsed() > RESUME_OFFER_WINDOW {
+                self.resume_offer = None;
+            }
+            return;
+        }
+        self.resume_offer = None;
+        match self.person.resume_agents {
+            settings::ResumeAgents::Off => {}
+            settings::ResumeAgents::Auto => {
+                let (_, skipped) = self.resume_plan(None);
+                self.resume_sessions(ready, skipped, true, window, cx);
+            }
+            settings::ResumeAgents::Ask => {
+                let n = ready.len();
+                let spec = json!({ "kind": "toast", "notification": {
+                    "title": format!("Resume {n} session{}", if n == 1 { "" } else { "s" }),
+                    "body": resumed_names(&ready),
+                    "level": "info",
+                    "timeout": 30000,
+                    "action": { "name": "session.resume", "args": { "confirmed": true } },
+                } });
+                self.open_overlay(mods::new_overlay_id(), spec, window, cx);
+            }
+        }
+    }
+
+    /// Types each record's command line into its terminal, if that is still a
+    /// bare shell when it gets there. What it did, as `session.resume` answers.
+    fn resume_sessions(&mut self, ready: Vec<crate::resume::Record>, skipped: Vec<(crate::resume::Record, String)>, tell: bool, window: &mut Window, cx: &mut Context<Self>) -> Value {
+        let mut resumed = Vec::new();
+        for r in &ready {
+            let powershell = self.live.get(&r.terminal).is_some_and(|rec| {
+                let shell = crate::resume::foreground_argv(rec).into_iter().next()
+                    .or_else(|| rec.pointer("/argv/0").and_then(Value::as_str).map(str::to_owned))
+                    .unwrap_or_default();
+                let name = shell.rsplit(['/', '\\']).next().unwrap_or(&shell).to_ascii_lowercase();
+                name.starts_with("pwsh") || name.starts_with("powershell")
+            });
+            let text = crate::resume::command_line(&r.cwd, &r.argv, powershell);
+            let (core, terminal, name) = (self.core.clone(), r.terminal.clone(), r.name.clone());
+            let job = cx.background_executor().spawn(async move { core.call("terminal.send", json!({ "terminal": terminal, "text": text })).map_err(|e| format!("{e:#}")) });
+            let (terminal, place) = (r.terminal.clone(), r.place.clone().unwrap_or_else(|| r.terminal.clone()));
+            cx.spawn_in(window, async move |this, cx| {
+                if let Err(why) = job.await {
+                    tracing::warn!("resuming {name} in {terminal}: {why}");
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        let spec = json!({"kind":"toast", "notification":{"title":format!("Could not resume {name}"),"body":format!("{place}: {why}"),"level":"error"}});
+                        this.open_overlay(mods::new_overlay_id(), spec, window, cx);
+                    });
+                }
+            })
+            .detach();
+            resumed.push(json!({ "terminal": r.terminal, "name": r.name, "where": r.place }));
+        }
+        if tell && !skipped.is_empty() {
+            let body = skipped.iter().take(3).map(|(r, why)| format!("{} in {}: {why}", r.name, r.place.as_deref().unwrap_or(&r.terminal))).collect::<Vec<_>>().join("; ");
+            let spec = json!({"kind":"toast", "notification":{"title":format!("Resumed {}, left {} as a shell", ready.len(), skipped.len()),"body":body,"level":"warning"}});
+            self.open_overlay(mods::new_overlay_id(), spec, window, cx);
+        }
+        json!({
+            "resumed": resumed,
+            "skipped": skipped.iter().map(|(r, why)| json!({ "terminal": r.terminal, "name": r.name, "where": r.place, "why": why })).collect::<Vec<_>>(),
+        })
     }
 
     /// Tells the person an agent needs them or finished: Herdr's sounds, and a
@@ -3575,6 +3715,41 @@ impl AppWindow {
             }
             "app.whats_new" => {
                 self.open_whats_new(true, window, cx);
+                return;
+            }
+            "session.resume" => {
+                let terminal = Self::arg(a, "terminal");
+                let (ready, skipped) = self.resume_plan(terminal);
+                if let Some(t) = terminal && ready.is_empty() && skipped.is_empty() {
+                    return self.fail(format!("no saved session for {t:?}: see session.saved"));
+                }
+                if ready.is_empty() {
+                    if person {
+                        let body = skipped.iter().take(3).map(|(r, why)| format!("{}: {why}", r.name)).collect::<Vec<_>>().join("; ");
+                        let spec = json!({"kind":"toast", "notification":{"title":"Nothing to resume","body":body,"level":"info"}});
+                        self.open_overlay(mods::new_overlay_id(), spec, window, cx);
+                    }
+                    let r = self.resume_sessions(ready, skipped, false, window, cx);
+                    return self.answer(Ok(r));
+                }
+                if a.get("confirmed").and_then(Value::as_bool) != Some(true) {
+                    if !person {
+                        return self.fail("session.resume types into terminals: pass confirmed: true");
+                    }
+                    let n = ready.len();
+                    let title = format!("Resume {n} session{}?", if n == 1 { "" } else { "s" });
+                    let args = json!({ "terminal": terminal, "confirmed": true });
+                    self.confirm(&title, &resumed_names(&ready), "session.resume", args, window, cx);
+                    return;
+                }
+                let r = self.resume_sessions(ready, skipped, person, window, cx);
+                self.answer(Ok(r));
+                return;
+            }
+            "session.saved" => {
+                let is_shell = |argv: &[String]| crate::programs::of(None, argv)["shell"] == true;
+                let sessions: Vec<Value> = self.resume.readiness(&self.live, is_shell).iter().map(|(r, why)| crate::resume::shown(r, why)).collect();
+                self.answer(Ok(json!({ "sessions": sessions })));
                 return;
             }
             "app.palette" => {
@@ -5070,6 +5245,20 @@ fn new_space_machine(args: &Value, person: bool, model: &Model) -> Option<String
         .filter(|m| !m.is_empty()).map(str::to_owned)
 }
 
+/// Where the resumable programs are recorded (resume.rs).
+fn resume_path() -> PathBuf {
+    file("data/resume.json")
+}
+
+/// "Claude Code in space / tab, Codex in t4 and 2 more".
+fn resumed_names(records: &[crate::resume::Record]) -> String {
+    let mut names: Vec<String> = records.iter().take(3).map(|r| format!("{} in {}", r.name, r.place.as_deref().unwrap_or(&r.terminal))).collect();
+    if records.len() > 3 {
+        names.push(format!("{} more", records.len() - 3));
+    }
+    names.join(", ")
+}
+
 fn home() -> String {
     mods::home().to_string_lossy().into_owned()
 }
@@ -6367,6 +6556,74 @@ export default class Scale extends View {
         assert!(!shown.contains(&first) && shown.ends_with(&["n0".into(), "n1".into(), "n2".into(), "n3".into()]), "the oldest closed: {shown:?}");
         assert!(shown.contains(&needs_you), "routine toasts close before an older one that needs the person: {shown:?}");
         assert!(cx.debug_bounds("toast-3 agents finished").is_none(), "its mod went with it");
+    }
+
+    #[test]
+    fn a_saved_agent_in_a_bare_shell_is_offered_and_resumed_only_there() {
+        in_own_process("resume_offer");
+    }
+
+    /// After a start, a recorded agent whose terminal is a bare shell again
+    /// gets one toast; its action types the command line into that terminal
+    /// only, never into one running something else.
+    #[gpui::test]
+    fn resume_offer(cx: &mut gpui::TestAppContext) {
+        use super::OverlayKind;
+        use crate::resume::Record;
+        use serde_json::json;
+        if !running_alone("resume_offer") {
+            return;
+        }
+        cx.executor().allow_parking();
+        let (core, calls) = crate::hc::answering(|method, _| match method {
+            "terminal.send" => Ok(json!({})),
+            _ => Err(json!({ "message": "not in this test" })),
+        });
+        let (view, cx) = open_window_on(core, cx, "toast", include_str!("../defaults/mods/toast/main.js"), json!({ "id": "pane", "type": "block" }));
+        cx.run_until_parked();
+        let record = |terminal: &str, session: &str| Record {
+            terminal: terminal.into(), place: Some(format!("s / {terminal}")), program: "claude".into(), name: "Claude Code".into(),
+            cwd: "/w/it's".into(), argv: ["claude", "--model", "opus", "--resume", session].map(String::from).to_vec(),
+            session: Some(session.into()), saved_ms: 1,
+        };
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.live.insert("t1".into(), json!({ "address": "t1", "pid": 5, "foreground": { "pid": 5, "argv": ["-zsh"], "cwd": "/w" }, "labels": {} }));
+            this.live.insert("t2".into(), json!({ "address": "t2", "pid": 6, "foreground": { "pid": 9, "argv": ["vim", "x"], "cwd": "/w" }, "labels": {} }));
+            this.resume.insert(record("t1", "s1"));
+            this.resume.insert(record("t2", "s2"));
+            this.person.resume_agents = crate::settings::ResumeAgents::Ask;
+            this.track_resume(window, cx);
+            this.track_resume(window, cx);
+        }));
+        cx.run_until_parked();
+        let toasts = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| {
+            this.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).map(|o| this.copies[&format!("overlay:{}", o.id)].inst.props.clone()).collect::<Vec<_>>()
+        });
+        let shown = toasts(cx);
+        assert_eq!(shown.len(), 1, "one offer, once: {shown:?}");
+        assert_eq!((shown[0]["title"].as_str(), shown[0]["body"].as_str()), (Some("Resume 1 session"), Some("Claude Code in s / t1")));
+        assert_eq!(shown[0]["action"], json!({ "name": "session.resume", "args": { "confirmed": true } }));
+        let sends = || calls.lock().unwrap().iter().filter(|(m, _)| m == "terminal.send").cloned().collect::<Vec<_>>();
+        assert!(sends().is_empty(), "nothing typed before the person says so");
+
+        let saved = cx.update(|window, cx| view.update(cx, |this, cx| this.run_as("session.saved", json!({}), false, window, cx)));
+        assert_eq!(saved["sessions"].as_array().map(|s| s.iter().map(|s| s["ready"].clone()).collect::<Vec<_>>()), Some(vec![json!(true), json!(false)]));
+        assert!(saved["sessions"][1]["why"].as_str().is_some_and(|w| w.contains("Vim")), "{saved}");
+
+        let unconfirmed = cx.update(|window, cx| view.update(cx, |this, cx| this.run_as("session.resume", json!({}), false, window, cx)));
+        assert!(unconfirmed["error"].as_str().is_some_and(|e| e.contains("confirmed")), "{unconfirmed}");
+        let done = cx.update(|window, cx| view.update(cx, |this, cx| this.run_as("session.resume", json!({ "confirmed": true }), false, window, cx)));
+        assert_eq!(done["resumed"][0]["terminal"], "t1");
+        assert_eq!(done["skipped"][0]["terminal"], "t2");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while sends().is_empty() {
+            assert!(std::time::Instant::now() < deadline, "terminal.send never went");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            cx.run_until_parked();
+        }
+        assert_eq!(sends(), vec![("terminal.send".to_owned(), json!({ "terminal": "t1", "text": "cd '/w/it'\\''s' && claude --model opus --resume s1" }))]);
+        let missing = cx.update(|window, cx| view.update(cx, |this, cx| this.run_as("session.resume", json!({ "terminal": "t7", "confirmed": true }), false, window, cx)));
+        assert!(missing["error"].as_str().is_some_and(|e| e.contains("no saved session")), "{missing}");
     }
 
     #[test]
