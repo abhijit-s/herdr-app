@@ -433,9 +433,10 @@ pub struct Person {
     #[serde(skip_serializing_if = "is_full_strength")]
     pub font_thicken_strength: u16,
     /// Thicken the panels' text (every mod, tab, popup and toast) the same
-    /// way, apart from the terminals' `font_thicken` (macOS).
-    #[serde(skip_serializing_if = "is_false")]
-    pub ui_font_thicken: bool,
+    /// way, or turn its font smoothing off, apart from the terminals'
+    /// `font_thicken` (macOS).
+    #[serde(skip_serializing_if = "Thicken::is_auto")]
+    pub ui_font_thicken: Thicken,
     /// How much `ui_font_thicken` thickens, 0 to 255.
     #[serde(skip_serializing_if = "is_full_strength")]
     pub ui_font_thicken_strength: u16,
@@ -652,7 +653,7 @@ fn is_full_strength(v: &u16) -> bool {
     *v == THICKEN_STRENGTH_DEFAULT
 }
 
-/// `font_thicken`: absent or `"auto"` leaves macOS
+/// `font_thicken` and `ui_font_thicken`: absent or `"auto"` leaves macOS
 /// font smoothing to pick by text color, `true` thickens at a fixed strength
 /// and `false` turns smoothing off, both the same for every text color. Any
 /// other string is kept, so `problems()` can name it, and draws as `"auto"`.
@@ -725,10 +726,6 @@ fn is_ui_weight_default(v: &u16) -> bool {
     *v == UI_FONT_WEIGHT_DEFAULT
 }
 
-fn is_false(b: &bool) -> bool {
-    !*b
-}
-
 fn is_true(b: &bool) -> bool {
     *b
 }
@@ -799,7 +796,7 @@ impl Default for Person {
             font_ligatures: false,
             font_thicken: Thicken::Auto,
             font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
-            ui_font_thicken: false,
+            ui_font_thicken: Thicken::Auto,
             ui_font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
             text_contrast: 0.0,
             ui_text_contrast: 0.0,
@@ -845,7 +842,7 @@ pub struct Settings {
     pub font_ligatures: bool,
     pub font_thicken: Thicken,
     pub font_thicken_strength: u16,
-    pub ui_font_thicken: bool,
+    pub ui_font_thicken: Thicken,
     pub ui_font_thicken_strength: u16,
     /// Terminal text's edge contrast, 0 (off) to 1.
     pub text_contrast: f32,
@@ -936,7 +933,7 @@ impl Default for Settings {
             font_ligatures: false,
             font_thicken: Thicken::Auto,
             font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
-            ui_font_thicken: false,
+            ui_font_thicken: Thicken::Auto,
             ui_font_thicken_strength: THICKEN_STRENGTH_DEFAULT,
             text_contrast: 0.0,
             ui_text_contrast: 0.0,
@@ -1000,7 +997,7 @@ impl Settings {
             font_ligatures: person.font_ligatures,
             font_thicken: person.font_thicken.clone(),
             font_thicken_strength: person.font_thicken_strength,
-            ui_font_thicken: person.ui_font_thicken,
+            ui_font_thicken: person.ui_font_thicken.clone(),
             ui_font_thicken_strength: person.ui_font_thicken_strength,
             text_contrast: person.text_contrast,
             ui_text_contrast: person.ui_text_contrast,
@@ -1090,6 +1087,7 @@ impl Settings {
             out.push(format!("minimum_contrast {} is outside 1..21", self.minimum_contrast));
         }
         out.extend(self.font_thicken.problem("font_thicken"));
+        out.extend(self.ui_font_thicken.problem("ui_font_thicken"));
         if self.font_thicken_strength > 255 {
             out.push(format!("font_thicken_strength {} is outside 0..255", self.font_thicken_strength));
         }
@@ -1308,9 +1306,9 @@ pub fn text_rems(rems: f32) -> Pixels {
 /// only; everything else follows `ui_scale`, and text also `ui_text_scale`.
 impl Settings {
     /// How `ui_font_thicken` rasterises every glyph outside the terminals'
-    /// grids: at its strength when on, else by text color.
+    /// grids.
     pub fn ui_glyph_thicken(&self) -> gpui::GlyphThicken {
-        if self.ui_font_thicken { gpui::GlyphThicken::Strength(self.ui_font_thicken_strength.min(255) as u8) } else { gpui::GlyphThicken::Auto }
+        self.ui_font_thicken.glyph(self.ui_font_thicken_strength)
     }
 
     /// The opacity faint terminal text draws at: `faint_opacity` within 0..1.
@@ -1752,22 +1750,39 @@ mod tests {
     #[test]
     fn ui_font_thicken_defaults_off_at_full_strength_apart_from_the_terminals() {
         let default: Person = serde_json::from_str("{}").unwrap();
-        assert!(!default.ui_font_thicken);
+        assert_eq!(default.ui_font_thicken, Thicken::Auto);
         assert_eq!(default.ui_font_thicken_strength, 255);
         assert_eq!(serde_json::to_value(&default).unwrap().get("ui_font_thicken"), None);
         assert_eq!(serde_json::to_value(&default).unwrap().get("ui_font_thicken_strength"), None);
         let d = Settings::compose(&default, &crate::layout::Look::default(), true);
-        assert_eq!((d.ui_font_thicken, d.ui_glyph_thicken()), (false, gpui::GlyphThicken::Auto));
+        assert_eq!((d.ui_font_thicken.clone(), d.ui_glyph_thicken()), (Thicken::Auto, gpui::GlyphThicken::Auto));
         for strength in [0, 30, 255, 256] {
             let person: Person = serde_json::from_value(serde_json::json!({"ui_font_thicken": true, "ui_font_thicken_strength": strength})).unwrap();
             let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
-            assert_eq!((settings.ui_font_thicken, settings.font_thicken.clone()), (true, Thicken::Auto));
+            assert_eq!((settings.ui_font_thicken.clone(), settings.font_thicken.clone()), (Thicken::On, Thicken::Auto));
             assert_eq!(settings.ui_font_thicken_strength, strength);
             assert_eq!(settings.ui_glyph_thicken(), gpui::GlyphThicken::Strength(strength.min(255) as u8));
             assert_eq!(settings.problems().is_empty(), strength <= 255, "strength {strength}");
         }
         let terminal: Person = serde_json::from_value(serde_json::json!({"font_thicken": true})).unwrap();
         assert_eq!(Settings::compose(&terminal, &crate::layout::Look::default(), true).ui_glyph_thicken(), gpui::GlyphThicken::Auto);
+    }
+
+    #[test]
+    fn ui_font_thicken_takes_auto_true_or_false_as_font_thicken_does() {
+        for (value, glyph) in [(serde_json::json!("auto"), gpui::GlyphThicken::Auto), (serde_json::json!(true), gpui::GlyphThicken::Strength(192)), (serde_json::json!(false), gpui::GlyphThicken::Off)] {
+            let person: Person = serde_json::from_value(serde_json::json!({"ui_font_thicken": value, "ui_font_thicken_strength": 192})).unwrap();
+            let saved = serde_json::to_value(&person).unwrap();
+            assert_eq!(saved.get("ui_font_thicken"), (value != "auto").then_some(&value), "{value}");
+            let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
+            assert_eq!(settings.ui_glyph_thicken(), glyph, "{value}");
+            assert_eq!(settings.font_thicken.glyph(settings.font_thicken_strength), gpui::GlyphThicken::Auto, "the terminals keep theirs");
+            assert!(settings.problems().is_empty(), "{value}");
+        }
+        let person: Person = serde_json::from_value(serde_json::json!({"ui_font_thicken": "thin"})).unwrap();
+        let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
+        assert_eq!(settings.ui_glyph_thicken(), gpui::GlyphThicken::Auto);
+        assert_eq!(settings.problems(), vec![r#"ui_font_thicken "thin" is not "auto", true or false"#.to_string()]);
     }
 
     #[test]
@@ -1968,7 +1983,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: true, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

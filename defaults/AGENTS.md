@@ -776,17 +776,17 @@ What's about the user, never a look:
   gets under `"auto"`; 255 draws as white text does. With `font_weight` 400
   and a strength of 30, terminal text matches Ghostty's Regular at strength 30.
   Changes apply immediately, including text already on screen. The Settings
-  window sets both on its Text page under Terminal text: a Thicken toggle, and a strength
-  stepper in steps of 16 while it's on.
-- `ui_font_thicken`: `true` thickens the panels' text (every mod, tab, popup,
-  toast and the Settings window) the same for every text color, as
-  `font_thicken` does for terminals (macOS). Terminals follow `font_thicken`
-  either way, and emoji are never thickened. Off by default: panels keep the
-  system's smoothing, where dark text on light draws thinnest.
-- `ui_font_thicken_strength` (0..255): how much `ui_font_thicken` thickens,
-  with the same steps as `font_thicken_strength`. Default 255. The Settings
-  window sets both on its Text page under Size: a "Thicken interface text" toggle, and a
-  strength stepper in steps of 16 while it's on.
+  window sets both on its Text page under Terminal text: a Thicken picker
+  (Auto, On, Off), and a strength stepper in steps of 16 while it's On.
+- `ui_font_thicken` (`"auto"`, `true` or `false`): the same for the panels'
+  text (every mod, tab, popup, toast and the Settings window), apart from the
+  terminals' `font_thicken`. Emoji are never thickened. `"auto"` (the default)
+  keeps the system's smoothing, where dark text on light draws thinnest.
+- `ui_font_thicken_strength` (0..255): how much `ui_font_thicken: true`
+  thickens, with the same steps as `font_thicken_strength`. Default 255. The
+  Settings window sets both on its Text page under Size: a "Thicken interface
+  text" picker (Auto, On, Off), and a strength stepper in steps of 16 while
+  it's On.
 - `text_contrast` (0..1): sharpens the edges of terminal text without widening its strokes. When the text is blended, each edge pixel's coverage moves toward an S-curve: faint pixels fade and nearly solid ones fill, so a stroke keeps about the same ink. Thickening adds ink instead. 0 (the default) draws text as rasterised; 1 uses the full curve. Try 0.5 first. Panels follow `ui_text_contrast`. Changes apply immediately. The Settings window sets it on its Text page under Terminal text, with a "Contrast" stepper in steps of 0.1.
 - `faint_opacity` (0..1): the opacity faint (dim, SGR 2) terminal text draws at, as Ghostty's `faint-opacity`. Default 0.5; 1 draws faint text like the rest. Changes apply immediately. The Settings window sets it on its Text page under Terminal text, with a "Faint text" stepper in steps of 0.1.
 - `font_fallbacks` (a list of family names): fonts terminal text takes a character from, in order, when its own font lacks it, before the system's choice. Default empty. `["ZedMono Nerd Font Mono"]` draws symbols such as ⏺ as Ghostty does with that font as its fallback; bold text takes the fallback's bold face. A fallback glyph keeps its cell, as in Ghostty: in a one-cell character, ink wider or taller than the cell shrinks to fit it, and ink past an edge moves inside; ink already inside its cell is drawn as the font draws it. Nerd Font icons (private use characters) the font lacks don't use this list: they always come from the bundled Symbols Nerd Font, fitted to their cells. Families that aren't installed are skipped. Changes apply immediately. The Settings window doesn't set it.

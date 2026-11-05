@@ -4,8 +4,9 @@
 //! `font-thicken`), and smoothing off inks both alike too, where macOS's own
 //! smoothing thickens by text color.
 //! The window's own thickening (`set_glyph_thicken`, ui_font_thicken)
-//! thickens the panels' dark text on light, while a `with_glyph_thicken`
-//! inside it (the terminal grid's, here with font_thicken auto) keeps its own.
+//! thickens the panels' dark text on light, or with smoothing off lightens
+//! it, while a `with_glyph_thicken` inside it (the terminal grid's, here with
+//! font_thicken auto) keeps its own.
 //! Prints each case's ink: the mean of (pixel - background) / (text -
 //! background) over the text's box, so both polarities compare directly.
 use gpui::{prelude::*, *};
@@ -100,11 +101,14 @@ fn ui_inks(window: &mut Window, cx: &mut App, ui_thicken: GlyphThicken) -> (f32,
     (ui, terminal)
 }
 
-const UI_THICKENS: [GlyphThicken; 2] = [GlyphThicken::Auto, GlyphThicken::Strength(255)];
+const UI_THICKENS: [GlyphThicken; 3] = [GlyphThicken::Auto, GlyphThicken::Strength(255), GlyphThicken::Off];
 
-fn check_ui([auto, on]: [(f32, f32); 2]) {
+fn check_ui([auto, on, off]: [(f32, f32); 3]) {
     assert!(on.0 > auto.0 * 1.05, "ui_font_thicken thickens the panels' dark text: {} to {}", auto.0, on.0);
-    assert!((on.1 - auto.1).abs() < auto.1 * 0.001, "the terminal grid keeps its own: {} vs {}", auto.1, on.1);
+    assert!(off.0 < auto.0, "ui_font_thicken false draws the panels' dark text unsmoothed, lighter: {} to {}", auto.0, off.0);
+    for (name, ui) in [("on", on), ("off", off)] {
+        assert!((ui.1 - auto.1).abs() < auto.1 * 0.001, "{name}, the terminal grid keeps its own: {} vs {}", auto.1, ui.1);
+    }
     assert!((auto.0 - auto.1).abs() < auto.1 * 0.001, "auto, both draw as GPUI does: {} vs {}", auto.0, auto.1);
 }
 
