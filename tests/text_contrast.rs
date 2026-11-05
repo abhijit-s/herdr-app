@@ -12,15 +12,15 @@ const TEXT: &str = "the quick brown fox jumps over the lazy dog 0123456789";
 const DARK: u32 = 0x1b1b1e;
 const LIGHT: u32 = 0xe4e4e8;
 // Rows: (contrast, thicken, text, background).
-const CASES: [(f32, Option<u8>, u32, u32); 8] = [
-    (0.0, None, LIGHT, DARK),
-    (0.5, None, LIGHT, DARK),
-    (1.0, None, LIGHT, DARK),
-    (0.0, Some(255), LIGHT, DARK),
-    (0.0, None, DARK, LIGHT),
-    (0.5, None, DARK, LIGHT),
-    (1.0, None, DARK, LIGHT),
-    (0.0, Some(255), DARK, LIGHT),
+const CASES: [(f32, GlyphThicken, u32, u32); 8] = [
+    (0.0, GlyphThicken::Auto, LIGHT, DARK),
+    (0.5, GlyphThicken::Auto, LIGHT, DARK),
+    (1.0, GlyphThicken::Auto, LIGHT, DARK),
+    (0.0, GlyphThicken::Strength(255), LIGHT, DARK),
+    (0.0, GlyphThicken::Auto, DARK, LIGHT),
+    (0.5, GlyphThicken::Auto, DARK, LIGHT),
+    (1.0, GlyphThicken::Auto, DARK, LIGHT),
+    (0.0, GlyphThicken::Strength(255), DARK, LIGHT),
 ];
 const ROW: f32 = 18.;
 const WIDTH: f32 = 220.;

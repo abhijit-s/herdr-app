@@ -763,15 +763,18 @@ What's about the user, never a look:
 - `font_ligatures`: programming ligatures are off by default; set `true` to
   enable them in terminal fonts such as JetBrains Mono and Fira Code. The cursor
   and background changes (including selections) break ligatures so individual cells stay clear.
-- `font_thicken`: `true` thickens terminal text the same for every text color,
-  as Ghostty's `font-thicken` does (macOS). Without it, macOS font smoothing
-  thickens light text on a dark background more than dark text on a light one.
-  Panels follow `ui_font_thicken` instead. Off by default.
-- `font_thicken_strength` (0..255): how much `font_thicken` thickens, Ghostty's
-  `font-thicken-strength`. Default 255. macOS applies it in a few steps: 0 to
-  about 100 all draw as its lightest smoothing, the one dark text gets without
-  `font_thicken`; 255 draws as white text does. With `font_weight` 400 and a
-  strength of 30, terminal text matches Ghostty's Regular at strength 30.
+- `font_thicken`: how macOS font smoothing draws terminal text. `"auto"` (the
+  default) leaves it to the system, which thickens light text on a dark
+  background more than dark text on a light one. `true` thickens text the same
+  for every text color, as Ghostty's `font-thicken` does. `false` turns font
+  smoothing off: plain antialiased text, the same for every text color and
+  lighter than either, as Ghostty's `font-thicken = false`. Panels follow
+  `ui_font_thicken` instead.
+- `font_thicken_strength` (0..255): how much `font_thicken: true` thickens,
+  Ghostty's `font-thicken-strength`. Default 255. macOS applies it in a few
+  steps: 0 to about 100 all draw as its lightest smoothing, the one dark text
+  gets under `"auto"`; 255 draws as white text does. With `font_weight` 400
+  and a strength of 30, terminal text matches Ghostty's Regular at strength 30.
   Changes apply immediately, including text already on screen. The Settings
   window sets both on its Text page under Terminal text: a Thicken toggle, and a strength
   stepper in steps of 16 while it's on.
@@ -791,7 +794,7 @@ What's about the user, never a look:
 - `unfocused_dim` (0..1): while the Herdr window isn't the active one, it fades this fraction of the way toward the background, so a glance shows which window has the keyboard. What fades is `unfocused_dim_scope`'s choice. The switch is instant both ways: back in Herdr, everything is at full brightness at once. 0 (the default) never dims; try 0.3. The Settings window sets it on its Look page under Inactive window, with a "Dim when inactive" stepper in steps of 0.1.
 - `unfocused_dim_scope` (`"window"` or `"text"`): what `unfocused_dim` fades. `"window"` (the default) fades the whole window evenly toward the theme's background: panels, sidebar, tabs, pane headers, terminals with their backgrounds, and every overlay, toast, popup and tooltip on top. `"text"` fades only terminal text (every color, bold and faint included) toward the terminal's background, leaving backgrounds, selection, find highlights, the cursor and the panels as they are. The Settings window sets it on its Look page under Inactive window, as "Dim".
 - `unfocused_dim_color` (`"#rrggbb"`): the color the whole window fades toward while `unfocused_dim_scope` is `"window"`, laid over it at `unfocused_dim`'s alpha. Unset (the default), it's the theme's background. A mid grey such as `"#4d4d4d"` at 0.25 darkens text and lightens backgrounds together, as Rex does. Anything other than a `"#rrggbb"` color is reported as a problem and the background is used. `"text"` scope ignores it. The Settings window doesn't set it.
-- `text_rendering` (`"grayscale"` or `"subpixel"`, macOS, trial): how terminal text's edges are smoothed. `"grayscale"` (the default) gives each pixel one coverage. `"subpixel"` gives each of a pixel's red, green and blue stripes its own, so edges sit a third of a pixel finer, with faint color fringes up close. It only shows on 1x (non-Retina), unrotated displays in an opaque window; elsewhere text stays grayscale, and a window moved between displays switches by itself. Subpixel glyphs are drawn by swash rather than CoreGraphics, so `font_thicken` and macOS's own light-text thickening become an emboldened outline of about the same weight. Panels follow `ui_text_rendering`. Changes apply immediately. The Settings window sets it on its Text page under Terminal text, as "Text smoothing".
+- `text_rendering` (`"grayscale"` or `"subpixel"`, macOS, trial): how terminal text's edges are smoothed. `"grayscale"` (the default) gives each pixel one coverage. `"subpixel"` gives each of a pixel's red, green and blue stripes its own, so edges sit a third of a pixel finer, with faint color fringes up close. It only shows on 1x (non-Retina), unrotated displays in an opaque window; elsewhere text stays grayscale, and a window moved between displays switches by itself. Subpixel glyphs are drawn by swash rather than CoreGraphics, so `font_thicken` and macOS's own light-text thickening become an emboldened outline of about the same weight, and `font_thicken: false` an outline grown to CoreGraphics' unsmoothed weight. Panels follow `ui_text_rendering`. Changes apply immediately. The Settings window sets it on its Text page under Terminal text, as "Text smoothing".
 - `ui_text_rendering` (`"grayscale"` or `"subpixel"`, trial): the same for the panels' text, apart from the terminals'. Default `"grayscale"`. The Settings window sets it on its Text page under Size, as "Interface text smoothing".
 - `subpixel_order` (`"rgb"` or `"bgr"`): the display's color stripes, left to right, for subpixel smoothing. Default `"rgb"`, which most displays are; if subpixel text shows colored fringes on the wrong side of each stroke, try `"bgr"`. The Settings window shows a "Subpixel order" picker while either text is subpixel.
 - `ui_font_weight` (100..900, default 400): the panels' regular text weight

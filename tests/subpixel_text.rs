@@ -6,7 +6,7 @@
 //! switches on its next frame.
 //! Subpixel text weighs what grayscale text weighs at the same settings: the
 //! person's terminal and panel fonts and contrasts, every thicken strength the
-//! Settings window reaches to (0, 30, 112, 192, 255) and thicken off, both
+//! Settings window reaches to (0, 30, 112, 192, 255), auto and off, both
 //! polarities, painted as the app paints them, read back from the GPU. Ink is
 //! the mean over the text's box of (pixel - background) / (text -
 //! background), per channel; the linear-light column decodes sRGB first.
@@ -38,25 +38,35 @@ const TERMINAL: Text = Text { name: "terminal", family: "JetBrains Mono", text: 
 const PANEL: Text = Text { name: "panel", family: "Geist", text: PANEL_TEXT, size: 13., contrast: 0.2 };
 const STRENGTHS: [u8; 5] = [0, 30, 112, 192, 255];
 const POLARITIES: [(u32, u32); 2] = [(LIGHT, DARK), (DARK, LIGHT)];
-/// How far subpixel ink may stray from grayscale's, thickened and plain.
+/// How far subpixel ink may stray from grayscale's, thickened and plain
+/// (auto or off).
 const THICKENED_TOLERANCE: f32 = 2.0;
 const PLAIN_TOLERANCE: f32 = 5.0;
 
 #[derive(Clone, Copy)]
 struct Row {
     text: Text,
-    thicken: Option<u8>,
+    thicken: GlyphThicken,
     fg: u32,
     bg: u32,
     subpixel: bool,
 }
 
-/// Rows: each text at each strength then thicken off, both polarities,
+/// How a row's thickening reads in labels: its strength, auto or off.
+fn thicken_label(thicken: GlyphThicken) -> String {
+    match thicken {
+        GlyphThicken::Strength(s) => s.to_string(),
+        GlyphThicken::Auto => "auto".into(),
+        GlyphThicken::Off => "off".into(),
+    }
+}
+
+/// Rows: each text at each strength then thicken auto and off, both polarities,
 /// grayscale then subpixel.
 fn rows() -> Vec<Row> {
     let mut rows = Vec::new();
     for text in [TERMINAL, PANEL] {
-        for thicken in STRENGTHS.map(Some).into_iter().chain([None]) {
+        for thicken in STRENGTHS.map(GlyphThicken::Strength).into_iter().chain([GlyphThicken::Auto, GlyphThicken::Off]) {
             for (fg, bg) in POLARITIES {
                 for subpixel in [false, true] {
                     rows.push(Row { text, thicken, fg, bg, subpixel });
@@ -67,7 +77,7 @@ fn rows() -> Vec<Row> {
     rows
 }
 
-fn find_row(text: Text, thicken: Option<u8>, fg: u32, subpixel: bool) -> usize {
+fn find_row(text: Text, thicken: GlyphThicken, fg: u32, subpixel: bool) -> usize {
     rows().iter().position(|r| r.text == text && r.thicken == thicken && r.fg == fg && r.subpixel == subpixel).unwrap()
 }
 
@@ -170,7 +180,7 @@ fn save_pngs(image: &image::RgbaImage) {
         for (fg, _) in POLARITIES {
             let polarity = if fg == DARK { "dark on light" } else { "light on dark" };
             for (subpixel, mode) in [(false, "grayscale"), (true, "subpixel")] {
-                sheet.push((find_row(text, Some(strength), fg, subpixel), format!("{} {polarity}, thicken {strength}, {mode}", text.name)));
+                sheet.push((find_row(text, GlyphThicken::Strength(strength), fg, subpixel), format!("{} {polarity}, thicken {strength}, {mode}", text.name)));
             }
         }
         save(image, &dir, &sheet, &format!("{name}_{tag}"));
@@ -191,7 +201,7 @@ fn check(window: &mut Window, cx: &mut App) {
     for (pair, rows) in m.chunks(2).zip(rows.chunks(2)) {
         let row = rows[0];
         let polarity = if row.fg == DARK { "dark on light" } else { "light on dark" };
-        let thicken = row.thicken.map_or("off".to_string(), |s| s.to_string());
+        let thicken = thicken_label(row.thicken);
         let (gray, sub) = (&pair[0], &pair[1]);
         let difference = (sub.ink - gray.ink) / gray.ink * 100.0;
         let linear = (sub.linear_ink - gray.linear_ink) / gray.linear_ink * 100.0;
@@ -203,7 +213,7 @@ fn check(window: &mut Window, cx: &mut App) {
         if sub.colored <= 200 {
             failures.push(format!("{label}: subpixel colors too few edges ({} px)", sub.colored));
         }
-        let tolerance = if row.thicken.is_some() { THICKENED_TOLERANCE } else { PLAIN_TOLERANCE };
+        let tolerance = if row.thicken.strength().is_some() { THICKENED_TOLERANCE } else { PLAIN_TOLERANCE };
         if difference.abs() >= tolerance {
             failures.push(format!("{label}: subpixel ink {difference:+.1}% from grayscale (within {tolerance}%)"));
         }
@@ -211,7 +221,7 @@ fn check(window: &mut Window, cx: &mut App) {
     // Thicken adds weight at every strength, as a stronger fill always does.
     for text in [TERMINAL, PANEL] {
         for (fg, bg) in POLARITIES {
-            let inks: Vec<f32> = STRENGTHS.iter().map(|&s| m[find_row(text, Some(s), fg, true)].ink).collect();
+            let inks: Vec<f32> = STRENGTHS.iter().map(|&s| m[find_row(text, GlyphThicken::Strength(s), fg, true)].ink).collect();
             for (k, pair) in inks.windows(2).enumerate() {
                 if pair[1] <= pair[0] {
                     let polarity = if bg == LIGHT { "dark on light" } else { "light on dark" };
@@ -244,7 +254,7 @@ fn check_strength_sweep(text_system: &std::sync::Arc<dyn PlatformTextSystem>) {
                     is_emoji: false,
                     subpixel_rendering: subpixel,
                     dilation: 0,
-                    thicken: Some(thicken),
+                    thicken: GlyphThicken::Strength(thicken),
                     foreground: [0, 0, 0, 255],
                 };
                 let bounds = text_system.glyph_raster_bounds(&params).unwrap();
@@ -324,7 +334,7 @@ fn check_every_glyph_grows(text_system: &std::sync::Arc<dyn PlatformTextSystem>)
                 is_emoji: false,
                 subpixel_rendering: true,
                 dilation: 0,
-                thicken: Some(thicken),
+                thicken: GlyphThicken::Strength(thicken),
                 foreground: [0, 0, 0, 255],
             };
             let bounds = text_system.glyph_raster_bounds(&params).unwrap();
@@ -363,7 +373,7 @@ fn check_advances(text_system: &std::sync::Arc<dyn PlatformTextSystem>) {
 fn time_rasterising(text_system: &std::sync::Arc<dyn PlatformTextSystem>) {
     let font_id = text_system.font_id(&font("JetBrains Mono")).unwrap();
     let glyphs: Vec<GlyphId> = (' '..='~').filter_map(|c| text_system.glyph_for_char(font_id, c)).collect();
-    for thicken in [None, Some(30)] {
+    for thicken in [GlyphThicken::Auto, GlyphThicken::Strength(30), GlyphThicken::Off] {
         let mut results = Vec::new();
         for subpixel in [false, true] {
             let params: Vec<RenderGlyphParams> = glyphs
@@ -428,7 +438,7 @@ fn check_faces(text_system: &std::sync::Arc<dyn PlatformTextSystem>) {
             is_emoji: false,
             subpixel_rendering: true,
             dilation: 0,
-            thicken: None,
+            thicken: GlyphThicken::Auto,
             foreground: [0, 0, 0, 255],
         };
         let bounds = text_system.glyph_raster_bounds(&params).unwrap();
@@ -456,7 +466,7 @@ impl Render for Screen {
                     let top = point(px(0.), px(15. * row as f32));
                     let run = TextRun { len: text.len(), font: font("JetBrains Mono"), color: rgb(LIGHT).into(), background_color: None, underline: None, strikethrough: None };
                     let line = window.text_system().shape_line(text.into(), px(12.), &[run], None);
-                    window.with_glyph_thicken(Some(30), |window| window.with_glyph_subpixel(subpixel, |window| line.paint(top, px(15.), TextAlign::Left, None, window, cx).unwrap()));
+                    window.with_glyph_thicken(GlyphThicken::Strength(30), |window| window.with_glyph_subpixel(subpixel, |window| line.paint(top, px(15.), TextAlign::Left, None, window, cx).unwrap()));
                 }
             },
         )
@@ -498,12 +508,12 @@ const SHAPE_LINES: [&str; 3] = [
 const SHAPE_CELL: (f32, f32) = (7., 16.);
 const SHAPE_BASELINE: f32 = 12.;
 const SHAPE_LEFT: f32 = 4.;
-const SHAPE_STRENGTHS: [Option<u8>; 3] = [Some(30), Some(0), None];
+const SHAPE_STRENGTHS: [GlyphThicken; 4] = [GlyphThicken::Strength(30), GlyphThicken::Strength(0), GlyphThicken::Auto, GlyphThicken::Off];
 
 #[derive(Clone, Copy)]
 struct ShapeRow {
     line: usize,
-    thicken: Option<u8>,
+    thicken: GlyphThicken,
     fg: u32,
     bg: u32,
     subpixel: bool,
@@ -615,7 +625,8 @@ fn vertical_moments(ink: &[Vec<f32>], column: usize) -> Option<(f32, f32)> {
 /// lines painted as the terminal paints them, read back from the GPU. Per
 /// strength and polarity, the ink of each pixel row (summed over the three
 /// lines) stays within `ROW_TOLERANCE` of grayscale's, relative to the
-/// heaviest row (`PLAIN_ROW_TOLERANCE` with thicken off); the ascender rows
+/// heaviest row (`PLAIN_ROW_TOLERANCE` with thicken auto, `OFF_ROW_TOLERANCE`
+/// with it off); the ascender rows
 /// (above the x-height) and the x-height band each within `BAND_TOLERANCE`;
 /// the glyphs' mean vertical spread within `SPREAD_TOLERANCE` rows; the
 /// lines' total ink within `TOTAL_TOLERANCE`; and stems as even (`check_stems`).
@@ -623,10 +634,13 @@ fn vertical_moments(ink: &[Vec<f32>], column: usize) -> Option<(f32, f32)> {
 /// heavy stems: the x-height's top row 5 to 7% of the peak row light, the row
 /// above it 2 to 3% heavy. One growth for the whole font leaves that row 2 to
 /// 4% light, where a growth fitted to each glyph matched it to 1.5% but grew
-/// neighbouring stems unevenly.
+/// neighbouring stems unevenly. With smoothing off, CoreGraphics' unsmoothed
+/// x-height top row is about 8% of the peak row heavier than the fitted
+/// growth draws it (JetBrains Mono 12), and 17% with no growth at all.
 fn check_shape(cx: &mut HeadlessAppContext) {
     const ROW_TOLERANCE: f32 = 0.04;
     const PLAIN_ROW_TOLERANCE: f32 = 0.05;
+    const OFF_ROW_TOLERANCE: f32 = 0.09;
     const BAND_TOLERANCE: f32 = 3.0;
     const SPREAD_TOLERANCE: f32 = 0.04;
     const TOTAL_TOLERANCE: f32 = 3.0;
@@ -650,7 +664,7 @@ fn check_shape(cx: &mut HeadlessAppContext) {
         let (gray, sub) = (profile(0), profile(1));
         let peak = gray.iter().cloned().fold(0.0, f32::max);
         let row = rows[0];
-        let label = format!("thicken {} {}", row.thicken.map_or("off".into(), |s| s.to_string()), if row.fg == DARK { "dark on light" } else { "light on dark" });
+        let label = format!("thicken {} {}", thicken_label(row.thicken), if row.fg == DARK { "dark on light" } else { "light on dark" });
         let band = |p: &[f32], r: &std::ops::Range<usize>| p[r.clone()].iter().sum::<f32>();
         let ascender_diff = (band(&sub, &ascender) - band(&gray, &ascender)) / band(&gray, &ascender) * 100.0;
         let x_diff = (band(&sub, &x_band) - band(&gray, &x_band)) / band(&gray, &x_band) * 100.0;
@@ -675,7 +689,11 @@ fn check_shape(cx: &mut HeadlessAppContext) {
             worst_spread.0
         );
         println!("  rows from baseline: {}", (0..gray.len()).filter(|&y| gray[y] + sub[y] > 0.5).map(|y| format!("{:+}: {:.1}/{:.1}", y as i32 - baseline as i32, gray[y], sub[y])).collect::<Vec<_>>().join(", "));
-        let row_tolerance = if row.thicken.is_some() { ROW_TOLERANCE } else { PLAIN_ROW_TOLERANCE };
+        let row_tolerance = match row.thicken {
+            GlyphThicken::Strength(_) => ROW_TOLERANCE,
+            GlyphThicken::Auto => PLAIN_ROW_TOLERANCE,
+            GlyphThicken::Off => OFF_ROW_TOLERANCE,
+        };
         if worst.abs() > row_tolerance {
             failures.push(format!("{label}: row {:+} inks {:+.1}% of the peak row from grayscale (within {:.1}%)", worst_row as i32 - baseline as i32, worst * 100.0, row_tolerance * 100.0));
         }
@@ -730,7 +748,7 @@ fn check_stems(image: &image::RgbaImage, first: usize, rows: &[ShapeRow]) -> Vec
         };
         let ratios: Vec<f32> = sub.iter().zip(&gray).map(|(s, g)| s / g).collect();
         let row = pair[0];
-        let label = format!("thicken {} {}", row.thicken.map_or("off".into(), |s| s.to_string()), if row.fg == DARK { "dark on light" } else { "light on dark" });
+        let label = format!("thicken {} {}", thicken_label(row.thicken), if row.fg == DARK { "dark on light" } else { "light on dark" });
         let (gray_spread, sub_spread, ratio_spread) = (spread(&gray), spread(&sub), spread(&ratios));
         println!(
             "stems, {label}: width spread grayscale {:.1}%, subpixel {:.1}%; subpixel over grayscale {:.1}% spread, {}",
@@ -766,7 +784,7 @@ fn save_shape_pngs(image: &image::RgbaImage, rows: &[ShapeRow]) {
                 let crop = image::imageops::crop_imm(image, 0, h * i as u32, image.width(), h).to_image();
                 image::imageops::replace(&mut sheet, &crop, 0, (h * k as u32) as i64);
             }
-            let name = format!("shape_thicken{}_{polarity}_{tag}", thicken.map_or("off".into(), |s| s.to_string()));
+            let name = format!("shape_thicken{}_{polarity}_{tag}", thicken_label(thicken));
             sheet.save(dir.join(format!("{name}.png"))).unwrap();
             let zoom = image::imageops::crop_imm(&sheet, 0, 0, 200, sheet.height()).to_image();
             image::imageops::resize(&zoom, 200 * 6, sheet.height() * 6, image::imageops::FilterType::Nearest).save(dir.join(format!("{name}_zoom6x.png"))).unwrap();

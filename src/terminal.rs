@@ -281,7 +281,7 @@ impl TerminalView {
                 thumb: None,
                 track: None,
                 painted: Vec::new(),
-                painted_with: (0, Size::default(), font(""), 0, 0, 0, false, None, (Rgb::default(), 0)),
+                painted_with: (0, Size::default(), font(""), 0, 0, 0, false, gpui::GlyphThicken::Auto, (Rgb::default(), 0)),
             })),
             focus: cx.focus_handle(),
             was_focused: false,
@@ -1734,7 +1734,7 @@ fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, cursor: Option<usize>, fade: Fa
 /// whole cell font (its fallbacks too), the bold weight, the faint opacity,
 /// fonts added, ligatures, thickening and the text dim. A change in any
 /// rebuilds every row.
-type PaintedWith = (u32, Size<Pixels>, Font, u16, u32, u64, bool, Option<u8>, (Rgb, u32));
+type PaintedWith = (u32, Size<Pixels>, Font, u16, u32, u64, bool, gpui::GlyphThicken, (Rgb, u32));
 
 fn painted_with(cell: Size<Pixels>, fade: Fade) -> PaintedWith {
     let s = crate::settings::get();
@@ -1751,14 +1751,6 @@ fn painted_with(cell: Size<Pixels>, fade: Fade) -> PaintedWith {
     )
 }
 
-/// font_thicken's strength, when on: the terminal's glyphs thicken alike
-/// whatever their color, as Ghostty's do, where macOS otherwise thickens
-/// light text on dark more than dark text on light.
-fn glyph_thicken() -> Option<u8> {
-    let s = crate::settings::get();
-    s.font_thicken.then(|| s.font_thicken_strength.min(255) as u8)
-}
-
 /// The find field's editor colors, following the theme at open time.
 fn find_input_style() -> InputEditorStyle {
     InputEditorStyle {
@@ -1770,6 +1762,14 @@ fn find_input_style() -> InputEditorStyle {
         caret: crate::settings::color("foreground"),
         ..InputEditorStyle::default()
     }
+}
+
+/// font_thicken: on, the terminal's glyphs thicken alike whatever their
+/// color, as Ghostty's do, and off they aren't smoothed at all, where macOS
+/// otherwise thickens light text on dark more than dark text on light.
+fn glyph_thicken() -> gpui::GlyphThicken {
+    let s = crate::settings::get();
+    s.font_thicken.glyph(s.font_thicken_strength)
 }
 
 fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, window: &mut Window, cx: &mut App) {
