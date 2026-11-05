@@ -706,7 +706,7 @@ impl MacTextSystemState {
         let level = params.thicken.strength().map_or(params.dilation as f32, crate::lcd::thicken_level);
         let growth = self.subpixel_weight(params).at(level);
         let sign = self.subpixel_outward(params);
-        self.render_subpixel(params, glyph_bounds, bitmap_size, growth.map(|g| sign * g))
+        self.render_subpixel(params, glyph_bounds, bitmap_size, growth.map(|g| sign * g), sign)
     }
 
     /// HERDR: the growth for every glyph of `params`' font at its size: fitted
@@ -786,7 +786,7 @@ impl MacTextSystemState {
         size.width += DevicePixels((params.subpixel_variant.x > 0) as i32);
         let probe = crate::lcd::Samples::PROBE;
         let [plain, across, along] = [[0.0, 0.0], [probe, 0.0], [0.0, probe]].map(|embolden| {
-            let glyph = self.subpixel_glyph(params, bounds.origin, size, embolden);
+            let glyph = self.subpixel_glyph(params, bounds.origin, size, embolden, 1.0);
             self.lcd.lock().coverage(params.font_id, || self.face_source(params.font_id), &glyph)
         });
         Some(crate::lcd::Samples { width: size.width.0 as usize, plain: plain?, grown: [across?, along?] })
@@ -798,12 +798,14 @@ impl MacTextSystemState {
         origin: gpui::Point<DevicePixels>,
         size: Size<DevicePixels>,
         embolden: [f32; 2],
+        outward: f32,
     ) -> crate::lcd::Glyph {
         crate::lcd::Glyph {
             glyph_id: params.glyph_id.0 as u16,
             ppem: f32::from(params.font_size) * params.scale_factor,
             shift: params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32,
             embolden,
+            outward,
             origin: (origin.x.0, origin.y.0),
             size: (size.width.0 as usize, size.height.0 as usize),
         }
@@ -825,8 +827,9 @@ impl MacTextSystemState {
         glyph_bounds: Bounds<DevicePixels>,
         bitmap_size: Size<DevicePixels>,
         embolden: [f32; 2],
+        outward: f32,
     ) -> Option<Vec<u8>> {
-        let glyph = self.subpixel_glyph(params, glyph_bounds.origin, bitmap_size, embolden);
+        let glyph = self.subpixel_glyph(params, glyph_bounds.origin, bitmap_size, embolden, outward);
         self.lcd.lock().render(params.font_id, || self.face_source(params.font_id), &glyph)
     }
 

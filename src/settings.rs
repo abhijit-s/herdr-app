@@ -1748,7 +1748,7 @@ mod tests {
     }
 
     #[test]
-    fn ui_font_thicken_defaults_off_at_full_strength_apart_from_the_terminals() {
+    fn ui_font_thicken_defaults_auto_at_full_strength_apart_from_the_terminals() {
         let default: Person = serde_json::from_str("{}").unwrap();
         assert_eq!(default.ui_font_thicken, Thicken::Auto);
         assert_eq!(default.ui_font_thicken_strength, 255);

@@ -268,6 +268,8 @@ pub struct Glyph {
     /// How far the strokes grow across and along the rows, in device pixels
     /// (`fit`, by `Samples::outward`).
     pub embolden: [f32; 2],
+    /// `Samples::outward`: -1 for a glyph whose winding swash reads backwards.
+    pub outward: f32,
     /// The box: its origin relative to the pen (y down) and size.
     pub origin: (i32, i32),
     pub size: (usize, usize),
@@ -318,15 +320,17 @@ impl Rasterizer {
         if !scaler.scale_outline_into(glyph.glyph_id, &mut self.outline) {
             return None;
         }
-        // swash grows an outline right and up by twice the strength, its left
-        // and bottom edges fixed, as CoreGraphics' smoothing does; a
-        // backwards-wound glyph, grown by a negative strength, grows left and
-        // down instead. Moved back, it keeps its place among the rest.
+        // swash moves an outline's right and top edges by twice the strength,
+        // its left and bottom edges fixed, as CoreGraphics' smoothing does; a
+        // backwards-wound glyph moves its left and bottom edges instead,
+        // whichever way the strength grows it. Moved back, it keeps its place
+        // among the rest. The growth's sign doesn't say which: a font can
+        // shrink (smoothing off fits a negative growth).
         let [x, y] = glyph.embolden;
         if x != 0.0 || y != 0.0 {
             self.outline.embolden(x, y);
         }
-        let shift = Transform::translation(-2.0 * x.min(0.0), -2.0 * y.min(0.0));
+        let shift = if glyph.outward < 0.0 { Transform::translation(-2.0 * x, -2.0 * y) } else { Transform::translation(0.0, 0.0) };
         self.outline.transform(&shift.then_scale(columns as f32, 1.0));
         let offset = Vector::new(glyph.shift * columns as f32, 0.0);
         let mut data = Vec::new();

@@ -172,6 +172,19 @@ test("thicken strength shows only while thickening, and steps by 16 within 0 to 
   expect(click({ ...on, font_thicken_strength: 250 }, {}, "st-font_thicken_strength-plus")).toEqual(on);
 });
 
+test("the thicken pickers show auto, true and false selected, and nothing for an unknown string", () => {
+  // choicePicker marks the picked option with a border; the others have none.
+  const selected = (person: Record<string, any>, key: string) =>
+    ["Auto", "On", "Off"].filter((label) => click(person, {}, `st-${key}-${label}`, ["choicePicker", "shown?"]).calls.border_1);
+  for (const key of ["font_thicken", "ui_font_thicken"]) {
+    expect(selected({}, key)).toEqual(["Auto"]);
+    expect(selected({ [key]: "auto" }, key)).toEqual(["Auto"]);
+    expect(selected({ [key]: true }, key)).toEqual(["On"]);
+    expect(selected({ [key]: false }, key)).toEqual(["Off"]);
+    expect(selected({ [key]: "thin" }, key)).toEqual([]);
+  }
+});
+
 test("the interface thicken picker writes ui_font_thicken apart from the terminal's", () => {
   const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"]);
   expect(pick({ font_size: 15 }, "st-ui_font_thicken-On")).toEqual({ font_size: 15, ui_font_thicken: true });
