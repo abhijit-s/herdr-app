@@ -87,6 +87,7 @@ def env():
         XDG_STATE_HOME=f"{ROOT}/state",
         PYTHONIOENCODING="utf-8",
         HERDR_APP_NO_SOUND="1",
+        HERDR_APP_BACKGROUND="1",
         HERDR_APP_BENCH=f"{ROOT}/frames.jsonl",
         WAYLAND_DISPLAY=e.get("WAYLAND_DISPLAY", ""),
     )
