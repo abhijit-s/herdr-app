@@ -582,10 +582,13 @@ The main ones:
   pane unzooms. The new tree is saved like any split. The tab keeps the mode
   (on this screen): every pane split into the tab or closed in it, by a key, a
   mod or an agent, arranges it again with even sizes, the new pane right after
-  the one it split in reading order (in `bsp` it takes half of that pane's
-  space; in `master` the master stays). A dragged divider holds until the next
-  split or close; `pane.swap` and pane drags keep the mode, and the next
-  arrangement follows the new order. `off` clears the mode and leaves the panes
+  the one it split in reading order (in `master` the master stays). A dragged
+  divider holds until the next split or close; `pane.swap` and pane drags keep
+  the mode, and the next arrangement follows the new order. `bsp` is the
+  exception, as in tuios and bspwm: after the first arrangement a split halves
+  the pane it splits in the direction asked, a closed pane's space goes back to
+  the pane it was split with, and dragged sizes stay; a terminal added for an
+  agent splits across the parent of the pane it splits, so several dwindle. `off` clears the mode and leaves the panes
   where they are; `next` never picks it. settings.json's `default_arrange`
   gives new tabs a mode. Default key: Cmd+Shift+Space (macOS), Ctrl+Shift+Space
   (Linux, Windows).
@@ -724,7 +727,8 @@ What's about the user, never a look:
   through it. Mod blocks, the sidebar and the tab bar never take the focus this way.
 - `default_arrange`: the `pane.arrange` mode tabs made on this screen start
   in (`tiled`, `bsp`, `master`, `columns` or `rows`), so their splits and
-  closes arrange them from the first split. Absent (the default), or any other
+  closes arrange them from the first split (`bsp` splits the pane asked, the
+  way asked). Absent (the default), or any other
   value: new tabs have none. Tabs already open keep theirs. The Settings
   window's Look page sets it ("New tabs arrange").
 - `alert_command`: a program run for each alert in place of the system

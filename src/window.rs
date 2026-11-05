@@ -2609,7 +2609,8 @@ impl AppWindow {
             let before = tab.before.clone();
             let zoomed = tab.zoomed.clone();
             let id = tab.id.clone();
-            self.model.split(&target, Axis::Row, &pane, addr);
+            let axis = self.model.auto_axis(&target);
+            self.model.split(&target, axis, &pane, addr);
             let tab = self.model.tab_mut(&id).unwrap();
             tab.focused = focused;
             tab.before = before;
@@ -6288,10 +6289,11 @@ export default class Scale extends View {
         in_own_process("auto_arrange");
     }
 
-    /// Tab t starts as one terminal pane a in bsp. Mod panes split and close
-    /// (no core needed); every split and close runs bsp again, a dragged size
-    /// lasts until the next one, `off` makes splits plain, and settings.json's
-    /// `default_arrange` gives new tabs a mode.
+    /// Tab t starts as one terminal pane a in columns. Mod panes split and
+    /// close (no core needed); every split and close runs columns again, a
+    /// dragged size lasts until the next one, bsp splits the focused pane the
+    /// way asked and keeps its tree, `off` makes splits plain, and
+    /// settings.json's `default_arrange` gives new tabs a mode.
     #[gpui::test]
     fn auto_arrange(cx: &mut gpui::TestAppContext) {
         use crate::arrange::Mode;
@@ -6336,30 +6338,37 @@ export default class Scale extends View {
         };
         let focused = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.model.focused_pane().unwrap());
 
-        assert_eq!(run(cx, "pane.arrange", json!({ "mode": "bsp" }))["mode"], "bsp");
+        assert_eq!(run(cx, "pane.arrange", json!({ "mode": "columns" }))["mode"], "columns");
         let b = split(cx, "right", "b");
         assert_eq!(shape(cx, "t"), "R[a b]");
-        let c = split(cx, "right", "c");
-        assert_eq!(shape(cx, "t"), "R[a C[b c]]");
-        // From a, down: the new pane comes right after a and takes half of what's left.
+        // From a, down: still one row of columns, the new pane right after a.
         run(cx, "pane.focus", json!({ "pane": "a" }));
         let d = split(cx, "down", "d");
-        assert_eq!(shape(cx, "t"), "R[a C[d R[b c]]]");
+        assert_eq!(shape(cx, "t"), "R[a d b]");
         // A dragged divider stays while nothing comes or goes.
         view.update(cx, |this, _| this.model.tab_mut("t").unwrap().root.children_mut().unwrap()[0].size = Some(Size::Weight { weight: 2.5 }));
         run(cx, "pane.focus", json!({ "pane": b }));
         run(cx, "pane.swap", json!({ "direction": "left" }));
-        assert_eq!(shape(cx, "t"), "R[b C[d R[a c]]]", "a swap keeps the shape");
+        assert_eq!(shape(cx, "t"), "R[a b d]", "a swap keeps the shape");
         view.update(cx, |this, _| assert_eq!(this.model.tab("t").unwrap().root.children()[0].size, Some(Size::Weight { weight: 2.5 })));
         // Closing evens the sizes and goes on in the swapped order.
         run(cx, "pane.close", json!({ "pane": d }));
-        assert_eq!(shape(cx, "t"), "R[b C[a c]]");
+        assert_eq!(shape(cx, "t"), "R[a b]");
         view.update(cx, |this, _| {
             let tab = this.model.tab("t").unwrap();
             assert!(tab.root.walk().iter().all(|n| n.size.is_none()));
-            assert_eq!(tab.arrange, Some(Mode::Bsp), "the mode stays");
+            assert_eq!(tab.arrange, Some(Mode::Columns), "the mode stays");
         });
-        assert_eq!(focused(cx), b, "focus goes back as a plain close's does");
+        assert_eq!(focused(cx), b, "focus stays where it was");
+        // Bsp: the focused pane splits the way asked, and a close leaves the rest.
+        assert_eq!(run(cx, "pane.arrange", json!({ "mode": "bsp" }))["mode"], "bsp");
+        let c = split(cx, "down", "c");
+        assert_eq!(shape(cx, "t"), "R[a C[b c]]");
+        split(cx, "right", "e");
+        assert_eq!(shape(cx, "t"), "R[a C[b R[c e]]]");
+        run(cx, "pane.close", json!({ "pane": c }));
+        assert_eq!(shape(cx, "t"), "R[a C[b e]]");
+        view.update(cx, |this, _| assert_eq!(this.model.tab("t").unwrap().arrange, Some(Mode::Bsp)));
         // The arranged tree is the shared document's.
         view.update(cx, |this, _| {
             let shared = serde_json::to_value(crate::mirror::Document::capture(&this.model, None)).unwrap();
@@ -6367,11 +6376,11 @@ export default class Scale extends View {
         });
         // Off: plain splits again, the tree left as it was.
         assert_eq!(run(cx, "pane.arrange", json!({ "mode": "off" })), json!({ "ok": true, "tab": "t", "mode": "off" }));
-        assert_eq!(shape(cx, "t"), "R[b C[a c]]");
+        assert_eq!(shape(cx, "t"), "R[a C[b e]]");
         view.update(cx, |this, _| assert_eq!(this.model.tab("t").unwrap().arrange, None));
-        run(cx, "pane.focus", json!({ "pane": c }));
-        split(cx, "right", "e");
-        assert_eq!(shape(cx, "t"), "R[b C[a R[c e]]]");
+        run(cx, "pane.focus", json!({ "pane": b }));
+        split(cx, "right", "h");
+        assert_eq!(shape(cx, "t"), "R[a C[R[b h] e]]");
         // `next` after off starts again from tiled.
         assert_eq!(run(cx, "pane.arrange", json!({ "mode": "next" }))["mode"], "tiled");
 

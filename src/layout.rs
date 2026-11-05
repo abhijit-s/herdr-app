@@ -584,9 +584,21 @@ impl Node {
     /// Puts `new` beside `target` along `axis` (after it). Reuses the parent
     /// if it already runs along that axis, else wraps the target.
     pub fn split(&mut self, target: &str, axis: Axis, new: Node, container_id: String) -> bool {
+        self.split_inner(target, axis, new, container_id, true)
+    }
+
+    /// `split`, but `target` and `new` become a pair of their own unless
+    /// `target` is alone in its parent, so closing either one later gives its
+    /// space back to the other (a binary tree, as tuios and bspwm keep).
+    pub fn split_pair(&mut self, target: &str, axis: Axis, new: Node, container_id: String) -> bool {
+        self.split_inner(target, axis, new, container_id, false)
+    }
+
+    fn split_inner(&mut self, target: &str, axis: Axis, new: Node, container_id: String, merge: bool) -> bool {
         if let Some(parent) = self.parent_of(target).map(|p| p.id.clone())
             && let Some(p) = self.find_mut(&parent)
             && p.axis() == Some(axis)
+            && (merge || p.children().len() == 1)
         {
             let c = p.children_mut().unwrap();
             let i = c.iter().position(|n| n.id == target).unwrap();

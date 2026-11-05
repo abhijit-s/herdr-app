@@ -37,6 +37,13 @@ impl Mode {
         MODES.into_iter().find(|m| m.name() == name)
     }
 
+    /// Whether a pane coming or going rebuilds the tab. `bsp` keeps its tree,
+    /// as tuios and bspwm do: a split halves the pane it splits, in the
+    /// direction asked, and a closed pane's space goes to its neighbour.
+    pub fn rebuilds_on_change(self) -> bool {
+        self != Mode::Bsp
+    }
+
     /// The mode after `last` (the first when there's none).
     pub fn next(last: Option<Mode>) -> Mode {
         let i = last.and_then(|m| MODES.iter().position(|x| *x == m)).map_or(0, |i| (i + 1) % MODES.len());
