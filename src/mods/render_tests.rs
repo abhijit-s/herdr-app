@@ -80,6 +80,7 @@ fn fixture(populated: bool, props: Value, update: Value) -> BTreeMap<String, Val
         ("layout".into(), serde_json::from_str(include_str!("../../defaults/layouts/main.json")).unwrap()),
         ("layoutSpacing".into(), crate::layout_sync::spacing_fields(&serde_json::from_str(include_str!("../../defaults/layouts/main.json")).unwrap())),
         ("layouts".into(), json!(crate::window::shipped_layouts())),
+        ("modActions".into(), json!([])),
         ("theme".into(), serde_json::to_value(&*crate::settings::theme()).unwrap()),
         ("settings".into(), crate::settings::Settings::default().for_mods()),
         ("themes".into(), json!([{"name":"graphite", "colors": &*crate::settings::theme()}])),  ("fonts".into(), json!(["Monospace", "Sans"])),
@@ -830,6 +831,13 @@ fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
         // The query sits in a native text field; what the list shows tells it apart.
         let expected = if query == "settings" { "Settings" } else { "Nothing matches" };
         assert!(tree.contains(expected), "palette query {query}: {tree}");
+    }
+    // A mod's palette action lists under the mod's name, found by its keywords too.
+    let mut values = fixture(true, props(), updates("current", "current"));
+    values.insert("modActions".into(), json!([{"mod":"broadcast","title":"Send to all terminals","command":"mod.open","args":{"name":"broadcast"},"keywords":"smart"}]));
+    for query in ["send to all", "smart"] {
+        let tree = describe_with_values(cx, &staged, "frame/palette", values.clone(), Some(&format!("this.query = {query:?};"))).unwrap();
+        assert!(tree.contains("Send") && tree.contains("broadcast"), "palette query {query}: {tree}");
     }
     // Reviewed overlay contract table, not extracted from arbitrary JS call sites.
     let scenarios = [

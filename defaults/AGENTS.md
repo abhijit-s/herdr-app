@@ -681,7 +681,7 @@ The main ones:
   column holding the tab block, `terminal_padding` `[x, y]` the root's; `reset` lists
   names to put back as the file has them),
   `layout.clone {name, as?}` (duplicate, then switch; default `<name>-copy`).
-- App: `mod.clone {name, as?}` (duplicate; default `<name>-copy`), `mod.open {name}` (again: closes it), `overlay.close {id?}`, `app.help` (again: closes it), `app.palette` (again: closes it), `app.settings {section?}`
+- App: `mod.clone {name, as?}` (duplicate; default `<name>-copy`), `mod.open {name, props?}` (as the overlay its mod.json describes, `props` being what its `props()` holds; again: closes it, or opens it afresh with other props), `overlay.close {id?}`, `app.help` (again: closes it), `app.palette` (again: closes it), `app.settings {section?}`
   (sections: `look`, `text`, `machines`, `alerts`, `updates`, `privacy`; Machines lists, updates, renames and removes ssh machines; settings edit the same files you do; its search field, focused by cmd-f or ctrl-f or by typing, finds a setting by its name, description or settings.json key, such as `cell_rounding`, and shows each page's matches with their controls).
   `app.check_updates` (only a successful check reports Up to date; a failed check clears the checked time and can be retried), `app.update_core` (a newer herdr-core of this generation, terminals kept;
   never one a package manager owns), `app.welcome`, `app.whats_new`, `app.feedback {message?, from?}` (from `"person"` or `"agent"`; opens a review window, where the person can paste up to 3 screenshots; never sends until the person clicks Send), `app.reset`,
@@ -982,10 +982,11 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
 ```
 ~/.config/herdr-app/mods/<name>/
   main.js       the mod (required)
-  mod.json    where it first appears: { "place": "right" | "left" | "top" | "bottom" | "none", "size": 320 }
+  mod.json    where it first appears: { "place": "right" | "left" | "top" | "bottom" | "none", "size": 320 }, palette "actions"
   *.js, *.svg   more modules ("./ui.js"), its own icons
 ```
 
+- `"actions"` in `mod.json` adds entries to the command palette, listed under the mod's name: `[{ "title": "Send to all terminals", "command": "mod.open", "args": { "props": { "target": "shells" } }, "keywords": "broadcast" }]`. `command` is an app command (see Commands) run with `args` (optional); `keywords` (optional) are more words to find it by. `mod.open` without a `name` opens this mod, so an action can open the mod's own overlay with props that say what it's for. An entry the app can't run (no title, an unknown command, a misspelled or missing argument) is left out and named in `herdr-app status` and `herdr-app check`, as is a mod.json Herdr can't read; the mod's other entries and fields still count. Saving `mod.json` updates the palette, and a removed mod's actions go with it. `modActions()` lists every mod's actions as the palette shows them.
 - `"focusable": true` in `mod.json` lets `pane.go` give a shown copy the keyboard.
   It gets `"focus"` from `nextCommand()`: focus your own handle then
   (`this.handle.focus()`) and handle keys with `on_key_down`. The copy gets `"focus"`
@@ -1154,7 +1155,8 @@ All of it is in `herdr.d.ts`. In short:
   of the screen the window is on, 1 or 2, changing live as it moves to
   another screen; round sizes to whole device pixels with it), `keys()`,
   `commands()` (every app
-  command, its arguments and what it does), `layouts()` (the layout names).
+  command, its arguments and what it does), `modActions()` (every mod's palette
+  actions: mod, title, command, args, keywords), `layouts()` (the layout names).
   `focused().agent` is the agent an agent block shows.
   `focused().space`/`tab` describe the current window context. With a layout terminal
   block focused, `pane` and `shown` are null; `terminal` and `cwd` describe that block,

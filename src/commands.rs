@@ -90,7 +90,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("layout.select", &[req("stack"), req("child")], "Show one child of a stack."),
     cmd("layout.spacing", &[opt("pane_gap"), opt("area_padding"), opt("area_gap"), opt("terminal_padding"), opt("reset")], "Space around the shown tab's panes, px 0 to 40, kept with the layout's clicks (its file is not changed; a later edit of the same field in the file wins): pane_gap (between panes: the tab block's pane.gap), area_padding (number or [y, x]) and area_gap (the row or column holding the tab block), terminal_padding ([x, y]: the layout root's). reset: a list of those names, back to the file's values."),
     cmd("layout.reset", &[opt("name")], "Reset a shipped layout and its clicks (the old file is kept aside)."),
-    cmd("mod.open", &[req("name")], "Toggle a mod as the overlay its mod.json describes; calling again closes it."),
+    cmd("mod.open", &[req("name"), opt("props")], "Toggle a mod as the overlay its mod.json describes (props: what its props() holds); calling again closes it, or reopens it with other props."),
     cmd("overlay.close", &[opt("id")], "Close an overlay (default: the top dialog or popup)."),
     // The app.
     cmd("app.help", &[], "Toggle the keys dialog."),

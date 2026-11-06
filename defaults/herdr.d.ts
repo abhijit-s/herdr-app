@@ -82,7 +82,7 @@ export function playSound(sound: string): null;
  *   layout.spacing {pane_gap?, area_padding?, area_gap?, terminal_padding?, reset?: string[]} sets space around
  *   the shown tab's panes (px 0 to 40) as clicks, on any layout: the tab block's pane.gap, the padding and gap of
  *   the row or column holding it, the root's terminal_padding [x, y]; reset puts those named back as the file has them.
- * App: mod.open {name}, overlay.close {id?}, app.help, app.reset, app.theme {name}, app.zoom_in|zoom_out|zoom_reset.
+ * App: mod.open {name, props?}, overlay.close {id?}, app.help, app.reset, app.theme {name}, app.zoom_in|zoom_out|zoom_reset.
  * Mods: "<mod>.<command>" delivers <command> to that mod's nextCommand().
  */
 export function run(name: string, args?: Record<string, unknown>): null;
@@ -285,6 +285,11 @@ export function layouts(): string[];
 /** Every command the app runs: its name, arguments and what it does (as `herdr-app commands`).
  *  Mods' own `<mod>.<command>`s aren't listed. */
 export function commands(): { name: string; args: { name: string; required: boolean }[]; about: string }[];
+
+/** Every mod's command palette actions (the `actions` in its mod.json), as the palette lists them:
+ *  `mod` is the folder, `args` the command's arguments (`mod.open` without a name gets the mod's own).
+ *  Entries the app can't run are left out and named in `herdr-app status`. Live: changes as mods do. */
+export function modActions(): { mod: string; title: string; command: string; args: Record<string, unknown>; keywords: string }[];
 
 /** The window, for layouts that draw their own title bar (`"titlebar": "none"`). `buttons`:
  *  the system draws no window buttons, so draw them (`window.minimize`, `window.maximize`,

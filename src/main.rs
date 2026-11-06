@@ -90,6 +90,11 @@ fn main() {
     }
     // `herdr-app check <mod>` / `herdr-app types <mod>`: gpui-shell's own checker, with Herdr's module installed.
     if matches!(args.get(1).map(String::as_str), Some("check" | "types")) {
+        let problems = args.get(2).filter(|_| args[1] == "check").map(|dir| mods::action_problems(std::path::Path::new(dir))).unwrap_or_default();
+        if !problems.is_empty() {
+            eprintln!("{}", problems.join("\n"));
+            std::process::exit(1);
+        }
         mods::install_check_policy();
         gpui_shell::host::main_with_components(gpui_shell::FrozenComponentRegistry::default());
         return;

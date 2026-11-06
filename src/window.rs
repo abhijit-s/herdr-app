@@ -647,7 +647,7 @@ impl AppWindow {
             terms: HashMap::new(),
             copies: HashMap::new(),
             overlays: Vec::new(),
-            folders: mods::scan().into_iter().map(|f| (f.id.clone(), f)).collect(),
+            folders: scan_folders().0,
             seen,
             bounds: Default::default(),
             hidden_fit: Default::default(),
@@ -3742,7 +3742,11 @@ impl AppWindow {
                 if let Err(e) = mods::clone_mod(name, &to) {
                     return self.fail(format!("cannot clone mod: {e}"));
                 }
-                self.folders = mods::scan().into_iter().map(|f| (f.id.clone(), f)).collect();
+                let (folders, actions_changed) = scan_folders();
+                self.folders = folders;
+                if actions_changed {
+                    self.refresh_snapshot_mods(cx);
+                }
             }
             "layout.set" if shipped_layouts().contains(&self.layout_name.as_str()) => {
                 let n = match serde_json::from_value::<Node>(a.get("layout").cloned().unwrap_or_default()) {
@@ -3846,10 +3850,27 @@ impl AppWindow {
                 let Some(f) = self.folders.get(name) else { return self.fail(format!("no mod folder {name:?}")) };
                 let mut spec = mod_overlay(&f.dir);
                 spec["mod"] = json!(name);
-                // One popup per mod: running mod.open again toggles it, like app.settings.
+                let asked = a.get("props").filter(|p| p.is_object());
+                if let Some(props) = asked {
+                    spec["props"] = props.clone();
+                }
+                // One popup per mod: running mod.open again toggles it, like app.settings,
+                // unless it asks for other props (another of the mod's palette actions). A
+                // layout overlay's mods sit in its blocks and take no props: it only toggles.
                 let id = format!("mod-{name}");
-                if self.overlays.iter().any(|o| o.id == id) {
-                    self.close_overlay(&id, window, cx);
+                if let Some((slot, layout)) = self.overlays.iter().find(|o| o.id == id).map(|o| (o.slot.clone(), o.layout.is_some())) {
+                    let mut shown = self.copies.get(&slot).map(|c| c.inst.props.clone()).unwrap_or_default();
+                    if let Some(p) = shown.as_object_mut() {
+                        p.remove("overlay");
+                    }
+                    match asked {
+                        // Removed, not closed: a keyed window keeps where it was dragged.
+                        Some(p) if !layout && *p != shown => {
+                            self.remove_overlay(&id, window, cx);
+                            self.open_overlay(id, spec, window, cx);
+                        }
+                        _ => self.close_overlay(&id, window, cx),
+                    }
                 } else {
                     self.open_overlay(id, spec, window, cx);
                 }
@@ -4561,6 +4582,7 @@ impl AppWindow {
                 .iter()
                 .filter_map(|w| std::fs::read_to_string(file(&format!("{w}.error"))).ok())
                 .chain(self.copies.values().filter_map(|c| Some(format!("mod {}: {}", c.inst.name, c.error.as_ref()?))))
+                .chain(mods::actions(self.folders.values()).1)
                 .chain(self.documents.iter().filter_map(|(m, s)| s.error.as_ref().map(|e| format!("layout {}: {e}", if m.is_empty() { "local" } else { m }))))
                 .collect();
             return json!({
@@ -4722,7 +4744,7 @@ impl AppWindow {
         if self.runtime.is_none() {
             return;
         }
-        let found: BTreeMap<String, Found> = mods::scan().into_iter().map(|f| (f.id.clone(), f)).collect();
+        let (found, actions_changed) = scan_folders();
         let edited: BTreeSet<String> = found.values().filter(|f| self.folders.get(&f.id).is_some_and(|o| o.stamp != f.stamp)).map(|f| f.id.clone()).collect();
         let added = found.keys().any(|k| !self.folders.contains_key(k));
         let removed = self.folders.keys().any(|k| !found.contains_key(k));
@@ -4751,6 +4773,9 @@ impl AppWindow {
         }
         if !retry.is_empty() || added || removed {
             self.sync(window, cx);
+        }
+        if actions_changed {
+            self.refresh_snapshot_mods(cx);
         }
     }
 
@@ -5420,6 +5445,14 @@ fn resumed_names(records: &[crate::resume::Record]) -> String {
 
 fn home() -> String {
     mods::home().to_string_lossy().into_owned()
+}
+
+/// Every mod folder by id, with their palette actions published for
+/// `modActions()`; and whether those actions changed.
+fn scan_folders() -> (BTreeMap<String, Found>, bool) {
+    let found: BTreeMap<String, Found> = mods::scan().into_iter().map(|f| (f.id.clone(), f)).collect();
+    let changed = mods::publish_actions(Value::Array(mods::actions(found.values()).0));
+    (found, changed)
 }
 
 fn mod_overlay(dir: &std::path::Path) -> Value {
@@ -6326,6 +6359,90 @@ export default class Picker extends View {
         cx.simulate_keystrokes("shift-tab");
         cx.run_until_parked();
         assert!(!in_input(cx), "shift-tab, bound by no section, still moves focus");
+    }
+
+    #[test]
+    fn mod_palette_actions_follow_their_folders_and_mod_open_passes_props() {
+        in_own_process("mod_actions");
+    }
+
+    /// Mod `extra` declares two good palette actions and a bad one; `acts`,
+    /// opened by `mod.open` with props, draws how many `modActions()` lists and
+    /// its props' `n`. Status names the bad action; editing `extra`'s mod.json
+    /// and then removing `extra` change the open copy's list.
+    #[gpui::test]
+    fn mod_actions(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("mod_actions") {
+            return;
+        }
+        let extra = crate::mods::app_dir().join("mods/extra");
+        std::fs::create_dir_all(&extra).unwrap();
+        std::fs::write(extra.join("main.js"), "import { View, div } from \"gpui-kit\";\nexport default class Extra extends View { render() { return div(); } }\n").unwrap();
+        std::fs::write(extra.join("mod.json"), json!({ "place": "none", "actions": [
+            { "title": "One", "command": "mod.open" },
+            { "title": "Two", "command": "tab.new" },
+            { "title": "Bad", "command": "tab.fly" },
+        ] }).to_string()).unwrap();
+        let main_js = r#"import { View, div } from "gpui-kit";
+import { modActions, props } from "herdr";
+export default class Acts extends View {
+  render() {
+    return div().w(200).h(100)
+      .child(div().id("actions").w(10 + 10 * modActions().length).h(10).flex_none())
+      .child(div().id("n").w(10 + 10 * (props().n ?? 0)).h(10).flex_none());
+  }
+}"#;
+        let (view, cx) = open_window(cx, "acts", main_js, json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        // Its own props default, which an open call with none must not count as asked for.
+        std::fs::write(crate::mods::app_dir().join("mods/acts/mod.json"), r#"{ "place": "none", "overlay": { "props": { "n": 1 } } }"#).unwrap();
+        let width = |cx: &mut gpui::VisualTestContext, id: &'static str| cx.debug_bounds(id).map(|b| (f32::from(b.size.width) as usize - 10) / 10);
+        cx.update(|window, cx| view.update(cx, |this, cx| this.dispatch("mod.open", &json!({ "name": "acts", "props": { "n": 3 } }), true, window, cx)));
+        cx.run_until_parked();
+        assert_eq!(width(cx, "n"), Some(3), "mod.open's props reach props()");
+        assert_eq!(width(cx, "actions"), Some(2), "extra's good actions are listed");
+        let open = |cx: &mut gpui::VisualTestContext, props: serde_json::Value| {
+            cx.update(|window, cx| view.update(cx, |this, cx| this.dispatch("mod.open", &json!({ "name": "acts", "props": props }), true, window, cx)));
+            cx.run_until_parked();
+        };
+        open(cx, json!({ "n": 5 }));
+        assert_eq!(width(cx, "n"), Some(5), "other props open it again with them, not close it");
+        open(cx, json!({ "n": 5 }));
+        assert_eq!(width(cx, "n"), None, "the same props close it");
+        open(cx, json!({ "n": 3 }));
+        assert_eq!(width(cx, "n"), Some(3));
+        cx.update(|window, cx| view.update(cx, |this, cx| this.dispatch("mod.open", &json!({ "name": "acts" }), true, window, cx)));
+        cx.run_until_parked();
+        assert_eq!(width(cx, "n"), None, "no props closes it, whatever mod.json's own props say");
+        // A layout overlay takes no props: asking again with any closes it.
+        let lay = crate::mods::app_dir().join("mods/lay");
+        std::fs::create_dir_all(&lay).unwrap();
+        std::fs::write(lay.join("main.js"), "import { View, div } from \"gpui-kit\";\nexport default class Lay extends View { render() { return div(); } }\n").unwrap();
+        std::fs::write(lay.join("mod.json"), r#"{ "place": "none", "overlay": { "layout": { "id": "x", "type": "block", "content": { "mod": "lay" } } } }"#).unwrap();
+        let lay_open = |cx: &mut gpui::VisualTestContext, n: u32| {
+            view.update_in(cx, |this, window, cx| {
+                this.sync_folders(window, cx);
+                this.dispatch("mod.open", &json!({ "name": "lay", "props": { "n": n } }), true, window, cx);
+                this.overlays.iter().any(|o| o.id == "mod-lay")
+            })
+        };
+        assert!(lay_open(cx, 1));
+        assert!(!lay_open(cx, 2), "a layout overlay toggles closed");
+        open(cx, json!({ "n": 3 }));
+        let errors = view.update_in(cx, |this, window, cx| this.control(json!({ "status": true }), window, cx))["errors"].clone();
+        assert!(errors.as_array().unwrap().iter().any(|e| e == "mod extra: actions[2]: no command \"tab.fly\""), "{errors}");
+        // An edit keeps the folder: only the actions changed, and the open copy still redraws.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(extra.join("mod.json"), json!({ "place": "none", "actions": [{ "title": "One", "command": "mod.open" }] }).to_string()).unwrap();
+        view.update_in(cx, |this, window, cx| this.sync_folders(window, cx));
+        cx.run_until_parked();
+        assert_eq!(width(cx, "actions"), Some(1), "an edited mod.json's actions are listed");
+        std::fs::remove_dir_all(&extra).unwrap();
+        view.update_in(cx, |this, window, cx| this.sync_folders(window, cx));
+        cx.run_until_parked();
+        assert_eq!(width(cx, "actions"), Some(0), "a removed mod's actions go, and the open copy redraws");
+        let errors = view.update_in(cx, |this, window, cx| this.control(json!({ "status": true }), window, cx))["errors"].clone();
+        assert!(!errors.to_string().contains("extra"), "{errors}");
     }
 
     #[test]

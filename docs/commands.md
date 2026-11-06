@@ -486,11 +486,12 @@ Reset a shipped layout and its clicks (the old file is kept aside).
 
 ## `mod.open`
 
-Toggle a mod as the overlay its mod.json describes; calling again closes it.
+Toggle a mod as the overlay its mod.json describes (props: what its props() holds); calling again closes it, or reopens it with other props.
 
 | Argument | Required |
 |---|---|
 | `name` | yes |
+| `props` | no |
 
 ## `overlay.close`
 
