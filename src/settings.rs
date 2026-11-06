@@ -2039,9 +2039,16 @@ impl Settings {
 
     /// A pane's text size in px at its own text zoom `pane`: its size
     /// (`font_size × pane`) times the app's zoom, each on a whole point when
-    /// within float error of one at whole-point steps.
+    /// within float error of one at whole-point steps, and at most the
+    /// largest app zoom's (`font_size × 3`) however the two multiply.
     pub fn pane_font_size(&self, pane: f32) -> f32 {
-        self.on_point(self.on_point(self.font_size * pane) * self.zoom)
+        self.on_point(self.on_point(self.font_size * pane) * self.zoom).min(self.font_size * ZOOM_MAX)
+    }
+
+    /// The pane's whole scale on the terminals' design size: `zoom × pane`,
+    /// at most the largest `zoom`, as `ui_scale` caps its product.
+    pub fn pane_scale(&self, pane: f32) -> f32 {
+        (self.zoom * pane).min(ZOOM_MAX)
     }
 
     fn on_point(&self, size: f32) -> f32 {
@@ -2422,6 +2429,19 @@ mod tests {
         assert_eq!(at(1.5).next_pane_zoom(pane, 0), None, "the pane's reset keeps the app's zoom: it is the default again");
         let tenth = stepped(14.0, 1.2, ZoomStep::Tenth);
         assert_eq!(tenth.pane_font_size(1.1).to_bits(), (14.0f32 * 1.1 * 1.2).to_bits());
+    }
+
+    /// Pane zoom times app zoom stops at the largest zoom's size, and the
+    /// two still reset independently.
+    #[test]
+    fn a_pane_zoomed_on_a_zoomed_app_stops_at_the_largest_size() {
+        let at = |zoom| stepped(14.0, zoom, ZoomStep::Tenth);
+        assert_eq!(at(3.0).pane_font_size(3.0), 42.0);
+        assert_eq!(at(2.0).pane_font_size(2.0), 42.0);
+        assert_eq!(at(2.0).pane_scale(2.0), 3.0);
+        assert_eq!(at(1.0).pane_font_size(2.0), 28.0, "the app's reset keeps the pane's zoom");
+        assert_eq!(at(2.0).next_pane_zoom(2.0, 0), None, "the pane's reset keeps the app's");
+        assert_eq!(at(2.0).terminal_font_size(), 28.0);
     }
 
     #[test]

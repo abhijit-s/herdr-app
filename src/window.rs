@@ -3992,6 +3992,14 @@ impl AppWindow {
                 };
                 let Some(view) = term.map(|t| t.view.clone()) else { return self.fail("no terminal pane to zoom") };
                 view.update(cx, |v, cx| v.zoom_text(steps, cx));
+                // Off screen it won't draw, so nothing would refit it: its program gets the new grid now.
+                if !view.read(cx).on_screen_this_frame()
+                    && let Some(pane) = self.terms.iter().find(|(_, t)| t.view == view).map(|(p, _)| p.clone())
+                    && let Some(tab) = self.model.tab_of(&pane)
+                    && let Some(area) = self.shown_area(tab, &pane)
+                {
+                    view.read(cx).fit(area, window);
+                }
             }
             "app.zoom_in" | "app.zoom_out" | "app.zoom_reset" => {
                 let zoom = settings::next_zoom(match name {
@@ -6681,6 +6689,14 @@ export default class Recent extends View {
             assert!(matches!(this.hidden_fit, super::pane_size::HiddenFit::Done(_)), "the hidden tab was fitted");
         });
         assert_eq!(state(cx).1, zoomed, "hidden, a keeps the zoomed grid");
+        // Zoomed by command while hidden, its program gets the new grid without the tab showing.
+        assert!(!view.update(cx, |this, cx| this.terms["a"].view.read(cx).on_screen_this_frame()), "a is off screen");
+        let reply = view.update_in(cx, |this, window, cx| this.run_as("pane.zoom_text_in", json!({ "pane": "a" }), false, window, cx));
+        assert!(reply.get("error").is_none(), "{reply}");
+        cx.run_until_parked();
+        let hidden = state(cx);
+        assert_eq!(hidden.0, Some(14.0 * 1.2));
+        assert!(hidden.1.0 < zoomed.0 && hidden.1.1 < zoomed.1, "hidden, a refits at once: {zoomed:?} -> {:?}", hidden.1);
         view.update_in(cx, |this, window, cx| {
             this.model.select_tab("t");
             this.model.focus_pane("a");

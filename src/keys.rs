@@ -44,6 +44,8 @@ const SHIPPED_KEYS: &[&str] = &[
 const SHIPPED_MACOS_KEYS: &[&str] = &[
     include_str!("keys/shipped/v0.1.4-keys.macos.json"),
     include_str!("keys/shipped/v0.1.5-keys.macos.json"),
+    // The fork's defaults before the pane text zoom keys (master 07fcfec).
+    include_str!("keys/shipped/fork-07fcfec-keys.macos.json"),
 ];
 
 #[derive(serde::Deserialize)]
@@ -303,6 +305,31 @@ mod tests {
             assert_eq!(super::load_text(&path, defaults, originals).unwrap(), defaults);
             assert_eq!(std::fs::read_to_string(&path).unwrap(), defaults);
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// An untouched keys.json from before the pane text zoom keys gets them
+    /// (Ctrl+= zooms the pane's text); an edited one stays as it is.
+    #[test]
+    fn untouched_fork_keys_gain_the_pane_text_zoom_keys() {
+        let dir = std::env::temp_dir().join(format!("herdr-keys-pane-zoom-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keys.json");
+        let before = include_str!("keys/shipped/fork-07fcfec-keys.macos.json");
+        let defaults = include_str!("../defaults/keys.macos.json");
+        let ctrl_eq = |text: &str| -> Option<String> {
+            let v: serde_json::Value = serde_json::from_str(text).unwrap();
+            v["global"]["ctrl-="].as_str().map(str::to_owned)
+        };
+        assert_eq!(ctrl_eq(before), None);
+        std::fs::write(&path, before).unwrap();
+        let loaded = super::load_text(&path, defaults, super::SHIPPED_MACOS_KEYS).unwrap();
+        assert_eq!(ctrl_eq(&loaded).as_deref(), Some("pane.zoom_text_in"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), defaults);
+        let edited = before.replace("tab.new", "pane.zoom");
+        std::fs::write(&path, &edited).unwrap();
+        assert_eq!(super::load_text(&path, defaults, super::SHIPPED_MACOS_KEYS).unwrap(), edited);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

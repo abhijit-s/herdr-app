@@ -1550,7 +1550,7 @@ fn text_metrics(window: &Window, pane_zoom: Option<f32>) -> (Size<Pixels>, f32) 
     let Some(z) = pane_zoom else { return (cell_size(window), crate::settings::font_size()) };
     let s = crate::settings::get();
     let font = s.pane_font_size(z);
-    (measure_cell_at(window.text_system(), &cell_font(false, false), &s, font, s.zoom * z, window.scale_factor()), font)
+    (measure_cell_at(window.text_system(), &cell_font(false, false), &s, font, s.pane_scale(z), window.scale_factor()), font)
 }
 
 /// The cell for `f` at these settings on a screen at `scale`: the font's
