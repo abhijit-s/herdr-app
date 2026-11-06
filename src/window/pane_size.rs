@@ -25,7 +25,8 @@ pub(super) fn frame_border(frame: &PaneFrame, focused: bool) -> Option<(f32, &st
 /// How far a framed pane's content sits in from its edge: the wider of its
 /// two borders, so moving the focus never resizes a terminal.
 pub(super) fn frame_inset(frame: &PaneFrame) -> f32 {
-    [false, true].map(|focused| frame_border(frame, focused).map_or(0.0, |(width, _)| width)).into_iter().fold(0.0, f32::max)
+    let width = |focused| frame_border(frame, focused).map_or(0.0, |(width, _)| width);
+    width(false).max(width(true))
 }
 
 pub(super) fn header_height(header: &Header) -> f32 {

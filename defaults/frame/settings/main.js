@@ -1086,7 +1086,7 @@ export default class Settings extends View {
           "pane_auto_names",
         ),
       )
-      .child(this.row(t, "Focus border", "The colour around the pane you're typing in. From theme is the accent, or the theme's own focus colour.", this.focusColorPicker(t), "colors.focus"))
+      .child(this.row(t, "Focus border", "The color around the pane you're typing in, where the layout draws it. From theme is the accent, or the theme's own focus color.", this.focusColorPicker(t), "colors.focus"))
       .child(this.row(t, "Focus border width", "Layout keeps the layout's own width. Panes keep their size as the focus moves.", this.choicePicker(t, "st-fw", "focus_border_width", FOCUS_WIDTHS), "focus_border_width"));
   }
 

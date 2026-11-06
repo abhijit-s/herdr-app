@@ -4902,8 +4902,10 @@ impl AppWindow {
         let head = div().flex_none().h(settings::z(pane_size::header_height(h))).w_full().flex()
             .child(self.render_slot(&format!("{}#frame", n.id), cx));
         if h.hover() {
-            let head = head.absolute().left_0().right_0().opacity(0.).group_hover(group, |s| s.opacity(1.));
-            let head = if h.bottom() { head.bottom_0() } else { head.top_0() };
+            // Absolute children sit against the padding box: inset by the pad so the header stays put as the focus moves.
+            let at = settings::z(pad.max(0.0));
+            let head = head.absolute().left(at).right(at).opacity(0.).group_hover(group, |s| s.opacity(1.));
+            let head = if h.bottom() { head.bottom(at) } else { head.top(at) };
             return el.child(body).child(head).into_any_element();
         }
         if h.bottom() { el.child(body).child(head) } else { el.child(head).child(body) }.into_any_element()

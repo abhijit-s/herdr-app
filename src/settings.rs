@@ -601,7 +601,10 @@ mod derivation_tests {
         let theme_own: BTreeMap<String, String> = [("focus".to_owned(), "#111111".to_owned())].into();
         let person: Settings = Settings { colors: [("focus".to_owned(), "#222222".to_owned())].into(), ..Settings::default() };
         assert_eq!(resolve_for(&Settings::default(), p, &theme_own)["focus"], "#111111", "a theme file's focus");
-        assert_eq!(resolve_for(&person, p, &theme_own)["focus"], "#222222", "settings.json and the layout's look win over the theme");
+        assert_eq!(resolve_for(&person, p, &theme_own)["focus"], "#222222", "settings.json wins over the theme");
+        let look = crate::layout::Look { colors: Some([("focus".to_owned(), "#333333".to_owned())].into()), ..Default::default() };
+        let composed = Settings::compose(&Person { colors: [("focus".to_owned(), "#222222".to_owned())].into(), ..Person::default() }, &look, true);
+        assert_eq!(resolve_for(&composed, p, &theme_own)["focus"], "#333333", "the layout's look wins over settings.json");
     }
 
     #[test]
@@ -2965,8 +2968,6 @@ mod tests {
         }
     }
 
-    /// The guide agents read (written to the home folder) explains every
-    /// settings.json key.
     #[test]
     fn focus_border_width_stays_out_unset_and_reports_a_width_outside_1_to_3() {
         assert_eq!(serde_json::to_value(Person::default()).unwrap().get("focus_border_width"), None);
@@ -2979,6 +2980,8 @@ mod tests {
         assert_eq!(Settings::default().focus_width(), None);
     }
 
+    /// The guide agents read (written to the home folder) explains every
+    /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
         let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, pane_zoom_keys: false, pane_auto_names: true, focus_border_width: Some(2.0), ..Person::default() };
