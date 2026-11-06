@@ -711,8 +711,9 @@ mod derivation_tests {
         }
     }
 
-    /// Focus changes resolve again from the palette `set` read, without
-    /// the theme file: only `chrome` moves, and only when the state does.
+    /// Focus changes resolve again from the palette `set` read: only
+    /// `chrome` moves, and only when the state does. The window test
+    /// `sidebar_shade_focus` corrupts a theme file on disk between the two.
     #[test]
     fn reshade_follows_focus_from_the_last_palette() {
         std::thread::spawn(|| {

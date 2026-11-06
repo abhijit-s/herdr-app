@@ -7681,6 +7681,27 @@ export default class Probe extends View {
         assert_eq!(chrome(cx), "#202020", "an own chrome wins while active");
         cx.deactivate_window();
         assert_eq!(chrome(cx), "#202020", "an own chrome wins while inactive");
+
+        // A theme file on disk: focus changes resolve it from the palette last
+        // read, so a half-written file can't flip the window to another theme.
+        let file = crate::mods::app_dir().join("themes/focus-test.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, r##"{"background":"#1d2330","foreground":"#c8d0e0","selection":"#3a4660","ansi":["#000000","#e06c75","#98c379","#e5c07b","#61afef","#c678dd","#56b6c2","#abb2bf","#5c6370","#e06c75","#98c379","#e5c07b","#61afef","#c678dd","#56b6c2","#ffffff"]}"##).unwrap();
+        view.update_in(cx, |this, window, cx| {
+            this.person.colors.remove("chrome");
+            this.person.theme = Some(crate::layout::ThemeChoice::One("focus-test".into()));
+            this.apply_look(window, cx);
+        });
+        let flat = chrome(cx);
+        assert_eq!(crate::settings::theme()["background"], "#1d2330", "the file's theme is showing");
+        std::fs::write(&file, "{\"background\": \"#1d23").unwrap();
+        cx.update(|window, _| window.activate_window());
+        let shaded = chrome(cx);
+        assert_ne!(shaded, flat, "focus shades the file's theme");
+        assert_eq!(crate::settings::theme()["background"], "#1d2330", "a corrupt file on disk doesn't reach a focus change");
+        cx.deactivate_window();
+        assert_eq!(chrome(cx), flat);
+        assert_eq!(crate::settings::theme()["background"], "#1d2330");
     }
 
     /// With `unfocused_dim` over the window (the default scope), blurring lays

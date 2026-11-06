@@ -1432,20 +1432,19 @@ mod tests {
     }
 
     /// A focus change that shades the sidebar bumps `theme`: only the copies
-    /// that read `theme()` redraw.
+    /// whose `herdr` module answered `theme()` redraw.
     #[test]
     fn a_theme_bump_refreshes_only_theme_readers() {
         std::thread::spawn(|| {
-            let (themed, other) = (Rc::new(RefCell::new(LiveReads::default())), Rc::new(RefCell::new(LiveReads::default())));
-            LIVE_READS.with_borrow_mut(|copies| {
-                copies.insert(1, Rc::downgrade(&themed));
-                copies.insert(2, Rc::downgrade(&other));
-            });
-            record(&themed, "theme");
-            read(&other, "agents", |s| &s.agents);
+            let none = gpui_shell::HostArguments::new([]);
+            let themed = module(Instance { name: "themed".into(), props: Value::Null }, 101);
+            let other = module(Instance { name: "other".into(), props: Value::Null }, 102);
+            themed.call("theme", &none).unwrap();
+            other.call("spaces", &none).unwrap();
+            assert!(!snapshot_changed(101) && !snapshot_changed(102));
             bump_revision("theme");
-            assert!(snapshot_changed(1));
-            assert!(!snapshot_changed(2));
+            assert!(snapshot_changed(101), "a copy that read theme() redraws");
+            assert!(!snapshot_changed(102), "one that didn't stays");
         }).join().unwrap();
     }
 
