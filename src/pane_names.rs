@@ -126,7 +126,7 @@ mod tests {
     fn shipped_words_hold_up() {
         let w = Words::parse(SHIPPED).expect("defaults/pane-names.json");
         for word in w.adjectives.iter().chain(&w.nouns) {
-            assert!((3..=6).contains(&word.len()), "{word:?}: three to six letters");
+            assert!((3..=7).contains(&word.len()), "{word:?}: three to seven letters");
         }
         assert!(w.adjectives.len() >= 40 && w.nouns.len() >= 40, "enough names that a tab rarely shares one");
         assert!(words().is_some());
@@ -134,16 +134,16 @@ mod tests {
 
     #[test]
     fn word_lists_are_checked_when_read() {
-        assert!(Words::parse(r#"{"adjectives":["calm"],"nouns":["cove"]}"#).is_ok());
+        assert!(Words::parse(r#"{"adjectives":["hazy"],"nouns":["inlet"]}"#).is_ok());
         for bad in [
-            r#"{"adjectives":[],"nouns":["cove"]}"#,
-            r#"{"adjectives":["calm"],"nouns":[]}"#,
-            r#"{"adjectives":["Calm"],"nouns":["cove"]}"#,
-            r#"{"adjectives":["calm"],"nouns":["sea cove"]}"#,
-            r#"{"adjectives":["calm"],"nouns":[""]}"#,
-            r#"{"adjectives":["calm","calm"],"nouns":["cove"]}"#,
-            r#"{"adjectives":["calm"],"nouns":["cove","cove"]}"#,
-            r#"{"adjectives":["calm"]}"#,
+            r#"{"adjectives":[],"nouns":["inlet"]}"#,
+            r#"{"adjectives":["hazy"],"nouns":[]}"#,
+            r#"{"adjectives":["Hazy"],"nouns":["inlet"]}"#,
+            r#"{"adjectives":["hazy"],"nouns":["sea inlet"]}"#,
+            r#"{"adjectives":["hazy"],"nouns":[""]}"#,
+            r#"{"adjectives":["hazy","hazy"],"nouns":["inlet"]}"#,
+            r#"{"adjectives":["hazy"],"nouns":["inlet","inlet"]}"#,
+            r#"{"adjectives":["hazy"]}"#,
         ] {
             assert!(Words::parse(bad).is_err(), "{bad}");
         }
@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn panes_sharing_a_name_in_a_tab_take_the_next_one_by_id() {
-        let w = Words::parse(r#"{"adjectives":["calm","misty"],"nouns":["cove","dune"]}"#).unwrap();
+        let w = Words::parse(r#"{"adjectives":["hazy","pale"],"nouns":["inlet","tarn"]}"#).unwrap();
         // Ids whose names collide in a list of four.
         let ids: Vec<String> = (0..64).map(|i| format!("p{i}")).collect();
         let index = |id: &str| (fnv1a(id.as_bytes()) % 4) as usize;
@@ -191,10 +191,10 @@ mod tests {
     fn only_a_bare_shell_shows_the_automatic_name() {
         let home = "/home/me";
         let cwd = Some("/home/me/src/herdr");
-        for title in ["", "  ", "t1", "zsh", "-zsh", "bash", "/bin/zsh", "~/src/herdr", "/home/me/src/herdr", "herdr", "me@box: ~/src/herdr", "me@box:~", "C:\\src\\herdr", "\u{2026}/src/herdr"] {
+        for title in ["", "  ", "t1", "zsh", "-zsh", "bash", "pwsh.exe", "~/src/herdr", "/home/me/src/herdr", "herdr", "me@box: ~/src/herdr", "me@box:~", "C:\\src\\herdr", "\u{2026}/src/herdr"] {
             assert!(shown(false, &shell(), title, "t1", cwd, home), "{title:?} says nothing");
         }
-        for title in ["deploy", "vim notes.md", "me@box: deploy", "herdr-app"] {
+        for title in ["deploy", "vim notes.md", "me@box: deploy", "herdr-app", "ping me@box: ~/src"] {
             assert!(!shown(false, &shell(), title, "t1", cwd, home), "{title:?} says something");
         }
         // The person's name, an agent, or a running command win.
