@@ -57,8 +57,8 @@ const body = source
   .replace(/^import .*;\n/gm, "")
   .replace("export function scaleStep", "function scaleStep")
   .replace("export default class Settings", "const Settings = class Settings")
-  + "\nreturn { Settings, scaleStep, spacingOf };";
-const { Settings, scaleStep, spacingOf } = new Function(...names, body)(...args);
+  + "\nreturn { Settings, scaleStep, spacingOf, sameSpacing, settlePending };";
+const { Settings, scaleStep, spacingOf, sameSpacing, settlePending } = new Function(...names, body)(...args);
 
 function find(root: Element, id: string): Element {
   if (root?.calls?.id?.[0] === id) return root;
@@ -349,10 +349,17 @@ test("reset shows only where a value differs from the layout file, and clears th
   expect(find(group, "st-sp-terminal_padding-reset")).toBeDefined();
   expect(find(group, "st-sp-pane_gap-reset")).toBeUndefined();
   expect(find(group, "st-sp-area_padding-reset")).toBeUndefined();
-  // A file that can't be read or parsed offers no reset, but the steppers still work.
-  const broken = await spacingClick(clicked, null, "st-sp-pane_gap-plus");
-  expect(find(broken.group, "st-sp-area_gap-reset")).toBeUndefined();
-  expect(broken.runs).toEqual([["layout.spacing", { pane_gap: 7 }]]);
+});
+
+test("a layout file that can't be read or parsed hides the steppers and says why", async () => {
+  for (const raw of [null, '{"type": "row",}', "[]"]) {
+    Object.assign(layoutDisk, { name: "mine", raw, shown: deck(), runs: [] });
+    const view = new Settings();
+    await view.loadLayoutFile();
+    const group = view.spacing(new Proxy({}, { get: () => "#000000" }), {});
+    for (const id of ["st-sp-pane_gap-plus", "st-sp-terminal_padding-x-plus", "st-sp-area_gap-reset"]) expect(find(group, id)).toBeUndefined();
+    expect(texts(group).some((t) => t.includes("layouts/mine.json can't be read or has errors"))).toBe(true);
+  }
 });
 
 test("a layout with nothing to space hides those controls and says why", async () => {
@@ -414,4 +421,50 @@ test("quick clicks each step once, before layout() catches up", async () => {
   layoutDisk.shown.children[1].children[0].content.pane.gap = 8;
   find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, { notify() {} });
   expect(layoutDisk.runs.at(-1)).toEqual(["layout.spacing", { pane_gap: 9 }]);
+});
+
+test("reset drops a pending step, so the stepper shows layout() again", async () => {
+  const clicked = deck();
+  clicked.children[1].children[0].content.pane!.gap = 7;
+  const { view } = await spacingClick(clicked, deck());
+  const t = new Proxy({}, { get: () => "#000000" });
+  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, { notify() {} });
+  find(view.spacing(t, {}), "st-sp-pane_gap-reset").calls.on_click[0](null, { notify() {} });
+  expect(view.spacingPending).toEqual({});
+  // layout() now has the file's 6 again: the next step counts from it.
+  layoutDisk.shown = deck();
+  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, { notify() {} });
+  expect(layoutDisk.runs).toEqual([["layout.spacing", { pane_gap: 8 }], ["layout.spacing", { reset: ["pane_gap"] }], ["layout.spacing", { pane_gap: 7 }]]);
+});
+
+test("a step layout() never shows (a refused call) expires, and steps don't carry to another layout", async () => {
+  const { view } = await spacingClick(deck(), deck());
+  const t = new Proxy({}, { get: () => "#000000" });
+  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, { notify() {} });
+  expect(texts(view.spacing(t, {}))).toContain("7");
+  // What the 250 ms timer does: nothing to drop yet, then the step expires.
+  expect(settlePending(view.spacingPending, spacingOf(deck()), Date.now())).toBe(false);
+  expect(settlePending(view.spacingPending, spacingOf(deck()), Date.now() + 1001)).toBe(true);
+  expect(view.spacingPending).toEqual({});
+  expect(texts(view.spacing(t, {}))).toContain("6");
+  // A step on one layout is gone once another shows.
+  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, { notify() {} });
+  layoutDisk.name = "other";
+  view.layoutFile = { name: "other", tree: deck() };
+  view.spacing(t, {});
+  expect(view.spacingPending).toEqual({});
+});
+
+test("spacing treats a null field as left out, and shows padding as x, y like terminal padding", async () => {
+  expect(sameSpacing(null, undefined)).toBe(true);
+  expect(sameSpacing(null, 0)).toBe(false);
+  const file = deck();
+  (file.children[1] as any).gap = null;
+  const shown = deck();
+  delete (shown.children[1] as any).gap;
+  shown.children[1].padding = [4, 6] as any;
+  file.children[1].padding = [4, 6] as any;
+  const { group } = await spacingClick(shown, file);
+  expect(find(group, "st-sp-area_gap-reset")).toBeUndefined();
+  expect(texts(group)).toContain("6, 4");
 });

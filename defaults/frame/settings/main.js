@@ -49,6 +49,8 @@ function spacingRaw(tree) {
 // Spacing values arrive as f32 widened to f64 (2.3 as 2.299999952...).
 function sameSpacing(a, b) {
   const pair = (v) => (typeof v === "number" ? [v, v] : v);
+  // `"gap": null` in a file is the field left out.
+  [a, b] = [a ?? undefined, b ?? undefined];
   if (a === undefined || b === undefined) return a === b;
   const [x, y] = [pair(a), pair(b)];
   return Array.isArray(x) && Array.isArray(y) && x.length === y.length && x.every((v, i) => Math.abs(v - y[i]) < 0.005);
@@ -70,6 +72,23 @@ function spacingOf(tree) {
     area_gap: area && num(area.gap, SPACING_DEFAULTS.area_gap),
     terminal_padding: pair(tree.terminal_padding, SPACING_DEFAULTS.terminal_padding),
   };
+}
+
+// How long a step waits to show in layout() before the stepper lets it go
+// (a refused layout.spacing never shows).
+const SPACING_PENDING_MS = 1000;
+
+// Drops pending steps layout() now shows, expired ones, and all of them when
+// the shown layout changed; true when any went.
+function settlePending(pending, shown, now) {
+  let dropped = false;
+  for (const [key, { value, at }] of Object.entries(pending)) {
+    if (sameSpacing(value, shown?.[key]) || now - at > SPACING_PENDING_MS) {
+      delete pending[key];
+      dropped = true;
+    }
+  }
+  return dropped;
 }
 
 function stepSpacing(v, d) {
@@ -187,6 +206,10 @@ export default class Settings extends View {
       else if (Date.now() - this.asked >= 3000) this.asked = null;
       cx.notify();
     });
+    // A step layout.spacing refused never shows in layout(): let it go once it expires.
+    cx.timer.every(250, (cx) => {
+      if (this.spacingPending && settlePending(this.spacingPending, spacingOf(layout()), Date.now())) cx.notify();
+    });
     cx.timer.every(3000, (cx) => {
       if (this.section === "look") {
         // The layout file may change under us (an agent, an editor).
@@ -282,6 +305,7 @@ export default class Settings extends View {
       const raw = await readTextFile(`${appHome()}/layouts/${name}.json`);
       tree = raw ? JSON.parse(raw) : null;
     } catch {}
+    // `tree` null: Herdr shows a stand-in and refuses layout.spacing.
     this.layoutFile = { name, tree: tree && typeof tree === "object" && !Array.isArray(tree) ? tree : null };
   }
 
@@ -801,24 +825,35 @@ export default class Settings extends View {
     const shown = layout();
     const s = spacingOf(shown);
     if (!s) return box.child(note("This layout shows no tab's panes."));
+    // Herdr refuses layout.spacing while the file doesn't parse: no steppers then.
+    if (this.layoutFile?.name !== name) return box;
+    if (!this.layoutFile.tree) return box.child(note(`layouts/${name}.json can't be read or has errors: fix it to change spacing.`));
     // A step not yet in layout() (layout.spacing applies after this returns):
-    // the next step counts from it, so quick clicks each move one.
+    // the next step counts from it, so quick clicks each move one. Steps
+    // belong to the layout they were made on.
+    if (this.spacingPendingFor !== name) this.spacingPending = {};
+    this.spacingPendingFor = name;
     this.spacingPending ??= {};
-    for (const [key, { value, at }] of Object.entries(this.spacingPending)) {
-      if (sameSpacing(value, s[key]) || Date.now() - at > 1000) delete this.spacingPending[key];
-      else s[key] = value;
-    }
+    settlePending(this.spacingPending, s, Date.now());
+    for (const [key, { value }] of Object.entries(this.spacingPending)) s[key] = value;
     const raw = spacingRaw(shown);
-    const fileRaw = this.layoutFile?.name === name && this.layoutFile.tree ? spacingRaw(this.layoutFile.tree) : null;
-    const clicked = (key) => fileRaw !== null && !sameSpacing(raw[key], fileRaw[key]);
+    const fileRaw = spacingRaw(this.layoutFile.tree);
+    const clicked = (key) => !sameSpacing(raw[key], fileRaw[key]);
     const round = (v) => Math.round(v * 100) / 100;
-    const show = (v) => (Array.isArray(v) ? (sameSpacing(v[0], v[1]) ? `${round(v[0])}` : `${round(v[0])}, ${round(v[1])}`) : `${round(v)}`);
+    // Pairs read x, y (sides, then top and bottom), as terminal padding does;
+    // layouts write padding [y, x].
+    const show = (v, key) => {
+      if (!Array.isArray(v)) return `${round(v)}`;
+      const [a, b] = key === "area_padding" ? [v[1], v[0]] : v;
+      return sameSpacing(a, b) ? `${round(a)}` : `${round(a)}, ${round(b)}`;
+    };
     const set = (key, value, cx) => {
-      if (key !== "reset") this.spacingPending[key] = { value, at: Date.now() };
+      if (key === "reset") for (const k of value) delete this.spacingPending[k];
+      else this.spacingPending[key] = { value, at: Date.now() };
       run("layout.spacing", { [key]: value });
       cx.notify();
     };
-    const steps = (id, value, to) => this.stepper(t, id, show(value), (_e, cx) => to(-1, cx), (_e, cx) => to(1, cx));
+    const steps = (id, value, to, key) => this.stepper(t, id, show(value, key), (_e, cx) => to(-1, cx), (_e, cx) => to(1, cx));
     const reset = (key) => (clicked(key) ? this.button(t, `st-sp-${key}-reset`, "Reset", (_e, cx) => set("reset", [key], cx)) : null);
     const px = (key, title, about) => {
       if (s[key] === null) return null;
@@ -828,7 +863,7 @@ export default class Settings extends View {
         set(key, Array.isArray(next) && next[0] === next[1] ? next[0] : next, cx);
       };
       const r = reset(key);
-      return this.row(t, title, about, h_flex().gap(8).items_center().child(steps(`st-sp-${key}`, now, to)).when(Boolean(r), (el) => el.child(r)));
+      return this.row(t, title, about, h_flex().gap(8).items_center().child(steps(`st-sp-${key}`, now, to, key)).when(Boolean(r), (el) => el.child(r)));
     };
     const [x, y] = s.terminal_padding;
     const axis = (i) => (d, cx) => set("terminal_padding", i === 0 ? [stepSpacing(x, d), y] : [x, stepSpacing(y, d)], cx);
@@ -841,7 +876,7 @@ export default class Settings extends View {
       .children(
         [
           px("pane_gap", "Pane gap", "Space between a tab's panes."),
-          px("area_padding", "Pane container padding", "Padding inside the row or column the panes sit in."),
+          px("area_padding", "Pane container padding", "Padding inside the row or column the panes sit in: sides, then top and bottom."),
           px("area_gap", "Pane container gap", "Space between the panes and what sits beside them in that row or column."),
         ].filter(Boolean),
       )
