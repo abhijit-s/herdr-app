@@ -2,12 +2,13 @@
 // Places (spaces, tabs) stay in the picker. Fuzzy: your letters in
 // order, word starts and runs rank higher. Empty: recent first, then every
 // group. Choices are entries of their own ("Layout: Zen"); commands that need
-// a name ask for it. Enter runs, ↑/↓ move, Esc closes.
+// a name ask for it; mods' own actions (mod.json) list under the mod's name.
+// Enter runs, ↑/↓ move, Esc closes.
 // The app's own mod: rewritten from the binary on every start.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { commands, layouts, keys, run, theme, props, closeOverlay, openOverlay, shared, window as win } from "herdr";
+import { commands, layouts, modActions, keys, run, theme, props, closeOverlay, openOverlay, shared, window as win } from "herdr";
 
 // The list keeps one height while you move: rows and group titles have fixed
 // heights, and the window shows as many as fit in LIST_H.
@@ -86,7 +87,8 @@ function titleOf(name) {
 
 // Every entry for the state we're in now.
 function entries() {
-  const known = new Set(commands().map((c) => c.name));
+  const all = commands();
+  const known = new Set(all.map((c) => c.name));
   const mac = win()?.platform === "macos";
   const list = NAMED.filter(([n]) => known.has(n))
     .filter(([n]) => !(mac && n.startsWith("window.")))
@@ -97,16 +99,23 @@ function entries() {
   }
   // Anything new in the app shows up too, until it gets a better name here.
   const named = new Set(NAMED.map(([n]) => n));
-  for (const c of commands()) {
+  for (const c of all) {
     if (named.has(c.name) || HIDDEN.has(c.name) || c.args.some((a) => a.required && a.name !== "name")) continue;
     list.push({ name: c.name, args: {}, ...titleOf(c.name), words: c.about });
   }
-  return list.map((e) => ({ ...e, id: `${e.name}:${JSON.stringify(e.args)}` }));
+  // The app checked these (`herdr-app status` names any it left out).
+  for (const a of modActions()) {
+    list.push({ name: a.command, args: a.args, group: a.mod, title: a.title, words: a.keywords, mod: a.mod });
+  }
+  return list.map((e) => ({ ...e, id: e.mod ? `${e.mod}/${e.title}` : `${e.name}:${JSON.stringify(e.args)}` }));
 }
 
-// The key bound to an entry: `name` or `name:value` in keys.json.
+// The key bound to an entry: `name` or `name:value` in keys.json. A value
+// fills one argument, so an entry with more has no such key.
 function keyOf(e, bound) {
-  const v = Object.values(e.args)[0];
+  const values = Object.values(e.args);
+  if (values.length > 1) return null;
+  const v = values[0];
   const want = v === undefined ? e.name : `${e.name}:${v}`;
   const k = bound.find((b) => b.section === "global" && b.action === want);
   return k ? k.keys : null;
@@ -160,13 +169,13 @@ export default class Palette extends View {
     this.recent = [e.id, ...this.recent.filter((r) => r !== e.id)].slice(0, 20);
     localStorage.setItem("recent", JSON.stringify(this.recent));
     this.close();
-    if (e.name === "mod.clone") {
+    if (e.name === "mod.clone" && !e.mod) {
       openOverlay({ mod: "prompt", kind: "dialog", width: 380, props: {
         title: "Duplicate mod", hint: "Mod to copy; creates <name>-copy",
         command: { name: "mod.clone", args: {} },
       } });
     } else {
-      run(e.name, e.name === "layout.clone" ? { name: shared("layout") ?? "main" } : e.args);
+      run(e.name, e.name === "layout.clone" && !e.mod ? { name: shared("layout") ?? "main" } : e.args);
     }
   }
 

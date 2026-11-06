@@ -343,6 +343,9 @@ pub struct Hint {
     /// `pane.go` can give it the keyboard.
     #[serde(default)]
     pub focusable: bool,
+    /// Its command palette entries, as written: `actions` reads them.
+    #[serde(default)]
+    pub actions: Value,
 }
 
 #[derive(Clone)]
@@ -350,6 +353,8 @@ pub struct Found {
     pub id: String,
     pub dir: PathBuf,
     pub hint: Hint,
+    /// Why mod.json couldn't be read as one (`hint` is then the default).
+    pub hint_error: Option<String>,
     pub stamp: SystemTime,
 }
 
@@ -372,7 +377,7 @@ fn scan_dir(root: &Path, prefix: &str) -> Vec<Found> {
                 return None;
             }
             let dir = e.path();
-            let hint = std::fs::read_to_string(dir.join("mod.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+            let (hint, hint_error) = read_hint(&dir);
             let stamp = std::fs::read_dir(&dir)
                 .into_iter()
                 .flatten()
@@ -380,9 +385,87 @@ fn scan_dir(root: &Path, prefix: &str) -> Vec<Found> {
                 .filter_map(|f| f.metadata().ok()?.modified().ok())
                 .max()
                 .unwrap_or(SystemTime::UNIX_EPOCH);
-            Some(Found { id, dir, hint, stamp })
+            Some(Found { id, dir, hint, hint_error, stamp })
         })
         .collect()
+}
+
+/// A mod.json that can't be read leaves the defaults, and why.
+fn read_hint(dir: &Path) -> (Hint, Option<String>) {
+    let Ok(text) = std::fs::read_to_string(dir.join("mod.json")) else { return (Hint::default(), None) };
+    match serde_json::from_str(&text) {
+        Ok(hint) => (hint, None),
+        Err(e) => (Hint::default(), Some(e.to_string())),
+    }
+}
+
+/// What is wrong with `dir`'s palette actions, or with a mod.json that costs
+/// it them (`herdr-app check`).
+pub fn action_problems(dir: &Path) -> Vec<String> {
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_owned());
+    let id = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
+    let (hint, hint_error) = read_hint(&dir);
+    actions([&Found { id, dir, hint, hint_error, stamp: SystemTime::UNIX_EPOCH }]).1
+}
+
+/// Every mod's palette actions (`modActions()`), in folder order, and what is
+/// wrong with the ones left out. An action is `{ title, command, args?, keywords? }`
+/// naming an app command; `mod.open` without a `name` opens the mod itself.
+pub fn actions<'a>(folders: impl IntoIterator<Item = &'a Found>) -> (Vec<Value>, Vec<String>) {
+    let mut list = Vec::new();
+    let mut problems = Vec::new();
+    for f in folders {
+        if let Some(e) = &f.hint_error {
+            problems.push(format!("mod {}: mod.json: {e}", f.id));
+            continue;
+        }
+        let entries = match &f.hint.actions {
+            Value::Null => continue,
+            Value::Array(entries) => entries,
+            _ => {
+                problems.push(format!("mod {}: actions: expected a list", f.id));
+                continue;
+            }
+        };
+        for (i, entry) in entries.iter().enumerate() {
+            match action(&f.id, entry) {
+                Ok(a) => list.push(a),
+                Err(why) => problems.push(format!("mod {}: actions[{i}]: {why}", f.id)),
+            }
+        }
+    }
+    (list, problems)
+}
+
+fn action(mod_id: &str, entry: &Value) -> Result<Value, String> {
+    let text = |k: &str| entry.get(k).and_then(Value::as_str).filter(|s| !s.trim().is_empty());
+    let title = text("title").ok_or("needs a title")?;
+    let name = text("command").ok_or("needs a command")?;
+    let command = crate::commands::find(name).ok_or_else(|| format!("no command {name:?}"))?;
+    let mut args = match entry.get("args") {
+        None | Some(Value::Null) => json!({}),
+        Some(args @ Value::Object(_)) => args.clone(),
+        Some(_) => return Err("args: expected an object".into()),
+    };
+    if name == "mod.open" && crate::commands::missing(command, &json!({ "name": args.get("name") })).is_some() {
+        args["name"] = json!(mod_id);
+    }
+    if name == "mod.open" && !args["name"].is_string() {
+        return Err("mod.open: name: expected a mod's folder name".into());
+    }
+    crate::commands::validate_args(command, &args)?;
+    if let Some(missing) = crate::commands::missing(command, &args) {
+        return Err(format!("{name}: needs {missing}"));
+    }
+    if args.get("props").is_some_and(|p| !p.is_object() && !p.is_null()) {
+        return Err(format!("{name}: props: expected an object"));
+    }
+    let keywords = match entry.get("keywords") {
+        None | Some(Value::Null) => "",
+        Some(Value::String(k)) => k,
+        Some(_) => return Err("keywords: expected a string".into()),
+    };
+    Ok(json!({ "mod": mod_id, "title": title, "command": name, "args": args, "keywords": keywords }))
 }
 
 /// What mods ask of the window.
@@ -596,12 +679,14 @@ pub struct Snapshot {
     /// The shown layout's spacing fields (`layout_sync::spacing_fields`): a
     /// reader redraws when these change, not on every layout click.
     pub spacing: Value,
+    /// Every mod's palette actions (`actions`).
+    pub actions: Value,
 }
 
 impl Default for Snapshot {
     /// Lists start empty, never null, so mods can map over them right away.
     fn default() -> Self {
-        Snapshot { layout: Value::Null, spaces: json!([]), machines: json!([]), agents: json!([]), panes: json!([]), terminals: json!([]), focused: Value::Null, places: json!([]), floats: json!({}), window: Value::Null, spacing: Value::Null }
+        Snapshot { layout: Value::Null, spaces: json!([]), machines: json!([]), agents: json!([]), panes: json!([]), terminals: json!([]), focused: Value::Null, places: json!([]), floats: json!({}), window: Value::Null, spacing: Value::Null, actions: json!([]) }
     }
 }
 
@@ -680,6 +765,9 @@ pub fn publish_focused(v: Value) -> bool {
 }
 pub fn publish_places(v: Value) -> bool {
     publish("places", |s| (std::mem::replace(&mut s.places, v.clone()), v))
+}
+pub fn publish_actions(v: Value) -> bool {
+    publish("actions", |s| (std::mem::replace(&mut s.actions, v.clone()), v))
 }
 
 #[derive(Default)]
@@ -1197,6 +1285,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
         .function("layout", reader(reads.clone(), "layout", |s| &s.layout))
         .function("layoutSpacing", reader(reads.clone(), "spacing", |s| &s.spacing))
         .function("layouts", |_| Ok(to_host(&json!(crate::window::layout_names()))))
+        .function("modActions", reader(reads.clone(), "actions", |s| &s.actions))
         .function("commands", |_| {
             let list: Vec<Value> = crate::commands::COMMANDS
                 .iter()
@@ -1544,6 +1633,67 @@ mod tests {
             assert!(set_shown_copies([2].into()).is_empty());
             assert!(!is_shown(1));
         }).join().unwrap();
+    }
+
+    #[test]
+    fn palette_actions_are_checked_and_malformed_ones_are_named_not_listed() {
+        let found = |id: &str, hint: Value| Found { id: id.into(), dir: PathBuf::new(), hint: serde_json::from_value(hint).unwrap(), hint_error: None, stamp: SystemTime::UNIX_EPOCH };
+        let acts = found("acts", json!({ "place": "none", "focusable": true, "actions": [
+            { "title": "Send to all", "command": "mod.open", "args": { "props": { "target": "shells" } }, "keywords": "smart" },
+            { "title": "Split", "command": "pane.split", "args": { "direction": "right" } },
+            { "title": "Open other", "command": "mod.open", "args": { "name": "other" } },
+            "split",
+            { "command": "tab.new" },
+            { "title": " ", "command": "tab.new" },
+            { "title": "No command" },
+            { "title": "Unknown", "command": "tab.fly" },
+            { "title": "Bad args", "command": "tab.new", "args": ["x"] },
+            { "title": "Misspelled", "command": "pane.split", "args": { "dir": "right" } },
+            { "title": "Missing", "command": "pane.split" },
+            { "title": "Null direction", "command": "pane.split", "args": { "direction": null } },
+            { "title": "Blank direction", "command": "pane.split", "args": { "direction": " " } },
+            { "title": "Blank name opens itself", "command": "mod.open", "args": { "name": "" } },
+            { "title": "Bad props", "command": "mod.open", "args": { "props": "x" } },
+            { "title": "Numbered", "command": "mod.open", "args": { "name": 5 } },
+            { "title": "Bad keywords", "command": "tab.new", "keywords": ["a"] },
+            { "title": "Bad target", "command": "tab.close", "args": { "id": 7 } },
+        ] }));
+        assert!(acts.hint.focusable && acts.hint.place.as_deref() == Some("none"), "a bad action costs the mod nothing else");
+        let dir = std::env::temp_dir().join(format!("herdr-action-check-{}", std::process::id())).join("checked");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("mod.json"), r#"{ "actions": [{ "title": "Go", "command": "mod.open" }, { "title": "Bad" }] }"#).unwrap();
+        assert_eq!(action_problems(&dir), vec!["mod checked: actions[1]: needs a command"], "herdr-app check reads the folder's own mod.json");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        assert_eq!(action_problems(&dir.join("sub/..")), vec!["mod checked: actions[1]: needs a command"], "named by its folder however it's written");
+        std::fs::write(dir.join("mod.json"), r#"{ "focusable": "yes", "actions": [] }"#).unwrap();
+        assert!(action_problems(&dir)[0].starts_with("mod checked: mod.json: invalid type"), "a mod.json Herdr can't read costs the mod its actions: check says so");
+        std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+        let none = found("none", json!({ "place": "right" }));
+        let odd = found("odd", json!({ "actions": { "title": "x" } }));
+        let (list, problems) = actions([&acts, &none, &odd]);
+        assert_eq!(list, vec![
+            json!({ "mod": "acts", "title": "Send to all", "command": "mod.open", "args": { "name": "acts", "props": { "target": "shells" } }, "keywords": "smart" }),
+            json!({ "mod": "acts", "title": "Split", "command": "pane.split", "args": { "direction": "right" }, "keywords": "" }),
+            json!({ "mod": "acts", "title": "Open other", "command": "mod.open", "args": { "name": "other" }, "keywords": "" }),
+            json!({ "mod": "acts", "title": "Blank name opens itself", "command": "mod.open", "args": { "name": "acts" }, "keywords": "" }),
+        ]);
+        assert_eq!(problems, vec![
+            "mod acts: actions[3]: needs a title",
+            "mod acts: actions[4]: needs a title",
+            "mod acts: actions[5]: needs a title",
+            "mod acts: actions[6]: needs a command",
+            "mod acts: actions[7]: no command \"tab.fly\"",
+            "mod acts: actions[8]: args: expected an object",
+            "mod acts: actions[9]: pane.split: unknown argument(s): dir; valid arguments: direction, pane, argv, mod, props",
+            "mod acts: actions[10]: pane.split: needs direction",
+            "mod acts: actions[11]: pane.split: needs direction",
+            "mod acts: actions[12]: pane.split: needs direction",
+            "mod acts: actions[14]: mod.open: props: expected an object",
+            "mod acts: actions[15]: mod.open: name: expected a mod's folder name",
+            "mod acts: actions[16]: keywords: expected a string",
+            "mod acts: actions[17]: tab.close: argument id must be a string (or null to omit it)",
+            "mod odd: actions: expected a list",
+        ]);
     }
 
     #[test]
