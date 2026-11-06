@@ -35,6 +35,25 @@ const HANDLE: f32 = 6.0;
 // The three native buttons plus their trailing breathing room (also used by the tabs mod).
 const TRAFFIC_LIGHT_WIDTH: f32 = 64.0;
 
+// A toast is as wide as what it says, within these; its height is fixed, so toasts stack.
+const TOAST_MIN_WIDTH: f32 = 200.0;
+const TOAST_MAX_WIDTH: f32 = 340.0;
+const TOAST_HEIGHT: f32 = 40.0;
+const TOAST_HEIGHT_WITH_BODY: f32 = 72.0;
+
+/// One line without a body, two with one: a body as the toast mod draws one
+/// (text that isn't blank, or anything else JavaScript calls true).
+fn toast_height(notification: &Value) -> f32 {
+    let body = match notification.get("body") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_f64().is_some_and(|n| n != 0.0),
+        Some(Value::String(s)) => !s.trim().is_empty(),
+        Some(Value::Array(_) | Value::Object(_)) => true,
+    };
+    if body { TOAST_HEIGHT_WITH_BODY } else { TOAST_HEIGHT }
+}
+
 fn traffic_light_divider_inset(n: &Node, axis: Axis, index: usize, macos: bool, zoom: f32) -> f32 {
     if !macos || axis != Axis::Row || n.titlebar != Some(crate::layout::Titlebar::Layout) {
         return 0.0;
@@ -3527,7 +3546,8 @@ impl AppWindow {
         props["overlay"] = json!(id);
         let num = |k: &str, d: f32| spec.get(k).and_then(Value::as_f64).map_or(d, |v| v as f32);
         let size = match kind {
-            OverlayKind::Toast => size(340.0, num("height", 72.0)),
+            // No width: as wide as its content, between the toast bounds.
+            OverlayKind::Toast => size(0.0, num("height", toast_height(&props))),
             // No size: as big as its content (0 = unset).
             OverlayKind::Window => size(num("width", 0.0), num("height", 0.0)),
             // No height: as tall as the content, up to most of the window.
@@ -3555,10 +3575,15 @@ impl AppWindow {
         if layout.is_none() {
             let copy = self.load(Instance { name, props }, window, cx);
             // Popups (menus) are as tall as what's in them; `height` is the most.
-            if fit
+            // A toast's height is set, but it's as wide as what's in it.
+            if (fit || kind == OverlayKind::Toast)
                 && let Some(root) = &copy.root
             {
-                root.update(cx, |r, cx| r.set_fit_content(true, cx));
+                root.update(cx, |r, cx| {
+                    r.set_fit_content(true, cx);
+                    // As wide as its text, but a toast's box can be wider (its minimum) and is as tall as set.
+                    r.set_fill_fitted(kind == OverlayKind::Toast, cx);
+                });
             }
             self.copies.insert(slot.clone(), copy);
         }
@@ -4275,7 +4300,7 @@ impl AppWindow {
             // Up to 1: a share of the window (terminals in overlays want room, not px).
             let span = |v: f32, full: Pixels| if v <= 1.0 { full * v } else { settings::z(v) };
             let (w, h) = (span(o.size.width, viewport.width), span(o.size.height, viewport.height));
-            let sized = |v: f32| v > 0.0 || o.kind != OverlayKind::Window;
+            let sized = |v: f32| v > 0.0 || !matches!(o.kind, OverlayKind::Window | OverlayKind::Toast);
             let content = match &o.layout {
                 Some(l) => self.render_node(l, &HashSet::new(), None, cx),
                 None => self.render_slot(&o.slot, cx),
@@ -4286,6 +4311,8 @@ impl AppWindow {
                 // Esc stays with terminals (agents use it to interrupt) and windows.
                 .when(o.layout.is_none() && o.kind.modal_keys(), |d| d.key_context("Overlay"))
                 .when(sized(o.size.width), |d| d.w(w))
+                .when(o.kind == OverlayKind::Toast, |d| d.min_w(settings::z(TOAST_MIN_WIDTH)).max_w(settings::z(TOAST_MAX_WIDTH)))
+                .debug_selector(|| format!("overlay-{id}"))
                 .when(sized(o.size.height), |d| if o.fit { d.max_h(h) } else { d.h(h) })
                 .when(!o.bare, |d| d.bg(c("popover")).border_1().border_color(c("border")).rounded(settings::z(8.0)).shadow_lg())
                 .overflow_hidden()
@@ -5231,6 +5258,80 @@ mod tests {
             } else {
                 assert_eq!(bounds.origin, point(px(100.0), px(200.0)));
             }
+        }
+    }
+
+    #[test]
+    fn a_toast_is_two_lines_high_only_with_a_body_the_mod_draws() {
+        use super::{TOAST_HEIGHT, TOAST_HEIGHT_WITH_BODY, toast_height};
+        use serde_json::json;
+        for (body, two) in [
+            (json!(null), false),
+            (json!(""), false),
+            (json!("  \n "), false),
+            (json!(false), false),
+            (json!(0), false),
+            (json!("to the clipboard"), true),
+            (json!(3), true),
+            (json!(true), true),
+            (json!(["a"]), true),
+        ] {
+            let want = if two { TOAST_HEIGHT_WITH_BODY } else { TOAST_HEIGHT };
+            assert_eq!(toast_height(&json!({ "title": "t", "body": body })), want, "{body}");
+        }
+        assert_eq!(toast_height(&json!({ "title": "t" })), TOAST_HEIGHT);
+    }
+
+    #[test]
+    fn toasts_are_as_wide_as_what_they_say() {
+        in_own_process("toast_sizes");
+    }
+
+    #[gpui::test]
+    fn toast_sizes(cx: &mut gpui::TestAppContext) {
+        use super::{TOAST_HEIGHT, TOAST_HEIGHT_WITH_BODY, TOAST_MAX_WIDTH, TOAST_MIN_WIDTH};
+        use serde_json::json;
+        if !running_alone("toast_sizes") {
+            return;
+        }
+        // The shipped mod, its root and text column keyed per toast so their bounds can be read.
+        let shipped = include_str!("../defaults/mods/toast/main.js");
+        let keyed = shipped.replace(r#".id("toast")"#, r#".id(`toast-${p.overlay}`)"#).replace("v_flex()\n          .flex_1()", "v_flex()\n          .id(`text-${p.overlay}`)\n          .flex_1()");
+        assert_eq!(keyed.matches("${p.overlay}").count(), 2, "the toast mod changed shape: key its root and text column again");
+        let (view, cx) = open_window(cx, "toast", &keyed, json!({"id": "root", "type": "block"}));
+        let long = "A notification whose title goes on far longer than any toast is wide";
+        let toasts = [
+            ("short", json!({"title": "Copied"})),
+            ("medium", json!({"title": "Terminal failed to start"})),
+            ("long", json!({"title": long})),
+            ("body", json!({"title": "Copied", "body": "to the clipboard"})),
+        ];
+        view.update_in(cx, |this, window, cx| {
+            for (id, note) in &toasts {
+                this.open_overlay((*id).into(), json!({"kind": "toast", "notification": note}), window, cx);
+            }
+            this.open_overlay("tall".into(), json!({"kind": "toast", "height": 90, "notification": {"title": "Set"}}), window, cx);
+        });
+        cx.run_until_parked();
+        let [short, medium, long, body, tall] =
+            ["overlay-short", "overlay-medium", "overlay-long", "overlay-body", "overlay-tall"].map(|s| cx.debug_bounds(s).unwrap_or_else(|| panic!("no {s}")));
+        assert_eq!(short.size, size(px(TOAST_MIN_WIDTH), px(TOAST_HEIGHT)), "a word is the narrowest, one line high");
+        assert!(medium.size.width > px(TOAST_MIN_WIDTH) && medium.size.width < px(TOAST_MAX_WIDTH), "fits its title: {:?}", medium.size);
+        assert_eq!(long.size, size(px(TOAST_MAX_WIDTH), px(TOAST_HEIGHT)), "a long title is cut at the widest");
+        assert_eq!(body.size.height, px(TOAST_HEIGHT_WITH_BODY));
+        assert_eq!(tall.size.height, px(90.0), "an explicit height wins");
+        // Stacked upward in the order opened, all on the same right edge.
+        let stack = [short, medium, long, body, tall];
+        for pair in stack.windows(2) {
+            assert_eq!(pair[1].bottom(), pair[0].top() - px(8.0), "{stack:?}");
+            assert_eq!(pair[1].right(), pair[0].right());
+        }
+        // The mod fills its pill inside the border, the text centred top to bottom.
+        for (id, pill) in ["short", "medium", "long", "body", "tall"].iter().zip(stack) {
+            let content = cx.debug_bounds(format!("toast-{id}").leak()).unwrap_or_else(|| panic!("no toast-{id}"));
+            let text = cx.debug_bounds(format!("text-{id}").leak()).unwrap_or_else(|| panic!("no text-{id}"));
+            assert_eq!(content, pill.inset(px(1.0)), "{id}: the content fills the pill inside its border");
+            assert!((text.center().y - pill.center().y).abs() < px(0.5), "{id}: text centred: text {text:?}, pill {pill:?}");
         }
     }
 
