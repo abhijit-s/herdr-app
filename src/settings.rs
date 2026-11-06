@@ -931,6 +931,9 @@ pub struct Person {
     /// Terminal cell width: the font's own advance, or rounded down to whole device pixels.
     #[serde(skip_serializing_if = "CellWidth::is_font")]
     pub cell_width: CellWidth,
+    /// How the grid snaps to device pixels: to the nearest, or outward.
+    #[serde(skip_serializing_if = "CellRounding::is_outward")]
+    pub cell_rounding: CellRounding,
     /// macOS Option sends Alt shortcuts, or follows the keyboard layout.
     #[serde(skip_serializing_if = "OptionAsAlt::is_auto")]
     pub option_as_alt: OptionAsAlt,
@@ -1037,6 +1040,34 @@ pub enum CellWidth {
 impl CellWidth {
     fn is_font(&self) -> bool {
         *self == CellWidth::Font
+    }
+}
+
+/// How the terminal grid snaps to whole device pixels: the row height always,
+/// the cell width when `cell_width` is "pixel". `Nearest` keeps the grid
+/// within half a pixel of the font's advance and height (× line_height);
+/// `Outward` rounds the width down and the row up, up to a pixel off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CellRounding {
+    #[default]
+    Outward,
+    Nearest,
+}
+
+impl CellRounding {
+    fn is_outward(&self) -> bool {
+        *self == CellRounding::Outward
+    }
+
+    /// `v` device px as whole ones, at least one; `outward` is this
+    /// dimension's outward direction (floor for the width, ceil for the row).
+    pub fn whole(self, v: f32, outward: fn(f32) -> f32) -> f32 {
+        match self {
+            CellRounding::Nearest => v.round(),
+            CellRounding::Outward => outward(v),
+        }
+        .max(1.0)
     }
 }
 
@@ -1306,6 +1337,7 @@ impl Default for Person {
             minimum_contrast: 1.0,
             letter_spacing: None,
             cell_width: CellWidth::Font,
+            cell_rounding: CellRounding::Outward,
             option_as_alt: OptionAsAlt::Auto,
             appearance: Appearance::System,
             theme: None,
@@ -1394,6 +1426,7 @@ pub struct Settings {
     pub minimum_contrast: f32,
     pub letter_spacing: f32,
     pub cell_width: CellWidth,
+    pub cell_rounding: CellRounding,
     pub option_as_alt: OptionAsAlt,
     pub sounds: Sounds,
     pub system_notifications: SystemNotifications,
@@ -1466,6 +1499,7 @@ impl Default for Settings {
             minimum_contrast: 1.0,
             letter_spacing: 0.0,
             cell_width: CellWidth::Font,
+            cell_rounding: CellRounding::Outward,
             option_as_alt: OptionAsAlt::Auto,
             sounds: Sounds::default(),
             system_notifications: SystemNotifications::Background,
@@ -1538,6 +1572,7 @@ impl Settings {
             minimum_contrast: person.minimum_contrast,
             letter_spacing: look.letter_spacing.or(person.letter_spacing).unwrap_or(d.letter_spacing),
             cell_width: person.cell_width,
+            cell_rounding: person.cell_rounding,
             option_as_alt: person.option_as_alt,
         }
     }
@@ -2310,6 +2345,17 @@ mod tests {
     fn tenth_steps_leave_the_text_size_unrounded() {
         let s = stepped(10.0, 1.1, ZoomStep::Tenth);
         assert_eq!(s.terminal_font_size().to_bits(), (10.0f32 * 1.1).to_bits());
+    }
+
+    #[test]
+    fn cell_rounding_defaults_to_outward() {
+        let default = Person::default();
+        assert_eq!(default.cell_rounding, CellRounding::Outward);
+        assert!(serde_json::to_value(&default).unwrap().get("cell_rounding").is_none());
+        let person: Person = serde_json::from_value(serde_json::json!({"cell_rounding": "nearest"})).unwrap();
+        assert_eq!(Settings::compose(&person, &crate::layout::Look::default(), true).cell_rounding, CellRounding::Nearest);
+        assert_eq!(serde_json::to_value(&person).unwrap()["cell_rounding"], "nearest");
+        assert!(serde_json::from_value::<Person>(serde_json::json!({"cell_rounding": "up"})).is_err());
     }
 
     #[test]

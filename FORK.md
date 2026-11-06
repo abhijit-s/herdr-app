@@ -77,11 +77,24 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 `feat/terminal-letter-spacing` (issue #171, PR #336): `letter_spacing`, px at zoom 1 added to the cell width (-2 to 10, default 0), set in settings.json or a layout's look. The cell stays within half to one and a half of the font's advance, because gpui-pre's force-width pass treats a glyph less than half a cell past the previous letter as a combining mark. Needs a `HERDR:` change in `vendor/gpui-pre/src/text_system/line_layout.rs` (`apply_force_width_to_layout`): base glyphs always sit on their cells, where a 1px tolerance made text creep then jump whenever the cell width differs from the font's advance. gpui-pre's own tests don't build in this checkout, so the placement rule was checked with a standalone copy of the function.
 
-`feat/cell-width-pixel` (on top of `feat/terminal-letter-spacing`, fork only for now): `cell_width` (`"font"`, default, or `"pixel"`: the spaced width rounded down to whole device pixels, as Ghostty does). `feat/letter-spacing` is the retired first version of both.
+`feat/cell-width-pixel` (on top of `feat/terminal-letter-spacing`, fork only for now): `cell_width` (`"font"`, default, or `"pixel"`: the spaced width on whole device pixels, rounded as `cell_rounding` says; see Cell rounding). `feat/letter-spacing` is the retired first version of both.
 
 - Settings window: a "Letter spacing" stepper (0.5px steps) on `feat/terminal-letter-spacing`, and a "Cell width" choice (Font or Whole pixels) on `feat/cell-width-pixel`, which turns the appearance picker into a general `choicePicker`. `feat/cell-width-pixel` merges `feat/terminal-letter-spacing` to pick up its row.
 - Files: `src/settings.rs`, `src/terminal.rs` (`cell_size`), `vendor/gpui-pre/src/text_system/line_layout.rs`, `defaults/AGENTS.md`, `defaults/frame/settings/main.js`
 - Upstream: issue #171, pull request #336 (`feat/terminal-letter-spacing`); `feat/cell-width-pixel` is fork only
+
+### Cell rounding
+
+`feat/cell-round-nearest` (branched from `master`, fork only): `cell_rounding` in settings.json, `"outward"` (default) or `"nearest"`, for how the grid snaps to whole device pixels: the row height (ascent + descent, × `line_height`) always, the cell width when `cell_width` is `"pixel"`. A separate key rather than a third `cell_width` value, because the row snaps in both `cell_width` modes.
+
+- Rule (`CellRounding::whole`, used by `row_height` and `cell_width`): `"nearest"` puts each dimension at the nearest whole device pixel of the font's own metric, at least one. That is the closest a pixel grid can get to the font's designed advance and line height: never more than half a device pixel off, either way. `"outward"` (width down, row up) is up to a whole pixel off, always in the same direction, so zoomed text drifts from the font's spacing (JetBrains Mono 13 at 1x: 7.8 × 16.9 becomes 7 × 18 outward, 8 × 17 nearest). Ghostty sizes cells the same way (`Metrics.zig`, `@round` of the face's width and height), which confirms it rather than being the reason.
+- Default `"outward"`: it keeps every existing grid where it is. `"nearest"` moves the grid by a device pixel at many sizes, so it is opt-in.
+- What `"nearest"` moves, by `cells_follow_each_fonts_metrics_by_the_rounding_rule` (JetBrains Mono, Geist Mono, Menlo, Monaco and Courier New, 9 to 24 pt, 1x and 2x, line height 1): 83 of the 120 font/size/scale cells change by one device pixel in width, height or both. JetBrains Mono at 12 (1x and 2x) and 15 (1x) stay as they were.
+- A row rounded below the font's height: text is centred in its row (gpui-pre's `ShapedLine::paint`, the same centring as Ghostty's baseline), so glyphs that reach the font's ascent or descent overhang equally above and below, at most a quarter of a device pixel each. Rows paint every background before any text, so the overhang is not cut. Box and block sprites, Nerd icons and fallback symbols are sized from the cell itself, so they fit whatever it rounds to.
+- Settings window: a "Cell rounding" choice (Outward / Nearest) under "Cell width".
+- Tests: `terminal::tests::{nearest_rounding_keeps_the_grid_within_half_a_device_pixel, cells_follow_each_fonts_metrics_by_the_rounding_rule, nearest_keeps_twelve_point_and_meets_ghostty_when_zoomed, a_shorter_row_centres_the_ink_rather_than_cutting_one_side, cell_rounding_applies_live, pixel_cell_width_rounds_after_letter_spacing, line_height_stays_within_its_range}`, `settings::tests::cell_rounding_defaults_to_outward`. The font tests use CoreText directly (macOS only); the test window's text system gives every font the same metrics.
+- Files: `src/settings.rs` (`CellRounding`, `Person`, `Settings`), `src/terminal.rs` (`measure_cell`, `row_height`, `cell_width`), `defaults/frame/settings/main.js` (`CELL_ROUNDINGS`), `defaults/AGENTS.md`
+- Upstream: none yet
 
 ### Variable font weights
 

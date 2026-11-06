@@ -897,9 +897,10 @@ What's about the user, never a look:
   Box/block, Powerline and sprite glyph colors are never adjusted.
   Changes apply immediately, including text already on screen.
 - `cell_width`: `"font"` (default) keeps the terminal cell width unrounded;
-  `"pixel"` rounds it down to whole device pixels after `letter_spacing`, as
-  Ghostty does (JetBrains Mono at 12 on a Retina display: 14.4 to 14 device
-  pixels). Changes apply immediately.
+  `"pixel"` puts it on whole device pixels after `letter_spacing`, rounded as
+  `cell_rounding` says (JetBrains Mono at 12 on a Retina display: 14.4 to 14
+  device pixels). Changes apply immediately.
+- `cell_rounding`: how the terminal grid snaps to whole device pixels: the row height (the font's ascent plus descent, times `line_height`) always, and the cell width when `cell_width` is `"pixel"`. `"outward"` (default) rounds the row up and the width down, so either can be up to a device pixel off the font's size. `"nearest"` rounds both to the nearest device pixel, at least one, so the grid is never more than half a pixel off the font's design, as Ghostty sizes its cells. A row rounded below the font's height keeps text centred, so tall glyphs reach past it equally above and below rather than being cut. Changes apply immediately.
 - `letter_spacing`: px (at zoom 1, like `font_size`) added to the terminal
   cell width, from `-2` to `10` (default `0`, the font's own advance).
   Negative values tighten the grid: JetBrains Mono at 12 is 7.2px wide, so

@@ -126,6 +126,11 @@ const CELL_WIDTHS = [
   ["font", "Font"],
   ["pixel", "Whole pixels"],
 ];
+// cell_rounding: how the grid snaps to device pixels (rows always, widths at whole pixels).
+const CELL_ROUNDINGS = [
+  ["outward", "Outward"],
+  ["nearest", "Nearest"],
+];
 // Trial: subpixel smoothing (macOS, 1x displays; grayscale elsewhere).
 const TEXT_RENDERINGS = [
   ["grayscale", "Grayscale"],
@@ -839,7 +844,8 @@ export default class Settings extends View {
           this.stepper(t, "st-letter_spacing", fraction(s.letter_spacing), (_e, cx) => step("letter_spacing", s.letter_spacing, -0.5, -2, 10, cx), (_e, cx) => step("letter_spacing", s.letter_spacing, 0.5, -2, 10, cx)),
         ),
       )
-      .child(this.row(t, "Cell width", "Whole pixels rounds each cell down, so letters sit evenly.", this.choicePicker(t, "st-cw", "cell_width", CELL_WIDTHS)))
+      .child(this.row(t, "Cell width", "Whole pixels puts each cell on device pixels, so letters sit evenly.", this.choicePicker(t, "st-cw", "cell_width", CELL_WIDTHS)))
+      .child(this.row(t, "Cell rounding", "Nearest keeps rows (and whole-pixel cells) within half a pixel of the font's size; Outward rounds rows up and cells down.", this.choicePicker(t, "st-cr", "cell_rounding", CELL_ROUNDINGS)))
       .child(
         this.row(
           t,

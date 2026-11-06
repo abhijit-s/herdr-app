@@ -1508,33 +1508,40 @@ pub fn cell_size(window: &Window) -> Size<Pixels> {
 }
 
 fn cell_size_at(window: &Window, s: &crate::settings::Settings) -> Size<Pixels> {
-    let ts = window.text_system();
-    let f = cell_font(false, false);
-    let id = ts.resolve_font(&f);
+    measure_cell(window.text_system(), &cell_font(false, false), s, window.scale_factor())
+}
+
+/// The cell for `f` at these settings on a screen at `scale`: the font's
+/// advance and height (ascent + descent), sized by the settings.
+fn measure_cell(ts: &gpui::WindowTextSystem, f: &Font, s: &crate::settings::Settings, scale: f32) -> Size<Pixels> {
+    let id = ts.resolve_font(f);
     let fs = px(s.terminal_font_size());
     let advance = ts.advance(id, fs, 'M').map(|s| s.width).unwrap_or(fs * 0.6);
     let h = ts.ascent(id, fs) + ts.descent(id, fs).abs();
-    let scale = window.scale_factor();
     // Glyphs sit exactly on their cells (gpui-pre `apply_force_width_to_layout`),
     // so any width works; boxes snap their edges (`snap_box`).
-    let w = cell_width(advance, px(s.letter_spacing * s.zoom), s.cell_width, scale);
-    size(w, row_height(h, s.line_height, scale))
+    let w = cell_width(advance, px(s.letter_spacing * s.zoom), s.cell_width, s.cell_rounding, scale);
+    size(w, row_height(h, s.line_height, s.cell_rounding, scale))
 }
 
 /// The font's height times line_height, kept within the 0.8 to 2 settings.json
-/// allows (a 0 would make empty rows and endless grids), rounded up to whole
-/// device pixels.
-fn row_height(font_height: Pixels, line_height: f32, scale: f32) -> Pixels {
-    px((f32::from(font_height) * line_height.clamp(0.8, 2.0) * scale).ceil() / scale)
+/// allows (a 0 would make empty rows and endless grids), in whole device
+/// pixels (`cell_rounding`; outward is up). Text is centred in the row
+/// (gpui-pre's `ShapedLine::paint`), so a row rounded below the font's height
+/// lets ink reach past it by the same amount top and bottom; rows paint their
+/// backgrounds before any text, so that ink is not cut.
+fn row_height(font_height: Pixels, line_height: f32, rounding: crate::settings::CellRounding, scale: f32) -> Pixels {
+    px(rounding.whole(f32::from(font_height) * line_height.clamp(0.8, 2.0) * scale, f32::ceil) / scale)
 }
 
-/// The font's advance plus letter_spacing, then, for `"pixel"`, rounded down
-/// to whole device pixels: spacing first, so the grid stays whole.
-fn cell_width(advance: Pixels, spacing: Pixels, choice: crate::settings::CellWidth, scale: f32) -> Pixels {
+/// The font's advance plus letter_spacing, then, for `"pixel"`, in whole
+/// device pixels (`cell_rounding`; outward is down): spacing first, so the
+/// grid stays whole.
+fn cell_width(advance: Pixels, spacing: Pixels, choice: crate::settings::CellWidth, rounding: crate::settings::CellRounding, scale: f32) -> Pixels {
     let w = spaced_width(advance, spacing);
     match choice {
         crate::settings::CellWidth::Font => w,
-        crate::settings::CellWidth::Pixel => whole_pixels(w, scale),
+        crate::settings::CellWidth::Pixel => px(rounding.whole(f32::from(w) * scale, f32::floor) / scale),
     }
 }
 
@@ -1544,11 +1551,6 @@ fn cell_width(advance: Pixels, spacing: Pixels, choice: crate::settings::CellWid
 /// would draw every other letter off the grid.
 fn spaced_width(advance: Pixels, spacing: Pixels) -> Pixels {
     (advance + spacing).max(advance * 0.5).min(advance * 1.5)
-}
-
-/// Rounded down to whole device pixels, as Ghostty does, and at least one.
-fn whole_pixels(width: Pixels, scale: f32) -> Pixels {
-    px((f32::from(width) * scale).floor().max(1.0) / scale)
 }
 
 /// A fallback glyph fitted to its cell: drawn at `size`, with its ink at
@@ -2505,24 +2507,62 @@ mod tests {
 
     #[test]
     fn line_height_stays_within_its_range() {
+        use crate::settings::CellRounding::Outward;
         use gpui::px;
-        assert_eq!(super::row_height(px(10.), 1.15, 2.), px(11.5));
-        assert_eq!(super::row_height(px(10.), 0., 1.), px(8.));
-        assert_eq!(super::row_height(px(10.), -1., 1.), px(8.));
-        assert_eq!(super::row_height(px(10.), 5., 1.), px(20.));
+        assert_eq!(super::row_height(px(10.), 1.15, Outward, 2.), px(11.5));
+        assert_eq!(super::row_height(px(10.), 0., Outward, 1.), px(8.));
+        assert_eq!(super::row_height(px(10.), -1., Outward, 1.), px(8.));
+        assert_eq!(super::row_height(px(10.), 5., Outward, 1.), px(20.));
     }
 
+    /// "outward" keeps the earlier sizes: the width down, at least one.
     #[test]
     fn pixel_cell_width_rounds_after_letter_spacing() {
-        use gpui::px;
-        assert_eq!(super::whole_pixels(px(7.5), 1.), px(7.));
-        assert_eq!(super::whole_pixels(px(7.2), 2.), px(7.));
-        assert_eq!(super::whole_pixels(px(7.75), 2.), px(7.5));
-        assert_eq!(super::whole_pixels(px(0.2), 1.), px(1.));
+        use crate::settings::CellRounding::Outward;
         use crate::settings::CellWidth::{Font, Pixel};
-        assert_eq!(super::cell_width(px(7.5), px(0.25), Pixel, 1.), px(7.));
-        assert_eq!(super::cell_width(px(7.5), px(0.5), Pixel, 1.), px(8.));
-        assert_eq!(super::cell_width(px(7.5), px(0.25), Font, 1.), px(7.75));
+        use gpui::px;
+        let whole = |w: f32, scale: f32| super::cell_width(px(w), px(0.), Pixel, Outward, scale);
+        assert_eq!(whole(7.5, 1.), px(7.));
+        assert_eq!(whole(7.2, 2.), px(7.));
+        assert_eq!(whole(7.75, 2.), px(7.5));
+        assert_eq!(super::cell_width(px(7.5), px(0.25), Pixel, Outward, 1.), px(7.));
+        assert_eq!(super::cell_width(px(7.5), px(0.5), Pixel, Outward, 1.), px(8.));
+        assert_eq!(super::cell_width(px(7.5), px(0.25), Font, Outward, 1.), px(7.75));
+        assert_eq!(super::row_height(px(17.1), 1.0, Outward, 1.), px(18.));
+    }
+
+    /// The rule: a pixel cell is the font's advance (plus letter_spacing) and
+    /// a row the font's height × line_height, each at the nearest whole device
+    /// pixel and at least one, so the grid is never more than half a device
+    /// pixel off the font's design. "outward" can be a whole pixel off.
+    #[test]
+    fn nearest_rounding_keeps_the_grid_within_half_a_device_pixel() {
+        use crate::settings::CellRounding::{Nearest, Outward};
+        use crate::settings::CellWidth::{Font, Pixel};
+        use gpui::px;
+        let mut worst = [0f32; 2];
+        for scale in [1.0, 1.5, 2.0, 3.0] {
+            for tenth in 20..=400 {
+                let design = tenth as f32 / 10.0;
+                for line_height in [0.8, 1.0, 1.15, 1.5] {
+                    for (i, rounding) in [Nearest, Outward].into_iter().enumerate() {
+                        let w = f32::from(super::cell_width(px(design), px(0.), Pixel, rounding, scale)) * scale;
+                        let h = f32::from(super::row_height(px(design), line_height, rounding, scale)) * scale;
+                        for (got, want) in [(w, design * scale), (h, design * line_height * scale)] {
+                            assert_eq!(got, got.round(), "{rounding:?} {design} at {scale}x: whole device px");
+                            if rounding == Nearest {
+                                assert_eq!(got, want.round().max(1.0), "{design} × {line_height} at {scale}x");
+                            }
+                            worst[i] = worst[i].max((got - want).abs());
+                        }
+                    }
+                }
+            }
+            assert_eq!(super::cell_width(px(0.2), px(0.), Pixel, Nearest, scale), px(1. / scale), "at least one");
+            assert_eq!(super::cell_width(px(7.3), px(0.), Font, Nearest, scale), px(7.3), "font widths stay as the font has them");
+        }
+        assert!(worst[0] <= 0.5 + 1e-4, "nearest {}", worst[0]);
+        assert!(worst[1] > 0.9, "outward {}", worst[1]);
     }
 
     #[gpui::test]
@@ -3154,6 +3194,127 @@ mod tests {
         close(fit_ink(ink(0.0, 0.0, 6.0, 30.0), cell), ink(1.5, 0.0, 3.0, 15.0));
     }
 
+    /// Real CoreText, the bundled fonts and the system's (which every Mac has).
+    #[cfg(target_os = "macos")]
+    fn core_text() -> gpui::WindowTextSystem {
+        use super::*;
+        let system = Arc::new(TextSystem::new(Arc::new(gpui_macos::MacTextSystem::new())));
+        system.add_fonts(crate::settings::BUNDLED_FONTS.iter().map(|b| std::borrow::Cow::Borrowed(*b)).collect()).unwrap();
+        WindowTextSystem::new(system)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn cell_settings(font_size: f32, line_height: f32, cell_width: crate::settings::CellWidth, cell_rounding: crate::settings::CellRounding) -> crate::settings::Settings {
+        crate::settings::Settings { font_size, line_height, cell_width, cell_rounding, zoom: 1.0, letter_spacing: 0.0, ..crate::settings::Settings::default() }
+    }
+
+    /// The rule, against each font's own metrics from CoreText: at "nearest"
+    /// a pixel cell is the advance and a row the height (ascent + descent)
+    /// × line_height, each at the nearest whole device pixel; at "outward"
+    /// the width goes down and the row up, as before. Several fonts, sizes
+    /// (whole and not) and screen scales.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cells_follow_each_fonts_metrics_by_the_rounding_rule() {
+        use super::*;
+        use crate::settings::CellRounding::{Nearest, Outward};
+        use crate::settings::CellWidth::{Font as FontWidth, Pixel};
+        let ts = core_text();
+        for family in ["JetBrains Mono", "Geist Mono", "Menlo", "Monaco", "Courier New"] {
+            let f = font(family);
+            let id = ts.resolve_font(&f);
+            for size in [9.0, 10.0, 11.0, 12.0, 12.5, 13.0, 14.0, 15.0, 16.0, 18.0, 20.0, 24.0] {
+                let advance = f32::from(ts.advance(id, px(size), 'M').unwrap().width);
+                let height = f32::from(ts.ascent(id, px(size)) + ts.descent(id, px(size)).abs());
+                for scale in [1.0, 2.0] {
+                    for line_height in [1.0, 1.2] {
+                        let at = |cw, r| measure_cell(&ts, &f, &cell_settings(size, line_height, cw, r), scale);
+                        let device = |c: Size<Pixels>| (f32::from(c.width) * scale, f32::from(c.height) * scale);
+                        let (w, h) = device(at(Pixel, Nearest));
+                        let what = format!("{family} {size} at {scale}x, line_height {line_height}");
+                        assert_eq!(w, (advance * scale).round().max(1.0), "nearest width, {what}");
+                        assert_eq!(h, (height * line_height * scale).round().max(1.0), "nearest row, {what}");
+                        assert!((w - advance * scale).abs() <= 0.5 && (h - height * line_height * scale).abs() <= 0.5 + 1e-4, "{what}");
+                        let (ow, oh) = device(at(Pixel, Outward));
+                        assert_eq!((ow, oh), ((advance * scale).floor().max(1.0), (height * line_height * scale).ceil()), "outward, {what}");
+                        // "font" widths stay the font's; the row rounds the same way.
+                        let font_cell = at(FontWidth, Nearest);
+                        assert_eq!(f32::from(font_cell.width), advance, "font width, {what}");
+                        assert_eq!(device(font_cell).1, h, "font-width row, {what}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The person's configuration (JetBrains Mono 12, pixel widths, line
+    /// height 1) draws the same grid either way, at 1x and 2x; at 13 to 15 pt
+    /// "nearest" gives Ghostty's cells for the same font (Metrics.zig rounds
+    /// the face's width and height to the nearest pixel), a secondary check.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn nearest_keeps_twelve_point_and_meets_ghostty_when_zoomed() {
+        use super::*;
+        use crate::settings::CellRounding::{Nearest, Outward};
+        use crate::settings::CellWidth::Pixel;
+        let ts = core_text();
+        let f = font(crate::settings::DEFAULT_FONT);
+        let device = |size: f32, r, scale: f32| {
+            let c = measure_cell(&ts, &f, &cell_settings(size, 1.0, Pixel, r), scale);
+            ((f32::from(c.width) * scale) as u32, (f32::from(c.height) * scale) as u32)
+        };
+        for scale in [1.0, 2.0] {
+            assert_eq!(device(12.0, Nearest, scale), device(12.0, Outward, scale), "12 pt at {scale}x");
+        }
+        // Ghostty 1.x with JetBrains Mono at 1x (textcard captures, 2026-11-06).
+        for (size, ghostty) in [(12.0, (7, 16)), (13.0, (8, 17)), (14.0, (8, 18)), (15.0, (9, 20))] {
+            assert_eq!(device(size, Nearest, 1.0), ghostty, "{size} pt");
+        }
+    }
+
+    /// Text sits centred in its row, so in a row rounded below the font's
+    /// height, glyphs that reach the font's ascent or descent (accents,
+    /// descenders) overhang by the same amount top and bottom, at most half
+    /// the rounding (a quarter device pixel); the font's line box is centred,
+    /// not cut at the bottom. Nerd icons and symbols fit the cell itself.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_shorter_row_centres_the_ink_rather_than_cutting_one_side() {
+        use super::*;
+        use crate::settings::CellRounding::Nearest;
+        use crate::settings::CellWidth::Pixel;
+        let ts = core_text();
+        let f = font(crate::settings::DEFAULT_FONT);
+        let mut shorter = 0;
+        for size in [9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 18.0, 20.0, 24.0] {
+            for scale in [1.0, 2.0] {
+                let cell = measure_cell(&ts, &f, &cell_settings(size, 1.0, Pixel, Nearest), scale);
+                let run = |text: &str| TextRun { len: text.len(), font: f.clone(), ..Default::default() };
+                let line = ts.shape_line("Ég".into(), px(size), &[run("Ég")], None);
+                let font_height = line.ascent + line.descent;
+                if cell.height >= font_height {
+                    continue;
+                }
+                shorter += 1;
+                let over = f32::from(font_height - cell.height);
+                assert!(over * scale <= 0.5 + 1e-4, "{size} at {scale}x: {over}");
+                // The line box (ascent above the baseline, descent below) about the row.
+                let baseline = f32::from((cell.height - line.ascent - line.descent) / 2. + line.ascent);
+                let top = baseline - f32::from(line.ascent);
+                let bottom = baseline + f32::from(line.descent) - f32::from(cell.height);
+                assert!((top + bottom).abs() < 1e-4 && (-top - over / 2.0).abs() < 1e-4, "{size} at {scale}x: {top} above, {bottom} below");
+                // Ink of the accent and the descender stays within the line box's overhang.
+                for c in ['É', 'g'] {
+                    let text = c.to_string();
+                    let one = ts.shape_line(text.clone().into(), px(size), &[run(&text)], None);
+                    let ink = glyph_ink(&one, c, cell.height, &ts).unwrap();
+                    assert!(f32::from(ink.top()) >= top - 1e-3 && f32::from(ink.bottom()) <= f32::from(cell.height) + bottom + 1e-3, "{c} at {size}, {scale}x: {ink:?}");
+                }
+            }
+        }
+        assert!(shorter > 0, "no size rounds the row down: nothing was checked");
+    }
+
     // CoreText itself (not MacPlatform, which needs the main thread), with
     // the system's own fallback fonts, which every Mac has.
     #[cfg(target_os = "macos")]
@@ -3214,6 +3375,30 @@ mod tests {
     }
 
     /// ui_zoom and ui_text_scale are the panels': a terminal's cells are the same.
+    /// Switching cell_rounding in settings changes the next cell size, as
+    /// the other settings do.
+    #[gpui::test]
+    fn cell_rounding_applies_live(cx: &mut gpui::TestAppContext) {
+        use super::*;
+        use crate::settings::CellRounding::{Nearest, Outward};
+        let original = crate::settings::get();
+        let window = cx.add_window(|_, _| Empty);
+        window.update(cx, |_, window, _| {
+            let mut at = |rounding| {
+                let mut s = (*original).clone();
+                (s.font_size, s.zoom, s.line_height, s.letter_spacing) = (13.0, 1.0, 1.0, 0.0);
+                (s.cell_width, s.cell_rounding) = (crate::settings::CellWidth::Pixel, rounding);
+                crate::settings::set(s.clone());
+                (cell_size(window), measure_cell(window.text_system(), &cell_font(false, false), &s, window.scale_factor()))
+            };
+            let (outward, outward_rule) = at(Outward);
+            let (nearest, nearest_rule) = at(Nearest);
+            assert_eq!((outward, nearest), (outward_rule, nearest_rule));
+            assert_ne!(outward, nearest, "the test text system's 13 pt cell rounds differently each way");
+        }).unwrap();
+        crate::settings::set((*original).clone());
+    }
+
     #[gpui::test]
     fn ui_scales_leave_terminal_cells_alone(cx: &mut gpui::TestAppContext) {
         use super::*;
