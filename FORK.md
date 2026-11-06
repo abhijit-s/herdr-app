@@ -447,7 +447,7 @@ A default mod, `crosstalk`, for [crosstalk](https://github.com/abhijit-s/crossta
 - Message bodies are untrusted: escape sequences, control characters and bidirectional overrides are removed, previews are 200 characters and a full body 64 KiB with a truncation marker, the sender is drawn outside the body in the mod's own colours with "verified" only when the service stamped `from_verified: true`, a reply whose `reply_to` is not the sender says where it goes, and no body is ever typed into a terminal. New `core.request`s toast together at most once per 30 s (ones arriving inside the window toast when it ends), and each request only once. "Open sender's pane" uses only presence's `x-herdr.terminal`.
 - `exec` cannot be cancelled, so `close()` stops re-arming and a watch already waiting ends at its 60 s timeout.
 - It needs crosstalk's service and CLI (milestone M1 phases P3 and P4); until those exist it shows "crosstalk is not available" and retries. Tests run it against a fake `exec`.
-- Files: `defaults/mods/crosstalk/`, `scripts/crosstalk.test.ts`, `justfile` (`test`), `defaults/AGENTS.md`, `src/mods/render_tests.rs` (the render fixture answers `crosstalk` with exit 69)
+- Files: `defaults/mods/crosstalk/` (with its user `README.md`), `scripts/crosstalk.test.ts`, `justfile` (`test`), `defaults/AGENTS.md`, `src/mods/render_tests.rs` (the render fixture answers `crosstalk` with exit 69)
 - Upstream: no. It is a client of crosstalk.
 
 ### Rejected text experiments

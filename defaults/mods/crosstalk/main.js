@@ -64,14 +64,18 @@ function missingMethods(discovered) {
 
 // Untrusted text for display: no escape sequences, control characters (other
 // than newline and tab), bidirectional overrides, line or paragraph
-// separators, zero-width, filler or tag characters, or variation
-// selectors; capped with a marker.
+// separators, zero-width spaces, fillers, blanks, or stray tag characters
+// and variation selectors; joiners and emoji presentation stay, so emoji
+// sequences and scripts that need them read as written; capped with a marker.
 function clean(text, max) {
   let s = String(text ?? "")
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, "")
     .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "")
-    .replace(/[\u00ad\u061c\u115f\u1160\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}]/gu, "");
+    // Tag characters survive only inside a subdivision flag (🏴 + tags + cancel tag).
+    .replace(/(\u{1f3f4}[\u{e0061}-\u{e007a}]{2,7}\u{e007f})|[\u{e0000}-\u{e007f}]/gu, (_m, flag) => flag ?? "")
+    // ZWNJ, ZWJ and VS15/VS16 (U+200C, U+200D, U+FE0E, U+FE0F) stay: scripts and emoji need them.
+    .replace(/[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u200b\u200e\u200f\u2028-\u202e\u2060-\u206f\u2800\u3164\ufe00-\ufe0d\ufeff\uffa0]/gu, "");
   if (s.length > max) s = s.slice(0, max) + " … (truncated)";
   return s;
 }
@@ -185,11 +189,13 @@ export default class Crosstalk extends View {
     if (this.closed) return;
     if (all || what === "ctl.presence") {
       const p = await rpc("presence.list");
+      if (this.closed) return;
       if (!p.error) this.agents = p.result ?? [];
     }
     if (this.closed) return;
     if (all) {
       const t = await rpc("task.list");
+      if (this.closed) return;
       if (!t.error) this.tasks = Array.isArray(t.result) ? t.result : t.result?.tasks ?? [];
     }
     if (!this.closed) cx.notify();
@@ -218,7 +224,7 @@ export default class Crosstalk extends View {
     this.pending.clear();
     if (!requests.length) return;
     this.lastToast = Date.now();
-    notify({ title: requests.length === 1 ? `Request from ${preview(requests[0].envelope.from)}` : `${requests.length} requests`, body: requests.length === 1 ? preview(bodyText(requests[0].envelope)) : "", level: "info", action: { name: "mod.open", args: { name: "crosstalk" } } });
+    notify({ title: requests.length === 1 ? `Request from ${preview(requests[0].envelope.from)}${requests[0].envelope.from_verified === true ? "" : " (unverified)"}` : `${requests.length} requests`, body: requests.length === 1 ? preview(bodyText(requests[0].envelope)) : "", level: "info", action: { name: "mod.open", args: { name: "crosstalk" } } });
   }
 
   act(method, params, cx, after) {
