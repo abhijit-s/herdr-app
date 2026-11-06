@@ -979,3 +979,25 @@ fn status_bar_shows_the_real_palette_key(cx: &mut TestAppContext) {
     assert!(tree.contains("commands"), "unbound hint still offers commands: {tree}");
     assert!(!tree.contains("Shift P"), "unbound hint must not invent a key: {tree}");
 }
+
+/// The pane headers put the automatic name after the person's and before the
+/// program's (which only shows at a bare shell when there's none).
+#[gpui::test]
+fn pane_headers_show_the_automatic_name_after_the_persons(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let shell = json!({"key":"shell", "name":"zsh", "icon":null, "tint":true, "tile":null, "color":null, "shell":true, "agent":false});
+    for entry in ["mods/pane", "mods/terminals-pane"] {
+        let header = |name: Value, auto_name: Value, cx: &mut TestAppContext| {
+            let mut values = fixture(true, props(), updates("current", "current"));
+            values.insert("panes".into(), json!([{"pane":"p1","terminal":"t1","tab":"tab1","title":"","name":name,"auto_name":auto_name,"cwd":"/fixture/project","branch":null,"status":null,"app":null,"program":shell,"focused":true,"zoomed":false}]));
+            describe_with_values(cx, &staged, entry, values, None).unwrap()
+        };
+        let tree = header(Value::Null, json!("hazy-inlet"), cx);
+        assert!(tree.contains("\"hazy-inlet\""), "{entry}: {tree}");
+        let tree = header(json!("build"), json!("hazy-inlet"), cx);
+        assert!(tree.contains("\"build\"") && !tree.contains("hazy-inlet"), "{entry}: the person's name first: {tree}");
+        let tree = header(Value::Null, Value::Null, cx);
+        assert!(!tree.contains("hazy-inlet"), "{entry}: {tree}");
+    }
+}

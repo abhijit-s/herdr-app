@@ -194,7 +194,7 @@ export function agents(): AgentInfo[];
 export interface PaneInfo {
   pane: string;
   /** null for a mod pane (`pane.split {mod}`): then `mod` names it, and only
-   *  pane, mod, tab, title, name, focused and zoomed are set. */
+   *  pane, mod, tab, title, name, auto_name (null), focused and zoomed are set. */
   terminal: string | null;
   mod?: string;
   tab: string;
@@ -202,6 +202,12 @@ export interface PaneInfo {
   title: string;
   /** The name given with pane.rename; null: none, show the program's. */
   name: string | null;
+  /** With `pane_auto_names` on: two words from the pane's id ("hazy-inlet"),
+   *  the same every time, set only while nobody named the pane, no agent or
+   *  command runs in it and its title is empty, a shell's name or a folder.
+   *  Show it in place of the shell's name: `p.name || p.auto_name || ...`.
+   *  Display only; null otherwise, and always for a mod pane. */
+  auto_name: string | null;
   /** Its live folder, and the git branch there. */
   cwd: string | null;
   branch: string | null;

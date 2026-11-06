@@ -652,6 +652,11 @@ pub fn publish_agents(v: Value) -> bool {
 pub fn publish_panes(v: Value) -> bool {
     publish("panes", |s| (std::mem::replace(&mut s.panes, v.clone()), v))
 }
+/// What `panes()` reads, for tests of what the window publishes.
+#[cfg(test)]
+pub fn published_panes() -> Value {
+    SNAPSHOT.with(|s| s.borrow().panes.clone())
+}
 pub fn publish_terminals(v: Value) -> bool {
     publish("terminals", |s| (std::mem::replace(&mut s.terminals, v.clone()), v))
 }

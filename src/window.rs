@@ -550,6 +550,8 @@ pub struct AppWindow {
     resume_offer: Option<Instant>,
     /// Live folders by address (from the shell process).
     cwds: HashMap<String, String>,
+    /// The automatic names panes show (`pane_auto_names`), by pane, as last published.
+    auto_names: HashMap<String, String>,
     /// When each terminal's repo and branch were last read, and what it was doing.
     /// Whether each terminal was busy at the last look at its folder.
     folders_busy: HashMap<String, bool>,
@@ -669,6 +671,7 @@ impl AppWindow {
             resume: crate::resume::Tracker::load(&resume_path()),
             resume_offer: Some(Instant::now()),
             cwds: HashMap::new(),
+            auto_names: HashMap::new(),
             folders_busy: HashMap::new(),
             born: RefCell::new(HashMap::new()),
             waits: HashMap::new(),
@@ -1055,8 +1058,12 @@ impl AppWindow {
         if !problems.is_empty() {
             self.report_layout(&problems.join("; "));
         }
+        let auto_names = s.pane_auto_names != settings::get().pane_auto_names;
         if settings::set(s) {
             self.theme_changed(window, cx);
+        }
+        if auto_names {
+            self.publish(cx);
         }
     }
 
@@ -1939,14 +1946,17 @@ impl AppWindow {
         let focused_pane = if block.is_some() { None } else { m.focused_pane() };
         let mut agents = Vec::new();
         let mut panes = Vec::new();
+        let auto_names_on = settings::get().pane_auto_names;
+        let mut auto_names = HashMap::new();
         for pr in &m.spaces {
             for (ci, ctx) in pr.tabs.iter().enumerate() {
+                let names = if auto_names_on { crate::pane_names::for_tab(ctx.root.panes().iter().map(|p| p.id.as_str())) } else { HashMap::new() };
                 for p in ctx.root.panes() {
                     let focused = m.active.as_deref() == Some(pr.id.as_str()) && focused_pane.as_deref() == Some(p.id.as_str());
                     let zoomed = ctx.zoomed.as_deref() == Some(p.id.as_str());
                     // A mod pane: what it shows, no terminal.
                     if let Some(Content::Mod { name, .. }) = p.content() {
-                        panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "tab": ctx.id, "title": name, "name": p.title, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
+                        panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "tab": ctx.id, "title": name, "name": p.title, "auto_name": null, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
                         continue;
                     }
                     let Some(addr) = p.terminal() else { continue };
@@ -1954,10 +1964,18 @@ impl AppWindow {
                     let title = self.terms.get(&p.id).map(|t| t.view.read(cx).title.clone()).or_else(|| {
                         self.live.get(addr).and_then(|r| r.get("title")).and_then(Value::as_str).map(str::to_owned)
                     });
+                    let program = self.program(addr);
+                    let cwd = self.cwds.get(addr);
+                    let auto_name = names
+                        .get(&p.id)
+                        .filter(|_| crate::pane_names::shown(p.title.is_some(), &program, title.as_deref().unwrap_or_default(), addr, cwd.map(String::as_str), &home));
+                    if let Some(n) = auto_name {
+                        auto_names.insert(p.id.clone(), n.clone());
+                    }
                     panes.push(json!({
-                        "pane": p.id, "terminal": addr, "tab": ctx.id, "title": title.clone().unwrap_or_default(), "name": p.title,
-                        "cwd": self.cwds.get(addr), "branch": m.folder_info.get(addr).and_then(|f| f.branch.clone()),
-                        "status": m.status(addr), "app": a.and_then(|a| a.app.clone()), "program": self.program(addr),
+                        "pane": p.id, "terminal": addr, "tab": ctx.id, "title": title.clone().unwrap_or_default(), "name": p.title, "auto_name": auto_name,
+                        "cwd": cwd, "branch": m.folder_info.get(addr).and_then(|f| f.branch.clone()),
+                        "status": m.status(addr), "app": a.and_then(|a| a.app.clone()), "program": program,
                         "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id),
                     }));
                     let Some(status) = m.status(addr) else { continue };
@@ -1984,6 +2002,7 @@ impl AppWindow {
             Some(json!({ "space": p.id, "tab": ctx.id, "terminal": m.address_of(&pane), "shown": self.swapped.get(&pane),
                 "pane": pane, "agent": self.shown_agent(), "cwd": cwd }))
         });
+        self.auto_names = auto_names;
         let machines = self.documents.iter().map(|(name, slot)| json!({
             "name": (!name.is_empty()).then_some(name), "layout": slot.layout(),
         })).collect();
@@ -3331,7 +3350,8 @@ impl AppWindow {
     }
 
     /// Asks the person for a new name (space.rename, tab.rename, pane.rename), then runs it with it.
-    /// The prompt starts with the name someone gave, empty for an automatic one.
+    /// The prompt starts with the name someone gave, empty for an automatic one,
+    /// except a pane's `pane_auto_names` name, which Enter keeps as its own.
     fn ask_name(&mut self, name: &str, mut args: Value, window: &mut Window, cx: &mut Context<Self>) {
         if !args.is_object() {
             args = json!({});
@@ -3345,9 +3365,12 @@ impl AppWindow {
             }
             "pane.rename" => {
                 let pane = Self::owned(&args, "pane").or_else(|| self.model.focused_pane());
-                let current = pane.as_deref().and_then(|p| self.model.pane_name(p)).map(str::to_owned);
+                let given = pane.as_deref().and_then(|p| self.model.pane_name(p));
+                let auto = pane.as_deref().and_then(|p| self.auto_names.get(p));
+                let hint = if given.is_none() && auto.is_some() { "empty: its automatic name" } else { "empty: its program's name" };
+                let current = given.or(auto.map(String::as_str)).map(str::to_owned);
                 args["pane"] = json!(pane);
-                ("rename pane", "empty: its program's name", current)
+                ("rename pane", hint, current)
             }
             _ => {
                 let id = Self::owned(&args, "id").or_else(|| self.model.active_tab().map(|c| c.id.clone()));
@@ -7119,6 +7142,64 @@ export default class Recent extends View {
         assert!(!pane_focused(cx), "hidden, the pane can't hold the keyboard");
         select("main", cx);
         assert!(pane_focused(cx));
+    }
+
+    #[test]
+    fn unnamed_panes_at_a_shell_show_an_automatic_name() {
+        in_own_process("pane_auto_names");
+    }
+
+    /// `pane_auto_names` off: no automatic name anywhere. On: a bare shell's
+    /// pane gets its stable name in panes() and as the rename prompt's start;
+    /// a running command, a mod pane and a renamed pane don't.
+    #[gpui::test]
+    fn pane_auto_names(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("pane_auto_names") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({
+            "id": "root", "type": "block", "content": { "tab": "active" }
+        }));
+        let auto_name = |pane: &str| crate::mods::published_panes().as_array().unwrap().iter().find(|p| p["pane"] == pane).map(|p| p["auto_name"].clone());
+        let prompt = |this: &mut super::AppWindow, pane: &str, window: &mut gpui::Window, cx: &mut gpui::Context<super::AppWindow>| {
+            this.run("pane.rename", json!({ "pane": pane }), window, cx);
+            let value = this.copies["overlay:rename"].inst.props["value"].clone();
+            this.run("pane.rename", json!({ "pane": pane }), window, cx);
+            value
+        };
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model.add_space("sp1", "", "/tmp", crate::model::Tab::new("tb1", "", "p1", "t1"));
+            this.model.add_tab("sp1", crate::model::Tab::new("tb2", "", "p2", "t2"));
+            this.live.insert("t1".into(), json!({ "address": "t1", "title": "~/src", "foreground": { "argv": ["-zsh"] }, "labels": {} }));
+            this.live.insert("t2".into(), json!({ "address": "t2", "title": "~/src", "foreground": { "argv": ["cargo", "build"] }, "labels": {} }));
+            this.sync(window, cx);
+            this.publish(cx);
+            assert_eq!(auto_name("p1"), Some(json!(null)), "off by default");
+            assert_eq!(prompt(this, "p1", window, cx), json!(""));
+
+            this.person.pane_auto_names = true;
+            this.apply_look(window, cx);
+            let expected = crate::pane_names::for_tab(["p1"])["p1"].clone();
+            assert_eq!(auto_name("p1"), Some(json!(expected)), "turning it on publishes it");
+            assert_eq!(auto_name("p2"), Some(json!(null)), "a running command names the pane");
+            assert_eq!(prompt(this, "p1", window, cx), json!(expected), "Enter keeps the automatic name");
+
+            // The window's own rename waits on the core's layout, which this one never has.
+            assert!(this.model.rename_pane("p1", "build"));
+            this.publish(cx);
+            assert_eq!(auto_name("p1"), Some(json!(null)), "the person's name wins");
+            assert_eq!(prompt(this, "p1", window, cx), json!("build"));
+            assert!(this.model.rename_pane("p1", ""));
+            this.publish(cx);
+            assert_eq!(auto_name("p1"), Some(json!(expected)), "the same name again");
+
+            this.person.pane_auto_names = false;
+            this.apply_look(window, cx);
+            assert_eq!(auto_name("p1"), Some(json!(null)), "turning it off takes it away");
+            assert_eq!(prompt(this, "p1", window, cx), json!(""));
+            assert_eq!(this.model.pane_name("p1"), None, "never written as the pane's name");
+        }));
     }
 
     #[test]
