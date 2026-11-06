@@ -10,7 +10,7 @@
 //! document with their `machine`; nothing is written to remote cores.
 //!
 //! A place needs a non-empty string `pane` and an integer `at`; entries without
-//! them are kept as they are, after the others, and so are top-level fields
+//! them are kept as they are (the first `MAX`), after the others, and so are top-level fields
 //! besides `v` and `places`. A `v` above `VERSION` is read but never written; a
 //! value that isn't an object with an integer `v` is unreadable and replaced by
 //! the next write.
@@ -24,16 +24,20 @@ pub const MAX: usize = 20;
 pub const SETTLE: Duration = Duration::from_millis(300);
 /// Writes that lose to another writer read, merge and try again this often.
 const ATTEMPTS: usize = 4;
+/// After a failed round the next waits this long, doubling per failure in a row up to `BACKOFF_MAX`.
+const BACKOFF: Duration = Duration::from_secs(1);
+const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Place {
     pub pane: String,
     #[serde(default)]
     pub terminal: Option<String>,
+    /// Always set by this app; another client may leave them null or out.
     #[serde(default)]
-    pub tab: String,
+    pub tab: Option<String>,
     #[serde(default)]
-    pub space: String,
+    pub space: Option<String>,
     #[serde(default)]
     pub machine: Option<String>,
     /// When the person arrived, in ms since the Unix epoch.
@@ -108,7 +112,8 @@ pub struct Stored {
     pub places: Vec<Place>,
     /// Top-level fields besides `v` and `places`, written back as they were.
     pub rest: Map<String, Value>,
-    /// Entries of `places` that aren't a place this app reads, written back after the others.
+    /// Entries of `places` that aren't a place this app reads, written back
+    /// after the others: the first `MAX`, so no client grows the document unbounded.
     pub foreign: Vec<Value>,
     /// Written by a newer app (`v` above `VERSION`): read, never overwritten.
     pub newer: bool,
@@ -185,7 +190,8 @@ fn read(store: &impl Store) -> Result<Stored, String> {
     for entry in entries {
         match serde_json::from_value::<Place>(entry.clone()) {
             Ok(place) if !place.pane.is_empty() => places.push(place),
-            _ => foreign.push(entry),
+            _ if foreign.len() < MAX => foreign.push(entry),
+            _ => {}
         }
     }
     Ok(Stored { version, places, rest, foreign, newer: v > VERSION, unreadable: None })
@@ -224,6 +230,9 @@ pub struct History {
     pub stale: bool,
     pub pending: bool,
     pub error: Option<String>,
+    /// Failed rounds in a row, and when the next may start.
+    failures: u32,
+    retry_at: Option<Instant>,
 }
 
 impl History {
@@ -237,8 +246,14 @@ impl History {
         merge(self.stored.as_ref().map_or(&[][..], |s| &s.places), &self.unsent)
     }
 
+    /// A new place: also worth trying again now after failures.
     pub fn note(&mut self, place: Place) {
         self.unsent = merge(&self.unsent, &[place]);
+        self.retry_now();
+    }
+
+    pub fn has_unsent(&self) -> bool {
+        !self.unsent.is_empty()
     }
 
     /// The document changed to `version` (None: unknown, as after `missed`).
@@ -246,13 +261,20 @@ impl History {
     pub fn changed(&mut self, version: Option<u64>) {
         if version.is_none() || self.stored.as_ref().map(|s| s.version) != version {
             self.stale = true;
+            self.retry_now();
         }
     }
 
+    pub fn retry_now(&mut self) {
+        self.failures = 0;
+        self.retry_at = None;
+    }
+
     /// The next round to run, if one is due: what's known and what to add. A
-    /// change seen while it runs makes the next one read again.
-    pub fn due(&mut self) -> Option<(Option<Stored>, Vec<Place>)> {
-        if self.pending {
+    /// change seen while it runs makes the next one read again. After failures,
+    /// none until the backoff ends.
+    pub fn due(&mut self, now: Instant) -> Option<(Option<Stored>, Vec<Place>)> {
+        if self.pending || (!self.stale && self.unsent.is_empty()) || self.retry_at.is_some_and(|at| now < at) {
             return None;
         }
         let known = self.stored.clone().filter(|_| !self.stale);
@@ -266,10 +288,11 @@ impl History {
     }
 
     /// A round's result. `sent` is what that round added.
-    pub fn finished(&mut self, sent: &[Place], result: Result<Stored, String>) {
+    pub fn finished(&mut self, sent: &[Place], result: Result<Stored, String>, now: Instant) {
         self.pending = false;
         let problem = match result {
             Ok(stored) => {
+                self.retry_now();
                 if !stored.newer {
                     self.unsent.retain(|p| !sent.contains(p));
                 }
@@ -279,6 +302,9 @@ impl History {
             }
             Err(e) => {
                 self.stale = true;
+                self.failures += 1;
+                let wait = BACKOFF.saturating_mul(1 << (self.failures - 1).min(5)).min(BACKOFF_MAX);
+                self.retry_at = Some(now + wait);
                 Some(e)
             }
         };
@@ -293,6 +319,7 @@ impl History {
     pub fn reconnected(&mut self) {
         self.pending = false;
         self.stale = true;
+        self.retry_now();
     }
 }
 
@@ -302,7 +329,7 @@ mod tests {
     use std::sync::Mutex;
 
     fn at(pane: &str, at: u64) -> Place {
-        Place { pane: pane.into(), terminal: Some(format!("t-{pane}")), tab: "tab".into(), space: "s".into(), at, ..Default::default() }
+        Place { pane: pane.into(), terminal: Some(format!("t-{pane}")), tab: Some("tab".into()), space: Some("s".into()), at, ..Default::default() }
     }
 
     fn panes(list: &[Place]) -> Vec<&str> {
@@ -341,9 +368,9 @@ mod tests {
         assert_eq!(settle.observe(Some(at("c", 3)), ms(2100)), None);
         assert_eq!(settle.observe(Some(at("d", 4)), ms(2500)).map(|p| p.pane), Some("c".into()));
         // The same pane in another tab is another place; nothing focused is none.
-        let moved = Place { tab: "other".into(), ..at("d", 5) };
+        let moved = Place { tab: Some("other".into()), ..at("d", 5) };
         assert_eq!(settle.observe(Some(moved), ms(2600)), None);
-        assert_eq!(settle.observe(None, ms(3000)).map(|p| p.tab), Some("other".into()));
+        assert_eq!(settle.observe(None, ms(3000)).and_then(|p| p.tab), Some("other".into()));
         assert_eq!(settle.settled(ms(9000)), None);
     }
 
@@ -361,11 +388,14 @@ mod tests {
         conflicts: Mutex<usize>,
         theirs: Place,
         sets: Mutex<usize>,
+        gets: Mutex<usize>,
+        /// Writes fail outright (a full disk, the size limit).
+        refuse: Mutex<bool>,
     }
 
     impl Fake {
         fn new(value: Value, version: u64, conflicts: usize) -> Self {
-            Fake { doc: Mutex::new((value, version)), conflicts: Mutex::new(conflicts), theirs: at("theirs", 50), sets: Mutex::new(0) }
+            Fake { doc: Mutex::new((value, version)), conflicts: Mutex::new(conflicts), theirs: at("theirs", 50), sets: Mutex::new(0), gets: Mutex::new(0), refuse: Mutex::new(false) }
         }
         fn places(&self) -> Vec<Place> {
             serde_json::from_value(self.doc.lock().unwrap().0["places"].clone()).unwrap()
@@ -374,11 +404,15 @@ mod tests {
 
     impl Store for Fake {
         fn get(&self) -> anyhow::Result<Value> {
+            *self.gets.lock().unwrap() += 1;
             let (value, version) = self.doc.lock().unwrap().clone();
             Ok(json!({ "value": value, "version": version }))
         }
         fn set(&self, value: Value, version: u64) -> anyhow::Result<u64> {
             *self.sets.lock().unwrap() += 1;
+            if *self.refuse.lock().unwrap() {
+                return Err(anyhow::anyhow!("no space left on device"));
+            }
             let mut conflicts = self.conflicts.lock().unwrap();
             let mut doc = self.doc.lock().unwrap();
             if *conflicts > 0 {
@@ -427,37 +461,37 @@ mod tests {
     fn a_window_writes_only_what_changed_and_forgets_what_landed() {
         let core = Fake::new(json!({ "v": 1, "places": [at("old", 1)] }), 3, 0);
         let mut history = History::new();
-        let (known, unsent) = history.due().expect("reads first");
+        let (known, unsent) = history.due(Instant::now()).expect("reads first");
         assert!(known.is_none() && unsent.is_empty());
-        assert!(history.due().is_none(), "one round at a time");
-        history.finished(&unsent, sync(&core, known, &unsent));
+        assert!(history.due(Instant::now()).is_none(), "one round at a time");
+        history.finished(&unsent, sync(&core, known, &unsent), Instant::now());
         assert_eq!(panes(&history.places()), ["old"]);
-        assert!(history.due().is_none(), "nothing to write");
+        assert!(history.due(Instant::now()).is_none(), "nothing to write");
 
         history.note(at("a", 10));
-        let (known, unsent) = history.due().unwrap();
+        let (known, unsent) = history.due(Instant::now()).unwrap();
         // Noted while that round runs: kept for the next one.
         history.note(at("b", 20));
         assert_eq!(panes(&history.places()), ["b", "a", "old"]);
-        history.finished(&unsent, sync(&core, known, &unsent));
-        let (known, unsent) = history.due().unwrap();
+        history.finished(&unsent, sync(&core, known, &unsent), Instant::now());
+        let (known, unsent) = history.due(Instant::now()).unwrap();
         assert_eq!(panes(&unsent), ["b"]);
-        history.finished(&unsent, sync(&core, known, &unsent));
-        assert!(history.due().is_none());
+        history.finished(&unsent, sync(&core, known, &unsent), Instant::now());
+        assert!(history.due(Instant::now()).is_none());
         assert_eq!(panes(&core.places()), ["b", "a", "old"]);
 
         // Another client clears it: this window doesn't bring the places back.
         *core.doc.lock().unwrap() = (Value::Null, 9);
         history.stale = true;
-        let (known, unsent) = history.due().unwrap();
-        history.finished(&unsent, sync(&core, known, &unsent));
+        let (known, unsent) = history.due(Instant::now()).unwrap();
+        history.finished(&unsent, sync(&core, known, &unsent), Instant::now());
         assert!(history.places().is_empty());
         assert_eq!(*core.sets.lock().unwrap(), 2);
 
         // A failure reads again next time and keeps what wasn't written.
         history.note(at("c", 30));
-        let (_, unsent) = history.due().unwrap();
-        history.finished(&unsent, Err("offline".into()));
+        let (_, unsent) = history.due(Instant::now()).unwrap();
+        history.finished(&unsent, Err("offline".into()), Instant::now());
         assert!(history.stale);
         assert_eq!(panes(&history.places()), ["c"]);
     }
@@ -486,10 +520,10 @@ mod tests {
         let stored = sync(&core, None, &[at("p24", 124), at("p5", 50)]).unwrap();
         assert_eq!((stored.version, *core.sets.lock().unwrap()), (7, 0));
         let mut history = History::new();
-        let (known, unsent) = history.due().unwrap();
-        history.finished(&unsent, sync(&core, known, &unsent));
+        let (known, unsent) = history.due(Instant::now()).unwrap();
+        history.finished(&unsent, sync(&core, known, &unsent), Instant::now());
         history.note(at("p24", 124));
-        assert!(history.due().is_none(), "no focus change, no write");
+        assert!(history.due(Instant::now()).is_none(), "no focus change, no write");
         // A visit it lacks: written, tidied.
         let stored = sync(&core, None, &[at("new", 500)]).unwrap();
         assert_eq!(*core.sets.lock().unwrap(), 1);
@@ -502,13 +536,13 @@ mod tests {
         for broken in [json!("garbage"), json!({ "places": [] }), json!({ "v": "1", "places": [] }), json!({ "v": 1, "places": {} })] {
             let core = Fake::new(broken.clone(), 2, 0);
             let mut history = History::new();
-            let (known, unsent) = history.due().unwrap();
-            history.finished(&unsent, sync(&core, known, &unsent));
+            let (known, unsent) = history.due(Instant::now()).unwrap();
+            history.finished(&unsent, sync(&core, known, &unsent), Instant::now());
             assert!(history.error.as_deref().is_some_and(|e| e.contains("next write replaces it")), "{broken}");
             assert_eq!(*core.sets.lock().unwrap(), 0, "nothing to add: left alone");
             history.note(at("mine", 10));
-            let (known, unsent) = history.due().unwrap();
-            history.finished(&unsent, sync(&core, known, &unsent));
+            let (known, unsent) = history.due(Instant::now()).unwrap();
+            history.finished(&unsent, sync(&core, known, &unsent), Instant::now());
             assert_eq!(core.doc.lock().unwrap().0, json!({ "v": 1, "places": [at("mine", 10)] }), "{broken}");
             assert!(history.error.is_none());
         }
@@ -519,18 +553,86 @@ mod tests {
         let core = Fake::new(Value::Null, 0, 0);
         let mut history = History::new();
         history.note(at("a", 10));
-        let (known, unsent) = history.due().unwrap();
+        let (known, unsent) = history.due(Instant::now()).unwrap();
         assert!(!history.stale, "the round reads");
         history.changed(Some(4));
-        history.finished(&unsent, sync(&core, known, &unsent));
+        history.finished(&unsent, sync(&core, known, &unsent), Instant::now());
         assert!(history.stale, "the change during the round is still to read");
-        let (known, _) = history.due().unwrap();
+        let (known, _) = history.due(Instant::now()).unwrap();
         assert!(known.is_none());
-        history.finished(&[], sync(&core, known, &[]));
+        history.finished(&[], sync(&core, known, &[]), Instant::now());
         let own = core.doc.lock().unwrap().1;
         history.changed(Some(own));
         assert!(!history.stale, "this window's own write");
         history.changed(None);
         assert!(history.stale, "missed: unknown");
+    }
+
+    #[test]
+    fn a_failing_core_is_tried_less_often_until_something_changes() {
+        let core = Fake::new(Value::Null, 0, 0);
+        *core.refuse.lock().unwrap() = true;
+        let t0 = Instant::now();
+        let secs = |n: u64| t0 + Duration::from_secs(n);
+        let mut history = History::new();
+        history.note(at("a", 10));
+        let round = |history: &mut History, now: Instant| match history.due(now) {
+            Some((known, unsent)) => {
+                history.finished(&unsent, sync(&core, known, &unsent), now);
+                true
+            }
+            None => false,
+        };
+        // Fails at 0; waits 1 s, then 2, 4, 8, 16, then 30 at most.
+        let mut tried = vec![];
+        for tick in 0..120 {
+            if round(&mut history, secs(tick)) { tried.push(tick); }
+        }
+        assert_eq!(tried, [0, 1, 3, 7, 15, 31, 61, 91]);
+        assert_eq!(*core.sets.lock().unwrap(), 8, "one write a round, not one a tick");
+        assert!(history.error.as_deref().is_some_and(|e| e.contains("no space")));
+        // A new place, a doc event or a reconnect tries again at once.
+        history.note(at("b", 20));
+        assert!(round(&mut history, secs(92)));
+        history.changed(None);
+        assert!(round(&mut history, secs(93)));
+        history.reconnected();
+        assert!(round(&mut history, secs(94)));
+        assert!(!round(&mut history, secs(94)), "and backs off again");
+        // The core writes again: success ends the backoff.
+        *core.refuse.lock().unwrap() = false;
+        assert!(round(&mut history, secs(200)));
+        assert!(history.error.is_none() && !history.has_unsent());
+        assert_eq!(panes(&core.places()), ["b", "a"]);
+        history.note(at("c", 30));
+        assert!(round(&mut history, secs(200)));
+    }
+
+    #[test]
+    fn idle_ticks_ask_the_core_nothing() {
+        let core = Fake::new(json!({ "v": 1, "places": [at("a", 1)] }), 1, 0);
+        let mut history = History::new();
+        let (known, unsent) = history.due(Instant::now()).unwrap();
+        history.finished(&unsent, sync(&core, known, &unsent), Instant::now());
+        for _ in 0..10 {
+            assert!(history.due(Instant::now()).is_none());
+        }
+        assert_eq!((*core.gets.lock().unwrap(), *core.sets.lock().unwrap()), (1, 0));
+    }
+
+    #[test]
+    fn a_place_needs_only_pane_and_at_and_unreadable_entries_are_bounded() {
+        let mut places = vec![json!({ "pane": "p", "tab": null, "space": null, "terminal": null, "machine": null, "at": 7 }), json!({ "pane": "q", "at": 3 })];
+        places.extend((0..30).map(|i| json!({ "pane": format!("bad{i}") })));
+        let core = Fake::new(json!({ "v": 1, "places": places }), 1, 0);
+        let stored = sync(&core, None, &[]).unwrap();
+        assert_eq!(panes(&stored.places), ["p", "q"], "null or missing tab and space: a normal place");
+        assert_eq!(stored.places[0].tab, None);
+        assert_eq!(stored.foreign.len(), MAX, "the first unreadable entries, no more");
+        assert_eq!(stored.foreign[0]["pane"], "bad0");
+        let stored = sync(&core, Some(stored), &[at("p", 9)]).unwrap();
+        assert_eq!(panes(&stored.places), ["p", "q"], "deduplicated with it");
+        let written = core.doc.lock().unwrap().0["places"].as_array().unwrap().len();
+        assert_eq!(written, 2 + MAX);
     }
 }

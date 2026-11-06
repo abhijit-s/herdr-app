@@ -1987,21 +1987,29 @@ impl AppWindow {
         let tab = space.active_tab()?;
         let pane = tab.focused_pane()?;
         Some(crate::focus_history::Place {
-            terminal: m.address_of(&pane), pane, tab: tab.id.clone(), space: space.id.clone(),
+            terminal: m.address_of(&pane), pane, tab: Some(tab.id.clone()), space: Some(space.id.clone()),
             machine: space.machine.clone(), at: model::now_ms(), ..Default::default()
         })
     }
 
     /// Notes where the person is and whatever place they settled on; true
-    /// when `recentPlaces()` changed.
+    /// when `recentPlaces()` changed. Runs on every publish (a title change
+    /// too), so nothing settling costs no list.
     fn note_focus(&mut self, now: Instant) -> bool {
         let here = self.here();
         let history = &mut self.focus_history;
         let left = history.settle.observe(here, now);
+        let mut noted = false;
         for place in left.into_iter().chain(history.settle.settled(now)) {
             history.note(place);
+            noted = true;
         }
-        mods::publish_places(serde_json::to_value(history.places()).unwrap_or_default())
+        noted && self.publish_places()
+    }
+
+    /// `recentPlaces()` for mods; true when it changed.
+    fn publish_places(&self) -> bool {
+        mods::publish_places(serde_json::to_value(self.focus_history.places()).unwrap_or_default())
     }
 
     /// Writes the places noted since the last round to `herdr.focus` (each
@@ -2016,7 +2024,7 @@ impl AppWindow {
         if self.note_focus(Instant::now()) {
             self.refresh_snapshot_mods(cx);
         }
-        let Some((known, unsent)) = self.focus_history.due() else { return };
+        let Some((known, unsent)) = self.focus_history.due(Instant::now()) else { return };
         let (core, generation) = (self.core.clone(), self.core_generation);
         cx.spawn(async move |this, cx| {
             let sent = unsent.clone();
@@ -2026,8 +2034,8 @@ impl AppWindow {
             }).await;
             let _ = this.update(cx, |this, cx| {
                 if generation != this.core_generation { return; }
-                this.focus_history.finished(&sent, result);
-                if this.note_focus(Instant::now()) {
+                this.focus_history.finished(&sent, result, Instant::now());
+                if this.publish_places() {
                     this.refresh_snapshot_mods(cx);
                 }
             });
@@ -2164,11 +2172,15 @@ impl AppWindow {
         }
         // The place the person was on when they quit; a round still running merges with it.
         self.note_focus(Instant::now());
+        // Nothing unsent: no read just to quit. One try, whatever the backoff.
         self.focus_history.pending = false;
-        if let Some((known, unsent)) = self.focus_history.due() {
+        self.focus_history.retry_now();
+        if self.focus_history.has_unsent()
+            && let Some((known, unsent)) = self.focus_history.due(Instant::now())
+        {
             let deadline = Instant::now() + Duration::from_secs(1);
             let result = crate::focus_history::sync(&crate::focus_history::OnCore(&self.core, deadline), known, &unsent);
-            self.focus_history.finished(&unsent, result);
+            self.focus_history.finished(&unsent, result, Instant::now());
         }
         self.save_view();
     }

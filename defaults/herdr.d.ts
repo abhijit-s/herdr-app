@@ -244,8 +244,9 @@ export interface Place {
   pane: string;
   /** null for a mod pane. */
   terminal: string | null;
-  tab: string;
-  space: string;
+  /** Herdr sets both; another client may leave them null. */
+  tab: string | null;
+  space: string | null;
   /** The machine the pane is on; null: this computer. */
   machine: string | null;
   /** When the person arrived, in ms since the Unix epoch. */
@@ -255,9 +256,9 @@ export interface Place {
 /** Where the person has been, newest first, one place per pane, at most 20: every
  *  focus move (keys, clicks, commands, agent.focus, tab and space switches) on any
  *  Herdr client of this machine, kept across restarts in the core document
- *  `herdr.focus`. Overlays and popups (this one included) are never places, so
- *  `[0]` is usually where the person is and the first place that isn't
- *  `focused()` is where they were before. A place is a pane: `agent.focus` on a
+ *  `herdr.focus`. Overlays and popups (this one included) are never places. `[0]`
+ *  is the latest arrival on any client, not necessarily this window's focus: the
+ *  first place that isn't `focused()` is where the person was before. A place is a pane: `agent.focus` on a
  *  sub-agent shown only in an agent block (no pane of its own) records none. Panes closed since are not removed:
  *  check them against `panes()`. Older herdr-app builds lack it: feature-detect
  *  with `import * as herdr from "herdr"` and `typeof herdr.recentPlaces === "function"`. Live. */
