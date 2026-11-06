@@ -712,6 +712,36 @@ mod derivation_tests {
     }
 
     #[test]
+    fn only_a_dark_tinted_active_shade_follows_focus() {
+        let dark = preset("graphite").unwrap();
+        let light = preset("paper").unwrap();
+        let with = |shade, panels| Settings { sidebar_shade: shade, panel_colors: panels, ..Settings::default() };
+        let none = BTreeMap::new();
+        let chrome: BTreeMap<String, String> = [("chrome".to_owned(), "#202020".to_owned())].into();
+        assert!(shade_follows_focus(&with(SidebarShade::Active, PanelColors::Tinted), dark, &none));
+        assert!(!shade_follows_focus(&with(SidebarShade::Flat, PanelColors::Tinted), dark, &none), "flat");
+        assert!(!shade_follows_focus(&with(SidebarShade::Always, PanelColors::Tinted), dark, &none), "always: shaded either way");
+        assert!(!shade_follows_focus(&with(SidebarShade::Active, PanelColors::Classic), dark, &none), "classic");
+        assert!(!shade_follows_focus(&with(SidebarShade::Active, PanelColors::Tinted), light, &none), "light");
+        assert!(!shade_follows_focus(&with(SidebarShade::Active, PanelColors::Tinted), dark, &chrome), "the theme's own chrome");
+        let mine = Settings { colors: chrome.clone(), ..with(SidebarShade::Active, PanelColors::Tinted) };
+        assert!(!shade_follows_focus(&mine, dark, &none), "settings' or a look's own chrome");
+        let look = Settings { look_paints_panels: true, ..with(SidebarShade::Active, PanelColors::Tinted) };
+        assert!(!shade_follows_focus(&look, dark, &none), "a look that keeps classic panels");
+        for shaded in [false, true] {
+            for (s, p) in [(with(SidebarShade::Flat, PanelColors::Tinted), dark), (with(SidebarShade::Active, PanelColors::Tinted), light), (mine.clone(), dark)] {
+                let (a, b) = WINDOW_ACTIVE.with(|w| {
+                    w.set(shaded);
+                    let a = resolve_for(&s, p, &none);
+                    w.set(!shaded);
+                    (a, resolve_for(&s, p, &none))
+                });
+                assert_eq!(a, b, "a case that skips focus really doesn't change with it");
+            }
+        }
+    }
+
+    #[test]
     fn mods_read_the_settings_built_at_the_last_set() {
         std::thread::spawn(|| {
             set(Settings { theme: "graphite".into(), zoom: 1.0, ..Settings::default() });
@@ -1604,6 +1634,11 @@ thread_local! {
     /// The theme's palette and own colors as `set` last read them, so a
     /// focus change resolves again without reading the theme file.
     static PALETTE: RefCell<(Palette, BTreeMap<String, String>)> = RefCell::new((GRAPHITE.clone(), BTreeMap::new()));
+    /// How many times `reshade` ran, for tests.
+    #[cfg(test)]
+    static RESHADES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Whether a focus change can change the theme (`shade_follows_focus`).
+    static FOLLOWS_FOCUS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// `settings()` as mods read it, built once per `set`: mods call it from
     /// render, some once per element.
     static FOR_MODS: RefCell<std::sync::Arc<serde_json::Value>> = RefCell::new(std::sync::Arc::new(Settings::default().for_mods()));
@@ -1678,10 +1713,34 @@ fn resolve_for(s: &Settings, p: &Palette, own: &BTreeMap<String, String>) -> The
     resolve(p, &colors, panels_in_use(s.panel_colors, p, own, s.look_paints_panels), s.sidebar_shade.shades(WINDOW_ACTIVE.with(|w| w.get())))
 }
 
+/// Whether focus can change the theme these settings draw: only a dark
+/// tinted theme in `sidebar_shade`'s `active` mode whose chrome isn't its
+/// own (flat and always don't change with focus; classic panels and light
+/// themes have no shade).
+fn shade_follows_focus(s: &Settings, p: &Palette, own: &BTreeMap<String, String>) -> bool {
+    s.sidebar_shade == SidebarShade::Active
+        && panels_in_use(s.panel_colors, p, own, s.look_paints_panels) == PanelColors::Tinted
+        && !is_light(p.background)
+        && !own.contains_key("chrome")
+        && !s.colors.contains_key("chrome")
+}
+
+#[cfg(test)]
+pub fn reshades() -> u32 {
+    RESHADES.get()
+}
+
+/// Whether the window's focus can change the theme now, as of the last `set`.
+pub fn follows_focus() -> bool {
+    FOLLOWS_FOCUS.get()
+}
+
 /// Resolves the theme again for the window's focus (`set_window_active`)
 /// from the palette `set` last read; returns whether that changed it. Only
 /// `sidebar_shade` follows focus, so only `chrome` can change.
 pub fn reshade() -> bool {
+    #[cfg(test)]
+    RESHADES.set(RESHADES.get() + 1);
     CURRENT.with(|c| {
         let theme = PALETTE.with_borrow(|(p, own)| resolve_for(&c.borrow().0, p, own));
         if *c.borrow().1 == theme {
@@ -1707,6 +1766,7 @@ pub fn set(s: Settings) -> bool {
         // have new colors under the same name.
         let (p, own) = palette(&s.theme).unwrap_or_else(|_| (GRAPHITE.clone(), BTreeMap::new()));
         let theme = resolve_for(&s, &p, &own);
+        FOLLOWS_FOCUS.set(shade_follows_focus(&s, &p, &own));
         PALETTE.set((p, own));
         FOR_MODS.set(std::sync::Arc::new(s.for_mods()));
         if *c.borrow().0 == s && *c.borrow().1 == theme {

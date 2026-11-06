@@ -1069,12 +1069,13 @@ impl AppWindow {
         window.refresh();
     }
 
-    /// `sidebar_shade` follows the window's focus. Only `chrome` can change,
+    /// `sidebar_shade` follows the window's focus; when nothing can change
+    /// (`settings::follows_focus`), it does nothing more. Only `chrome` can change,
     /// which neither terminals nor the kit's tokens use: the mods that read
     /// `theme()` redraw, and the window.
     fn shade_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         settings::set_window_active(window.is_window_active());
-        if settings::reshade() {
+        if settings::follows_focus() && settings::reshade() {
             mods::bump_revision("theme");
             self.refresh_snapshot_mods(cx);
             window.refresh();
@@ -7669,9 +7670,13 @@ export default class Probe extends View {
                 this.apply_look(window, cx);
             });
             assert_eq!(&chrome(cx), active, "{mode:?} while active");
+            let before = (crate::mods::revision("theme"), crate::settings::reshades());
             cx.deactivate_window();
             assert_eq!(&chrome(cx), inactive, "{mode:?} while inactive");
             cx.update(|window, _| window.activate_window());
+            chrome(cx);
+            assert_eq!(crate::mods::revision("theme"), before.0, "{mode:?}: focus changes bump nothing");
+            assert_eq!(crate::settings::reshades(), before.1, "{mode:?}: focus changes resolve nothing");
         }
         view.update_in(cx, |this, window, cx| {
             this.person.sidebar_shade = SidebarShade::Active;

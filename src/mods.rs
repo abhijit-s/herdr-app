@@ -614,6 +614,12 @@ fn publish(key: &'static str, set: impl FnOnce(&mut Snapshot) -> (Value, Value))
     changed
 }
 
+/// How many times `key` changed, for tests.
+#[cfg(test)]
+pub fn revision(key: &str) -> u64 {
+    REVISIONS.with_borrow(|r| r.get(key).copied().unwrap_or(0))
+}
+
 /// Something mods read changed: the copies that read it redraw.
 pub fn bump_revision(key: &str) {
     REVISIONS.with_borrow_mut(|r| match r.get_mut(key) {
