@@ -711,6 +711,23 @@ mod derivation_tests {
         }
     }
 
+    #[test]
+    fn mods_read_the_settings_built_at_the_last_set() {
+        std::thread::spawn(|| {
+            set(Settings { theme: "graphite".into(), zoom: 1.0, ..Settings::default() });
+            let first = for_mods();
+            assert!(std::sync::Arc::ptr_eq(&first, &for_mods()), "every read hands out the same value");
+            assert_eq!(*first, get().for_mods());
+            set(Settings { theme: "graphite".into(), zoom: 1.25, ..Settings::default() });
+            let second = for_mods();
+            assert!(!std::sync::Arc::ptr_eq(&first, &second), "a set builds it again");
+            assert_eq!(second["zoom"], 1.25);
+            assert_eq!(*second, get().for_mods());
+        })
+        .join()
+        .unwrap();
+    }
+
     /// Focus changes resolve again from the palette `set` read: only
     /// `chrome` moves, and only when the state does. The window test
     /// `sidebar_shade_focus` corrupts a theme file on disk between the two.
@@ -1587,6 +1604,9 @@ thread_local! {
     /// The theme's palette and own colors as `set` last read them, so a
     /// focus change resolves again without reading the theme file.
     static PALETTE: RefCell<(Palette, BTreeMap<String, String>)> = RefCell::new((GRAPHITE.clone(), BTreeMap::new()));
+    /// `settings()` as mods read it, built once per `set`: mods call it from
+    /// render, some once per element.
+    static FOR_MODS: RefCell<std::sync::Arc<serde_json::Value>> = RefCell::new(std::sync::Arc::new(Settings::default().for_mods()));
 }
 
 const ZOOM_MIN: f32 = 0.5;
@@ -1594,6 +1614,11 @@ const ZOOM_MAX: f32 = 3.0;
 
 pub fn get() -> Rc<Settings> {
     CURRENT.with(|c| c.borrow().0.clone())
+}
+
+/// The settings mods read (`settings()`), as of the last `set`.
+pub fn for_mods() -> std::sync::Arc<serde_json::Value> {
+    FOR_MODS.with_borrow(std::sync::Arc::clone)
 }
 
 /// The resolved theme: every color by name.
@@ -1683,6 +1708,7 @@ pub fn set(s: Settings) -> bool {
         let (p, own) = palette(&s.theme).unwrap_or_else(|_| (GRAPHITE.clone(), BTreeMap::new()));
         let theme = resolve_for(&s, &p, &own);
         PALETTE.set((p, own));
+        FOR_MODS.set(std::sync::Arc::new(s.for_mods()));
         if *c.borrow().0 == s && *c.borrow().1 == theme {
             return false;
         }

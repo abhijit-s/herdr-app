@@ -1196,7 +1196,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
                 Ok(to_host(&serde_json::to_value(&*crate::settings::theme()).unwrap_or(Value::Null)))
             }
         })
-        .function("settings", |_| Ok(to_host(&crate::settings::get().for_mods())))
+        .function("settings", |_| Ok(HostValue::Json(crate::settings::for_mods())))
         .function("keys", |_| Ok(HostValue::Json(keys_part())))
         .function("openOverlay", |a| {
             let mut spec = from_host(a.value(0)?);
@@ -1445,6 +1445,20 @@ mod tests {
             bump_revision("theme");
             assert!(snapshot_changed(101), "a copy that read theme() redraws");
             assert!(!snapshot_changed(102), "one that didn't stays");
+        }).join().unwrap();
+    }
+
+    /// `settings()` hands out the value built at the last settings change,
+    /// without building it again per call.
+    #[test]
+    fn settings_hands_out_the_value_built_at_the_last_change() {
+        std::thread::spawn(|| {
+            let host = module(Instance { name: "reader".into(), props: Value::Null }, 103);
+            let none = gpui_shell::HostArguments::new([]);
+            match host.call("settings", &none).unwrap() {
+                HostValue::Json(v) => assert!(std::sync::Arc::ptr_eq(&v, &crate::settings::for_mods())),
+                other => panic!("settings() answered {other:?}"),
+            }
         }).join().unwrap();
     }
 
