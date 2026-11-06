@@ -795,6 +795,9 @@ mod derivation_tests {
 pub struct Person {
     /// How big the whole app is drawn (1 = as designed). The zoom keys change it.
     pub zoom: f32,
+    /// What one press of the zoom keys moves.
+    #[serde(skip_serializing_if = "ZoomStep::is_tenth")]
+    pub zoom_step: ZoomStep,
     /// How big the panels are drawn on top of `zoom` (chrome, mods, overlays;
     /// not the terminals' text or cells). 0.75..1.5.
     #[serde(skip_serializing_if = "is_one")]
@@ -1005,6 +1008,22 @@ pub enum OptionAsAlt {
     On,
     Left,
     Right,
+}
+
+/// What one press of the zoom keys moves: a tenth of the designed size, or
+/// the terminals' text to the next whole point (the panels scale with it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ZoomStep {
+    #[default]
+    Tenth,
+    Point,
+}
+
+impl ZoomStep {
+    fn is_tenth(&self) -> bool {
+        *self == ZoomStep::Tenth
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1245,6 +1264,7 @@ impl Default for Person {
     fn default() -> Self {
         Person {
             zoom: 1.0,
+            zoom_step: ZoomStep::Tenth,
             ui_zoom: 1.0,
             ui_text_scale: 1.0,
             sounds: Sounds::default(),
@@ -1346,6 +1366,7 @@ pub struct Settings {
     pub ui_font_weight: u16,
     /// How big the whole app is drawn (1 = as designed). The zoom keys change it.
     pub zoom: f32,
+    pub zoom_step: ZoomStep,
     /// The panels' size on top of `zoom` (terminals' text and cells excluded).
     pub ui_zoom: f32,
     /// The panels' text size on top of their zoom.
@@ -1429,6 +1450,7 @@ impl Default for Settings {
             ui_font_size: 13.0,
             ui_font_weight: UI_FONT_WEIGHT_DEFAULT,
             zoom: 1.0,
+            zoom_step: ZoomStep::Tenth,
             ui_zoom: 1.0,
             ui_text_scale: 1.0,
             asked_ui_scales: (1.0, 1.0),
@@ -1496,6 +1518,7 @@ impl Settings {
             ui_font_size: d.ui_font_size,
             ui_font_weight: person.ui_font_weight,
             zoom: person.zoom,
+            zoom_step: person.zoom_step,
             ui_zoom: clamp_scale(person.ui_zoom, UI_ZOOM_RANGE),
             ui_text_scale: clamp_scale(person.ui_text_scale, UI_TEXT_SCALE_RANGE),
             asked_ui_scales: (person.ui_zoom, person.ui_text_scale),
@@ -1646,6 +1669,9 @@ thread_local! {
 
 const ZOOM_MIN: f32 = 0.5;
 const ZOOM_MAX: f32 = 3.0;
+/// How far from a whole point a size still counts as on it (f32 error from
+/// `points / font_size * font_size`).
+const POINT_SLACK: f32 = 0.01;
 
 pub fn get() -> Rc<Settings> {
     CURRENT.with(|c| c.borrow().0.clone())
@@ -1806,12 +1832,9 @@ fn system_text_scale() -> f32 {
     1.0
 }
 
-/// The next zoom level in `steps` tenths (0 resets).
+/// The zoom `steps` presses of the zoom keys away (0 resets).
 pub fn next_zoom(steps: i32) -> f32 {
-    if steps == 0 {
-        return 1.0;
-    }
-    ((zoom() * 10.0).round() + steps as f32).clamp(ZOOM_MIN * 10.0, ZOOM_MAX * 10.0) / 10.0
+    get().next_zoom(steps)
 }
 
 /// The terminals' zoom: their text, cells and padding.
@@ -1924,8 +1947,34 @@ impl Settings {
         v
     }
 
+    /// The zoom `steps` presses of the zoom keys away (0 resets): in tenths,
+    /// or at whole points of the terminals' text. From between two points (a
+    /// zoom set in tenths, a layout's own font size) the first press goes to
+    /// the nearest whole point in its direction.
+    pub fn next_zoom(&self, steps: i32) -> f32 {
+        if steps == 0 {
+            return 1.0;
+        }
+        match self.zoom_step {
+            ZoomStep::Tenth => ((self.zoom * 10.0).round() + steps as f32).clamp(ZOOM_MIN * 10.0, ZOOM_MAX * 10.0) / 10.0,
+            ZoomStep::Point => {
+                let size = self.font_size;
+                let now = size * self.zoom;
+                let from = if steps > 0 { (now + POINT_SLACK).floor() } else { (now - POINT_SLACK).ceil() };
+                let points = (from + steps as f32).clamp((size * ZOOM_MIN).ceil(), (size * ZOOM_MAX).floor());
+                (points / size).clamp(ZOOM_MIN, ZOOM_MAX)
+            }
+        }
+    }
+
+    /// The terminals' text size in px. At whole-point steps, a zoom that lands
+    /// within float error of a whole point draws at exactly that point.
     pub fn terminal_font_size(&self) -> f32 {
-        self.font_size * self.zoom
+        let size = self.font_size * self.zoom;
+        if self.zoom_step == ZoomStep::Point && (size - size.round()).abs() < POINT_SLACK {
+            return size.round();
+        }
+        size
     }
 
     /// The terminals' padding in px: [x, y].
@@ -2170,6 +2219,86 @@ mod tests {
         let look = crate::layout::Look { letter_spacing: Some(-0.5), ..Default::default() };
         assert_eq!(Settings::compose(&person, &crate::layout::Look::default(), true).letter_spacing, 1.0);
         assert_eq!(Settings::compose(&person, &look, true).letter_spacing, -0.5);
+    }
+
+    fn stepped(font_size: f32, zoom: f32, zoom_step: ZoomStep) -> Settings {
+        Settings { font_size, zoom, zoom_step, ..Settings::default() }
+    }
+
+    /// Presses from `from`, returning the terminals' text size after each.
+    fn presses(mut s: Settings, steps: &[i32]) -> Vec<f32> {
+        steps
+            .iter()
+            .map(|&n| {
+                s.zoom = s.next_zoom(n);
+                s.terminal_font_size()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn zoom_steps_default_to_tenths() {
+        assert_eq!(Person::default().zoom_step, ZoomStep::Tenth);
+        assert!(serde_json::to_value(Person::default()).unwrap().get("zoom_step").is_none());
+        let s = stepped(12.0, 1.0, ZoomStep::Tenth);
+        assert_eq!([s.next_zoom(1), s.next_zoom(-1), s.next_zoom(3)], [1.1, 0.9, 1.3]);
+        assert_eq!(stepped(12.0, 3.0, ZoomStep::Tenth).next_zoom(1), 3.0);
+        let person: Person = serde_json::from_value(serde_json::json!({"zoom_step": "point"})).unwrap();
+        assert_eq!(Settings::compose(&person, &crate::layout::Look::default(), true).zoom_step, ZoomStep::Point);
+        assert!(serde_json::from_value::<Person>(serde_json::json!({"zoom_step": "half"})).is_err());
+    }
+
+    /// Ghostty's font-size steps: 12 → 13 → 14 → 15, exactly, and back.
+    #[test]
+    fn point_steps_land_the_terminal_text_on_whole_points() {
+        let s = stepped(12.0, 1.0, ZoomStep::Point);
+        assert_eq!(presses(s.clone(), &[1, 1, 1, -1, -1, -1, -1]), [13.0, 14.0, 15.0, 14.0, 13.0, 12.0, 11.0]);
+        // The panels scale by the same factor as the text.
+        let mut at13 = s.clone();
+        at13.zoom = s.next_zoom(1);
+        assert_eq!(at13.ui_scale(), at13.zoom);
+        assert!((at13.zoom - 13.0 / 12.0).abs() < 1e-6, "{}", at13.zoom);
+        // Reset goes back to the designed size.
+        assert_eq!(at13.next_zoom(0), 1.0);
+    }
+
+    /// A zoom set in tenths (12 at 1.1 is 13.2) steps to the nearest whole
+    /// point in the press's direction, not past it.
+    #[test]
+    fn point_steps_from_between_points_go_to_the_nearest_one() {
+        assert_eq!(presses(stepped(12.0, 1.1, ZoomStep::Point), &[1]), [14.0]);
+        assert_eq!(presses(stepped(12.0, 1.1, ZoomStep::Point), &[-1]), [13.0]);
+        assert_eq!(presses(stepped(12.5, 1.0, ZoomStep::Point), &[1, 1, -1, -1, -1]), [13.0, 14.0, 13.0, 12.0, 11.0]);
+        assert_eq!(stepped(12.5, 1.0, ZoomStep::Point).terminal_font_size(), 12.5);
+    }
+
+    /// Every size from 6 to 72 in half points, pressed to both ends: each
+    /// zoom stays in range (settings.json would be refused otherwise) and
+    /// each size between the ends is a whole point, drawn exactly.
+    #[test]
+    fn point_steps_stay_inside_the_zoom_range() {
+        for half in 12..=144 {
+            let size = half as f32 / 2.0;
+            for dir in [1, -1] {
+                let mut s = stepped(size, 1.0, ZoomStep::Point);
+                for _ in 0..200 {
+                    let next = s.next_zoom(dir);
+                    assert!((ZOOM_MIN..=ZOOM_MAX).contains(&next), "{size} pt: zoom {next}");
+                    s.zoom = next;
+                    let shown = s.terminal_font_size();
+                    assert_eq!(shown, shown.round(), "{size} pt at zoom {next}");
+                }
+                let end = if dir > 0 { (size * ZOOM_MAX).floor() } else { (size * ZOOM_MIN).ceil() };
+                assert_eq!(s.terminal_font_size(), end, "{size} pt pressed to the {dir} end");
+            }
+        }
+    }
+
+    /// Tenths keep drawing `font_size × zoom` as is, near a whole point or not.
+    #[test]
+    fn tenth_steps_leave_the_text_size_unrounded() {
+        let s = stepped(10.0, 1.1, ZoomStep::Tenth);
+        assert_eq!(s.terminal_font_size().to_bits(), (10.0f32 * 1.1).to_bits());
     }
 
     #[test]
