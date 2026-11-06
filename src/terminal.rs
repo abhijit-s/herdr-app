@@ -471,10 +471,10 @@ impl TerminalView {
         self.grid.borrow().vt.tail_text(n)
     }
 
-    /// Whether a key or paste was sent to the program.
+    /// Whether a key or paste was sent to the program since the last ask.
     #[cfg(test)]
-    pub fn typed(&self) -> bool {
-        self.typed_at.get().is_some()
+    pub fn take_typed(&self) -> bool {
+        self.typed_at.take().is_some()
     }
 
     /// The screen's write stamp (`Vt::writes`): whether it changed.
@@ -3345,6 +3345,24 @@ mod tests {
     fn kept_rows_rebuild_when_the_text_size_changes() {
         let cell = gpui::size(gpui::px(8.0), gpui::px(16.0));
         assert_ne!(super::painted_with(cell, 14.0, Default::default()), super::painted_with(cell, 15.4, Default::default()));
+    }
+
+    /// A zoomed pane's letter spacing scales with its zoom as the text does:
+    /// at twice the size, a 1 px `letter_spacing` adds 2 px to each cell.
+    #[gpui::test]
+    fn a_zoomed_panes_letter_spacing_scales_with_it(cx: &mut gpui::TestAppContext) {
+        use super::*;
+        let window = cx.add_window(|_, _| Empty);
+        window.update(cx, |_, window, _| {
+            let at = |spacing: f32| {
+                crate::settings::set(crate::settings::Settings { letter_spacing: spacing, ..crate::settings::Settings::default() });
+                (text_metrics(window, None).0.width, text_metrics(window, Some(2.0)).0.width)
+            };
+            let ((plain, zoomed), (plain_spaced, zoomed_spaced)) = (at(0.0), at(1.0));
+            assert_eq!(plain_spaced - plain, px(1.0));
+            assert_eq!(zoomed_spaced - zoomed, px(2.0));
+            crate::settings::set(crate::settings::Settings::default());
+        }).unwrap();
     }
 
     /// A pane's own text zoom: its cells are measured at its text size, it

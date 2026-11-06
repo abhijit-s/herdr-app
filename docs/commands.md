@@ -277,7 +277,7 @@ Show only this pane of its tab, or all again.
 
 ## `pane.zoom_text_in`
 
-Make a terminal pane's text bigger (default: the focused terminal) by one zoom step, on top of the app's zoom; its program gets the new rows and columns. Kept for the life of the pane.
+Make a terminal pane's text bigger (default: the focused terminal) by one zoom step, on top of the app's zoom; its program gets the new rows and columns. Kept for the life of the pane's terminal view.
 
 | Argument | Required |
 |---|---|
