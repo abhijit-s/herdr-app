@@ -117,6 +117,11 @@ const APPEARANCES = [
   ["light", "Light"],
   ["dark", "Dark"],
 ];
+// zoom_step: what one press of the zoom keys moves.
+const ZOOM_STEPS = [
+  ["tenth", "10%"],
+  ["point", "Whole points"],
+];
 const CELL_WIDTHS = [
   ["font", "Font"],
   ["pixel", "Whole pixels"],
@@ -767,6 +772,8 @@ export default class Settings extends View {
           ),
         )
         .when(this.picking === which, (el) => el.child(this.fontList(t, which, def)));
+    // At whole-point steps, the terminals' text size in points.
+    const zoomShown = s.zoom_step === "point" ? `${Math.round(s.font_size * s.zoom * 10) / 10} pt` : `${Math.round(s.zoom * 100)}%`;
     return v_flex()
       .w_full()
       .child(this.heading(t, "Size"))
@@ -778,10 +785,11 @@ export default class Settings extends View {
           h_flex()
             .gap(8)
             .items_center()
-            .child(this.stepper(t, "st-zoom", `${Math.round(s.zoom * 100)}%`, () => run("app.zoom_out"), () => run("app.zoom_in")))
+            .child(this.stepper(t, "st-zoom", zoomShown, () => run("app.zoom_out"), () => run("app.zoom_in")))
             .child(this.button(t, "st-zoom-reset", "Reset", () => run("app.zoom_reset"))),
         ),
       )
+      .child(this.row(t, "Zoom steps", "Whole points move the terminals' text a point at a time, as Ghostty does; the panels scale with it.", this.choicePicker(t, "st-zs", "zoom_step", ZOOM_STEPS)))
       .child(this.row(t, "Interface zoom", "Panels, tabs and popups, on top of zoom. Terminals keep their size.", scaleStepper("ui_zoom", s.ui_zoom)))
       .child(this.row(t, "Interface text size", "The panels' text only: spacing and icons keep their size.", scaleStepper("ui_text_scale", s.ui_text_scale)))
       .child(fontRow("ui_font", null, "Interface font", s.ui_font_family, DEFAULT_UI_FONT))
