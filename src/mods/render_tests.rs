@@ -987,7 +987,8 @@ fn pane_headers_show_the_automatic_name_after_the_persons(cx: &mut TestAppContex
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let shell = json!({"key":"shell", "name":"zsh", "icon":null, "tint":true, "tile":null, "color":null, "shell":true, "agent":false});
-    for entry in ["mods/pane", "mods/terminals-pane"] {
+    // What each shows without one: the shell's program name, the title else "shell".
+    for (entry, fallback) in [("mods/pane", "zsh"), ("mods/terminals-pane", "shell")] {
         let header = |name: Value, auto_name: Value, cx: &mut TestAppContext| {
             let mut values = fixture(true, props(), updates("current", "current"));
             values.insert("panes".into(), json!([{"pane":"p1","terminal":"t1","tab":"tab1","title":"","name":name,"auto_name":auto_name,"cwd":"/fixture/project","branch":null,"status":null,"app":null,"program":shell,"focused":true,"zoomed":false}]));
@@ -998,6 +999,6 @@ fn pane_headers_show_the_automatic_name_after_the_persons(cx: &mut TestAppContex
         let tree = header(json!("build"), json!("hazy-inlet"), cx);
         assert!(tree.contains("\"build\"") && !tree.contains("hazy-inlet"), "{entry}: the person's name first: {tree}");
         let tree = header(Value::Null, Value::Null, cx);
-        assert!(!tree.contains("hazy-inlet"), "{entry}: {tree}");
+        assert!(!tree.contains("hazy-inlet") && tree.contains(&format!("\"{fallback}\"")), "{entry}: without one, as before: {tree}");
     }
 }

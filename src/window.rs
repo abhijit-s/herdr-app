@@ -7203,6 +7203,54 @@ export default class Recent extends View {
     }
 
     #[test]
+    fn a_tabs_panes_keep_their_automatic_names_when_a_neighbour_starts_a_command() {
+        in_own_process("pane_auto_names_in_a_tab");
+    }
+
+    /// Ids p0, p11709, p12850 and p14038 all hash to the same name. In tab t,
+    /// the mod pane p11709 takes it, the shell p12850 the next and the shell
+    /// p14038 the one after; p0 sits in another tab and leaves t alone. A
+    /// command starting in p12850 hides its name but moves nobody's.
+    #[gpui::test]
+    fn pane_auto_names_in_a_tab(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Content, Node};
+        use crate::model::{Tab, pane};
+        use serde_json::json;
+        if !running_alone("pane_auto_names_in_a_tab") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        let auto_name = |pane: &str| crate::mods::published_panes().as_array().unwrap().iter().find(|p| p["pane"] == pane).map(|p| p["auto_name"].clone());
+        let (m, a, b) = ("p11709", "p12850", "p14038");
+        let names = crate::pane_names::for_tab([m, a, b]);
+        assert_ne!(names[b], crate::pane_names::for_tab([b])[b], "the ids collide");
+        assert_ne!(names[b], crate::pane_names::for_tab([a, b])[b], "and the mod pane counts");
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            let viewer = Node::block(m, Content::Mod { name: "unused".into(), props: json!({}) });
+            let mut tab = Tab::new("t", "", a, "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane(a, "ta"), viewer, pane(b, "tb")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.add_tab("s", Tab::new("u", "", "p0", "tc"));
+            this.model.select_tab("t");
+            for t in ["ta", "tb", "tc"] {
+                this.live.insert(t.into(), json!({ "address": t, "foreground": { "argv": ["-zsh"] }, "labels": {} }));
+            }
+            this.sync(window, cx);
+            this.person.pane_auto_names = true;
+            this.apply_look(window, cx);
+            assert_eq!(auto_name(m), Some(json!(null)), "a mod pane shows its mod");
+            assert_eq!(auto_name(a), Some(json!(names[a])));
+            assert_eq!(auto_name(b), Some(json!(names[b])));
+            assert_eq!(auto_name("p0"), Some(json!(crate::pane_names::for_tab(["p0"])["p0"])), "another tab names its own");
+
+            this.live.insert("ta".into(), json!({ "address": "ta", "foreground": { "argv": ["cargo", "build"] }, "labels": {} }));
+            this.publish(cx);
+            assert_eq!(auto_name(a), Some(json!(null)), "a running command names the pane");
+            assert_eq!(auto_name(b), Some(json!(names[b])), "its neighbour keeps its name");
+        }));
+    }
+
+    #[test]
     fn a_second_rename_press_closes_the_prompt() {
         in_own_process("rename_prompt_opens_once");
     }

@@ -299,6 +299,10 @@ test("the new tabs arrangement writes its mode and leaves off out", () => {
 test("name panes automatically sits under the look page's panes, writes true and leaves off out", () => {
   expect(click({}, {}, "st-pane_auto_names", [], "look")).toEqual({ pane_auto_names: true });
   expect(click({ pane_auto_names: true, zoom: 1.1 }, {}, "st-pane_auto_names", [], "look")).toEqual({ zoom: 1.1 });
+  const on = (person: Record<string, any>) => click(person, {}, "st-pane_auto_names", ["shown?"], "look").calls.justify_end !== undefined;
+  expect(on({ pane_auto_names: true })).toBe(true);
+  expect(on({})).toBe(false);
+  expect(on({ pane_auto_names: false })).toBe(false);
   const shown = texts(search("pane_auto_names").root).join("|");
   expect(shown).toContain("Look|PANES|Name");
   expect(shown).toContain("pane|_|auto|_|names");
