@@ -75,7 +75,7 @@ function spacingOf(tree) {
 }
 
 // How long a step waits to show in layout() before the stepper lets it go
-// (a refused layout.spacing never shows).
+// (a refused layout.spacing never shows); `settleLater` times it.
 const SPACING_PENDING_MS = 1000;
 
 // Drops pending steps layout() now shows, expired ones, and all of them when
@@ -206,10 +206,6 @@ export default class Settings extends View {
       else if (Date.now() - this.asked >= 3000) this.asked = null;
       cx.notify();
     });
-    // A step layout.spacing refused never shows in layout(): let it go once it expires.
-    cx.timer.every(250, (cx) => {
-      if (this.spacingPending && settlePending(this.spacingPending, spacingOf(layout()), Date.now())) cx.notify();
-    });
     cx.timer.every(3000, (cx) => {
       if (this.section === "look") {
         // The layout file may change under us (an agent, an editor).
@@ -301,12 +297,28 @@ export default class Settings extends View {
   async loadLayoutFile() {
     const name = shared("layout") ?? "main";
     let tree = null;
+    let missing = false;
     try {
       const raw = await readTextFile(`${appHome()}/layouts/${name}.json`);
+      missing = raw === null;
       tree = raw ? JSON.parse(raw) : null;
     } catch {}
-    // `tree` null: Herdr shows a stand-in and refuses layout.spacing.
-    this.layoutFile = { name, tree: tree && typeof tree === "object" && !Array.isArray(tree) ? tree : null };
+    // No tree: Herdr shows its shipped stand-in. It takes layout.spacing for
+    // a missing file but refuses it for one it can't read or parse.
+    this.layoutFile = { name, missing, tree: tree && typeof tree === "object" && !Array.isArray(tree) ? tree : null };
+  }
+
+  // One timer, only while a step is pending: once the newest one expires,
+  // whatever layout() hasn't shown (a refused layout.spacing) goes.
+  settleLater(cx) {
+    this.spacingTimer?.cancel();
+    this.spacingTimer = null;
+    if (Object.keys(this.spacingPending ?? {}).length === 0) return;
+    this.spacingTimer = cx.timer.after(SPACING_PENDING_MS + 50, (cx) => {
+      this.spacingTimer = null;
+      if (settlePending(this.spacingPending, spacingOf(layout()), Date.now())) cx.notify();
+      this.settleLater(cx);
+    });
   }
 
   close() {
@@ -827,7 +839,7 @@ export default class Settings extends View {
     if (!s) return box.child(note("This layout shows no tab's panes."));
     // Herdr refuses layout.spacing while the file doesn't parse: no steppers then.
     if (this.layoutFile?.name !== name) return box;
-    if (!this.layoutFile.tree) return box.child(note(`layouts/${name}.json can't be read or has errors: fix it to change spacing.`));
+    if (!this.layoutFile.tree && !this.layoutFile.missing) return box.child(note(`layouts/${name}.json can't be read or has errors: fix it to change spacing.`));
     // A step not yet in layout() (layout.spacing applies after this returns):
     // the next step counts from it, so quick clicks each move one. Steps
     // belong to the layout they were made on.
@@ -837,8 +849,10 @@ export default class Settings extends View {
     settlePending(this.spacingPending, s, Date.now());
     for (const [key, { value }] of Object.entries(this.spacingPending)) s[key] = value;
     const raw = spacingRaw(shown);
-    const fileRaw = spacingRaw(this.layoutFile.tree);
-    const clicked = (key) => !sameSpacing(raw[key], fileRaw[key]);
+    // A missing file's values are the shipped stand-in's, which this can't
+    // see: no Reset then.
+    const fileRaw = this.layoutFile.tree ? spacingRaw(this.layoutFile.tree) : null;
+    const clicked = (key) => fileRaw !== null && !sameSpacing(raw[key], fileRaw[key]);
     const round = (v) => Math.round(v * 100) / 100;
     // Pairs read x, y (sides, then top and bottom), as terminal padding does;
     // layouts write padding [y, x].
@@ -851,6 +865,7 @@ export default class Settings extends View {
       if (key === "reset") for (const k of value) delete this.spacingPending[k];
       else this.spacingPending[key] = { value, at: Date.now() };
       run("layout.spacing", { [key]: value });
+      this.settleLater(cx);
       cx.notify();
     };
     const steps = (id, value, to, key) => this.stepper(t, id, show(value, key), (_e, cx) => to(-1, cx), (_e, cx) => to(1, cx));

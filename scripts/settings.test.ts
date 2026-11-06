@@ -49,6 +49,16 @@ const values: Record<string, any> = {
 };
 // settings.json as the mod sees it through readTextFile / writeTextFile.
 const disk: { raw: string | null; writes: number; fail?: string; readFail?: string; toasts: any[] } = { raw: null, writes: 0, toasts: [] };
+// Timers the Settings window starts, and a click's context that records them.
+type FakeTimer = { ms: number; f: (cx: any) => void; every: boolean; cancelled: boolean; cancel(): void; is_done(): boolean };
+const timers: FakeTimer[] = [];
+const fakeTimer = (every: boolean) => (ms: number, f: (cx: any) => void) => {
+  const t: FakeTimer = { ms, f, every, cancelled: false, cancel() { t.cancelled = true; }, is_done: () => t.cancelled };
+  timers.push(t);
+  return t;
+};
+const clickCx = () => ({ notify() {}, timer: { after: fakeTimer(false), every: fakeTimer(true) } });
+const live = () => timers.filter((t) => !t.cancelled);
 // The shown layout's file (layouts/<name>.json), apart from settings.json.
 const layoutDisk: { name: string; raw: string | null; shown: any; writes: number; runs: any[] } = { name: "mine", raw: null, shown: null, writes: 0, runs: [] };
 const names = [...source.matchAll(/^import \{([^}]*)\}/gm)].flatMap(m => m[1].split(",").map(n => n.trim()));
@@ -320,7 +330,7 @@ async function spacingClick(shown: any, file: any, id?: string) {
   await view.loadLayoutFile();
   const group = view.spacing(new Proxy({}, { get: () => "#000000" }), {});
   const button = id ? find(group, id) : undefined;
-  button?.calls.on_click[0](null, { notify() {} });
+  button?.calls.on_click[0](null, clickCx());
   return { view, group, button, runs: layoutDisk.runs };
 }
 
@@ -352,7 +362,7 @@ test("reset shows only where a value differs from the layout file, and clears th
 });
 
 test("a layout file that can't be read or parsed hides the steppers and says why", async () => {
-  for (const raw of [null, '{"type": "row",}', "[]"]) {
+  for (const raw of ['{"type": "row",}', "[]", ""]) {
     Object.assign(layoutDisk, { name: "mine", raw, shown: deck(), runs: [] });
     const view = new Settings();
     await view.loadLayoutFile();
@@ -414,12 +424,12 @@ test("a click equal to Herdr's default still offers a reset when the file leaves
 test("quick clicks each step once, before layout() catches up", async () => {
   const { view } = await spacingClick(deck(), deck());
   const t = new Proxy({}, { get: () => "#000000" });
-  for (let i = 0; i < 2; i++) find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, { notify() {} });
+  for (let i = 0; i < 2; i++) find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, clickCx());
   expect(layoutDisk.runs).toEqual([["layout.spacing", { pane_gap: 7 }], ["layout.spacing", { pane_gap: 8 }]]);
   // Once layout() shows it, the pending step is gone and layout() leads again.
   layoutDisk.shown = deck();
   layoutDisk.shown.children[1].children[0].content.pane.gap = 8;
-  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, { notify() {} });
+  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, clickCx());
   expect(layoutDisk.runs.at(-1)).toEqual(["layout.spacing", { pane_gap: 9 }]);
 });
 
@@ -428,19 +438,19 @@ test("reset drops a pending step, so the stepper shows layout() again", async ()
   clicked.children[1].children[0].content.pane!.gap = 7;
   const { view } = await spacingClick(clicked, deck());
   const t = new Proxy({}, { get: () => "#000000" });
-  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, { notify() {} });
-  find(view.spacing(t, {}), "st-sp-pane_gap-reset").calls.on_click[0](null, { notify() {} });
+  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, clickCx());
+  find(view.spacing(t, {}), "st-sp-pane_gap-reset").calls.on_click[0](null, clickCx());
   expect(view.spacingPending).toEqual({});
   // layout() now has the file's 6 again: the next step counts from it.
   layoutDisk.shown = deck();
-  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, { notify() {} });
+  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, clickCx());
   expect(layoutDisk.runs).toEqual([["layout.spacing", { pane_gap: 8 }], ["layout.spacing", { reset: ["pane_gap"] }], ["layout.spacing", { pane_gap: 7 }]]);
 });
 
 test("a step layout() never shows (a refused call) expires, and steps don't carry to another layout", async () => {
   const { view } = await spacingClick(deck(), deck());
   const t = new Proxy({}, { get: () => "#000000" });
-  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, { notify() {} });
+  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, clickCx());
   expect(texts(view.spacing(t, {}))).toContain("7");
   // What the 250 ms timer does: nothing to drop yet, then the step expires.
   expect(settlePending(view.spacingPending, spacingOf(deck()), Date.now())).toBe(false);
@@ -448,7 +458,7 @@ test("a step layout() never shows (a refused call) expires, and steps don't carr
   expect(view.spacingPending).toEqual({});
   expect(texts(view.spacing(t, {}))).toContain("6");
   // A step on one layout is gone once another shows.
-  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, { notify() {} });
+  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, clickCx());
   layoutDisk.name = "other";
   view.layoutFile = { name: "other", tree: deck() };
   view.spacing(t, {});
@@ -467,4 +477,43 @@ test("spacing treats a null field as left out, and shows padding as x, y like te
   const { group } = await spacingClick(shown, file);
   expect(find(group, "st-sp-area_gap-reset")).toBeUndefined();
   expect(texts(group)).toContain("6, 4");
+});
+
+test("a missing layout file keeps the steppers (Herdr takes layout.spacing then), without a Reset", async () => {
+  const clicked = deck();
+  clicked.children[1].gap = 12;
+  const { group, runs } = await spacingClick(clicked, null, "st-sp-pane_gap-plus");
+  expect(runs).toEqual([["layout.spacing", { pane_gap: 7 }]]);
+  expect(find(group, "st-sp-area_gap-reset")).toBeUndefined();
+});
+
+test("the Settings window runs no spacing timer until a step is pending, and stops it once none is", async () => {
+  timers.length = 0;
+  const view = new Settings();
+  view.init({}, { ...clickCx(), focus_handle: () => ({ focus() {} }), spawn() {} });
+  // The window's own timers (update check, file and machine refresh) and nothing faster.
+  expect(timers.map((t) => [t.every, t.ms])).toEqual([[true, 300], [true, 3000]]);
+  timers.length = 0;
+  Object.assign(layoutDisk, { name: "mine", raw: JSON.stringify(deck()), shown: deck(), runs: [] });
+  await view.loadLayoutFile();
+  const t = new Proxy({}, { get: () => "#000000" });
+  view.spacing(t, {});
+  expect(timers).toEqual([]);
+  // A step starts one one-shot timer; another replaces it.
+  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, clickCx());
+  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, clickCx());
+  expect(live().map((x) => [x.every, x.ms])).toEqual([[false, 1050]]);
+  // Reset leaves nothing pending: no timer.
+  layoutDisk.shown.children[1].children[0].content.pane.gap = 7;
+  find(view.spacing(t, {}), "st-sp-pane_gap-reset").calls.on_click[0](null, clickCx());
+  expect(live()).toEqual([]);
+  // A step layout() never shows: when the timer fires after it expired, it goes and nothing re-arms.
+  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, clickCx());
+  const [pending] = live();
+  view.spacingPending.pane_gap.at -= 2000;
+  let notified = 0;
+  pending.f({ ...clickCx(), notify() { notified++; } });
+  expect(view.spacingPending).toEqual({});
+  expect(notified).toBe(1);
+  expect(live().filter((x) => x !== pending)).toEqual([]);
 });
