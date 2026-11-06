@@ -12,8 +12,21 @@ pub(super) fn padding(n: &Node) -> (f32, f32) {
     n.padding.map_or((0.0, 0.0), |p| p.axes())
 }
 
-pub(super) fn frame_border(frame: &PaneFrame, focused: bool) -> Option<&Line> {
-    if focused { frame.focus.as_ref().or(frame.border.as_ref()) } else { frame.border.as_ref() }
+/// A framed pane's border, width and color: its `focus` line while it has
+/// the keyboard (settings.json's `focus_border_width` over the layout's
+/// width), else its `border`.
+pub(super) fn frame_border(frame: &PaneFrame, focused: bool) -> Option<(f32, &str)> {
+    let border = frame.border.as_ref().map(|l| (l.width, l.color.as_str()));
+    if !focused { return border; }
+    let width = settings::get().focus_width();
+    frame.focus.as_ref().map(|l| (width.unwrap_or(l.width), l.color.as_str())).or(border)
+}
+
+/// How far a framed pane's content sits in from its edge: the wider of its
+/// two borders, so moving the focus never resizes a terminal.
+pub(super) fn frame_inset(frame: &PaneFrame) -> f32 {
+    let width = |focused| frame_border(frame, focused).map_or(0.0, |(width, _)| width);
+    width(false).max(width(true))
 }
 
 pub(super) fn header_height(header: &Header) -> f32 {
@@ -90,7 +103,7 @@ fn pane_size(n: &Node, size: Size<Pixels>, target: &str, frame: Option<&PaneFram
     match &n.kind {
         Kind::Block { .. } if n.id == target => {
             if let Some(frame) = frame.filter(|_| n.is_pane()) {
-                let border = frame_border(frame, focused.contains(&n.id)).map_or(0.0, |line| line.width) * zoom;
+                let border = frame_inset(frame) * zoom;
                 let header = frame.header.as_ref().filter(|h| !h.hover()).map_or(0.0, header_height) * zoom;
                 size = inset(size, 2.0 * border, 2.0 * border + header);
             }
@@ -118,7 +131,7 @@ fn pane_size(n: &Node, size: Size<Pixels>, target: &str, frame: Option<&PaneFram
 /// The tab area, the cell size, and what else sizes a pane's grid: the
 /// terminals' padding, the panels' scale (padding, borders and headers
 /// follow it), the tab block's own padding and its pane frame.
-type Geometry = (Size<Pixels>, Size<Pixels>, (f32, f32), f32, (f32, f32), Option<PaneFrame>);
+type Geometry = (Size<Pixels>, Size<Pixels>, (f32, f32), f32, (f32, f32), Option<PaneFrame>, Option<f32>);
 
 /// Whether hidden tabs fit the window: the geometry seen at the last tick, and
 /// whether they were sized for it.
@@ -176,7 +189,7 @@ impl AppWindow {
             _ => None,
         };
         let cell = crate::terminal::cell_size(window);
-        let now = (area, cell, settings::get().terminal_padding_px(), settings::ui_scale(), padding(context), frame);
+        let now = (area, cell, settings::get().terminal_padding_px(), settings::ui_scale(), padding(context), frame, settings::get().focus_width());
         match &self.hidden_fit {
             HiddenFit::Done(g) if *g == now => return,
             HiddenFit::Seen(g) if *g == now => self.hidden_fit = HiddenFit::Done(now),
@@ -194,6 +207,54 @@ impl AppWindow {
                     t.view.read(cx).fit(area, window);
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{frame_border, pane_size};
+    use crate::layout::{Line, Node, PaneFrame};
+    use crate::settings;
+    use gpui::px;
+
+    fn frame(border: f32, focus: f32) -> PaneFrame {
+        let line = |width: f32, color: &str| Some(Line { width, color: color.into() });
+        PaneFrame { border: line(border, "border"), focus: line(focus, "focus"), ..PaneFrame::default() }
+    }
+
+    fn with_focus_width(width: Option<f32>, check: impl FnOnce()) {
+        let before = settings::get();
+        settings::set(settings::Settings { focus_border_width: width, ..(*before).clone() });
+        check();
+        settings::set((*before).clone());
+    }
+
+    #[test]
+    fn focus_border_width_replaces_the_layouts_focus_width_within_1_to_3() {
+        let f = frame(1.0, 1.0);
+        with_focus_width(None, || assert_eq!(frame_border(&f, true), Some((1.0, "focus"))));
+        for (asked, drawn) in [(2.0, 2.0), (3.0, 3.0), (0.0, 1.0), (9.0, 3.0)] {
+            with_focus_width(Some(asked), || {
+                assert_eq!(frame_border(&f, true), Some((drawn, "focus")), "{asked}");
+                assert_eq!(frame_border(&f, false), Some((1.0, "border")), "{asked}: other panes keep the border");
+            });
+        }
+        let border_only = PaneFrame { focus: None, ..frame(1.0, 1.0) };
+        with_focus_width(Some(3.0), || assert_eq!(frame_border(&border_only, true), Some((1.0, "border")), "no focus line, nothing to widen"));
+    }
+
+    #[test]
+    fn moving_the_focus_never_resizes_a_framed_pane() {
+        let root: Node = serde_json::from_str(r#"{"id":"r","type":"row","children":[{"id":"a","type":"block","content":{"terminal":"a"}},{"id":"b","type":"block","content":{"terminal":"b"}}]}"#).unwrap();
+        let area = gpui::size(px(800.0), px(600.0));
+        let size = |f: &PaneFrame, focused: &str| pane_size(&root, area, "a", Some(f), &[focused.to_owned()].into(), 1.0).unwrap();
+        for (f, width, inset) in [(frame(1.0, 1.0), None, 1.0), (frame(1.0, 1.0), Some(3.0), 3.0), (frame(1.0, 2.0), None, 2.0), (frame(2.0, 1.0), None, 2.0)] {
+            with_focus_width(width, || {
+                let (on, off) = (size(&f, "a"), size(&f, "b"));
+                assert_eq!(on, off, "{width:?}: focused or not, a keeps its size");
+                assert_eq!(on.height, px(600.0 - 2.0 * inset), "{width:?}: inset by the wider border");
+            });
         }
     }
 }

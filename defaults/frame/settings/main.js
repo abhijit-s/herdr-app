@@ -181,6 +181,15 @@ const SIDEBAR_SHADES = [
   ["active", "Darker when active"],
   ["always", "Always darker"],
 ];
+// The active pane's border width (focus_border_width); Layout, the layout's own, is left out of settings.json.
+const FOCUS_WIDTHS = [
+  [null, "Layout"],
+  [1, "1 px"],
+  [2, "2 px"],
+  [3, "3 px"],
+];
+// Theme colors offered for the active pane's border (colors.focus).
+const FOCUS_SWATCHES = ["ansi1", "ansi2", "ansi3", "ansi4", "ansi5", "ansi6", "terminal_foreground"];
 const RESUME_AGENTS = [
   ["ask", "Ask"],
   ["auto", "Auto"],
@@ -1077,7 +1086,61 @@ export default class Settings extends View {
           "pane_auto_names",
         ),
       )
+      .child(this.row(t, "Focus border", "The color around the pane you're typing in, where the layout draws it. From theme is the accent, or the theme's own focus color.", this.focusColorPicker(t), "colors.focus"))
+      .child(this.row(t, "Focus border width", "Layout keeps the layout's own width. Panes keep their size as the focus moves.", this.choicePicker(t, "st-fw", "focus_border_width", FOCUS_WIDTHS), "focus_border_width"))
       .child(this.row(t, "Working spinner", "What spins while an agent works: in pane headers, tabs, the agents list, the picker and peeks.", this.spinnerPicker(t), "working_spinner"));
+  }
+
+  // From theme (no colors.focus), or one of the shown theme's colors as it is
+  // now; a hand-written color shows as its own swatch.
+  focusColorPicker(t) {
+    const now = this.person.colors?.focus;
+    const swatches = [...new Set([...FOCUS_SWATCHES.map((name) => t[name]), now].filter(Boolean).map((c) => c.toLowerCase()))];
+    const set = (value, cx) =>
+      this.change((p) => {
+        const colors = { ...p.colors };
+        if (value) colors.focus = value;
+        else delete colors.focus;
+        if (Object.keys(colors).length) p.colors = colors;
+        else delete p.colors;
+      }, cx);
+    const picked = (c) => now?.toLowerCase() === c;
+    return h_flex()
+      .p(2)
+      .gap(4)
+      .items_center()
+      .rounded(8)
+      .border_1()
+      .border_color(t.border)
+      .bg(t.background)
+      .child(
+        div()
+          .id("st-fc-theme")
+          .px(12)
+          .py(4)
+          .rounded(6)
+          .text_size(13)
+          .cursor_pointer()
+          .when(!now, (el) => el.bg(t.raised).text_color(t.foreground).border_1().border_color(t.border))
+          .when(Boolean(now), (el) => el.text_color(t.muted).hover((s) => s.text_color(t.foreground)))
+          .on_click((_e, cx) => set(null, cx))
+          .child("From theme"),
+      )
+      .children(
+        swatches.map((c) =>
+          div()
+            .id(`st-fc-${c}`)
+            .w(18)
+            .h(18)
+            .rounded(9)
+            .bg(c)
+            .border_2()
+            .border_color(picked(c) ? t.foreground : "#00000000")
+            .cursor_pointer()
+            .tooltip(c)
+            .on_click((_e, cx) => set(c, cx)),
+        ),
+      );
   }
 
   // working_spinner: each choice spinning as it will; the ring (the default)

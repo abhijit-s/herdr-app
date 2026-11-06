@@ -262,9 +262,22 @@ pub fn theme_is_light(name: &str) -> bool {
     palette(name).map(|(p, _)| is_light(p.background)).unwrap_or(false)
 }
 
-fn is_light(c: u32) -> bool {
+pub fn is_light(c: u32) -> bool {
     let ch = |s: u32| ((c >> s) & 255) as f32 / 255.0;
     0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0) > 0.5
+}
+
+/// What's wrong with a theme file as Herdr reads and draws it with default
+/// settings: a field or color it can't read, or `ring` or `focus` under 3:1
+/// on its background.
+#[cfg(test)]
+pub fn theme_file_problems(name: &str, text: &str) -> Vec<String> {
+    let (p, own) = match parse_theme_file(name, text) {
+        Ok(t) => t,
+        Err(e) => return vec![e],
+    };
+    let t = resolve_for(&Settings::default(), &p, &own);
+    ["ring", "focus"].into_iter().filter(|k| u32::from_str_radix(&t[*k][1..7], 16).map_or(true, |c| contrast(c, p.background) < 3.0)).map(|k| format!("{name}: {k} {} reads under 3:1 on {:06x}", t[k], p.background)).collect()
 }
 
 /// Every theme that can be shown, presets first, each with its colors
@@ -337,6 +350,12 @@ fn contrast(a: u32, b: u32) -> f32 {
     crate::vt::contrast(rgb(a), rgb(b))
 }
 
+/// `accent` when it reads at 3:1 on `bg`, else the classic ring mix toward
+/// `ink`, else black or white: always 3:1 (`ring` and `focus`).
+fn readable_accent(accent: u32, bg: u32, ink: u32) -> u32 {
+    [accent, mix(bg, ink, 0.7)].into_iter().find(|c| contrast(*c, bg) >= 3.0).unwrap_or(if contrast(0, bg) > contrast(0xffffff, bg) { 0 } else { 0xffffff })
+}
+
 /// Panel colors, each a step from the terminal's background toward its
 /// foreground (`Steps`). Panel text uses a neutral ink (`ink`) for
 /// contrast, its quieter tiers stepped toward it the same way. `shaded`
@@ -348,7 +367,7 @@ fn tinted_panels(p: &Palette, ink: u32, shaded: bool, accent: u32, own_canvas: O
     let bg = p.background;
     let s = if is_light(bg) { &LIGHT_STEPS } else { &DARK_STEPS };
     let tint = |t: f32| hex(mix(bg, p.foreground, t));
-    let ring = [accent, mix(bg, ink, 0.7)].into_iter().find(|c| contrast(*c, bg) >= 3.0).unwrap_or(if contrast(0, bg) > contrast(0xffffff, bg) { 0 } else { 0xffffff });
+    let ring = readable_accent(accent, bg, ink);
     let dim = hex(mix(bg, ink, s.dim));
     let canvas = tint(s.canvas);
     let chrome = match (shaded, own_canvas) {
@@ -426,11 +445,9 @@ fn resolve(p: &Palette, overrides: &BTreeMap<String, String>, panels: PanelColor
     let light = is_light(bg);
     let ink = if light { 0x1b1b1e } else { 0xeeeeef };
     let [working, blocked, done] = p.status.unwrap_or([p.ansi[3], p.ansi[1], p.ansi[4]]);
+    let accent = overrides.get("accent").and_then(|v| u32::from_str_radix(v.trim_start_matches('#').get(..6)?, 16).ok()).unwrap_or(p.ansi[4]);
     let panels = match panels {
-        PanelColors::Tinted => {
-            let accent = overrides.get("accent").and_then(|v| u32::from_str_radix(v.trim_start_matches('#').get(..6)?, 16).ok()).unwrap_or(p.ansi[4]);
-            tinted_panels(p, ink, shaded, accent, overrides.get("canvas"))
-        }
+        PanelColors::Tinted => tinted_panels(p, ink, shaded, accent, overrides.get("canvas")),
         PanelColors::Classic => classic_panels(bg, ink),
     };
     let mut t: Theme = [
@@ -439,6 +456,7 @@ fn resolve(p: &Palette, overrides: &BTreeMap<String, String>, panels: PanelColor
         ("foreground", hex(ink)),
         ("surface", hex(bg)),
         ("accent", hex(p.ansi[4])),
+        ("focus", hex(readable_accent(accent, bg, ink))),
         ("accent_foreground", hex(bg)),
         ("solid", hex(ink)),
         ("solid_foreground", hex(if light { 0xffffff } else { mix(bg, 0, 0.28) })),
@@ -573,6 +591,35 @@ mod derivation_tests {
         assert_eq!(resolve(p, &own, PanelColors::Tinted, false)["ring"], "#ff0000", "an own ring wins");
     }
 
+    /// Unset, `focus` (the active pane's border) is the accent in use, so
+    /// panes look as they did when layouts drew `accent`, except that an
+    /// accent under 3:1 on the background falls back as `ring` does.
+    #[test]
+    fn focus_is_the_readable_accent_unless_set() {
+        for ((name, p, own), chosen) in themes().into_iter().flat_map(|t| [(t.clone(), PanelColors::Tinted), (t, PanelColors::Classic)]) {
+            let t = drawn(&p, &own, chosen, false);
+            assert!(contrast(rgb(&t, "focus"), p.background) >= 3.0, "{name}: focus {} on {:06x}", t["focus"], p.background);
+            if contrast(rgb(&t, "accent"), p.background) >= 3.0 {
+                assert_eq!(t["focus"][..7], t["accent"][..7], "{name}, {chosen:?}: a readable accent is the focus");
+            }
+        }
+        let p = preset("graphite").unwrap();
+        assert_eq!(resolve(p, &BTreeMap::new(), PanelColors::Tinted, false)["focus"], hex(p.ansi[4]));
+        let accent: BTreeMap<String, String> = [("accent".to_owned(), "#3b82f6".to_owned())].into();
+        assert_eq!(resolve(p, &accent, PanelColors::Classic, false)["focus"], "#3b82f6", "an overridden accent is the focus, classic panels too");
+        let faint: BTreeMap<String, String> = [("accent".to_owned(), "#22252a".to_owned())].into();
+        assert_eq!(resolve(p, &faint, PanelColors::Tinted, false)["focus"], hex(mix(p.background, 0xeeeeef, 0.7)), "an accent under 3:1 falls back");
+        let own: BTreeMap<String, String> = [("accent".to_owned(), "#3b82f6".to_owned()), ("focus".to_owned(), "#ff000080".to_owned())].into();
+        assert_eq!(resolve(p, &own, PanelColors::Tinted, false)["focus"], "#ff000080", "an own focus wins, as written");
+        let theme_own: BTreeMap<String, String> = [("focus".to_owned(), "#111111".to_owned())].into();
+        let person: Settings = Settings { colors: [("focus".to_owned(), "#222222".to_owned())].into(), ..Settings::default() };
+        assert_eq!(resolve_for(&Settings::default(), p, &theme_own)["focus"], "#111111", "a theme file's focus");
+        assert_eq!(resolve_for(&person, p, &theme_own)["focus"], "#222222", "settings.json wins over the theme");
+        let look = crate::layout::Look { colors: Some([("focus".to_owned(), "#333333".to_owned())].into()), ..Default::default() };
+        let composed = Settings::compose(&Person { colors: [("focus".to_owned(), "#222222".to_owned())].into(), ..Person::default() }, &look, true);
+        assert_eq!(resolve_for(&composed, p, &theme_own)["focus"], "#333333", "the layout's look wins over settings.json");
+    }
+
     #[test]
     fn panels_take_the_theme_tint() {
         let p = parse_theme_file("t", r##"{"background":"#101820","foreground":"#80c0ff","selection":"#203040","ansi":["#000000","#000000","#000000","#000000","#4080ff","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000"]}"##).unwrap().0;
@@ -629,7 +676,10 @@ mod derivation_tests {
         let before: BTreeMap<String, Theme> = serde_json::from_str(include_str!("../tests/fixtures/master-panels.json")).unwrap();
         for (name, p, own) in themes() {
             for shaded in [false, true] {
-                assert_eq!(drawn(&p, &own, PanelColors::Classic, shaded), before[&name], "{name}, shaded {shaded}");
+                // `focus` isn't a panel color; `focus_is_the_readable_accent_unless_set` pins it.
+                let mut t = drawn(&p, &own, PanelColors::Classic, shaded);
+                t.remove("focus");
+                assert_eq!(t, before[&name], "{name}, shaded {shaded}");
             }
         }
         assert_eq!(before.len(), themes().len());
@@ -935,6 +985,10 @@ pub struct Person {
     /// A draggable scroll position thumb at a terminal pane's right edge.
     #[serde(skip_serializing_if = "is_true")]
     pub pane_scrollbars: bool,
+    /// Px (at zoom 1) of the active pane's border in a pane frame, 1 to 3;
+    /// unset, the layout's `focus` width.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus_border_width: Option<f32>,
     /// Minimum terminal text contrast ratio; 1 leaves program colors unchanged.
     pub minimum_contrast: f32,
     /// Px (at zoom 1) added to (or, negative, taken from) the terminal cell width.
@@ -1410,6 +1464,7 @@ impl Default for Person {
             telemetry: true,
             clipboard_write: true,
             pane_scrollbars: true,
+            focus_border_width: None,
             minimum_contrast: 1.0,
             letter_spacing: None,
             cell_width: CellWidth::Font,
@@ -1496,6 +1551,8 @@ pub struct Settings {
     pub colors: BTreeMap<String, String>,
     /// A draggable scroll position thumb at a terminal pane's right edge.
     pub pane_scrollbars: bool,
+    /// `focus_border_width` as written (`focus_width` reads it).
+    pub focus_border_width: Option<f32>,
     /// Space between a terminal's edge and its text, in px: [x, y].
     pub terminal_padding: [f32; 2],
     /// 0..1: below 1, what's behind a terminal shows through.
@@ -1579,6 +1636,7 @@ impl Default for Settings {
             dark: true,
             colors: BTreeMap::new(),
             pane_scrollbars: true,
+            focus_border_width: None,
             terminal_padding: [10.0, 6.0],
             terminal_opacity: 1.0,
             clipboard_write: true,
@@ -1657,6 +1715,7 @@ impl Settings {
             dark,
             colors,
             pane_scrollbars: person.pane_scrollbars,
+            focus_border_width: person.focus_border_width,
             terminal_padding: look.terminal_padding.unwrap_or(d.terminal_padding),
             terminal_opacity: look.terminal_opacity.unwrap_or(1.0).clamp(0.0, 1.0),
             sounds: person.sounds.clone(),
@@ -1723,6 +1782,9 @@ impl Settings {
             if parse_hex(v).is_none() {
                 out.push(format!("colors.{k}: {v:?} is not #rrggbb or #rrggbbaa"));
             }
+        }
+        if let Some(w) = self.focus_border_width.filter(|w| !FOCUS_BORDER_WIDTH.contains(w)) {
+            out.push(format!("focus_border_width {w} is outside 1..3"));
         }
         if !(1.0..=21.0).contains(&self.minimum_contrast) {
             out.push(format!("minimum_contrast {} is outside 1..21", self.minimum_contrast));
@@ -1808,6 +1870,7 @@ const ZOOM_MAX: f32 = 3.0;
 /// `points / font_size * font_size`).
 const POINT_SLACK: f32 = 0.01;
 const FONT_SIZE_RANGE: std::ops::RangeInclusive<f32> = 6.0..=72.0;
+const FOCUS_BORDER_WIDTH: std::ops::RangeInclusive<f32> = 1.0..=3.0;
 
 pub fn get() -> Rc<Settings> {
     CURRENT.with(|c| c.borrow().0.clone())
@@ -2112,6 +2175,12 @@ impl Settings {
             o.insert("working_spinner_presets".into(), presets.into());
         }
         v
+    }
+
+    /// The active pane's border width in a pane frame (`focus_border_width`,
+    /// within 1 to 3), when settings.json sets one.
+    pub fn focus_width(&self) -> Option<f32> {
+        self.focus_border_width.map(|w| w.clamp(*FOCUS_BORDER_WIDTH.start(), *FOCUS_BORDER_WIDTH.end()))
     }
 
     /// The zoom `steps` presses of the zoom keys away (0 resets; `step_zoom`).
@@ -3062,11 +3131,23 @@ mod tests {
         .unwrap();
     }
 
+    #[test]
+    fn focus_border_width_stays_out_unset_and_reports_a_width_outside_1_to_3() {
+        assert_eq!(serde_json::to_value(Person::default()).unwrap().get("focus_border_width"), None);
+        for (asked, used, problem) in [(2.0, 2.0, false), (0.5, 1.0, true), (4.0, 3.0, true)] {
+            let person: Person = serde_json::from_value(serde_json::json!({"focus_border_width": asked})).unwrap();
+            let s = Settings::compose(&person, &crate::layout::Look::default(), true);
+            assert_eq!(s.focus_width(), Some(used), "{asked}");
+            assert_eq!(s.problems().contains(&format!("focus_border_width {asked} is outside 1..3")), problem, "{asked}");
+        }
+        assert_eq!(Settings::default().focus_width(), None);
+    }
+
     /// The guide agents read (written to the home folder) explains every
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, pane_zoom_keys: false, pane_auto_names: true, working_spinner: Some("braille".into()), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, pane_zoom_keys: false, pane_auto_names: true, focus_border_width: Some(2.0), working_spinner: Some("braille".into()), ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();
