@@ -428,13 +428,17 @@ fn zoom_row_shows_points_at_whole_point_steps(cx: &mut TestAppContext) {
         settings["zoom_step"] = json!(step);
         settings["font_size"] = json!(12.0);
         settings["zoom"] = json!(zoom);
-        let tree = describe_with_values(cx, &staged, "frame/settings", values, Some("this.load = async () => {}; this.person = {};")).unwrap();
+        let tree = describe_with_values(cx, &staged, "frame/settings", values, Some(&format!("this.load = async () => {{}}; this.person = {{ zoom_step: \"{step}\" }};"))).unwrap();
         for id in ["Zoom steps", "st-zs-10%", "st-zs-Whole points"] {
             assert!(tree.contains(id), "missing {id}: {tree}");
         }
         let lines = tree.lines().skip_while(|l| !l.contains("st-zoom-minus")).skip(1);
         let row = lines.take_while(|l| !l.contains("st-zoom-plus")).collect::<Vec<_>>().join("\n");
         assert!(row.contains(shown), "{step} at {zoom}: {row}");
+        // The picked choice is the one drawn raised (with a border).
+        let picked: Vec<_> = tree.lines().filter(|l| l.contains("st-zs-") && l.contains(".border_1")).collect();
+        let want = if step == "point" { "st-zs-Whole points" } else { "st-zs-10%" };
+        assert!(picked.len() == 1 && picked[0].contains(want), "{step}: {picked:?}");
     }
 }
 

@@ -1630,7 +1630,7 @@ impl Settings {
         if !(-2.0..=10.0).contains(&self.letter_spacing) {
             out.push(format!("letter_spacing {} is outside -2..10", self.letter_spacing));
         }
-        if !(6.0..=72.0).contains(&self.font_size) {
+        if !FONT_SIZE_RANGE.contains(&self.font_size) {
             out.push(format!("font_size {} is outside 6..72", self.font_size));
         }
         if !(0.8..=2.0).contains(&self.line_height) {
@@ -1672,6 +1672,7 @@ const ZOOM_MAX: f32 = 3.0;
 /// How far from a whole point a size still counts as on it (f32 error from
 /// `points / font_size * font_size`).
 const POINT_SLACK: f32 = 0.01;
+const FONT_SIZE_RANGE: std::ops::RangeInclusive<f32> = 6.0..=72.0;
 
 pub fn get() -> Rc<Settings> {
     CURRENT.with(|c| c.borrow().0.clone())
@@ -1955,16 +1956,16 @@ impl Settings {
         if steps == 0 {
             return 1.0;
         }
-        match self.zoom_step {
-            ZoomStep::Tenth => ((self.zoom * 10.0).round() + steps as f32).clamp(ZOOM_MIN * 10.0, ZOOM_MAX * 10.0) / 10.0,
-            ZoomStep::Point => {
-                let size = self.font_size;
-                let now = size * self.zoom;
-                let from = if steps > 0 { (now + POINT_SLACK).floor() } else { (now - POINT_SLACK).ceil() };
-                let points = (from + steps as f32).clamp((size * ZOOM_MIN).ceil(), (size * ZOOM_MAX).floor());
-                (points / size).clamp(ZOOM_MIN, ZOOM_MAX)
-            }
+        // A font_size outside its range (reported, not refused) steps in
+        // tenths: at 0 or below there is no whole point to land on.
+        if self.zoom_step == ZoomStep::Tenth || !FONT_SIZE_RANGE.contains(&self.font_size) {
+            return ((self.zoom * 10.0).round() + steps as f32).clamp(ZOOM_MIN * 10.0, ZOOM_MAX * 10.0) / 10.0;
         }
+        let size = self.font_size;
+        let now = size * self.zoom;
+        let from = if steps > 0 { (now + POINT_SLACK).floor() } else { (now - POINT_SLACK).ceil() };
+        let points = (from + steps as f32).clamp((size * ZOOM_MIN).ceil(), (size * ZOOM_MAX).floor());
+        (points / size).clamp(ZOOM_MIN, ZOOM_MAX)
     }
 
     /// The terminals' text size in px. At whole-point steps, a zoom that lands
@@ -2291,6 +2292,16 @@ mod tests {
                 let end = if dir > 0 { (size * ZOOM_MAX).floor() } else { (size * ZOOM_MIN).ceil() };
                 assert_eq!(s.terminal_font_size(), end, "{size} pt pressed to the {dir} end");
             }
+        }
+    }
+
+    /// A font_size outside 6..72 (reported by `problems`, still drawn) steps
+    /// in tenths rather than panic on an empty range or save a NaN zoom.
+    #[test]
+    fn point_steps_fall_back_to_tenths_outside_the_font_size_range() {
+        for size in [0.3, 0.0, -1.0, f32::NAN, 100.0] {
+            let s = stepped(size, 1.0, ZoomStep::Point);
+            assert_eq!([s.next_zoom(1), s.next_zoom(-1)], [1.1, 0.9], "font_size {size}");
         }
     }
 
