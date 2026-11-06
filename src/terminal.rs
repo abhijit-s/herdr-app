@@ -3272,14 +3272,15 @@ mod tests {
         }
     }
 
-    /// Text sits centred in its row, so in a row rounded below the font's
-    /// height, glyphs that reach the font's ascent or descent (accents,
-    /// descenders) overhang by the same amount top and bottom, at most half
-    /// the rounding (a quarter device pixel); the font's line box is centred,
-    /// not cut at the bottom. Nerd icons and symbols fit the cell itself.
+    /// In a row rounded below the font's height, the font's line box placed
+    /// as gpui-pre's `ShapedLine::paint` places it (centred: `padding_top`,
+    /// line.rs, which this test does not run) overhangs by at most a quarter
+    /// device pixel each side, and glyphs that reach the font's ascent or
+    /// descent (accents, descenders) keep their ink inside that box. Nerd
+    /// icons and symbols fit the cell itself.
     #[cfg(target_os = "macos")]
     #[test]
-    fn a_shorter_row_centres_the_ink_rather_than_cutting_one_side() {
+    fn a_shorter_row_overhangs_a_quarter_pixel_each_side_at_most() {
         use super::*;
         use crate::settings::CellRounding::Nearest;
         use crate::settings::CellWidth::Pixel;

@@ -845,7 +845,7 @@ export default class Settings extends View {
         ),
       )
       .child(this.row(t, "Cell width", "Whole pixels puts each cell on device pixels, so letters sit evenly.", this.choicePicker(t, "st-cw", "cell_width", CELL_WIDTHS)))
-      .child(this.row(t, "Cell rounding", "Nearest keeps rows (and whole-pixel cells) within half a pixel of the font's size; Outward rounds rows up and cells down.", this.choicePicker(t, "st-cr", "cell_rounding", CELL_ROUNDINGS)))
+      .child(this.row(t, "Cell rounding", "Nearest keeps rows (and whole-pixel cells) within half a pixel of the font's size; Outward rounds rows up and whole-pixel cells down.", this.choicePicker(t, "st-cr", "cell_rounding", CELL_ROUNDINGS)))
       .child(
         this.row(
           t,
