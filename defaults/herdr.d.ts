@@ -79,6 +79,9 @@ export function playSound(sound: string): null;
  *   Shipped layouts/mods are replaced at start; edits move to <name>-edited.
  *   Herdr (main) inherits settings; Herdr 98 and Terminals bring their own look. Clone to change shipped looks beyond theme picks.
  *   layout.reset {name?} resets a shipped layout and its clicks.
+ *   layout.spacing {pane_gap?, area_padding?, area_gap?, terminal_padding?, reset?: string[]} sets space around
+ *   the shown tab's panes (px 0 to 40) as clicks, on any layout: the tab block's pane.gap, the padding and gap of
+ *   the row or column holding it, the root's terminal_padding [x, y]; reset puts those named back as the file has them.
  * App: mod.open {name}, overlay.close {id?}, app.help, app.reset, app.theme {name}, app.zoom_in|zoom_out|zoom_reset.
  * Mods: "<mod>.<command>" delivers <command> to that mod's nextCommand().
  */
@@ -264,7 +267,7 @@ export interface Place {
  *  with `import * as herdr from "herdr"` and `typeof herdr.recentPlaces === "function"`. Live. */
 export function recentPlaces(): Place[];
 
-/** The shown layout (layouts/<name>.json). Its name is shared("layout").
+/** The shown layout (layouts/<name>.json) with its clicks on it. Its name is shared("layout").
  *  Root `terminal_menu?: string` chooses a terminal right-click menu mod (default: "menu").
  *  Unknown names warn and fall back to "menu". This replaces the menu, not its items.
  *  Opens a pointer popup with mod.json overlay width/height (default 220×260). */

@@ -3774,6 +3774,17 @@ impl AppWindow {
                     n.size = Some(Span::Weight { weight: w as f32 });
                 }
             }
+            "layout.spacing" => {
+                let spacing = match serde_json::from_value::<layout_sync::Spacing>(if a.is_null() { json!({}) } else { a.clone() }) {
+                    Ok(s) => s,
+                    Err(e) => return self.fail(format!("layout.spacing: {e}")),
+                };
+                if let Err(e) = spacing.apply(&mut self.chrome, &self.file_chrome) {
+                    return self.fail(format!("layout.spacing: {e}"));
+                }
+                // terminal_padding reaches the terminals through the composed settings.
+                self.apply_look(window, cx);
+            }
             "layout.reset" => {
                 let name = Self::owned(a, "name").unwrap_or_else(|| self.layout_name.clone());
                 let Some((_, text)) = LAYOUTS.iter().find(|(n, _)| *n == name) else {

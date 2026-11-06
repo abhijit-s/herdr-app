@@ -464,6 +464,18 @@ Show one child of a stack.
 | `stack` | yes |
 | `child` | yes |
 
+## `layout.spacing`
+
+Space around the shown tab's panes, px 0 to 40, kept with the layout's clicks (its file is not changed; a later edit of the same field in the file wins): pane_gap (between panes: the tab block's pane.gap), area_padding (number or [y, x]) and area_gap (the row or column holding the tab block), terminal_padding ([x, y]: the layout root's). reset: a list of those names, back to the file's values.
+
+| Argument | Required |
+|---|---|
+| `pane_gap` | no |
+| `area_padding` | no |
+| `area_gap` | no |
+| `terminal_padding` | no |
+| `reset` | no |
+
 ## `layout.reset`
 
 Reset a shipped layout and its clicks (the old file is kept aside).
