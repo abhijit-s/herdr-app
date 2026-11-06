@@ -1,0 +1,186 @@
+import { test, expect } from "bun:test";
+import { readFile } from "node:fs/promises";
+
+const source = (await readFile(new URL("../defaults/mods/crosstalk/main.js", import.meta.url), "utf8"))
+  .replace(/^import [\s\S]*?;\n/gm, "").replace("export default class Crosstalk", "class Crosstalk");
+
+const NAMES = ["parseRpc", "parseWatch", "missingMethods", "clean", "preview", "replyEnvelope", "Crosstalk", "METHODS"];
+
+type Call = { command: string; args: string[]; options: unknown };
+type Reply = { code: number; stdout?: string; stderr?: string };
+
+// The mod's source with Herdr and gpui stubbed; exec answers from `rpc`
+// (per method) and `watches` (in order; none left: the watch never returns).
+function load(rpc: Record<string, Reply | ((params: any) => Reply)> = {}, watches: Reply[] = []) {
+  const calls: Call[] = [], shared: Record<string, unknown> = {}, toasts: any[] = [], runs: unknown[][] = [];
+  const exec = (command: string, args: string[], options: unknown) => {
+    calls.push({ command, args, options });
+    if (args[0] === "watch") {
+      const next = watches.shift();
+      return next ? Promise.resolve({ stdout: "", stderr: "", ...next }) : new Promise(() => {});
+    }
+    const r = rpc[args[1]];
+    const reply = typeof r === "function" ? r(JSON.parse(args[2])) : r ?? { code: 0, stdout: JSON.stringify({ result: [] }) };
+    return Promise.resolve({ stdout: "", stderr: "", ...reply });
+  };
+  const input = { v: "", on() {}, value() { return this.v; }, set_value(v: string) { this.v = v; } };
+  const stubs: Record<string, unknown> = {
+    View: class {}, div: () => ({}), v_flex: () => ({}), h_flex: () => ({}), Input: { new: () => ({}) },
+    InputState: { new: () => input }, exec, theme: () => ({}),
+    setShared: (k: string, v: unknown) => { shared[k] = v; }, notify: (n: unknown) => { toasts.push(n); }, run: (...a: unknown[]) => { runs.push(a); },
+  };
+  const mod = new Function(...Object.keys(stubs), `${source}; return { ${NAMES.join(", ")} };`)(...Object.values(stubs));
+  const cx: any = { notify() {}, spawn: (f: (cx: any) => Promise<unknown>) => { void f(cx); }, timer: { every() {} }, stop_propagation() {} };
+  // A watch with nothing scripted never returns, so settling waits on the event loop, not on every task.
+  const settle = async () => { for (let i = 0; i < 50; i++) await new Promise((r) => setTimeout(r, 0)); };
+  return { mod, calls, shared, toasts, runs, cx, input, settle };
+}
+
+const ok = (result: unknown): Reply => ({ code: 0, stdout: JSON.stringify({ jsonrpc: "2.0", id: 1, result }) });
+const fails = (kind: string, hint = ""): Reply => ({ code: 0, stdout: JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32000, message: kind, data: { kind, hint } } }) });
+const discover = (names: string[]) => ok({ openrpc: "1.3.2", methods: names.map((name) => ({ name })) });
+const msg = (id: string, extra: Record<string, unknown> = {}) => ({ seq: 1, subject: "data.person.abhi", state: "fetched", envelope: { spec: "0.1", id, kind: "core.message", plane: "data", from: "data.agent.mbp.review", to: ["data.person.abhi"], at: "2026-11-06T08:00:00Z", body: { text: "hi" }, ...extra } });
+
+function service(methods: string[], extra: Record<string, Reply | ((p: any) => Reply)> = {}) {
+  return { "rpc.discover": discover(methods), whoami: ok({ address: "data.person.abhi", verified: true, person: true }), ...extra };
+}
+
+async function started(rpc: Record<string, Reply | ((p: any) => Reply)>, watches: Reply[] = []) {
+  const h = load(rpc, watches);
+  const view = new h.mod.Crosstalk();
+  view.init({}, h.cx);
+  await h.settle();
+  return { ...h, view };
+}
+
+test("a response is a result or an error with its kind; exit codes mean what the CLI says", () => {
+  const { parseRpc } = load().mod;
+  expect(parseRpc(ok([1]))).toEqual({ result: [1] });
+  expect(parseRpc(fails("conflict", "re-read"))).toEqual({ error: { kind: "conflict", message: "conflict", hint: "re-read" } });
+  expect(parseRpc({ code: 69, stdout: "", stderr: "no service\nmore" }).error).toEqual({ kind: "unavailable", message: "crosstalk is not available", hint: "no service" });
+  expect(parseRpc({ code: 64, stdout: "", stderr: "bad flag" }).error.kind).toBe("bug");
+  expect(parseRpc({ code: 0, stdout: "not json", stderr: "" }).error.kind).toBe("bug");
+});
+
+test("a watch is an event, a timeout, or an error", () => {
+  const { parseWatch } = load().mod;
+  expect(parseWatch({ code: 124, stdout: "", stderr: "" })).toEqual({ timeout: true });
+  expect(parseWatch({ code: 0, stdout: '{"type":"message","id":"x"}\n', stderr: "" })).toEqual({ event: { type: "message", id: "x" } });
+  expect(parseWatch({ code: 69, stdout: "", stderr: "" }).error.kind).toBe("unavailable");
+  expect(parseWatch({ code: 64, stdout: "", stderr: "" }).error.kind).toBe("bug");
+});
+
+test("untrusted text loses escapes, controls and bidirectional overrides, and is capped", () => {
+  const { clean, preview } = load().mod;
+  expect(clean("a\x1b[31mred\x1b[0m\x1b]0;title\x07b", 100)).toBe("aredb");
+  expect(clean("x‮y⁦z‏\x00\x07\x9b", 100)).toBe("xyz");
+  expect(clean("keep\ttabs\nand lines", 100)).toBe("keep\ttabs\nand lines");
+  expect(clean("abcdef", 3)).toBe("abc … (truncated)");
+  expect(preview("  two\n\nlines  ")).toBe("two lines");
+  expect(preview("x".repeat(300)).length).toBe(200 + " … (truncated)".length);
+});
+
+test("a reply goes to reply_to, else the sender, in the thread, with the correlation id and no from", () => {
+  const { replyEnvelope } = load().mod;
+  const request = { spec: "0.1", id: "01A", kind: "core.request", from: "data.agent.mbp.review", reply_to: "data.agent.mbp.review-replies", correlation_id: "c1", thread: "01T" };
+  const r = replyEnvelope(request, "yes");
+  expect(r).toMatchObject({ kind: "core.message", plane: "data", to: ["data.agent.mbp.review-replies"], in_reply_to: "01A", thread: "01T", correlation_id: "c1", body: { text: "yes" } });
+  expect("from" in r).toBe(false);
+  const plain = replyEnvelope({ id: "01B", from: "data.agent.mbp.build" }, "ok");
+  expect(plain).toMatchObject({ to: ["data.agent.mbp.build"], thread: "01B" });
+  expect("correlation_id" in plain).toBe(false);
+});
+
+test("start-up checks rpc.discover, learns its address from whoami, reads everything, then watches", async () => {
+  const { mod } = load();
+  const { calls, view, shared } = await started(service(mod.METHODS, { fetch: ok([msg("01A"), msg("01B", { kind: "core.mail" })]) }));
+  expect(calls.every((c) => c.command === "crosstalk")).toBe(true);
+  expect(calls.map((c) => c.args[0] === "rpc" ? c.args[1] : c.args.join(" "))).toEqual(["rpc.discover", "whoami", "fetch", "presence.list", "task.list", "watch --once --json --timeout 60s"]);
+  expect(JSON.parse(calls[2].args[2])).toEqual({ limit: 200 });
+  expect(view.me.address).toBe("data.person.abhi");
+  expect(shared["crosstalk.unread"]).toBe(2);
+});
+
+test("a crosstalk without every method the mod needs is refused, naming what is missing", async () => {
+  const { calls, view } = await started(service(["whoami", "fetch"]));
+  expect(view.ready).toBe(false);
+  expect(view.problem.kind).toBe("unsupported");
+  expect(view.problem.hint).toContain("task.claim");
+  expect(calls).toHaveLength(1);
+});
+
+test("an unreachable service backs off and starts no watch", async () => {
+  const { calls, view } = await started({ "rpc.discover": { code: 69, stderr: "cannot start" } });
+  expect(view.problem.kind).toBe("unavailable");
+  expect(view.retryAt).toBeGreaterThan(Date.now());
+  expect(calls.some((c) => c.args[0] === "watch")).toBe(false);
+});
+
+test("bad usage is a bug the person hears about", async () => {
+  const { toasts } = await started({ "rpc.discover": { code: 64, stderr: "unknown flag" } });
+  expect(toasts).toHaveLength(1);
+  expect(toasts[0]).toMatchObject({ level: "error", title: "crosstalk inbox: bug" });
+});
+
+test("a message event re-reads the inbox, a timeout re-arms, and close stops re-arming", async () => {
+  const { mod } = load();
+  let fetches = 0;
+  const h = await started(service(mod.METHODS, { fetch: () => { fetches++; return ok(fetches > 1 ? [msg("01A")] : []); } }), [
+    { code: 0, stdout: JSON.stringify({ type: "message", id: "01A", subject: "data.person.abhi" }) },
+    { code: 124 },
+  ]);
+  const watches = () => h.calls.filter((c) => c.args[0] === "watch").length;
+  expect(fetches).toBe(2);
+  expect(h.view.inbox.map((d: any) => d.envelope.id)).toEqual(["01A"]);
+  expect(watches()).toBe(3); // the event, the timeout, and the one now waiting
+  h.view.watching = false;
+  await h.view.close();
+  h.view.arm(h.cx);
+  await h.settle();
+  expect(watches()).toBe(3);
+});
+
+test("a request toasts once, and not again within the merge window", async () => {
+  const { mod } = load();
+  const { view, toasts } = await started(service(mod.METHODS, { fetch: ok([msg("01R", { kind: "core.request", body: { text: "review\x1b[31m this?" } })]) }));
+  expect(toasts).toHaveLength(1);
+  expect(toasts[0]).toMatchObject({ title: "Request from data.agent.mbp.review", body: "review this?", action: { name: "mod.open", args: { name: "crosstalk" } } });
+  view.setInbox([msg("01R", { kind: "core.request" }), msg("01S", { kind: "core.request" })]);
+  expect(toasts).toHaveLength(1);
+  view.setInbox([msg("01R", { kind: "core.request" })]);
+  expect(toasts).toHaveLength(1);
+});
+
+test("actions are one call each with the pinned params", async () => {
+  const { mod } = load();
+  const h = await started(service(mod.METHODS, { fetch: ok([msg("01A")]), "task.list": ok([{ id: "T1", status: "open", version: 3, title: "x" }]) }));
+  const sent = (m: string) => h.calls.filter((c) => c.args[0] === "rpc" && c.args[1] === m).map((c) => JSON.parse(c.args[2]));
+  h.view.open = "01A";
+  h.view.act("ack", { id: "01A" }, h.cx);
+  h.view.act("nack", { id: "01A", delay_s: 600 }, h.cx);
+  h.view.act("task.claim", { id: "T1", expect_status: "open", expect_version: 3 }, h.cx);
+  h.input.set_value("  thanks  ");
+  h.view.reply(h.cx);
+  await h.settle();
+  expect(sent("ack")).toEqual([{ id: "01A" }]);
+  expect(sent("nack")).toEqual([{ id: "01A", delay_s: 600 }]);
+  expect(sent("task.claim")).toEqual([{ id: "T1", expect_status: "open", expect_version: 3 }]);
+  const [pub] = sent("publish");
+  expect(pub.envelope).toMatchObject({ to: ["data.agent.mbp.review"], in_reply_to: "01A", body: { text: "thanks" } });
+  expect(h.input.value()).toBe("");
+});
+
+test("a failed action says why and changes nothing", async () => {
+  const { mod } = load();
+  const h = await started(service(mod.METHODS, { "task.claim": fails("conflict", "someone claimed it first") }));
+  h.view.act("task.claim", { id: "T1", expect_status: "open", expect_version: 1 }, h.cx);
+  await h.settle();
+  expect(h.view.note).toBe("task.claim: conflict (someone claimed it first)");
+});
+
+test("the sender's pane comes only from presence's x-herdr.terminal", async () => {
+  const { mod } = load();
+  const h = await started(service(mod.METHODS, { "presence.list": ok([{ address: "data.agent.mbp.review", state: "idle", ext: { "x-herdr.terminal": "t7" } }]) }));
+  expect(h.view.terminalOf("data.agent.mbp.review")).toBe("t7");
+  expect(h.view.terminalOf("data.agent.mbp.other")).toBe(null);
+});

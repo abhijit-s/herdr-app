@@ -1021,7 +1021,8 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
   `~/.herdr/worktrees/<repo>/<branch>` on the space's machine, a constant
   at its top; the
   `spaces` sidebar nests worktree spaces under their repo's and shows each
-  space's repo, branch, ahead/behind and uncommitted changes). Shipped mods
+  space's repo, branch, ahead/behind and uncommitted changes),
+  and `crosstalk` (the person's crosstalk inbox, tasks and agents, opened with `mod.open {name: "crosstalk"}`; it only runs the `crosstalk` command, `rpc` and `watch --once`, shows message bodies as cleaned plain text, and puts the unread count in `shared("crosstalk.unread")`). Shipped mods
   are Herdr's; duplicate with `mod.clone` before editing.
 
 ### Check before you finish

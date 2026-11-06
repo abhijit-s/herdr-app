@@ -438,6 +438,18 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Files: `src/settings.rs` (`Steps`, `contrast`, `with_alpha`, `resolve`, `mix`, `SidebarShade`, `set_window_active`, `reshade`, `PanelColors`, `tinted_panels`, `classic_panels`), `tests/fixtures/master-panels.json`, `src/window.rs` (`shade_sidebar`, `theme_changed`), `src/mods.rs` (`theme` read recorded), `defaults/AGENTS.md`, `defaults/frame/settings/main.js`, `scripts/settings.test.ts`
 - Upstream: maybe. It's a derivation improvement and carries no Rex data.
 
+### crosstalk inbox mod
+
+A default mod, `crosstalk`, for [crosstalk](https://github.com/abhijit-s/crosstalk) (agent messaging; the herdr-core host lives in that repo as `host/herdr`): the person's inbox, tasks and agents in one panel, opened with `mod.open {name: "crosstalk"}` (command palette). Fork-only: it is a client of a separate tool, not a Herdr feature.
+
+- It is an ordinary crosstalk client and nothing else: every call is `exec("crosstalk", ["rpc", <method>, <params JSON>])`, and push is one `crosstalk watch --once --json --timeout 60s` at a time, re-armed after each event or timeout. It never opens a socket or reads crosstalk's or herdr-core's files or documents. Start-up checks `rpc.discover` lists every method it calls (`METHODS`) and takes its own address from `whoami`; it never supplies `from`.
+- Exit codes as the crosstalk CLI defines them: 0 with an error object shows its kind and hint; 69 (service unavailable) backs off from 1 s to 60 s; 124 re-arms the watch; 64 (bad usage) is a bug and posts an error toast.
+- Message bodies are untrusted: escape sequences, control characters and bidirectional overrides are removed, previews are 200 characters and a full body 64 KiB with a truncation marker, the sender is drawn outside the body in the mod's own colours, and no body is ever typed into a terminal. A `core.request` toasts at most once per 30 s. "Open sender's pane" uses only presence's `x-herdr.terminal`.
+- `exec` cannot be cancelled, so `close()` stops re-arming and a watch already waiting ends at its 60 s timeout.
+- It needs crosstalk's service and CLI (milestone M1 phases P3 and P4); until those exist it shows "crosstalk is not available" and retries. Tests run it against a fake `exec`.
+- Files: `defaults/mods/crosstalk/`, `scripts/crosstalk.test.ts`, `justfile` (`test`), `defaults/AGENTS.md`, `src/mods/render_tests.rs` (the render fixture answers `crosstalk` with exit 69)
+- Upstream: no. It is a client of crosstalk.
+
 ### Rejected text experiments
 
 Two text-quality experiments measured against the shipped thicken, contrast and weight settings, and not kept. The numbers are here so neither is tried again without a new reason.
