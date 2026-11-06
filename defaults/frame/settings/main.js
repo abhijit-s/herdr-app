@@ -23,16 +23,35 @@ export function scaleStep(asked, composed, delta, [lo, hi]) {
 const SPACING_DEFAULTS = { pane_gap: 0, area_padding: [0, 0], area_gap: 0, terminal_padding: [10, 6] };
 const SPACING_RANGE = [0, 40];
 
-// The first block showing a tab's panes, and the node holding it.
+// The tab block on screen, as Herdr finds it (the first visible one: hidden
+// nodes and a stack's other children don't count), and the node holding it.
 function tabBlock(node, parent = null) {
-  if (!node || typeof node !== "object") return null;
+  if (!node || typeof node !== "object" || node.hidden) return null;
   const c = node.content;
   if (node.type === "block" && c && typeof c === "object" && ("tab" in c || "context" in c)) return { block: node, parent };
-  for (const child of Array.isArray(node.children) ? node.children : []) {
+  const children = (Array.isArray(node.children) ? node.children : []).filter((child) => child && !child.hidden);
+  const shown = node.type === "stack" ? [children.find((child) => child.id === node.active) ?? children[0]].filter(Boolean) : children;
+  for (const child of shown) {
     const found = tabBlock(child, node);
     if (found) return found;
   }
   return null;
+}
+
+// The spacing fields as a tree writes them (undefined: left out), for
+// telling a click from the file's own value.
+function spacingRaw(tree) {
+  const found = tabBlock(tree);
+  const area = ["row", "column"].includes(found?.parent?.type) ? found.parent : null;
+  return { pane_gap: found?.block.content.pane?.gap, area_padding: area?.padding, area_gap: area?.gap, terminal_padding: tree?.terminal_padding };
+}
+
+// Spacing values arrive as f32 widened to f64 (2.3 as 2.299999952...).
+function sameSpacing(a, b) {
+  const pair = (v) => (typeof v === "number" ? [v, v] : v);
+  if (a === undefined || b === undefined) return a === b;
+  const [x, y] = [pair(a), pair(b)];
+  return Array.isArray(x) && Array.isArray(y) && x.length === y.length && x.every((v, i) => Math.abs(v - y[i]) < 0.005);
 }
 
 // Each spacing value a layout tree shows with, or null for one it has no
@@ -766,7 +785,7 @@ export default class Settings extends View {
 
   // The shown layout's spacing (layout() is the layout with its clicks):
   // set as clicks on it, so its file stays as written. Reset shows where a
-  // value differs from the file's and puts the file's back.
+  // value differs from the file's (set or not) and puts the file's back.
   spacing(t, cx) {
     const name = shared("layout") ?? "main";
     if (this.layoutFile?.name !== name && this.layoutFileFor !== name) {
@@ -779,12 +798,23 @@ export default class Settings extends View {
     }
     const box = v_flex().w_full().child(this.heading(t, "Spacing"));
     const note = (text) => div().pt(10).text_size(12.5).line_height("18px").text_color(t.dim).child(text);
-    const s = spacingOf(layout());
+    const shown = layout();
+    const s = spacingOf(shown);
     if (!s) return box.child(note("This layout shows no tab's panes."));
-    const file = this.layoutFile?.name === name && this.layoutFile.tree ? spacingOf(this.layoutFile.tree) : null;
-    const clicked = (key) => file !== null && JSON.stringify(file?.[key]) !== JSON.stringify(s[key]);
-    const show = (v) => (Array.isArray(v) ? (v[0] === v[1] ? `${v[0]}` : `${v[0]}, ${v[1]}`) : `${v}`);
+    // A step not yet in layout() (layout.spacing applies after this returns):
+    // the next step counts from it, so quick clicks each move one.
+    this.spacingPending ??= {};
+    for (const [key, { value, at }] of Object.entries(this.spacingPending)) {
+      if (sameSpacing(value, s[key]) || Date.now() - at > 1000) delete this.spacingPending[key];
+      else s[key] = value;
+    }
+    const raw = spacingRaw(shown);
+    const fileRaw = this.layoutFile?.name === name && this.layoutFile.tree ? spacingRaw(this.layoutFile.tree) : null;
+    const clicked = (key) => fileRaw !== null && !sameSpacing(raw[key], fileRaw[key]);
+    const round = (v) => Math.round(v * 100) / 100;
+    const show = (v) => (Array.isArray(v) ? (sameSpacing(v[0], v[1]) ? `${round(v[0])}` : `${round(v[0])}, ${round(v[1])}`) : `${round(v)}`);
     const set = (key, value, cx) => {
+      if (key !== "reset") this.spacingPending[key] = { value, at: Date.now() };
       run("layout.spacing", { [key]: value });
       cx.notify();
     };
@@ -805,14 +835,14 @@ export default class Settings extends View {
     const tr = reset("terminal_padding");
     const missing = [
       s.pane_gap === null ? "doesn't frame its panes, so they have no gap to set" : null,
-      s.area_gap === null ? "has no row or column around its panes, so their area has no spacing to set" : null,
+      s.area_gap === null ? "has no row or column around its panes, so their container has no spacing to set" : null,
     ].filter(Boolean);
     return box
       .children(
         [
           px("pane_gap", "Pane gap", "Space between a tab's panes."),
-          px("area_padding", "Pane area padding", "Space between the panes and the edge of their area."),
-          px("area_gap", "Pane area gap", "Space between the panes' area and the panels beside it."),
+          px("area_padding", "Pane container padding", "Padding inside the row or column the panes sit in."),
+          px("area_gap", "Pane container gap", "Space between the panes and what sits beside them in that row or column."),
         ].filter(Boolean),
       )
       .child(

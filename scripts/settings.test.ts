@@ -321,7 +321,7 @@ async function spacingClick(shown: any, file: any, id?: string) {
   const group = view.spacing(new Proxy({}, { get: () => "#000000" }), {});
   const button = id ? find(group, id) : undefined;
   button?.calls.on_click[0](null, { notify() {} });
-  return { group, button, runs: layoutDisk.runs };
+  return { view, group, button, runs: layoutDisk.runs };
 }
 
 test("spacing steppers run layout.spacing, never write the layout file, and stay within 0 to 40", async () => {
@@ -362,4 +362,56 @@ test("a layout with nothing to space hides those controls and says why", async (
   expect(find(group, "st-sp-terminal_padding-x-plus")).toBeDefined();
   const none = await spacingClick({ id: "root", type: "row", children: [] }, null);
   expect(find(none.group, "st-sp-terminal_padding-x-plus")).toBeUndefined();
+});
+
+/** Every string drawn under `root`. */
+function texts(root: any): string[] {
+  return (root?.nodes ?? []).flatMap((n: any) => (typeof n === "string" ? [n] : texts(n)));
+}
+
+test("spacing follows the tab block on screen: not a hidden one, not a stack's other child", () => {
+  const tree = {
+    id: "root", type: "row", children: [
+      { id: "h", type: "block", hidden: true, content: { tab: "active", pane: { gap: 1 } } },
+      { id: "st", type: "stack", active: "b", children: [
+        { id: "a", type: "column", gap: 2, children: [{ id: "ta", type: "block", content: { tab: "active", pane: { gap: 3 } } }] },
+        { id: "b", type: "row", gap: 4, children: [{ id: "tb", type: "block", content: { tab: "active", pane: { gap: 5 } } }] },
+      ] },
+    ],
+  };
+  expect(spacingOf(tree)).toMatchObject({ pane_gap: 5, area_gap: 4 });
+  (tree.children[1] as any).active = undefined;
+  expect(spacingOf(tree)).toMatchObject({ pane_gap: 3, area_gap: 2 });
+});
+
+test("spacing shows f32 values rounded, and a value equal to the file's offers no reset", async () => {
+  const shown = deck();
+  shown.children[1].children[0].content.pane!.gap = 2.299999952316284;
+  const file = deck();
+  file.children[1].children[0].content.pane!.gap = 2.3;
+  const { group } = await spacingClick(shown, file);
+  expect(texts(group)).toContain("2.3");
+  expect(texts(group).some((t) => t.includes("2.2999"))).toBe(false);
+  expect(find(group, "st-sp-pane_gap-reset")).toBeUndefined();
+});
+
+test("a click equal to Herdr's default still offers a reset when the file leaves the field out", async () => {
+  const file = deck();
+  delete (file as any).terminal_padding;
+  const shown = deck();
+  shown.terminal_padding = [10, 6];
+  const { group } = await spacingClick(shown, file);
+  expect(find(group, "st-sp-terminal_padding-reset")).toBeDefined();
+});
+
+test("quick clicks each step once, before layout() catches up", async () => {
+  const { view } = await spacingClick(deck(), deck());
+  const t = new Proxy({}, { get: () => "#000000" });
+  for (let i = 0; i < 2; i++) find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, { notify() {} });
+  expect(layoutDisk.runs).toEqual([["layout.spacing", { pane_gap: 7 }], ["layout.spacing", { pane_gap: 8 }]]);
+  // Once layout() shows it, the pending step is gone and layout() leads again.
+  layoutDisk.shown = deck();
+  layoutDisk.shown.children[1].children[0].content.pane.gap = 8;
+  find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, { notify() {} });
+  expect(layoutDisk.runs.at(-1)).toEqual(["layout.spacing", { pane_gap: 9 }]);
 });
