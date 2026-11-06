@@ -191,7 +191,7 @@ mod tests {
     fn only_a_bare_shell_shows_the_automatic_name() {
         let home = "/home/me";
         let cwd = Some("/home/me/src/herdr");
-        for title in ["", "  ", "t1", "zsh", "-zsh", "bash", "pwsh.exe", "~/src/herdr", "/home/me/src/herdr", "herdr", "me@box: ~/src/herdr", "me@box:~", "C:\\src\\herdr", "\u{2026}/src/herdr"] {
+        for title in ["", "  ", "t1", "zsh", "-zsh", "bash", "pwsh.exe", "~/src/herdr", "/home/me/src/herdr", "herdr", "me@box: ~/src/herdr", "me@box:~", "me@box:", "C:\\src\\herdr", "\u{2026}/src/herdr"] {
             assert!(shown(false, &shell(), title, "t1", cwd, home), "{title:?} says nothing");
         }
         for title in ["deploy", "vim notes.md", "me@box: deploy", "herdr-app", "ping me@box: ~/src"] {

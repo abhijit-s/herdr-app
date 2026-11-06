@@ -989,13 +989,15 @@ fn pane_headers_show_the_automatic_name_after_the_persons(cx: &mut TestAppContex
     let shell = json!({"key":"shell", "name":"zsh", "icon":null, "tint":true, "tile":null, "color":null, "shell":true, "agent":false});
     // What each shows without one: the shell's program name, the title else "shell".
     for (entry, fallback) in [("mods/pane", "zsh"), ("mods/terminals-pane", "shell")] {
+        // A shell's title as Herdr gives it an automatic name: a folder, never empty.
         let header = |name: Value, auto_name: Value, cx: &mut TestAppContext| {
+            let title = if auto_name.is_null() { "" } else { "~/src" };
             let mut values = fixture(true, props(), updates("current", "current"));
-            values.insert("panes".into(), json!([{"pane":"p1","terminal":"t1","tab":"tab1","title":"","name":name,"auto_name":auto_name,"cwd":"/fixture/project","branch":null,"status":null,"app":null,"program":shell,"focused":true,"zoomed":false}]));
+            values.insert("panes".into(), json!([{"pane":"p1","terminal":"t1","tab":"tab1","title":title,"name":name,"auto_name":auto_name,"cwd":"/fixture/project","branch":null,"status":null,"app":null,"program":shell,"focused":true,"zoomed":false}]));
             describe_with_values(cx, &staged, entry, values, None).unwrap()
         };
         let tree = header(Value::Null, json!("hazy-inlet"), cx);
-        assert!(tree.contains("\"hazy-inlet\""), "{entry}: {tree}");
+        assert!(tree.contains("\"hazy-inlet\"") && !tree.contains("\"~/src\""), "{entry}: the automatic name before the folder title: {tree}");
         let tree = header(json!("build"), json!("hazy-inlet"), cx);
         assert!(tree.contains("\"build\"") && !tree.contains("hazy-inlet"), "{entry}: the person's name first: {tree}");
         let tree = header(Value::Null, Value::Null, cx);
