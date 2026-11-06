@@ -67,6 +67,12 @@ const DIM_SCOPES = [
   ["window", "Window"],
   ["text", "Text"],
 ];
+// When the sidebar takes a shade darker; Active is the default, left out of settings.json.
+const SIDEBAR_SHADES = [
+  ["active", "Darker when active"],
+  ["flat", "Flat"],
+  ["always", "Always darker"],
+];
 const RESUME_AGENTS = [
   ["ask", "Ask"],
   ["auto", "Auto"],
@@ -557,6 +563,7 @@ export default class Settings extends View {
       .child(this.heading(t, "Inactive window"))
       .child(this.contrast(t, "unfocused_dim", "Dim when inactive", "Fades this far toward the background while Herdr isn't the active window."))
       .child(this.row(t, "Dim", "The whole window, or only terminal text.", this.choicePicker(t, "st-ds", "unfocused_dim_scope", DIM_SCOPES)))
+      .child(this.row(t, "Sidebar shade", "A shade darker sidebar, while Herdr is the active window or always.", this.choicePicker(t, "st-ss", "sidebar_shade", SIDEBAR_SHADES)))
       .child(div().h(18))
       .child(this.heading(t, "Mouse"))
       .child(this.followsMouse(t, cx))

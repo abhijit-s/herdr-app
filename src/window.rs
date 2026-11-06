@@ -612,6 +612,8 @@ pub struct AppWindow {
     _tasks: Vec<Task<()>>,
     /// Gives the keyboard back when what had it leaves the screen (`restore_focus`).
     _focus_lost: Option<Subscription>,
+    /// Shades the sidebars as the window gains or loses focus (`sidebar_shade`).
+    _activation: Option<Subscription>,
     /// Remembers where the window is (`place.rs`); the write waiting to settle.
     _place: Option<Subscription>,
     place_write: Option<Task<()>>,
@@ -709,10 +711,13 @@ impl AppWindow {
             focus: cx.focus_handle(),
             _tasks: Vec::new(),
             _focus_lost: None,
+            _activation: None,
             _place: None,
             place_write: None,
         };
         w._focus_lost = Some(cx.on_focus_lost(window, |this, window, cx| this.restore_focus(window, cx)));
+        settings::set_window_active(window.is_window_active());
+        w._activation = Some(cx.observe_window_activation(window, |this, window, cx| this.shade_sidebar(window, cx)));
         w._place = Some(cx.observe_window_bounds(window, |this, window, cx| {
             if let Some(t) = crate::place::changed(window, cx) {
                 this.place_write = Some(t);
@@ -1051,12 +1056,25 @@ impl AppWindow {
             self.report_layout(&problems.join("; "));
         }
         if settings::set(s) {
-            for term in self.terms.values() {
-                term.view.read(cx).refresh_theme();
-            }
-            mods::apply_theme(cx);
-            self.refresh_mods(cx);
-            window.refresh();
+            self.theme_changed(window, cx);
+        }
+    }
+
+    fn theme_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for term in self.terms.values() {
+            term.view.read(cx).refresh_theme();
+        }
+        mods::apply_theme(cx);
+        self.refresh_mods(cx);
+        window.refresh();
+    }
+
+    /// `sidebar_shade` follows the window's focus: the settings in use, with
+    /// the theme resolved again for the new state, only when that changes it.
+    fn shade_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        settings::set_window_active(window.is_window_active());
+        if settings::set((*settings::get()).clone()) {
+            self.theme_changed(window, cx);
         }
     }
 
@@ -7608,6 +7626,57 @@ export default class Probe extends View {
     #[test]
     fn the_whole_window_dims_while_inactive() {
         in_own_process("unfocused_dim_window");
+    }
+
+    #[test]
+    fn the_sidebar_shade_follows_focus() {
+        in_own_process("sidebar_shade_focus");
+    }
+
+    /// `sidebar_shade` swaps `chrome` as the window gains and loses focus,
+    /// with no poll in between: the theme everything reads changes at once.
+    #[gpui::test]
+    fn sidebar_shade_focus(cx: &mut gpui::TestAppContext) {
+        use crate::settings::SidebarShade;
+        use serde_json::json;
+        if !running_alone("sidebar_shade_focus") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        let chrome = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            crate::settings::theme()["chrome"].clone()
+        };
+        view.update_in(cx, |this, window, cx| {
+            this.person.appearance = crate::settings::Appearance::Dark;
+            this.apply_look(window, cx);
+        });
+        cx.update(|window, _| window.activate_window());
+        let shaded = chrome(cx);
+        cx.deactivate_window();
+        let flat = chrome(cx);
+        assert_ne!(shaded, flat, "active, the dark default theme's sidebar is a shade darker");
+        assert_eq!(crate::settings::theme()["canvas"], shaded, "the shade sits level with canvas");
+        cx.update(|window, _| window.activate_window());
+        assert_eq!(chrome(cx), shaded, "focused again, shaded again");
+        for (mode, active, inactive) in [(SidebarShade::Flat, &flat, &flat), (SidebarShade::Always, &shaded, &shaded)] {
+            view.update_in(cx, |this, window, cx| {
+                this.person.sidebar_shade = mode;
+                this.apply_look(window, cx);
+            });
+            assert_eq!(&chrome(cx), active, "{mode:?} while active");
+            cx.deactivate_window();
+            assert_eq!(&chrome(cx), inactive, "{mode:?} while inactive");
+            cx.update(|window, _| window.activate_window());
+        }
+        view.update_in(cx, |this, window, cx| {
+            this.person.sidebar_shade = SidebarShade::Active;
+            this.person.colors.insert("chrome".into(), "#202020".into());
+            this.apply_look(window, cx);
+        });
+        assert_eq!(chrome(cx), "#202020", "an own chrome wins while active");
+        cx.deactivate_window();
+        assert_eq!(chrome(cx), "#202020", "an own chrome wins while inactive");
     }
 
     /// With `unfocused_dim` over the window (the default scope), blurring lays

@@ -282,7 +282,7 @@ pub fn themes() -> Vec<(String, Theme)> {
         .iter()
         .map(|n| n.to_string())
         .chain(files)
-        .filter_map(|n| palette(&n).ok().map(|(p, o)| (n, resolve(&p, &o))))
+        .filter_map(|n| palette(&n).ok().map(|(p, o)| (n, resolve(&p, &o, false))))
         .collect()
 }
 
@@ -313,6 +313,10 @@ pub type Theme = BTreeMap<String, String>;
 struct Steps {
     canvas: f32,
     chrome: f32,
+    /// `chrome` with `sidebar_shade` on: where a dark theme's window
+    /// backdrop sits while active, level with `canvas`. Light themes keep
+    /// their sidebar as is.
+    chrome_active: f32,
     popover: f32,
     raised: f32,
     border: f32,
@@ -324,9 +328,9 @@ struct Steps {
 }
 
 const DARK_STEPS: Steps =
-    Steps { canvas: -0.022, chrome: 0.016, popover: 0.066, raised: 0.086, border: 0.153, input: 0.26, hover: 0.042, selected: 0.075, muted: 0.614, dim: 0.459 };
+    Steps { canvas: -0.022, chrome: 0.016, chrome_active: -0.022, popover: 0.066, raised: 0.086, border: 0.153, input: 0.26, hover: 0.042, selected: 0.075, muted: 0.614, dim: 0.459 };
 const LIGHT_STEPS: Steps =
-    Steps { canvas: 0.015, chrome: 0.068, popover: 0.0, raised: 0.035, border: 0.096, input: 0.214, hover: 0.048, selected: 0.09, muted: 0.752, dim: 0.598 };
+    Steps { canvas: 0.015, chrome: 0.068, chrome_active: 0.068, popover: 0.0, raised: 0.035, border: 0.096, input: 0.214, hover: 0.048, selected: 0.09, muted: 0.752, dim: 0.598 };
 
 /// WCAG contrast ratio of two colors.
 fn contrast(a: u32, b: u32) -> f32 {
@@ -344,7 +348,8 @@ fn contrast(a: u32, b: u32) -> f32 {
 /// The panel colors around a palette, each a step from the terminal's
 /// background toward its foreground (`Steps`). Panel text uses a neutral
 /// ink for contrast, its quieter tiers stepped toward it the same way.
-fn resolve(p: &Palette, overrides: &BTreeMap<String, String>) -> Theme {
+/// `shaded` takes `chrome` a shade darker (`sidebar_shade`).
+fn resolve(p: &Palette, overrides: &BTreeMap<String, String>, shaded: bool) -> Theme {
     let bg = p.background;
     let light = is_light(bg);
     let s = if light { &LIGHT_STEPS } else { &DARK_STEPS };
@@ -360,7 +365,7 @@ fn resolve(p: &Palette, overrides: &BTreeMap<String, String>) -> Theme {
         ("foreground", hex(fg)),
         ("surface", hex(bg)),
         ("canvas", tint(s.canvas)),
-        ("chrome", tint(s.chrome)),
+        ("chrome", tint(if shaded { s.chrome_active } else { s.chrome })),
         ("popover", tint(s.popover)),
         ("raised", tint(s.raised)),
         ("hover", with_alpha(p.foreground, s.hover)),
@@ -435,8 +440,10 @@ mod derivation_tests {
 
     #[test]
     fn panels_layer_away_from_the_terminal() {
-        for (name, p) in palettes() {
-            let t = resolve(&p, &BTreeMap::new());
+        for ((name, p), shaded) in palettes().into_iter().flat_map(|p| [(p.clone(), false), (p, true)]) {
+            let t = resolve(&p, &BTreeMap::new(), shaded);
+            let (chrome, canvas) = (lightness(rgb(&t, "chrome")), lightness(rgb(&t, "canvas")));
+            assert!(if is_light(p.background) { chrome < canvas } else { canvas <= chrome }, "{name}: chrome {chrome} against canvas {canvas}, shaded {shaded}");
             let [canvas, surface, popover, raised] = ["canvas", "surface", "popover", "raised"].map(|k| lightness(rgb(&t, k)));
             if is_light(p.background) {
                 assert!(canvas < surface && raised < popover && popover <= surface, "{name}: light layers {canvas} {surface} {popover} {raised}");
@@ -450,8 +457,8 @@ mod derivation_tests {
     /// public themes before the steps were tuned, so no theme reads worse.
     #[test]
     fn panel_text_keeps_its_contrast() {
-        for (name, p) in palettes() {
-            let t = resolve(&p, &BTreeMap::new());
+        for ((name, p), shaded) in palettes().into_iter().flat_map(|p| [(p.clone(), false), (p, true)]) {
+            let t = resolve(&p, &BTreeMap::new(), shaded);
             for panel in ["surface", "canvas", "chrome", "popover", "raised"] {
                 for (text, floor) in [("foreground", 6.9), ("muted", 3.35), ("dim", 2.1)] {
                     let c = contrast(rgb(&t, text), rgb(&t, panel));
@@ -466,10 +473,10 @@ mod derivation_tests {
     fn explicit_colors_win() {
         let colors: BTreeMap<String, String> =
             ["canvas", "chrome", "popover", "raised", "border", "hover", "dim", "ring"].iter().map(|k| (k.to_string(), "#123456".into())).collect();
-        for (name, p) in palettes() {
-            let t = resolve(&p, &colors);
+        for ((name, p), shaded) in palettes().into_iter().flat_map(|p| [(p.clone(), false), (p, true)]) {
+            let t = resolve(&p, &colors, shaded);
             for k in colors.keys() {
-                assert_eq!(t[k], "#123456", "{name}: {k}");
+                assert_eq!(t[k], "#123456", "{name}: {k}, shaded {shaded}");
             }
         }
     }
@@ -477,11 +484,45 @@ mod derivation_tests {
     #[test]
     fn panels_take_the_theme_tint() {
         let p = parse_theme_file("t", r##"{"background":"#101820","foreground":"#80c0ff","selection":"#203040","ansi":["#000000","#000000","#000000","#000000","#4080ff","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000"]}"##).unwrap().0;
-        let t = resolve(&p, &BTreeMap::new());
+        let t = resolve(&p, &BTreeMap::new(), false);
         assert_eq!(t["border"], hex(mix(0x101820, 0x80c0ff, DARK_STEPS.border)));
         assert_eq!(t["hover"], with_alpha(0x80c0ff, DARK_STEPS.hover));
         let border = rgb(&t, "border");
         assert!(border & 255 > (border >> 16) & 255, "a blue foreground tints the border blue: {border:06x}");
+    }
+
+    #[test]
+    fn sidebar_shade_darkens_chrome_only_when_it_shades() {
+        let shades = |mode: SidebarShade| [true, false].map(|active| mode.shades(active));
+        assert_eq!(shades(SidebarShade::Flat), [false, false]);
+        assert_eq!(shades(SidebarShade::Active), [true, false]);
+        assert_eq!(shades(SidebarShade::Always), [true, true]);
+        for (name, p) in palettes() {
+            let [flat, shaded] = [false, true].map(|s| resolve(&p, &BTreeMap::new(), s));
+            assert_eq!(flat.iter().filter(|(k, v)| shaded[*k] != **v).map(|(k, _)| k.as_str()).collect::<Vec<_>>(), if is_light(p.background) || flat["chrome"] == shaded["chrome"] { vec![] } else { vec!["chrome"] }, "{name}");
+            if !is_light(p.background) && p.background != 0 {
+                assert!(lightness(rgb(&shaded, "chrome")) < lightness(rgb(&flat, "chrome")), "{name}: the shade is darker");
+                assert_eq!(shaded["chrome"], shaded["canvas"], "{name}: the shade sits level with canvas");
+            }
+        }
+        let p = preset("graphite").unwrap();
+        let own: BTreeMap<String, String> = [("chrome".to_owned(), "#202020".to_owned())].into();
+        assert_eq!(resolve(p, &own, true)["chrome"], "#202020", "a theme's own chrome is never shaded");
+    }
+
+    #[test]
+    fn sidebar_shade_defaults_to_active_and_refuses_others() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.sidebar_shade, SidebarShade::Active);
+        assert_eq!(serde_json::to_value(&default).unwrap().get("sidebar_shade"), None);
+        for (value, mode) in [("flat", SidebarShade::Flat), ("active", SidebarShade::Active), ("always", SidebarShade::Always)] {
+            let person: Person = serde_json::from_value(serde_json::json!({"sidebar_shade": value})).unwrap();
+            assert_eq!(Settings::compose(&person, &crate::layout::Look::default(), true).sidebar_shade, mode);
+        }
+        assert_eq!(serde_json::to_value(Person { sidebar_shade: SidebarShade::Flat, ..Person::default() }).unwrap()["sidebar_shade"], "flat");
+        for bad in [serde_json::json!({"sidebar_shade": "dark"}), serde_json::json!({"sidebar_shade": true})] {
+            assert!(serde_json::from_value::<Person>(bad.clone()).is_err(), "{bad} is refused");
+        }
     }
 
     #[test]
@@ -590,6 +631,9 @@ pub struct Person {
     /// background.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unfocused_dim_color: Option<String>,
+    /// When the sidebars and bars take a shade darker: `flat`, `active` or `always`.
+    #[serde(skip_serializing_if = "SidebarShade::is_active")]
+    pub sidebar_shade: SidebarShade,
     /// Trial: smooth terminal text with a coverage per color channel
     /// (subpixel, on 1x displays) rather than one (grayscale) (macOS).
     #[serde(skip_serializing_if = "TextRendering::is_grayscale")]
@@ -757,6 +801,27 @@ pub enum DimScope {
 impl DimScope {
     fn is_window(&self) -> bool {
         *self == DimScope::Window
+    }
+}
+
+/// When the sidebars and bars (`chrome`) take a shade darker than their
+/// flat color: never, while the window is active, or always.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarShade {
+    Flat,
+    #[default]
+    Active,
+    Always,
+}
+
+impl SidebarShade {
+    fn is_active(&self) -> bool {
+        *self == SidebarShade::Active
+    }
+
+    fn shades(self, window_active: bool) -> bool {
+        self == SidebarShade::Always || (self == SidebarShade::Active && window_active)
     }
 }
 
@@ -932,6 +997,7 @@ impl Default for Person {
             unfocused_dim: 0.0,
             unfocused_dim_scope: DimScope::Window,
             unfocused_dim_color: None,
+            sidebar_shade: SidebarShade::Active,
             text_rendering: TextRendering::Grayscale,
             ui_text_rendering: TextRendering::Grayscale,
             subpixel_order: SubpixelOrder::Rgb,
@@ -985,6 +1051,8 @@ pub struct Settings {
     pub unfocused_dim_scope: DimScope,
     /// The color the window fades toward, as written (`dim_color` reads it).
     pub unfocused_dim_color: Option<String>,
+    /// When the sidebars and bars take a shade darker.
+    pub sidebar_shade: SidebarShade,
     /// Terminal text's smoothing (subpixel only where the display allows).
     pub text_rendering: TextRendering,
     /// The panels' text's smoothing.
@@ -1069,6 +1137,7 @@ impl Default for Settings {
             unfocused_dim: 0.0,
             unfocused_dim_scope: DimScope::Window,
             unfocused_dim_color: None,
+            sidebar_shade: SidebarShade::Active,
             text_rendering: TextRendering::Grayscale,
             ui_text_rendering: TextRendering::Grayscale,
             subpixel_order: SubpixelOrder::Rgb,
@@ -1133,6 +1202,7 @@ impl Settings {
             unfocused_dim: person.unfocused_dim,
             unfocused_dim_scope: person.unfocused_dim_scope,
             unfocused_dim_color: person.unfocused_dim_color.clone(),
+            sidebar_shade: person.sidebar_shade,
             text_rendering: person.text_rendering,
             ui_text_rendering: person.ui_text_rendering,
             subpixel_order: person.subpixel_order,
@@ -1273,7 +1343,8 @@ pub fn path() -> std::path::PathBuf {
 
 thread_local! {
     static CURRENT: RefCell<(Rc<Settings>, Rc<Theme>)> =
-        RefCell::new((Rc::new(Settings::default()), Rc::new(resolve(&GRAPHITE, &BTreeMap::new()))));
+        RefCell::new((Rc::new(Settings::default()), Rc::new(resolve(&GRAPHITE, &BTreeMap::new(), false))));
+    static WINDOW_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
 const ZOOM_MIN: f32 = 0.5;
@@ -1328,6 +1399,12 @@ pub fn write_person(person: &Person) -> std::io::Result<()> {
     crate::persist::write_atomic(&path(), serde_json::to_string_pretty(person).unwrap_or_default() + "\n")
 }
 
+/// Notes whether the window is active, which `sidebar_shade` follows;
+/// `set` applies it.
+pub fn set_window_active(active: bool) {
+    WINDOW_ACTIVE.with(|w| w.set(active));
+}
+
 /// Installs new settings; returns whether anything changed.
 pub fn set(s: Settings) -> bool {
     #[cfg(target_os = "macos")]
@@ -1343,7 +1420,7 @@ pub fn set(s: Settings) -> bool {
         // have new colors under the same name.
         let (p, mut colors) = palette(&s.theme).unwrap_or_else(|_| (GRAPHITE.clone(), BTreeMap::new()));
         colors.extend(s.colors.clone());
-        let theme = resolve(&p, &colors);
+        let theme = resolve(&p, &colors, s.sidebar_shade.shades(WINDOW_ACTIVE.with(|w| w.get())));
         if *c.borrow().0 == s && *c.borrow().1 == theme {
             return false;
         }
@@ -2111,7 +2188,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Flat, ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();
