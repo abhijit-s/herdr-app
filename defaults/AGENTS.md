@@ -349,7 +349,7 @@ layout's look and a block can differ:
 - `themes/<name>.json`: `{ "background", "foreground", "selection",
   "cursor"?, "ansi": [16 colors], "colors"?: {...} }`, all `#rrggbb`; panel
   colors are derived from these, `colors` overrides them.
-  With `panel_colors` at its default, each derived panel color is the background stepped toward the theme's own `foreground`, so panels carry the theme's tint: `canvas` a hair darker than the terminal, `chrome` (sidebars, bars) a small step (on a dark theme level with `canvas` while `sidebar_shade` shades it), `popover` then `raised` further on a dark theme (on a light one `popover` is the background and `raised` a light shade), `border` and `input` (the stronger border) further still; `hover` and `selected` are the terminal's `foreground` at low alpha. Panel text stays a neutral ink, with `muted`, `dim`, `idle` and `unknown` stepped from the background toward it, and `ring` is the accent in use (`ansi[4]`, or `colors.accent` when a theme, look or settings.json sets it, its alpha dropped) when that reads at 3:1 on the background, else a mix toward the panel ink, else black or white, so it always reads at 3:1. A `colors` value that isn't `#rrggbb` or `#rrggbbaa` is reported as a problem. Set any of these in `colors` to replace it. A theme file or layout look whose own `colors` paint its panels (`surface`, `popover` or `raised`), such as Win98 or Terminals, or a theme whose `foreground` sits under 3:1 on its background or on the wrong side of it, derives what it leaves unset the classic way (`panel_colors`). settings.json's `colors` don't decide that: they only replace the colors they name.
+  With `panel_colors` at its default, each derived panel color is the background stepped toward the theme's own `foreground`, so panels carry the theme's tint: `canvas` a hair darker than the terminal, `chrome` (sidebars, bars) a small step (on a dark theme level with `canvas` while `sidebar_shade` shades it), `popover` then `raised` further on a dark theme (on a light one `popover` is the background and `raised` a light shade), `border` and `input` (the stronger border) further still; `hover` and `selected` are the terminal's `foreground` at low alpha. Panel text stays a neutral ink, with `muted`, `dim`, `idle` and `unknown` stepped from the background toward it, and `ring` is the accent in use (`ansi[4]`, or `colors.accent` when a theme, look or settings.json sets it, its alpha dropped) when that reads at 3:1 on the background, else a mix toward the panel ink, else black or white, so it always reads at 3:1. `focus`, the active pane's border in the shipped layouts, is the accent in use the same way, under either `panel_colors`, so a theme that leaves it unset keeps its accent there when that reads at 3:1; a theme file's, a look's or settings.json's `colors.focus` sets it apart from the accent. A `colors` value that isn't `#rrggbb` or `#rrggbbaa` is reported as a problem. Set any of these in `colors` to replace it. A theme file or layout look whose own `colors` paint its panels (`surface`, `popover` or `raised`), such as Win98 or Terminals, or a theme whose `foreground` sits under 3:1 on its background or on the wrong side of it, derives what it leaves unset the classic way (`panel_colors`). settings.json's `colors` don't decide that: they only replace the colors they name.
   Herdr ships
   `atom-one-dark`. The original unedited Atom One Dark and Win98 theme files
   are upgraded to readable terminal colors; edited theme files are kept.
@@ -391,13 +391,14 @@ The tab block says how each pane of the shown tab is wrapped:
 ```json
 { "tab": "active",
   "pane": { "gap": 6, "radius": 6, "background": "surface",
-            "border": { "width": 1, "color": "border" }, "focus": { "width": 1, "color": "accent" },
+            "border": { "width": 1, "color": "border" }, "focus": { "width": 1, "color": "focus" },
             "header": { "content": { "mod": "pane" }, "height": 30, "position": "top", "reveal": "always" },
             "lone": false } }
 ```
 
 - The look applies to every pane; `focus` replaces the border while the
   pane has the keyboard; `gap` is the space between panes.
+- Each pane's content sits in by the wider of `border` and `focus`, so moving the focus never resizes a terminal; with the narrower line drawn, the rest is the frame's background. settings.json's `focus_border_width` replaces the `focus` width.
 - `header`: a mod drawn on each pane, one copy per pane, with
   `props().pane` and `props().terminal`. It reads its live facts from
   `panes()` (name, auto_name, title, folder, branch, agent status, focused, zoomed, text_size) and its
@@ -450,7 +451,7 @@ The default window:
         { "id": "tabs", "type": "block", "size": { "px": 30 }, "content": { "mod": "tabs" } },
         { "id": "main", "type": "block", "content": { "tab": "active",
           "pane": { "gap": 6, "radius": 6, "border": { "width": 1, "color": "border" },
-                    "focus": { "width": 1, "color": "accent" } } } } ] } ] }
+                    "focus": { "width": 1, "color": "focus" } } } } ] } ] }
 ```
 
 Sidebar on the right: swap the two children of `root`. No sidebar: set
@@ -921,6 +922,7 @@ What's about the user, never a look:
   pane's right edge (default `true`). It shows only when the pane has
   scrollback — never on the alternate screen (editors, pagers) — and
   drags to move through it.
+- `focus_border_width` (px at zoom 1, `1` to `3`): the width of the active pane's border where the layout frames panes with a `focus` line; unset, the layout's own width. Every pane in the frame sits in by the wider of this and the `border` width, so the focus moving never resizes a terminal. A value outside `1` to `3` is reported as a problem and drawn at the nearer end. Its colour is the theme colour `focus` (set `colors.focus`). The Settings window sets both on its Look page under Panes, as "Focus border" (From theme, or one of the theme's colours as it is now) and "Focus border width" (Layout, 1, 2 or 3 px).
 - `telemetry`: `false` stops anonymous usage data and deletes what wasn't
   sent (on when absent; Settings → Privacy shows each report word for
   word, and `telemetry()` in mods). Once a day the app sends counts:
