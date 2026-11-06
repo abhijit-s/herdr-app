@@ -348,16 +348,24 @@ fn contrast(a: u32, b: u32) -> f32 {
 /// Panel colors, each a step from the terminal's background toward its
 /// foreground (`Steps`). Panel text uses a neutral ink (`ink`) for
 /// contrast, its quieter tiers stepped toward it the same way. `shaded`
-/// takes `chrome` a shade darker (`sidebar_shade`).
-fn tinted_panels(p: &Palette, ink: u32, shaded: bool) -> Vec<(&'static str, String)> {
+/// takes `chrome` a shade darker (`sidebar_shade`), level with `canvas`
+/// even when the theme sets that; `ring` is the accent in use (`accent`,
+/// the theme's or its override) when it reads at 3:1.
+fn tinted_panels(p: &Palette, ink: u32, shaded: bool, accent: u32, own_canvas: Option<&String>) -> Vec<(&'static str, String)> {
     let bg = p.background;
     let s = if is_light(bg) { &LIGHT_STEPS } else { &DARK_STEPS };
     let tint = |t: f32| hex(mix(bg, p.foreground, t));
-    let ring = if contrast(p.ansi[4], bg) >= 3.0 { p.ansi[4] } else { mix(bg, ink, 0.7) };
+    let ring = if contrast(accent, bg) >= 3.0 { accent } else { mix(bg, ink, 0.7) };
     let dim = hex(mix(bg, ink, s.dim));
+    let canvas = tint(s.canvas);
+    let chrome = match (shaded, own_canvas) {
+        (false, _) => tint(s.chrome),
+        (true, Some(own)) if !is_light(bg) => own.clone(),
+        (true, _) => tint(s.chrome_active),
+    };
     vec![
-        ("canvas", tint(s.canvas)),
-        ("chrome", tint(if shaded { s.chrome_active } else { s.chrome })),
+        ("canvas", canvas),
+        ("chrome", chrome),
         ("popover", tint(s.popover)),
         ("raised", tint(s.raised)),
         ("hover", with_alpha(p.foreground, s.hover)),
@@ -420,7 +428,10 @@ fn resolve(p: &Palette, overrides: &BTreeMap<String, String>, panels: PanelColor
     let ink = if light { 0x1b1b1e } else { 0xeeeeef };
     let [working, blocked, done] = p.status.unwrap_or([p.ansi[3], p.ansi[1], p.ansi[4]]);
     let panels = match panels {
-        PanelColors::Tinted if !keeps_classic_panels(p, overrides) => tinted_panels(p, ink, shaded),
+        PanelColors::Tinted if !keeps_classic_panels(p, overrides) => {
+            let accent = overrides.get("accent").and_then(|v| u32::from_str_radix(v.trim_start_matches('#').get(..6)?, 16).ok()).unwrap_or(p.ansi[4]);
+            tinted_panels(p, ink, shaded, accent, overrides.get("canvas"))
+        }
         _ => classic_panels(bg, ink),
     };
     let mut t: Theme = [
@@ -525,7 +536,7 @@ mod derivation_tests {
                     assert!(c >= floor, "{name}: {text} on {panel} is {c:.2}, under {floor}");
                 }
             }
-            assert!(contrast(rgb(&t, "ring"), p.background) >= 3.0 || t["ring"] == hex(mix(p.background, rgb(&t, "foreground"), 0.7)), "{name}: ring");
+            assert!(contrast(rgb(&t, "ring"), p.background) >= 3.0, "{name}: ring {} on {:06x}", t["ring"], p.background);
         }
     }
 
@@ -539,6 +550,18 @@ mod derivation_tests {
                 assert_eq!(t[k], "#123456", "{name}: {k}, shaded {shaded}");
             }
         }
+    }
+
+    #[test]
+    fn ring_follows_the_accent_in_use() {
+        let p = preset("graphite").unwrap();
+        let accent: BTreeMap<String, String> = [("accent".to_owned(), "#3b82f6".to_owned())].into();
+        assert_eq!(resolve(p, &accent, PanelColors::Tinted, false)["ring"], "#3b82f6", "an overridden accent rings too");
+        let faint: BTreeMap<String, String> = [("accent".to_owned(), "#22252a".to_owned())].into();
+        let t = resolve(p, &faint, PanelColors::Tinted, false);
+        assert_eq!(t["ring"], hex(mix(p.background, 0xeeeeef, 0.7)), "an accent under 3:1 falls back");
+        let own: BTreeMap<String, String> = [("accent".to_owned(), "#3b82f6".to_owned()), ("ring".to_owned(), "#ff0000".to_owned())].into();
+        assert_eq!(resolve(p, &own, PanelColors::Tinted, false)["ring"], "#ff0000", "an own ring wins");
     }
 
     #[test]
@@ -568,6 +591,9 @@ mod derivation_tests {
         let p = preset("graphite").unwrap();
         let own: BTreeMap<String, String> = [("chrome".to_owned(), "#202020".to_owned())].into();
         assert_eq!(resolve(p, &own, PanelColors::Tinted, true)["chrome"], "#202020", "a theme's own chrome is never shaded");
+        let canvas: BTreeMap<String, String> = [("canvas".to_owned(), "#3a3f4b".to_owned())].into();
+        assert_eq!(resolve(p, &canvas, PanelColors::Tinted, true)["chrome"], "#3a3f4b", "the shade sits level with a theme's own canvas");
+        assert_ne!(resolve(p, &canvas, PanelColors::Tinted, false)["chrome"], "#3a3f4b", "flat, chrome stays its own step");
     }
 
     #[test]
