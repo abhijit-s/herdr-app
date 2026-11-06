@@ -235,9 +235,9 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 ### Copied toast on copy-on-select
 
-`fix/contrast-copied-toast` (branched from `master`, fork only): when a mouse selection in a terminal is copied on release, a "Copied" success toast (1.5 s) says so. Only the terminal knows a copy happened: `TerminalView::select` emits `TerminalEvent::Copied` when `copy` wrote non-empty text, and `AppWindow` opens the toast. A mod can't tell: `on_mouse_down_out` hears every press in the window, Settings and other dialogs included, and `run("terminal.copy")` returns nothing, so a mod that guessed a selection from repeated presses toasted on every quick press of a Settings stepper.
+`fix/contrast-copied-toast` (branched from `master`, fork only): when a mouse selection in a terminal is copied on release, a "Copied" success toast (1.5 s) says so; the next copy replaces it (`AppWindow::show_copied`, as upstream #416 does), so quick selections never stack toasts. Only the terminal knows a copy happened: `TerminalView::select` emits `TerminalEvent::Copied` when `copy` wrote non-empty text, and `AppWindow` opens the toast. A mod can't tell: `on_mouse_down_out` hears every press in the window, Settings and other dialogs included, and `run("terminal.copy")` returns nothing, so a mod that guessed a selection from repeated presses toasted on every quick press of a Settings stepper.
 
-- Files: `src/terminal.rs` (`TerminalEvent::Copied`, `select`, `copy`), `src/window.rs` (the terminal subscription, test `copy_on_select_says_copied_and_settings_presses_do_not`)
+- Files: `src/terminal.rs` (`TerminalEvent::Copied`, `select`, `copy`), `src/window.rs` (the terminal subscription, test `copy_on_select_says_copied_once_and_settings_presses_do_not`)
 - Upstream: none yet
 
 ### Popup command
