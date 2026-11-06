@@ -817,6 +817,10 @@ pub struct Person {
     /// Bounce the Dock icon when an agent needs you while Herdr is in the background.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub dock_bounce: bool,
+    /// Names nobody-named panes at a bare shell with two calm words from
+    /// their id (pane_names.rs); display only.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub pane_auto_names: bool,
     /// What happens to recorded agents whose terminals are back to a shell
     /// after Herdr starts or the core comes back (resume.rs).
     #[serde(skip_serializing_if = "ResumeAgents::is_ask")]
@@ -1309,6 +1313,7 @@ impl Default for Person {
             sounds: Sounds::default(),
             system_notifications: SystemNotifications::Background,
             dock_bounce: false,
+            pane_auto_names: false,
             resume_agents: ResumeAgents::Ask,
             alert_command: None,
             focus_follows_mouse: false,
@@ -1442,6 +1447,7 @@ pub struct Settings {
     pub sounds: Sounds,
     pub system_notifications: SystemNotifications,
     pub dock_bounce: bool,
+    pub pane_auto_names: bool,
     pub alert_command: Option<AlertCommand>,
 }
 
@@ -1517,6 +1523,7 @@ impl Default for Settings {
             sounds: Sounds::default(),
             system_notifications: SystemNotifications::Background,
             dock_bounce: false,
+            pane_auto_names: false,
             alert_command: None,
         }
     }
@@ -1581,6 +1588,7 @@ impl Settings {
             sounds: person.sounds.clone(),
             system_notifications: person.system_notifications,
             dock_bounce: person.dock_bounce,
+            pane_auto_names: person.pane_auto_names,
             alert_command: person.alert_command.clone(),
             clipboard_write: person.clipboard_write,
             minimum_contrast: person.minimum_contrast,
@@ -2879,7 +2887,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, pane_zoom_keys: false, ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, pane_zoom_keys: false, pane_auto_names: true, ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

@@ -1,7 +1,8 @@
 // A pane's header, for layouts that frame their panes:
 //   { "tab": "active", "pane": { "header": { "content": { "mod": "pane" } } } }
 // Shows the program's icon (the app's program table), the pane's name
-// (pane.rename), else the agent's name or the terminal's title, the folder,
+// (pane.rename), else its automatic name (pane_auto_names: only at a bare
+// shell), else the agent's name or the terminal's title, the folder,
 // the pane's own text size while pane.zoom_text_* sets it, and the agent's
 // status; buttons split, zoom and close this pane.
 // Props from the app: { pane, terminal }. Click: focus the pane.
@@ -46,7 +47,7 @@ export default class Pane extends View {
     const t = theme();
     const p = this.me();
     if (!p) return div();
-    const name = p.name || ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
+    const name = p.name || p.auto_name || ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
     const pic = icon(p.program, 14, t.dim);
     const st = p.status;
     const pane = p.pane;

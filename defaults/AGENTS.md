@@ -129,7 +129,8 @@ the highlighted line shows where it will land.
   viewer, a board, a git panel): `pane.split {direction, mod, props}`. One
   nobody named shows its program (an agent's name, else the terminal's
   title); `pane.rename` names it ("server"), saved with its tab, and
-  `panes()[i].name` gives the name (null: none). A
+  `panes()[i].name` gives the name (null: none). With `pane_auto_names` on, a pane at a bare shell nobody named shows two words of its own instead (`panes()[i].auto_name`, "hazy-inlet"; see The person).
+  A
   mod pane splits, zooms, closes and gets a header like any pane, keeps
   the keyboard when clicked, and is saved with its tab; its `props` tell
   it what to show (a file, a folder). Closing a terminal pane ends its
@@ -399,7 +400,7 @@ The tab block says how each pane of the shown tab is wrapped:
   pane has the keyboard; `gap` is the space between panes.
 - `header`: a mod drawn on each pane, one copy per pane, with
   `props().pane` and `props().terminal`. It reads its live facts from
-  `panes()` (name, title, folder, branch, agent status, focused, zoomed, text_size) and its
+  `panes()` (name, auto_name, title, folder, branch, agent status, focused, zoomed, text_size) and its
   buttons run pane commands with that pane (`pane.split`, `pane.zoom`,
   `pane.close`). `position`: `top` or `bottom`; `reveal: "hover"` shows it
   only while the pointer is on the pane, drawn over the terminal so the
@@ -749,6 +750,7 @@ What's about the user, never a look:
   time; a build not run from an app bundle sends none.
 - `dock_bounce`: `true` bounces the Dock icon when an agent needs the
   person while Herdr is in the background. Off by default.
+- `pane_auto_names`: `true` gives each pane nobody named two calm words of its own, such as `hazy-inlet`, picked from its id so it keeps them across redraws and restarts (two panes of one tab that would share a name: the one whose id sorts later takes the next in the list, so a new split whose id sorts earlier can take an existing pane's name, which moves to the next one until that split closes; rare, about 1 in 2,304 per extra pane in a tab). A pane shows it only while nothing better names it: the person's `pane.rename` name comes first, then an agent or a running command, and the automatic name only at a bare shell whose title is empty, the terminal's address (its title before the shell sets one), the shell's name (`zsh`, `-zsh`) or a folder (`~/src`, `me@box: ~/src`, the folder's name). Mods read it as `panes()[i].auto_name` (null when off or not shown); the shipped `pane` and `terminals-pane` headers show it. Display only: never written into a layout or settings.json, though `pane.rename`'s prompt starts from it, so Enter keeps it as the pane's real name. The words are `defaults/pane-names.json` in the app. Off by default; Settings > Look > Panes has it as "Name panes automatically".
 - `focus_follows_mouse`: `true` focuses a terminal pane (a tab's, or a layout's
   terminal block) once the pointer rests on it for `focus_follows_mouse_delay_ms`
   (0 to 2000, default 150), as a click would: the delay counts from the

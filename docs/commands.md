@@ -120,7 +120,7 @@ Close a pane and end its terminal.
 
 ## `pane.rename`
 
-Name a pane (default: the focused one; asks the person when no name; an empty name: its program's again).
+Name a pane (default: the focused one; asks the person when no name, starting from the name it shows: its own or, with pane_auto_names, its automatic one; an empty name: its program's again).
 
 | Argument | Required |
 |---|---|

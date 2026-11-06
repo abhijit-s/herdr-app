@@ -212,6 +212,11 @@ pub fn of(app: Option<&str>, argv: &[String]) -> Value {
     TABLE.with(|t| resolve(&t.borrow(), app, argv))
 }
 
+/// Whether a word is a shell the table lists (`zsh`, `-zsh`, `/bin/bash`, `pwsh.exe`).
+pub fn is_shell(word: &str) -> bool {
+    TABLE.with(|t| t.borrow().shells.iter().any(|s| s == base(word)))
+}
+
 /// How the app calls an agent ("Kiro finished"), from its 7501 `app`: the
 /// name `of` shows for it (the person's `programs.json` included), else the `app`.
 pub fn name(app: &str) -> String {

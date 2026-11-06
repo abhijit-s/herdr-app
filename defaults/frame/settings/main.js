@@ -1062,7 +1062,21 @@ export default class Settings extends View {
       .child(this.followsMouse(t, cx))
       .child(this.plain(div().h(18)))
       .child(this.heading(t, "Panes"))
-      .child(this.row(t, "New tabs arrange", "New tabs start in this arrangement: splits and closes arrange their panes again.", this.choicePicker(t, "st-da", "default_arrange", ARRANGES), "default_arrange"));
+      .child(this.row(t, "New tabs arrange", "New tabs start in this arrangement: splits and closes arrange their panes again.", this.choicePicker(t, "st-da", "default_arrange", ARRANGES), "default_arrange"))
+      .child(
+        this.row(
+          t,
+          "Name panes automatically",
+          "A pane at a bare shell that nobody named shows two words of its own, such as hazy-inlet, the same every time. Renaming it starts from that name.",
+          this.toggle(t, "st-pane_auto_names", this.person.pane_auto_names === true, (_e, cx) =>
+            this.change((p) => {
+              if (p.pane_auto_names) delete p.pane_auto_names;
+              else p.pane_auto_names = true;
+            }, cx),
+          ),
+          "pane_auto_names",
+        ),
+      );
   }
 
   text(t) {

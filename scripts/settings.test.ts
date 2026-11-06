@@ -304,6 +304,18 @@ test("the new tabs arrangement writes its mode and leaves off out", () => {
   expect(pick({ default_arrange: "rows", zoom: 1.1 }, "st-da-Off")).toEqual({ zoom: 1.1 });
 });
 
+test("name panes automatically sits under the look page's panes, writes true and leaves off out", () => {
+  expect(click({}, {}, "st-pane_auto_names", [], "look")).toEqual({ pane_auto_names: true });
+  expect(click({ pane_auto_names: true, zoom: 1.1 }, {}, "st-pane_auto_names", [], "look")).toEqual({ zoom: 1.1 });
+  const on = (person: Record<string, any>) => click(person, {}, "st-pane_auto_names", ["shown?"], "look").calls.justify_end !== undefined;
+  expect(on({ pane_auto_names: true })).toBe(true);
+  expect(on({})).toBe(false);
+  expect(on({ pane_auto_names: false })).toBe(false);
+  const shown = texts(search("pane_auto_names").root).join("|");
+  expect(shown).toContain("Look|PANES|Name");
+  expect(shown).toContain("pane|_|auto|_|names");
+});
+
 test("dim when inactive sits on the look page, its scope writes text and leaves window out", () => {
   expect(click({}, {}, "st-unfocused_dim-plus", [], "look")).toEqual({ unfocused_dim: 0.1 });
   expect(click({ unfocused_dim: 0.3 }, {}, "st-unfocused_dim-minus", [], "look")).toEqual({ unfocused_dim: 0.2 });
