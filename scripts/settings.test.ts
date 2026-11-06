@@ -752,6 +752,16 @@ test("search finds machines and spacing that a page not yet opened reads in", as
   expect(shown("pane gap")).toContain("layout.spacing.|pane|_|gap");
 });
 
+test("the spacing rows are found once the layout file is read, with nothing else changing", async () => {
+  machineDisk = [];
+  Object.assign(layoutDisk, { name: "mine", raw: JSON.stringify(deck()), shown: deck(), readFail: undefined });
+  const { view, shown, settle } = searchFrom("updates");
+  await view.loadMachines(); // the machine list is in before the search starts
+  shown("pane gap");
+  await settle();
+  expect(shown("pane gap")).toContain("layout.spacing.|pane|_|gap");
+});
+
 test("a description that changed since indexing is matched as it is now", () => {
   const { view, shown } = searchFrom("look");
   expect(shown("keeps classic")).not.toContain("Panel colours");

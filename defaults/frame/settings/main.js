@@ -501,7 +501,7 @@ export default class Settings extends View {
   results(t, cx) {
     // What the pages draw from: descriptions and conditional rows follow it (an
     // update check, a theme's panels), so a change means a new index.
-    const from = JSON.stringify([settings(), updates(), telemetry(), layoutSpacing(), this.person, this.machineList, this.layoutFile?.raw]);
+    const from = JSON.stringify([settings(), updates(), telemetry(), layoutSpacing(), this.person, this.machineList, this.layoutFile?.name, this.layoutFile?.raw]);
     if (!this.index || this.indexStale || from !== this.indexedFrom) this.buildIndex(t, cx);
     this.indexedFrom = from;
     const m = this.match();
