@@ -1146,7 +1146,8 @@ All of it is in `herdr.d.ts`. In short:
   space, machine, at), one place per pane, at most 20. A place counts once they
   stay on it 300 ms, by any means (keys, clicks, commands, `agent.focus`, tab and
   space switches) on any Herdr client of this machine; overlays and popups never
-  count, so a go-to popup sees where the person was before it opened. Closed panes
+  count, so a go-to popup sees where the person was before it opened. A place is a
+  pane: `agent.focus` on a sub-agent shown only in an agent block records none. Closed panes
   stay in it until pushed out: check them against `panes()`. Kept across restarts
   in the core document `herdr.focus` (see herdr-core below).
   Terminal copy/paste and implicit right-click routing follow the focused block.
@@ -1215,14 +1216,20 @@ including a small herdr-core skill you can install with the user's permission.
   command there and prints exactly its output.
 - Focus history: the core document `herdr.focus` (`doc.get`/`doc.set`, API only)
   is `{"v": 1, "places": [{pane, terminal, tab, space, machine, at}, ...]}`,
-  newest first, at most 20, one place per pane; `at` is ms since the Unix epoch.
+  newest first, at most 20, one place per pane; `pane` (a non-empty string) and
+  `at` (an integer, ms since the Unix epoch) are required.
   Herdr app windows write it on this machine's core when the person settles on a
   pane; places on another machine stay here with their `machine` (remote cores are
   never written). Any client may add to it: read, merge (the union by `pane`, the
   later `at` winning, sorted by `at` newest first then `pane`, cut to 20), and
   `doc.set` with the version read; on `conflict`, read and merge again. Write only
-  when the merged list differs, and keep fields you don't know. A `v` above 1 is a
-  newer shape: read it, don't write it. Writing `{"v": 1, "places": []}` clears it.
+  when the merge keeps a visit the stored list lacks (a new pane or a later `at`),
+  not to tidy another client's order or length. Keep what you don't read: other
+  top-level fields, other fields of a place, and entries without a `pane` and an
+  integer `at` (the app writes those back as they were, after the places). A `v`
+  above 1 is a newer shape: read it, don't write it. A value that isn't an object
+  with an integer `v` (and a `places` list) is unreadable: the app says so once and
+  its next write replaces it with a fresh `{"v": 1}`. Writing `{"v": 1, "places": []}` clears it.
 
 ## Keep in mind
 

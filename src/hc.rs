@@ -52,6 +52,8 @@ pub struct Pushed {
     pub docs: bool,
     /// This machine's focus history (`focus_history::NAME`) changed, or events were missed.
     pub focus: bool,
+    /// The version the last of those changes left it at; None when unknown (`missed`).
+    pub focus_version: Option<u64>,
     pub terminals: bool,
 }
 
@@ -114,12 +116,16 @@ impl EventLines {
                     self.resynced = true;
                     pushed.docs = true;
                     pushed.focus = true;
+                    pushed.focus_version = None;
                     pushed.terminals = true;
                 }
                 Some("event") if p["seq"].as_u64().is_none_or(|s| s > self.seq) => {
                     self.seq = p["seq"].as_u64().unwrap_or(self.seq);
                     if p["type"] == "doc" && p["data"]["name"] == crate::focus_history::NAME {
-                        pushed.focus |= p["machine"].is_null();
+                        if p["machine"].is_null() {
+                            pushed.focus = true;
+                            pushed.focus_version = p["data"]["version"].as_u64();
+                        }
                     } else if p["type"] == "doc" {
                         pushed.docs = true;
                     } else {
@@ -602,6 +608,7 @@ mod tests {
         let doc = |seq: u64, name: &str, machine: Option<&str>| format!("{}\n", json!({"method": "event", "params": {"seq": seq, "type": "doc", "machine": machine, "data": {"name": name, "version": 2}}}));
         let got = lines.push(doc(22, "herdr.focus", None).as_bytes());
         assert!(got.focus && !got.docs);
+        assert_eq!(got.focus_version, Some(2), "the version, to tell an app's own write");
         let got = lines.push(doc(23, "herdr.focus", Some("rohan")).as_bytes());
         assert!(!got.focus && !got.docs, "another machine's history isn't this one's");
         let got = lines.push(doc(24, "herdr-app", None).as_bytes());

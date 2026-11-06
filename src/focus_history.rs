@@ -8,6 +8,12 @@
 //! counts once the person stays `SETTLE` on it, so quick hops through panes
 //! leave nothing behind. Places on another machine stay in this machine's
 //! document with their `machine`; nothing is written to remote cores.
+//!
+//! A place needs a non-empty string `pane` and an integer `at`; entries without
+//! them are kept as they are, after the others, and so are top-level fields
+//! besides `v` and `places`. A `v` above `VERSION` is read but never written; a
+//! value that isn't an object with an integer `v` is unreadable and replaced by
+//! the next write.
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::time::{Duration, Instant};
@@ -31,7 +37,6 @@ pub struct Place {
     #[serde(default)]
     pub machine: Option<String>,
     /// When the person arrived, in ms since the Unix epoch.
-    #[serde(default)]
     pub at: u64,
     /// Fields another client added, kept when this one rewrites the list.
     #[serde(flatten)]
@@ -95,13 +100,39 @@ impl Settle {
     }
 }
 
-/// The document as stored: its version and places, and whether a newer app
-/// wrote it in a shape this one must not overwrite.
+/// The document as stored: its version, places, and what this app keeps
+/// without understanding it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Stored {
     pub version: u64,
     pub places: Vec<Place>,
+    /// Top-level fields besides `v` and `places`, written back as they were.
+    pub rest: Map<String, Value>,
+    /// Entries of `places` that aren't a place this app reads, written back after the others.
+    pub foreign: Vec<Value>,
+    /// Written by a newer app (`v` above `VERSION`): read, never overwritten.
     pub newer: bool,
+    /// Why the value couldn't be read; the next write replaces it.
+    pub unreadable: Option<String>,
+}
+
+impl Stored {
+    /// Whether merging `unsent` in keeps a visit the stored list lacks (a new
+    /// pane, or a later visit to one). Order, duplicates or length alone aren't
+    /// a change: another client's list is rewritten only for news.
+    fn gains(&self, unsent: &[Place]) -> bool {
+        let merged = merge(&self.places, unsent);
+        unsent.iter().any(|p| merged.contains(p) && !self.places.contains(p))
+    }
+
+    fn value(&self, places: &[Place]) -> Value {
+        let mut value = self.rest.clone();
+        let mut list: Vec<Value> = places.iter().filter_map(|p| serde_json::to_value(p).ok()).collect();
+        list.extend(self.foreign.iter().cloned());
+        value.insert("v".into(), json!(VERSION));
+        value.insert("places".into(), Value::Array(list));
+        Value::Object(value)
+    }
 }
 
 /// The core's documents, as `sync` needs them (a fake one in tests).
@@ -112,15 +143,21 @@ pub trait Store {
     fn set(&self, value: Value, version: u64) -> anyhow::Result<u64>;
 }
 
-/// This machine's core, each call bounded by `timeout`.
-pub struct OnCore<'a>(pub &'a crate::hc::Core, pub Duration);
+/// This machine's core, every call of a round ending by `deadline`.
+pub struct OnCore<'a>(pub &'a crate::hc::Core, pub Instant);
+
+impl OnCore<'_> {
+    fn left(&self) -> Duration {
+        self.1.saturating_duration_since(Instant::now())
+    }
+}
 
 impl Store for OnCore<'_> {
     fn get(&self) -> anyhow::Result<Value> {
-        self.0.call_timeout("doc.get", json!({ "name": NAME }), self.1)
+        self.0.call_timeout("doc.get", json!({ "name": NAME }), self.left())
     }
     fn set(&self, value: Value, version: u64) -> anyhow::Result<u64> {
-        let reply = self.0.call_timeout("doc.set", json!({ "name": NAME, "value": value, "version": version }), self.1)?;
+        let reply = self.0.call_timeout("doc.set", json!({ "name": NAME, "value": value, "version": version }), self.left())?;
         reply["version"].as_u64().ok_or_else(|| anyhow::anyhow!("{NAME} write returned no version"))
     }
 }
@@ -132,26 +169,43 @@ fn read(store: &impl Store) -> Result<Stored, String> {
     if value.is_null() {
         return Ok(Stored { version, ..Default::default() });
     }
-    let newer = value["v"].as_u64().is_none_or(|v| v > VERSION);
-    let places = value["places"].as_array().into_iter().flatten().filter_map(|p| serde_json::from_value(p.clone()).ok()).collect();
-    Ok(Stored { version, places, newer })
+    let v = value.as_object().and_then(|o| o.get("v")).and_then(Value::as_u64).filter(|v| *v >= 1);
+    let listed = value.get("places").is_none_or(Value::is_array);
+    let (Some(v), true) = (v, listed || v.is_some_and(|v| v > VERSION)) else {
+        let unreadable = Some(format!("{NAME} isn't an object with an integer v and a places list; the next write replaces it"));
+        return Ok(Stored { version, unreadable, ..Default::default() });
+    };
+    let mut rest = value.as_object().cloned().unwrap_or_default();
+    rest.remove("v");
+    let entries = match rest.remove("places") {
+        Some(Value::Array(entries)) => entries,
+        _ => vec![],
+    };
+    let (mut places, mut foreign) = (Vec::new(), Vec::new());
+    for entry in entries {
+        match serde_json::from_value::<Place>(entry.clone()) {
+            Ok(place) if !place.pane.is_empty() => places.push(place),
+            _ => foreign.push(entry),
+        }
+    }
+    Ok(Stored { version, places, rest, foreign, newer: v > VERSION, unreadable: None })
 }
 
 /// Adds `unsent` to the document: from `known` when given (a stale version
 /// only costs a conflict), else read first. A write that loses to another
-/// writer reads again and merges; nothing is written when nothing changes.
+/// writer reads again and merges; nothing is written unless it gains a visit.
 pub fn sync(store: &impl Store, known: Option<Stored>, unsent: &[Place]) -> Result<Stored, String> {
     let mut stored = match known {
         Some(known) => known,
         None => read(store)?,
     };
     for _ in 0..ATTEMPTS {
-        let places = merge(&stored.places, unsent);
-        if stored.newer || places == stored.places {
+        if stored.newer || !stored.gains(unsent) {
             return Ok(stored);
         }
-        match store.set(json!({ "v": VERSION, "places": places }), stored.version) {
-            Ok(version) => return Ok(Stored { version, places, newer: false }),
+        let places = merge(&stored.places, unsent);
+        match store.set(stored.value(&places), stored.version) {
+            Ok(version) => return Ok(Stored { version, places, unreadable: None, ..stored }),
             Err(e) if crate::hc::error_kind(&e) == Some("conflict") => stored = read(store)?,
             Err(e) => return Err(format!("{e:#}")),
         }
@@ -166,7 +220,7 @@ pub struct History {
     pub settle: Settle,
     stored: Option<Stored>,
     unsent: Vec<Place>,
-    /// Read again before the next write (start, reconnect, a `doc` event).
+    /// Read again before the next write (start, reconnect, a `doc` event, a failure).
     pub stale: bool,
     pub pending: bool,
     pub error: Option<String>,
@@ -187,41 +241,53 @@ impl History {
         self.unsent = merge(&self.unsent, &[place]);
     }
 
-    /// The next round to run, if one is due: what's known and what to add.
+    /// The document changed to `version` (None: unknown, as after `missed`).
+    /// The echo of this window's own write needs no read.
+    pub fn changed(&mut self, version: Option<u64>) {
+        if version.is_none() || self.stored.as_ref().map(|s| s.version) != version {
+            self.stale = true;
+        }
+    }
+
+    /// The next round to run, if one is due: what's known and what to add. A
+    /// change seen while it runs makes the next one read again.
     pub fn due(&mut self) -> Option<(Option<Stored>, Vec<Place>)> {
         if self.pending {
             return None;
         }
         let known = self.stored.clone().filter(|_| !self.stale);
-        let unchanged = known.as_ref().is_some_and(|k| k.newer || merge(&k.places, &self.unsent) == k.places);
-        if unchanged {
+        if known.as_ref().is_some_and(|k| k.newer || !k.gains(&self.unsent)) {
             self.unsent.clear();
             return None;
         }
         self.pending = true;
+        self.stale = false;
         Some((known, self.unsent.clone()))
     }
 
     /// A round's result. `sent` is what that round added.
     pub fn finished(&mut self, sent: &[Place], result: Result<Stored, String>) {
         self.pending = false;
-        match result {
+        let problem = match result {
             Ok(stored) => {
                 if !stored.newer {
                     self.unsent.retain(|p| !sent.contains(p));
                 }
+                let problem = stored.unreadable.clone();
                 self.stored = Some(stored);
-                self.stale = false;
-                self.error = None;
+                problem
             }
             Err(e) => {
-                if self.error.as_ref() != Some(&e) {
-                    tracing::warn!("{NAME}: {e}");
-                }
-                self.error = Some(e);
                 self.stale = true;
+                Some(e)
             }
+        };
+        if let Some(e) = &problem
+            && self.error.as_ref() != Some(e)
+        {
+            tracing::warn!("{NAME}: {e}");
         }
+        self.error = problem;
     }
 
     pub fn reconnected(&mut self) {
@@ -394,5 +460,77 @@ mod tests {
         history.finished(&unsent, Err("offline".into()));
         assert!(history.stale);
         assert_eq!(panes(&history.places()), ["c"]);
+    }
+
+    #[test]
+    fn a_write_keeps_what_this_app_does_not_read() {
+        let doc = json!({ "v": 1, "owner": "tui", "places": [at("old", 1), { "terminal": "t9", "at": 5 }, { "pane": "p", "at": "soon" }, { "pane": "", "at": 2 }] });
+        let core = Fake::new(doc, 1, 0);
+        let stored = sync(&core, None, &[at("mine", 10)]).unwrap();
+        assert_eq!(panes(&stored.places), ["mine", "old"]);
+        let written = core.doc.lock().unwrap().0.clone();
+        assert_eq!(written["owner"], "tui", "top-level fields stay");
+        assert_eq!(written["v"], 1);
+        let entries = written["places"].as_array().unwrap();
+        assert_eq!(entries.len(), 5);
+        assert_eq!(entries[2..], [json!({ "terminal": "t9", "at": 5 }), json!({ "pane": "p", "at": "soon" }), json!({ "pane": "", "at": 2 })], "unreadable places kept as they were, after the others");
+    }
+
+    #[test]
+    fn another_clients_untidy_list_is_rewritten_only_for_news() {
+        // 25 places, oldest first, p3 twice.
+        let mut untidy: Vec<Place> = (0..25).map(|i| at(&format!("p{i}"), i + 100)).collect();
+        untidy.push(at("p3", 1));
+        let core = Fake::new(json!({ "v": 1, "places": untidy }), 7, 0);
+        // What this window noted is already there, or older than what is.
+        let stored = sync(&core, None, &[at("p24", 124), at("p5", 50)]).unwrap();
+        assert_eq!((stored.version, *core.sets.lock().unwrap()), (7, 0));
+        let mut history = History::new();
+        let (known, unsent) = history.due().unwrap();
+        history.finished(&unsent, sync(&core, known, &unsent));
+        history.note(at("p24", 124));
+        assert!(history.due().is_none(), "no focus change, no write");
+        // A visit it lacks: written, tidied.
+        let stored = sync(&core, None, &[at("new", 500)]).unwrap();
+        assert_eq!(*core.sets.lock().unwrap(), 1);
+        assert_eq!(stored.places.len(), MAX);
+        assert_eq!(panes(&stored.places[..3]), ["new", "p24", "p23"]);
+    }
+
+    #[test]
+    fn an_unreadable_value_is_said_once_and_replaced_by_the_next_write() {
+        for broken in [json!("garbage"), json!({ "places": [] }), json!({ "v": "1", "places": [] }), json!({ "v": 1, "places": {} })] {
+            let core = Fake::new(broken.clone(), 2, 0);
+            let mut history = History::new();
+            let (known, unsent) = history.due().unwrap();
+            history.finished(&unsent, sync(&core, known, &unsent));
+            assert!(history.error.as_deref().is_some_and(|e| e.contains("next write replaces it")), "{broken}");
+            assert_eq!(*core.sets.lock().unwrap(), 0, "nothing to add: left alone");
+            history.note(at("mine", 10));
+            let (known, unsent) = history.due().unwrap();
+            history.finished(&unsent, sync(&core, known, &unsent));
+            assert_eq!(core.doc.lock().unwrap().0, json!({ "v": 1, "places": [at("mine", 10)] }), "{broken}");
+            assert!(history.error.is_none());
+        }
+    }
+
+    #[test]
+    fn a_change_seen_during_a_round_is_read_after_it_and_an_echo_is_not() {
+        let core = Fake::new(Value::Null, 0, 0);
+        let mut history = History::new();
+        history.note(at("a", 10));
+        let (known, unsent) = history.due().unwrap();
+        assert!(!history.stale, "the round reads");
+        history.changed(Some(4));
+        history.finished(&unsent, sync(&core, known, &unsent));
+        assert!(history.stale, "the change during the round is still to read");
+        let (known, _) = history.due().unwrap();
+        assert!(known.is_none());
+        history.finished(&[], sync(&core, known, &[]));
+        let own = core.doc.lock().unwrap().1;
+        history.changed(Some(own));
+        assert!(!history.stale, "this window's own write");
+        history.changed(None);
+        assert!(history.stale, "missed: unknown");
     }
 }

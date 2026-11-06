@@ -835,11 +835,12 @@ impl AppWindow {
                 let (sub, machines, (refresh, focus), listed, lines) = cx.background_executor().spawn(async move {
                     // The local stream forwards remote doc events too.
                     let mut sub = subscription;
-                    let (mut refresh, mut focus, mut terminals) = (false, false, relisting);
+                    // The focus history's change: None, else the version it's at (None: unknown).
+                    let (mut refresh, mut focus, mut terminals) = (false, None, relisting);
                     if sub.is_none() && let Ok((channel, events, snapshot)) = core.subscribe() {
                         event_lines = crate::hc::EventLines::new(&snapshot);
                         sub = Some((channel, events));
-                        (refresh, focus, terminals) = (true, true, true);
+                        (refresh, focus, terminals) = (true, Some(None), true);
                     }
                     let mut closed = false;
                     if let Some((channel, events)) = &sub {
@@ -847,10 +848,10 @@ impl AppWindow {
                             if let crate::hc::Stream::Data(bytes) = event {
                                 let pushed = event_lines.push(&bytes);
                                 refresh |= pushed.docs;
-                                focus |= pushed.focus;
+                                if pushed.focus { focus = Some(pushed.focus_version); }
                                 terminals |= pushed.terminals;
                                 core.credit(*channel, bytes.len());
-                            } else { (refresh, focus, closed) = (true, true, true); }
+                            } else { (refresh, focus, closed) = (true, Some(None), true); }
                         }
                     }
                     // A stream that ended is subscribed to again, with a fresh snapshot.
@@ -2004,10 +2005,14 @@ impl AppWindow {
     }
 
     /// Writes the places noted since the last round to `herdr.focus` (each
-    /// tick; only when they change it), and reads it again after `changed_elsewhere`.
-    fn flush_focus(&mut self, changed_elsewhere: bool, cx: &mut Context<Self>) {
+    /// tick; only when they add a visit), and reads it again after a change to
+    /// it (`changed`: the version it's at, None when unknown).
+    fn flush_focus(&mut self, changed: Option<Option<u64>>, cx: &mut Context<Self>) {
         if self.draining { return; }
-        self.focus_history.stale |= changed_elsewhere;
+        if let Some(version) = changed {
+            self.focus_history.changed(version);
+        }
+        if !self.documents_watching { return; }
         if self.note_focus(Instant::now()) {
             self.refresh_snapshot_mods(cx);
         }
@@ -2016,7 +2021,8 @@ impl AppWindow {
         cx.spawn(async move |this, cx| {
             let sent = unsent.clone();
             let result = cx.background_executor().spawn(async move {
-                crate::focus_history::sync(&crate::focus_history::OnCore(&core, Duration::from_secs(5)), known, &unsent)
+                let deadline = Instant::now() + Duration::from_secs(5);
+                crate::focus_history::sync(&crate::focus_history::OnCore(&core, deadline), known, &unsent)
             }).await;
             let _ = this.update(cx, |this, cx| {
                 if generation != this.core_generation { return; }
@@ -2160,7 +2166,8 @@ impl AppWindow {
         self.note_focus(Instant::now());
         self.focus_history.pending = false;
         if let Some((known, unsent)) = self.focus_history.due() {
-            let result = crate::focus_history::sync(&crate::focus_history::OnCore(&self.core, Duration::from_secs(1)), known, &unsent);
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let result = crate::focus_history::sync(&crate::focus_history::OnCore(&self.core, deadline), known, &unsent);
             self.focus_history.finished(&unsent, result);
         }
         self.save_view();
@@ -6270,7 +6277,10 @@ export default class Recent extends View {
             std::thread::sleep(SETTLE + std::time::Duration::from_millis(50));
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             loop {
-                view.update(cx, |this, cx| this.flush_focus(false, cx));
+                view.update(cx, |this, cx| {
+                    this.documents_watching = true;
+                    this.flush_focus(None, cx)
+                });
                 cx.run_until_parked();
                 if !view.update(cx, |this, _| this.focus_history.pending) { break; }
                 assert!(std::time::Instant::now() < deadline, "the write never finished");
@@ -6316,10 +6326,16 @@ export default class Recent extends View {
             places.insert(0, json!({ "pane": "phone", "terminal": null, "tab": "t", "space": "s", "machine": null, "at": crate::model::now_ms() + 60_000, "client": "tui" }));
             *doc = (json!({ "v": 1, "places": places }), doc.1 + 1);
         }
-        view.update(cx, |this, cx| this.flush_focus(true, cx));
+        // This window's own write coming back is no change.
+        view.update(cx, |this, cx| {
+            this.flush_focus(Some(Some(version)), cx);
+            assert!(!this.focus_history.stale && !this.focus_history.pending, "an echo isn't read again");
+        });
+        let version = doc.lock().unwrap().1;
+        view.update(cx, |this, cx| this.flush_focus(Some(Some(version)), cx));
         settle(cx);
         assert_eq!(stored(), ["phone", "d", "a"]);
-        assert_eq!(doc.lock().unwrap().1, version + 1, "only the other client wrote");
+        assert_eq!(doc.lock().unwrap().1, version, "only the other client wrote");
         assert_eq!(drawn(cx), 3);
         let shown = view.update(cx, |this, _| this.focus_history.places());
         assert_eq!(shown[0].extra["client"], "tui", "fields other clients add are kept");

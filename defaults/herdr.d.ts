@@ -257,7 +257,8 @@ export interface Place {
  *  Herdr client of this machine, kept across restarts in the core document
  *  `herdr.focus`. Overlays and popups (this one included) are never places, so
  *  `[0]` is usually where the person is and the first place that isn't
- *  `focused()` is where they were before. Panes closed since are not removed:
+ *  `focused()` is where they were before. A place is a pane: `agent.focus` on a
+ *  sub-agent shown only in an agent block (no pane of its own) records none. Panes closed since are not removed:
  *  check them against `panes()`. Older herdr-app builds lack it: feature-detect
  *  with `import * as herdr from "herdr"` and `typeof herdr.recentPlaces === "function"`. Live. */
 export function recentPlaces(): Place[];
