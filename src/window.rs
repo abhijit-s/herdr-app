@@ -7683,9 +7683,10 @@ export default class Probe extends View {
         assert_eq!(chrome(cx), "#202020", "an own chrome wins while inactive");
 
         // A theme file on disk: focus changes resolve it from the palette last
-        // read. With the home moved to an empty folder (nothing written, so no
-        // file event reloads the look), any read of the file would fail and
-        // fall back to Graphite.
+        // read. With the home moved to an empty folder, any read of the file
+        // would fail and fall back to Graphite. Writing the file below can't
+        // reload the look behind the test's back: the watcher's 80 ms batching
+        // timer runs on gpui's fake clock, which this test never advances.
         let file = crate::mods::app_dir().join("themes/focus-test.json");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, r##"{"background":"#1d2330","foreground":"#c8d0e0","selection":"#3a4660","ansi":["#000000","#e06c75","#98c379","#e5c07b","#61afef","#c678dd","#56b6c2","#abb2bf","#5c6370","#e06c75","#98c379","#e5c07b","#61afef","#c678dd","#56b6c2","#ffffff"]}"##).unwrap();
@@ -7710,6 +7711,7 @@ export default class Probe extends View {
         assert_eq!(chrome(cx), flat);
         assert_eq!(crate::settings::theme()["background"], "#1d2330");
         unsafe { std::env::set_var("HERDR_APP_HOME", &home) };
+        std::fs::remove_dir_all(&empty).unwrap();
     }
 
     /// With `unfocused_dim` over the window (the default scope), blurring lays
