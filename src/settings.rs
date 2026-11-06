@@ -290,66 +290,97 @@ fn hex(c: u32) -> String {
     format!("#{c:06x}")
 }
 
+/// `a` moved toward `b` by `t`; a negative `t` moves away, clamped per channel.
 fn mix(a: u32, b: u32, t: f32) -> u32 {
     [16, 8, 0].iter().fold(0, |acc, s| {
         let (x, y) = (((a >> s) & 255) as f32, ((b >> s) & 255) as f32);
-        acc | (((x * (1.0 - t) + y * t).round() as u32) << s)
+        acc | ((x * (1.0 - t) + y * t).round().clamp(0.0, 255.0) as u32) << s
     })
+}
+
+fn with_alpha(c: u32, a: f32) -> String {
+    format!("#{c:06x}{:02x}", (a * 255.0).round() as u32)
 }
 
 /// Every color the app and mods use, resolved. Values are `#rrggbb` or `#rrggbbaa`.
 pub type Theme = BTreeMap<String, String>;
 
-/// The panel colors around a palette. `chrome` (sidebars, bars) and
-/// `canvas` (behind cards) step away from the terminal's background:
-/// darker on a dark theme, toward warm grey on a light one.
+/// How far each panel color sits from the terminal's background, as a step
+/// toward the theme's own foreground (negative steps away), so panels take
+/// the theme's tint rather than plain grey. The steps are fitted to a
+/// family of hand-tuned editor themes; light themes need smaller steps
+/// toward their dark ink, except the sidebar, which they shade more.
+struct Steps {
+    canvas: f32,
+    chrome: f32,
+    popover: f32,
+    raised: f32,
+    border: f32,
+    input: f32,
+    hover: f32,
+    selected: f32,
+    muted: f32,
+    dim: f32,
+}
+
+const DARK_STEPS: Steps =
+    Steps { canvas: -0.022, chrome: 0.016, popover: 0.066, raised: 0.086, border: 0.153, input: 0.26, hover: 0.042, selected: 0.075, muted: 0.614, dim: 0.459 };
+const LIGHT_STEPS: Steps =
+    Steps { canvas: 0.015, chrome: 0.068, popover: 0.0, raised: 0.035, border: 0.096, input: 0.214, hover: 0.048, selected: 0.09, muted: 0.752, dim: 0.598 };
+
+/// WCAG contrast ratio of two colors.
+fn contrast(a: u32, b: u32) -> f32 {
+    let lum = |c: u32| {
+        let ch = |s: u32| {
+            let v = ((c >> s) & 255) as f32 / 255.0;
+            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0)
+    };
+    let (x, y) = (lum(a), lum(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// The panel colors around a palette, each a step from the terminal's
+/// background toward its foreground (`Steps`). Panel text uses a neutral
+/// ink for contrast, its quieter tiers stepped toward it the same way.
 fn resolve(p: &Palette, overrides: &BTreeMap<String, String>) -> Theme {
     let bg = p.background;
     let light = is_light(bg);
+    let s = if light { &LIGHT_STEPS } else { &DARK_STEPS };
     let fg = if light { 0x1b1b1e } else { 0xeeeeef };
+    let tint = |t: f32| hex(mix(bg, p.foreground, t));
     let [working, blocked, done] = p.status.unwrap_or([p.ansi[3], p.ansi[1], p.ansi[4]]);
-    let (popover, raised, hover, selected, border, input, canvas, chrome) = if light {
-        let warm = 0xe8e8e2;
-        (hex(bg), hex(mix(bg, 0, 0.035)), "#0000000c".into(), "#00000012".into(), "#00000017".into(), "#00000026".into(), mix(bg, warm, 0.2), mix(bg, warm, 0.6))
-    } else {
-        (
-            hex(mix(bg, 0xffffff, 0.06)),
-            hex(mix(bg, 0xffffff, 0.09)),
-            "#ffffff0e".into(),
-            "#ffffff17".into(),
-            "#ffffff18".into(),
-            "#ffffff24".into(),
-            mix(bg, 0, 0.16),
-            mix(bg, 0, 0.32),
-        )
-    };
+    let accent = p.ansi[4];
+    let ring = if contrast(accent, bg) >= 3.0 { accent } else { mix(bg, fg, 0.7) };
+    let dim = hex(mix(bg, fg, s.dim));
     let mut t: Theme = [
         ("background", hex(bg)),
         ("terminal_foreground", hex(p.foreground)),
         ("foreground", hex(fg)),
         ("surface", hex(bg)),
-        ("canvas", hex(canvas)),
-        ("chrome", hex(chrome)),
-        ("popover", popover),
-        ("raised", raised),
-        ("hover", hover),
-        ("selected", selected),
-        ("border", border),
-        ("input", input),
-        ("muted", hex(mix(bg, fg, if light { 0.66 } else { 0.6 }))),
-        ("dim", hex(mix(bg, fg, if light { 0.46 } else { 0.38 }))),
-        ("accent", hex(p.ansi[4])),
+        ("canvas", tint(s.canvas)),
+        ("chrome", tint(s.chrome)),
+        ("popover", tint(s.popover)),
+        ("raised", tint(s.raised)),
+        ("hover", with_alpha(p.foreground, s.hover)),
+        ("selected", with_alpha(p.foreground, s.selected)),
+        ("border", tint(s.border)),
+        ("input", tint(s.input)),
+        ("muted", hex(mix(bg, fg, s.muted))),
+        ("dim", dim.clone()),
+        ("accent", hex(accent)),
         ("accent_foreground", hex(bg)),
         ("solid", hex(fg)),
         ("solid_foreground", hex(if light { 0xffffff } else { mix(bg, 0, 0.28) })),
-        ("ring", hex(mix(bg, fg, 0.7))),
+        ("ring", hex(ring)),
         ("selection", hex(p.selection)),
         ("cursor", hex(p.cursor.unwrap_or(p.foreground))),
         ("working", hex(working)),
         ("blocked", hex(blocked)),
         ("done", hex(done)),
-        ("idle", hex(mix(bg, fg, 0.38))),
-        ("unknown", hex(mix(bg, fg, 0.38))),
+        ("idle", dim.clone()),
+        ("unknown", dim),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -361,6 +392,103 @@ fn resolve(p: &Palette, overrides: &BTreeMap<String, String>) -> Theme {
         t.insert(k.clone(), v.clone());
     }
     t
+}
+
+#[cfg(test)]
+mod derivation_tests {
+    use super::*;
+
+    /// Shapes the steps have to hold for: presets, shipped files, and public
+    /// themes at the extremes (pure black, near black, pastel and plain light).
+    fn palettes() -> Vec<(String, Palette)> {
+        let file = |bg: &str, fg: &str, accent: &str| {
+            let mut ansi = vec!["\"#808080\"".to_owned(); 16];
+            ansi[4] = format!("\"{accent}\"");
+            let text = format!(r#"{{"background":"{bg}","foreground":"{fg}","selection":"{fg}","ansi":[{}]}}"#, ansi.join(","));
+            parse_theme_file("fixture", &text).unwrap().0
+        };
+        let mut out: Vec<(String, Palette)> = PRESETS.iter().map(|n| (n.to_string(), preset(n).unwrap().clone())).collect();
+        for (name, text) in THEMES {
+            out.push((name.to_string(), parse_theme_file(name, text).unwrap().0));
+        }
+        for (name, bg, fg, accent) in [
+            ("ayu-mirage", "#1f2430", "#cccac2", "#6dcbfa"),
+            ("ayu-light", "#f8f9fa", "#5c6166", "#3199e1"),
+            ("github-dark-default", "#0d1117", "#e6edf3", "#58a6ff"),
+            ("modus-vivendi", "#000000", "#ffffff", "#2fafff"),
+            ("moonfly", "#080808", "#bdbdbd", "#80a0ff"),
+            ("rose-pine-dawn", "#faf4ed", "#575279", "#56949f"),
+            ("zenburn", "#3f3f3f", "#dcdccc", "#8cd0d3"),
+        ] {
+            out.push((name.into(), file(bg, fg, accent)));
+        }
+        out
+    }
+
+    fn rgb(t: &Theme, k: &str) -> u32 {
+        u32::from_str_radix(&t[k][1..7], 16).unwrap()
+    }
+
+    fn lightness(c: u32) -> f32 {
+        contrast(c, 0)
+    }
+
+    #[test]
+    fn panels_layer_away_from_the_terminal() {
+        for (name, p) in palettes() {
+            let t = resolve(&p, &BTreeMap::new());
+            let [canvas, surface, popover, raised] = ["canvas", "surface", "popover", "raised"].map(|k| lightness(rgb(&t, k)));
+            if is_light(p.background) {
+                assert!(canvas < surface && raised < popover && popover <= surface, "{name}: light layers {canvas} {surface} {popover} {raised}");
+            } else {
+                assert!(canvas <= surface && surface < popover && popover < raised, "{name}: dark layers {canvas} {surface} {popover} {raised}");
+            }
+        }
+    }
+
+    /// Floors are the lowest each text tier reached on any panel across 90
+    /// public themes before the steps were tuned, so no theme reads worse.
+    #[test]
+    fn panel_text_keeps_its_contrast() {
+        for (name, p) in palettes() {
+            let t = resolve(&p, &BTreeMap::new());
+            for panel in ["surface", "canvas", "chrome", "popover", "raised"] {
+                for (text, floor) in [("foreground", 6.9), ("muted", 3.35), ("dim", 2.1)] {
+                    let c = contrast(rgb(&t, text), rgb(&t, panel));
+                    assert!(c >= floor, "{name}: {text} on {panel} is {c:.2}, under {floor}");
+                }
+            }
+            assert!(contrast(rgb(&t, "ring"), p.background) >= 3.0 || t["ring"] == hex(mix(p.background, rgb(&t, "foreground"), 0.7)), "{name}: ring");
+        }
+    }
+
+    #[test]
+    fn explicit_colors_win() {
+        let colors: BTreeMap<String, String> =
+            ["canvas", "chrome", "popover", "raised", "border", "hover", "dim", "ring"].iter().map(|k| (k.to_string(), "#123456".into())).collect();
+        for (name, p) in palettes() {
+            let t = resolve(&p, &colors);
+            for k in colors.keys() {
+                assert_eq!(t[k], "#123456", "{name}: {k}");
+            }
+        }
+    }
+
+    #[test]
+    fn panels_take_the_theme_tint() {
+        let p = parse_theme_file("t", r##"{"background":"#101820","foreground":"#80c0ff","selection":"#203040","ansi":["#000000","#000000","#000000","#000000","#4080ff","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000"]}"##).unwrap().0;
+        let t = resolve(&p, &BTreeMap::new());
+        assert_eq!(t["border"], hex(mix(0x101820, 0x80c0ff, DARK_STEPS.border)));
+        assert_eq!(t["hover"], with_alpha(0x80c0ff, DARK_STEPS.hover));
+        let border = rgb(&t, "border");
+        assert!(border & 255 > (border >> 16) & 255, "a blue foreground tints the border blue: {border:06x}");
+    }
+
+    #[test]
+    fn mix_clamps_past_the_ends() {
+        assert_eq!(mix(0x000000, 0xffffff, -0.5), 0x000000);
+        assert_eq!(mix(0xffffff, 0x000000, -0.5), 0xffffff);
+    }
 }
 
 /// settings.json: preferences used where a layout leaves its look unset.

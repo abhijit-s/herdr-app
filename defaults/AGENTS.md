@@ -337,7 +337,9 @@ layout's look and a block can differ:
   writing hex when a layout should work light and dark.
 - `themes/<name>.json`: `{ "background", "foreground", "selection",
   "cursor"?, "ansi": [16 colors], "colors"?: {...} }`, all `#rrggbb`; panel
-  colors are derived from these, `colors` overrides them. Herdr ships
+  colors are derived from these, `colors` overrides them.
+  Each derived panel color is the background stepped toward the theme's own `foreground`, so panels carry the theme's tint: `canvas` a hair darker than the terminal, `chrome` (sidebars, bars) a small step, `popover` then `raised` further on a dark theme (on a light one `popover` is the background and `raised` a light shade), `border` and `input` (the stronger border) further still; `hover` and `selected` are the foreground at low alpha. Panel text stays a neutral ink, with `muted`, `dim`, `idle` and `unknown` stepped from the background toward it, and `ring` is the accent (`ansi[4]`) unless that reads under 3:1 on the background. Set any of these in `colors` to replace it.
+  Herdr ships
   `atom-one-dark`. The original unedited Atom One Dark and Win98 theme files
   are upgraded to readable terminal colors; edited theme files are kept.
   A theme named like a layout (`themes/win98.json`) is
