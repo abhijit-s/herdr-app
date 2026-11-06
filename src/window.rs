@@ -610,6 +610,8 @@ pub struct AppWindow {
     update_dismissed: Option<String>,
     update_success: bool,
     update_status: String,
+    /// The "Copied" toast on screen: the next copy replaces it.
+    copied_toast: Option<String>,
     focus: FocusHandle,
     _tasks: Vec<Task<()>>,
     /// Gives the keyboard back when what had it leaves the screen (`restore_focus`).
@@ -711,6 +713,7 @@ impl AppWindow {
             update_dismissed: None,
             update_success: false,
             update_status: String::new(),
+            copied_toast: None,
             focus: cx.focus_handle(),
             _tasks: Vec::new(),
             _focus_lost: None,
@@ -1645,10 +1648,7 @@ impl AppWindow {
                 TerminalEvent::ContextMenu(at) => {
                     this.open_menu("pane", json!({ "pane": block.trim_end_matches(SWAP), "terminal": addr }), Some(*at), window, cx)
                 }
-                TerminalEvent::Copied => {
-                    let note = json!({ "title": "Copied", "level": "success", "timeout": 1500 });
-                    this.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": note }), window, cx);
-                }
+                TerminalEvent::Copied => this.show_copied(window, cx),
             });
             let focus = view.read(cx).focus_handle().clone();
             self.terms.insert(id, Term { view, address, focus, _sub: sub });
@@ -2175,6 +2175,17 @@ impl AppWindow {
                 });
             }).detach();
         }
+    }
+
+    /// One "Copied" toast at a time: quick selections replace it instead of stacking.
+    fn show_copied(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(old) = self.copied_toast.take() {
+            self.remove_overlay(&old, window, cx);
+        }
+        let id = mods::new_overlay_id();
+        let note = json!({ "title": "Copied", "level": "success", "timeout": 1500 });
+        self.open_overlay(id.clone(), json!({ "kind": "toast", "notification": note }), window, cx);
+        self.copied_toast = Some(id);
     }
 
     fn layout_notice(&mut self, title: &str, body: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -6638,7 +6649,7 @@ export default class Recent extends View {
     }
 
     #[test]
-    fn copy_on_select_says_copied_and_settings_presses_do_not() {
+    fn copy_on_select_says_copied_once_and_settings_presses_do_not() {
         in_own_process("copied_toast");
     }
 
@@ -6677,6 +6688,15 @@ export default class Recent extends View {
         cx.run_until_parked();
         assert!(cx.read_from_clipboard().and_then(|c| c.text()).is_some_and(|t| t.contains("hello")), "the drag copied nothing");
         assert_eq!(copied(cx), 1, "a copied selection says so once");
+
+        let first = view.update(cx, |this, _| this.copied_toast.clone());
+        cx.simulate_mouse_down(from, MouseButton::Left, none);
+        cx.simulate_mouse_move(to, Some(MouseButton::Left), none);
+        cx.simulate_mouse_up(to, MouseButton::Left, none);
+        cx.run_until_parked();
+        assert_eq!(copied(cx), 1, "a second quick copy stacked another toast");
+        let second = view.update(cx, |this, _| this.copied_toast.clone());
+        assert_ne!(first, second, "the second copy didn't replace the first toast");
 
         cx.update(|window, cx| view.update(cx, |this, cx| {
             this.run_as("app.settings", json!({ "section": "text" }), false, window, cx);
