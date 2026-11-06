@@ -239,6 +239,29 @@ export function terminals(): any[];
  *  `terminal` is null for mod panes. Live. */
 export function focused(): { space: string; tab: string; pane: string | null; terminal: string | null; shown: string | null; agent: string | null; cwd: string | null } | null;
 
+/** A pane the person settled on (stayed at least 300 ms), as it was then. */
+export interface Place {
+  pane: string;
+  /** null for a mod pane. */
+  terminal: string | null;
+  tab: string;
+  space: string;
+  /** The machine the pane is on; null: this computer. */
+  machine: string | null;
+  /** When the person arrived, in ms since the Unix epoch. */
+  at: number;
+}
+
+/** Where the person has been, newest first, one place per pane, at most 20: every
+ *  focus move (keys, clicks, commands, agent.focus, tab and space switches) on any
+ *  Herdr client of this machine, kept across restarts in the core document
+ *  `herdr.focus`. Overlays and popups (this one included) are never places, so
+ *  `[0]` is usually where the person is and the first place that isn't
+ *  `focused()` is where they were before. Panes closed since are not removed:
+ *  check them against `panes()`. Older herdr-app builds lack it: feature-detect
+ *  with `import * as herdr from "herdr"` and `typeof herdr.recentPlaces === "function"`. Live. */
+export function recentPlaces(): Place[];
+
 /** The shown layout (layouts/<name>.json). Its name is shared("layout").
  *  Root `terminal_menu?: string` chooses a terminal right-click menu mod (default: "menu").
  *  Unknown names warn and fall back to "menu". This replaces the menu, not its items.

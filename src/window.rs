@@ -574,6 +574,8 @@ pub struct AppWindow {
     /// Each machine owns a document; the empty key is this core.
     documents: std::collections::BTreeMap<String, crate::mirror_sync::Slot>,
     initial_view: Option<crate::mirror::View>,
+    /// Places the person settled on, shared as the core document `herdr.focus`.
+    focus_history: crate::focus_history::History,
     pointer: Point<Pixels>,
     /// Where a press on a `window_drag` node started, until it moves the window.
     drag_from: Option<Point<Pixels>>,
@@ -683,6 +685,7 @@ impl AppWindow {
                 [(String::new(), local)].into()
             },
             initial_view: std::fs::read_to_string(file("view.json")).ok().and_then(|s| serde_json::from_str(&s).ok()),
+            focus_history: crate::focus_history::History::new(),
             pointer: Point::default(),
             drag_from: None,
             titlebar_applied: None,
@@ -829,14 +832,14 @@ impl AppWindow {
                 let ask_machines = tick.is_multiple_of(5);
                 tick += 1;
                 let relisting = std::mem::take(&mut relist);
-                let (sub, machines, refresh, listed, lines) = cx.background_executor().spawn(async move {
+                let (sub, machines, (refresh, focus), listed, lines) = cx.background_executor().spawn(async move {
                     // The local stream forwards remote doc events too.
                     let mut sub = subscription;
-                    let (mut refresh, mut terminals) = (false, relisting);
+                    let (mut refresh, mut focus, mut terminals) = (false, false, relisting);
                     if sub.is_none() && let Ok((channel, events, snapshot)) = core.subscribe() {
                         event_lines = crate::hc::EventLines::new(&snapshot);
                         sub = Some((channel, events));
-                        (refresh, terminals) = (true, true);
+                        (refresh, focus, terminals) = (true, true, true);
                     }
                     let mut closed = false;
                     if let Some((channel, events)) = &sub {
@@ -844,16 +847,17 @@ impl AppWindow {
                             if let crate::hc::Stream::Data(bytes) = event {
                                 let pushed = event_lines.push(&bytes);
                                 refresh |= pushed.docs;
+                                focus |= pushed.focus;
                                 terminals |= pushed.terminals;
                                 core.credit(*channel, bytes.len());
-                            } else { (refresh, closed) = (true, true); }
+                            } else { (refresh, focus, closed) = (true, true, true); }
                         }
                     }
                     // A stream that ended is subscribed to again, with a fresh snapshot.
                     if closed { sub = None; }
                     let machines = if ask_machines || terminals { core.call("machine.list", json!({})).ok() } else { None };
                     let listed = terminals.then(|| (event_lines.live(), event_lines.ended()));
-                    (sub, machines, refresh, listed, event_lines)
+                    (sub, machines, (refresh, focus), listed, event_lines)
                 }).await;
                 let watching = sub.is_some();
                 subscription = sub;
@@ -884,6 +888,7 @@ impl AppWindow {
                     if changed { this.sync(window, cx); }
                     this.fit_hidden_tabs(window, cx);
                     this.flush_documents(refresh, window, cx);
+                    this.flush_focus(focus, cx);
                 }).is_err() { break; }
                 cx.background_executor().timer(Duration::from_millis(500)).await;
             }
@@ -989,6 +994,7 @@ impl AppWindow {
         tracing::info!("reconnected to the core");
         self.core_generation += 1;
         self.documents_watching = false;
+        self.focus_history.reconnected();
         for (machine, slot) in &mut self.documents {
             slot.available = false;
             slot.connected = machine.is_empty();
@@ -1965,10 +1971,61 @@ impl AppWindow {
         changed |= mods::publish_focused(focused.unwrap_or(Value::Null));
         changed |= mods::publish_floats(self.float_placements());
         changed |= mods::publish_layout(&self.chrome);
+        changed |= self.note_focus(Instant::now());
         if changed {
             self.refresh_snapshot_mods(cx);
         }
         self.write_where(cx);
+    }
+
+    /// Where the person is: the active tab's focused pane. Overlays, popups and
+    /// layout blocks holding the keyboard (an agent sidebar's terminal) leave it.
+    fn here(&self) -> Option<crate::focus_history::Place> {
+        let m = &self.model;
+        let space = m.active_space()?;
+        let tab = space.active_tab()?;
+        let pane = tab.focused_pane()?;
+        Some(crate::focus_history::Place {
+            terminal: m.address_of(&pane), pane, tab: tab.id.clone(), space: space.id.clone(),
+            machine: space.machine.clone(), at: model::now_ms(), ..Default::default()
+        })
+    }
+
+    /// Notes where the person is and whatever place they settled on; true
+    /// when `recentPlaces()` changed.
+    fn note_focus(&mut self, now: Instant) -> bool {
+        let here = self.here();
+        let history = &mut self.focus_history;
+        let left = history.settle.observe(here, now);
+        for place in left.into_iter().chain(history.settle.settled(now)) {
+            history.note(place);
+        }
+        mods::publish_places(serde_json::to_value(history.places()).unwrap_or_default())
+    }
+
+    /// Writes the places noted since the last round to `herdr.focus` (each
+    /// tick; only when they change it), and reads it again after `changed_elsewhere`.
+    fn flush_focus(&mut self, changed_elsewhere: bool, cx: &mut Context<Self>) {
+        if self.draining { return; }
+        self.focus_history.stale |= changed_elsewhere;
+        if self.note_focus(Instant::now()) {
+            self.refresh_snapshot_mods(cx);
+        }
+        let Some((known, unsent)) = self.focus_history.due() else { return };
+        let (core, generation) = (self.core.clone(), self.core_generation);
+        cx.spawn(async move |this, cx| {
+            let sent = unsent.clone();
+            let result = cx.background_executor().spawn(async move {
+                crate::focus_history::sync(&crate::focus_history::OnCore(&core, Duration::from_secs(5)), known, &unsent)
+            }).await;
+            let _ = this.update(cx, |this, cx| {
+                if generation != this.core_generation { return; }
+                this.focus_history.finished(&sent, result);
+                if this.note_focus(Instant::now()) {
+                    this.refresh_snapshot_mods(cx);
+                }
+            });
+        }).detach();
     }
 
     /// Tells the core where each terminal lives, in words: the `where` label,
@@ -2098,6 +2155,13 @@ impl AppWindow {
             let work = crate::mirror_sync::Work { machine: machine.clone(), version: slot.version, write: Some(doc) };
             let result = crate::mirror_sync::round_timeout(&self.core, work, deadline.saturating_duration_since(Instant::now()));
             self.documents_updated(None, vec![result], window, cx);
+        }
+        // The place the person was on when they quit; a round still running merges with it.
+        self.note_focus(Instant::now());
+        self.focus_history.pending = false;
+        if let Some((known, unsent)) = self.focus_history.due() {
+            let result = crate::focus_history::sync(&crate::focus_history::OnCore(&self.core, Duration::from_secs(1)), known, &unsent);
+            self.focus_history.finished(&unsent, result);
         }
         self.save_view();
     }
@@ -6144,6 +6208,121 @@ export default class Scale extends View {
             let width = cx.debug_bounds("scaled").expect("no scaled").size.width;
             assert_eq!(width, px(10.0 * scale), "at scale {scale}");
         }
+    }
+
+    #[test]
+    fn focus_moves_are_shared_as_recent_places_and_overlays_are_not() {
+        in_own_process("focus_history");
+    }
+
+    /// Tabs t (panes a, b) and u (pane d). A pane the person stays on is
+    /// written to the core's `herdr.focus`; a quick hop through b isn't; a
+    /// popup over the window changes nothing; a mod reading `recentPlaces()`
+    /// redraws as the list grows, and places another client wrote show up.
+    #[gpui::test]
+    fn focus_history(cx: &mut gpui::TestAppContext) {
+        use crate::focus_history::{NAME, SETTLE};
+        use crate::model::{Tab, pane};
+        use serde_json::{Value, json};
+        use std::sync::{Arc, Mutex};
+        if !running_alone("focus_history") {
+            return;
+        }
+        cx.executor().allow_parking();
+        let doc = Arc::new(Mutex::new((Value::Null, 0u64)));
+        let store = doc.clone();
+        let (core, _calls) = crate::hc::answering(move |method, params| {
+            let mut doc = store.lock().unwrap();
+            match method {
+                "doc.get" if params["name"] == NAME => Ok(json!({ "value": doc.0, "version": doc.1 })),
+                "doc.set" if params["name"] == NAME && params["version"] == doc.1 => {
+                    *doc = (params["value"].clone(), doc.1 + 1);
+                    Ok(json!({ "version": doc.1 }))
+                }
+                "doc.set" if params["name"] == NAME => Err(json!({ "message": "stale", "data": { "kind": "conflict" } })),
+                _ => Err(json!({ "message": "not in this test" })),
+            }
+        });
+        let main_js = r#"import { View, div } from "gpui-kit";
+import { recentPlaces } from "herdr";
+export default class Recent extends View {
+  render() {
+    return div().child(div().id("recent").w(10 * recentPlaces().length).h(10).flex_none());
+  }
+}"#;
+        let layout = json!({ "id": "root", "type": "row", "children": [
+            { "id": "main", "type": "block", "content": { "tab": "active" } },
+            { "id": "side", "type": "block", "size": { "px": 300 }, "content": { "mod": "recent" } },
+        ] });
+        let (view, cx) = open_window_on(core, cx, "recent", main_js, layout);
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = crate::layout::Node::container("t", crate::layout::Axis::Row, vec![pane("a", "ta"), pane("b", "tb")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.add_tab("s", Tab::new("u", "", "d", "td"));
+            this.model.select_tab("t");
+            this.model.focus_pane("a");
+            this.sync(window, cx);
+        });
+        // A round runs off the UI thread: tick until it lands.
+        let settle = |cx: &mut gpui::VisualTestContext| {
+            std::thread::sleep(SETTLE + std::time::Duration::from_millis(50));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                view.update(cx, |this, cx| this.flush_focus(false, cx));
+                cx.run_until_parked();
+                if !view.update(cx, |this, _| this.focus_history.pending) { break; }
+                assert!(std::time::Instant::now() < deadline, "the write never finished");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        let stored = || -> Vec<String> {
+            doc.lock().unwrap().0["places"].as_array().into_iter().flatten().map(|p| p["pane"].as_str().unwrap().to_owned()).collect()
+        };
+        let drawn = |cx: &mut gpui::VisualTestContext| cx.debug_bounds("recent").map_or(0.0, |b| f32::from(b.size.width) / 10.0) as usize;
+
+        settle(cx);
+        assert_eq!(stored(), ["a"]);
+        let first = doc.lock().unwrap().0["places"][0].clone();
+        assert_eq!((first["terminal"].as_str(), first["tab"].as_str(), first["space"].as_str()), (Some("ta"), Some("t"), Some("s")));
+        assert_eq!(first["machine"], Value::Null);
+        assert_eq!(drawn(cx), 1, "the mod redraws with the place");
+
+        // b for a moment, then tab u: only u's pane counts.
+        view.update_in(cx, |this, window, cx| {
+            this.model.focus_pane("b");
+            this.sync(window, cx);
+            this.model.select_tab("u");
+            this.sync(window, cx);
+        });
+        settle(cx);
+        assert_eq!(stored(), ["d", "a"]);
+        assert_eq!(drawn(cx), 2);
+
+        // A popup over the window (as Fetch opens) is no place, and leaves the one under it.
+        view.update_in(cx, |this, window, cx| {
+            this.open_overlay(crate::mods::new_overlay_id(), json!({ "mod": "recent", "kind": "popup" }), window, cx);
+        });
+        settle(cx);
+        assert!(view.update(cx, |this, _| this.overlays.iter().any(|o| o.kind == super::OverlayKind::Popup)));
+        assert_eq!(stored(), ["d", "a"]);
+        let version = doc.lock().unwrap().1;
+
+        // Another client's place arrives through a doc event and merges in; nothing is rewritten for it.
+        {
+            let mut doc = doc.lock().unwrap();
+            let mut places = doc.0["places"].as_array().cloned().unwrap();
+            places.insert(0, json!({ "pane": "phone", "terminal": null, "tab": "t", "space": "s", "machine": null, "at": crate::model::now_ms() + 60_000, "client": "tui" }));
+            *doc = (json!({ "v": 1, "places": places }), doc.1 + 1);
+        }
+        view.update(cx, |this, cx| this.flush_focus(true, cx));
+        settle(cx);
+        assert_eq!(stored(), ["phone", "d", "a"]);
+        assert_eq!(doc.lock().unwrap().1, version + 1, "only the other client wrote");
+        assert_eq!(drawn(cx), 3);
+        let shown = view.update(cx, |this, _| this.focus_history.places());
+        assert_eq!(shown[0].extra["client"], "tui", "fields other clients add are kept");
     }
 
     #[test]
