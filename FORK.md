@@ -565,6 +565,19 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Files: `src/mods.rs` (`Hint::actions`, `actions`, `action_problems`, `read_hint`, `Snapshot::actions`, `publish_actions`, `modActions`), `src/window.rs` (`scan_folders`, `sync_folders`, `mod.open` props, status), `src/main.rs` (`check`), `src/commands.rs`, `src/mods/render_tests.rs`, `defaults/frame/palette/main.js`, `scripts/palette.test.ts`, `defaults/herdr.d.ts`, `defaults/AGENTS.md`, `docs/commands.md`
 - Upstream: none yet
 
+### Working spinner
+
+`feat/working-spinner` (branched from `master`, fork only): `working_spinner` in settings.json chooses the spinner mods show while an agent works. `"ring"` (the default) is the spinning SVG drawn as before; eight glyph presets (`braille` ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ 80 ms, `braille-heavy` ⣾⣽⣻⢿⡿⣟⣯⣷ 80 ms, `orbit` ⠁⠂⠄⡀⢀⠠⠐⠈ 100 ms, `line` | / - \ 100 ms, `arc` ◜◠◝◞◡◟ 100 ms, `quarters` ◴◷◶◵ 120 ms, `pulse` · • ● • 180 ms, `sparkle` · ✢ ✳ ✶ ✻ ✽ 100 ms); or `{"frames": [...], "interval_ms": n}`. An unknown name, no frames, more than 32 frames, a frame of 0 or more than 4 characters (code points), or an interval that isn't an integer in 16..1000 draws the ring and is a settings problem; settings.json still loads (`Person` keeps the raw value).
+
+- Mods: `settings().working_spinner` is `null` (ring) or `{frames, interval_ms}`, frames space-padded to one length; `working_spinner_presets` lists the presets for a picker. The pane header, tabs, agents list, picker and peek draw it in the terminal font, `t.working`, centred in a `min_w(12)` box. Peek draws the ring by default like the others instead of its own 90 ms braille. Pane, tabs, agents and picker render byte-identical to master by default.
+- Settings window: Look > Panes, "Working spinner", a chip per choice spinning live; the ring removes the key; an unknown name highlights the ring it draws; own frames highlight nothing.
+- Glyphs: every preset glyph is in JetBrains Mono or its ZedMono and AdwaitaMono Nerd Font Mono fallbacks at one cell; in the panels (no fallback list for mods) CoreText draws braille from AppleBraille and the shapes from JetBrains Mono or Menlo, all single width, no emoji. Quarters and sparkle mix JetBrains Mono and Menlo strokes.
+- Perf: the ring steps present-only (0 window renders, 0 mod rebuilds, ~10 presents a simulated second). A glyph preset steps through gpui-kit's `.frames()`, which notifies its view each step: with braille on screen, about 16 window renders and 16 mod rebuilds a second (0 script renders), and more with several spinners in one view (31 for three). Measured with a throwaway GPUI counter test modelled on `spinners_turn_without_drawing_the_window`. Peek paid this before by default; with the ring default it no longer does.
+- Hot reload: `working_spinner` is part of `Settings`, so a settings.json edit makes `settings::set` report a change and `apply_look` redraws the mods.
+- Tests: `settings::tests::{working_spinner_takes_presets_and_frames_and_falls_back_to_the_ring, a_new_working_spinner_redraws_the_mods, the_guide_explains_every_setting}`, `mods::render_tests::{pane_header_draws_the_ring_by_default_as_it_always_has, agent_spinners_follow_the_working_spinner_setting}`, `scripts/settings.test.ts` ("the working spinner picker…"), `scripts/agents.test.ts` (harness `settings`). Every guard mutation-checked (19 mutations, all caught).
+- Files: `src/settings.rs` (`SpinnerFrames`, `SPINNER_PRESETS`, `working_spinner`, `compose`, `problems`, `for_mods`), `defaults/mods/{pane,peek,picker,tabs,agents}/main.js`, `defaults/frame/settings/main.js`, `defaults/AGENTS.md`, `defaults/herdr.d.ts`, `src/mods/render_tests.rs`, `scripts/settings.test.ts`, `scripts/agents.test.ts`
+- Upstream: none yet
+
 ### Rejected text experiments
 
 Two text-quality experiments measured against the shipped thicken, contrast and weight settings, and not kept. The numbers are here so neither is tried again without a new reason.
