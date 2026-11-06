@@ -391,7 +391,11 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  padding and opacity) with the person's zoom and sounds. `ui_scale` is what a mod's px
  *  are drawn at (zoom × ui_zoom): divide window px by it. `panels_in_use` is the panel
  *  derivation drawing now ("tinted" or "classic"): `panel_colors`, or classic for a theme
- *  or look that paints its own panels. */
+ *  or look that paints its own panels. `working_spinner` is the spinner to show while an
+ *  agent works: `null` for the ring icon (`svg("mods/workspace-chrome/spinner.svg").spin(900)`),
+ *  else `{ frames: string[], interval_ms: number }` for `.frames(frames, interval_ms)`, the
+ *  frames padded to one length (see `working_spinner` in AGENTS.md). `working_spinner_presets`
+ *  lists `{ name, frames, interval_ms }` for each preset besides the ring. */
 export function settings(): Record<string, unknown>;
 
 /** Every key binding: { section, keys, action }. */
