@@ -442,6 +442,23 @@ fn zoom_row_shows_points_at_whole_point_steps(cx: &mut TestAppContext) {
     }
 }
 
+/// The Text page has a Cell rounding choice under Cell width, showing the
+/// person's pick.
+#[gpui::test]
+fn cell_rounding_row_shows_the_pick(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut p = props();
+    p["section"] = json!("text");
+    for (person, want) in [("{}", "st-cr-Outward"), (r#"{ cell_rounding: "nearest" }"#, "st-cr-Nearest")] {
+        let values = fixture(true, p.clone(), updates("current", "current"));
+        let tree = describe_with_values(cx, &staged, "frame/settings", values, Some(&format!("this.load = async () => {{}}; this.person = {person};"))).unwrap();
+        assert!(tree.contains("Cell rounding"), "{tree}");
+        let picked: Vec<_> = tree.lines().filter(|l| l.contains("st-cr-") && l.contains(".border_1")).collect();
+        assert!(picked.len() == 1 && picked[0].contains(want), "{person}: {picked:?}");
+    }
+}
+
 #[gpui::test]
 fn long_theme_names_stay_inside_their_card(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
