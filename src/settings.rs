@@ -342,12 +342,13 @@ fn contrast(a: u32, b: u32) -> f32 {
 /// contrast, its quieter tiers stepped toward it the same way. `shaded`
 /// takes `chrome` a shade darker (`sidebar_shade`), level with `canvas`
 /// even when the theme sets that; `ring` is the accent in use (`accent`,
-/// the theme's or its override) when it reads at 3:1.
+/// the theme's or its override) when it reads at 3:1, else the classic
+/// mix, else black or white: always 3:1.
 fn tinted_panels(p: &Palette, ink: u32, shaded: bool, accent: u32, own_canvas: Option<&String>) -> Vec<(&'static str, String)> {
     let bg = p.background;
     let s = if is_light(bg) { &LIGHT_STEPS } else { &DARK_STEPS };
     let tint = |t: f32| hex(mix(bg, p.foreground, t));
-    let ring = if contrast(accent, bg) >= 3.0 { accent } else { mix(bg, ink, 0.7) };
+    let ring = [accent, mix(bg, ink, 0.7)].into_iter().find(|c| contrast(*c, bg) >= 3.0).unwrap_or(if contrast(0, bg) > contrast(0xffffff, bg) { 0 } else { 0xffffff });
     let dim = hex(mix(bg, ink, s.dim));
     let canvas = tint(s.canvas);
     let chrome = match (shaded, own_canvas) {
@@ -560,6 +561,11 @@ mod derivation_tests {
         let p = preset("graphite").unwrap();
         let accent: BTreeMap<String, String> = [("accent".to_owned(), "#3b82f6".to_owned())].into();
         assert_eq!(resolve(p, &accent, PanelColors::Tinted, false)["ring"], "#3b82f6", "an overridden accent rings too");
+        let grey = parse_theme_file("grey", r##"{"background":"#707070","foreground":"#e0e0e0","selection":"#909090","ansi":["#000000","#000000","#000000","#000000","#787878","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000"]}"##).unwrap().0;
+        let ring = resolve(&grey, &BTreeMap::new(), PanelColors::Tinted, false)["ring"].clone();
+        assert!(contrast(u32::from_str_radix(&ring[1..], 16).unwrap(), 0x707070) >= 3.0, "a mid grey still rings at 3:1: {ring}");
+        let translucent: BTreeMap<String, String> = [("accent".to_owned(), "#3b82f6cc".to_owned())].into();
+        assert_eq!(resolve(p, &translucent, PanelColors::Tinted, false)["ring"], "#3b82f6", "an #rrggbbaa accent rings in its color");
         let faint: BTreeMap<String, String> = [("accent".to_owned(), "#22252a".to_owned())].into();
         let t = resolve(p, &faint, PanelColors::Tinted, false);
         assert_eq!(t["ring"], hex(mix(p.background, 0xeeeeef, 0.7)), "an accent under 3:1 falls back");
