@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 const source = (await readFile(new URL("../defaults/mods/crosstalk/main.js", import.meta.url), "utf8"))
   .replace(/^import [\s\S]*?;\n/gm, "").replace("export default class Crosstalk", "class Crosstalk");
 
-const NAMES = ["parseRpc", "parseWatch", "missingMethods", "clean", "preview", "replyEnvelope", "Crosstalk", "METHODS"];
+const NAMES = ["parseRpc", "parseWatch", "missingMethods", "clean", "preview", "replyEnvelope", "replyNote", "Crosstalk", "METHODS"];
 
 type Call = { command: string; args: string[]; options: unknown };
 type Reply = { code: number; stdout?: string; stderr?: string };
@@ -24,16 +24,19 @@ function load(rpc: Record<string, Reply | ((params: any) => Reply)> = {}, watche
     return Promise.resolve({ stdout: "", stderr: "", ...reply });
   };
   const input = { v: "", on() {}, value() { return this.v; }, set_value(v: string) { this.v = v; } };
+  // The mod's clock: tests move it to cross back-off delays and merge windows.
+  const clock = { now: 1_000_000 };
+  class FakeDate extends Date { static now() { return clock.now; } }
   const stubs: Record<string, unknown> = {
     View: class {}, div: () => ({}), v_flex: () => ({}), h_flex: () => ({}), Input: { new: () => ({}) },
-    InputState: { new: () => input }, exec, theme: () => ({}),
+    InputState: { new: () => input }, exec, theme: () => ({}), Date: FakeDate,
     setShared: (k: string, v: unknown) => { shared[k] = v; }, notify: (n: unknown) => { toasts.push(n); }, run: (...a: unknown[]) => { runs.push(a); },
   };
   const mod = new Function(...Object.keys(stubs), `${source}; return { ${NAMES.join(", ")} };`)(...Object.values(stubs));
   const cx: any = { notify() {}, spawn: (f: (cx: any) => Promise<unknown>) => { void f(cx); }, timer: { every() {} }, stop_propagation() {} };
   // A watch with nothing scripted never returns, so settling waits on the event loop, not on every task.
   const settle = async () => { for (let i = 0; i < 50; i++) await new Promise((r) => setTimeout(r, 0)); };
-  return { mod, calls, shared, toasts, runs, cx, input, settle };
+  return { mod, calls, shared, toasts, runs, cx, input, settle, clock };
 }
 
 const ok = (result: unknown): Reply => ({ code: 0, stdout: JSON.stringify({ jsonrpc: "2.0", id: 1, result }) });
@@ -76,6 +79,7 @@ test("untrusted text loses escapes, controls and bidirectional overrides, and is
   expect(clean("x‮y⁦z‏\x00\x07\x9b", 100)).toBe("xyz");
   expect(clean("keep\ttabs\nand lines", 100)).toBe("keep\ttabs\nand lines");
   expect(clean("abcdef", 3)).toBe("abc … (truncated)");
+  expect(clean("a\u2028b\u2029c\u200bd\u200de\ufefff\u2060g", 100)).toBe("abcdefg");
   expect(preview("  two\n\nlines  ")).toBe("two lines");
   expect(preview("x".repeat(300)).length).toBe(200 + " … (truncated)".length);
 });
@@ -110,9 +114,9 @@ test("a crosstalk without every method the mod needs is refused, naming what is 
 });
 
 test("an unreachable service backs off and starts no watch", async () => {
-  const { calls, view } = await started({ "rpc.discover": { code: 69, stderr: "cannot start" } });
+  const { calls, view, clock } = await started({ "rpc.discover": { code: 69, stderr: "cannot start" } });
   expect(view.problem.kind).toBe("unavailable");
-  expect(view.retryAt).toBeGreaterThan(Date.now());
+  expect(view.retryAt).toBe(clock.now + 1000);
   expect(calls.some((c) => c.args[0] === "watch")).toBe(false);
 });
 
@@ -183,4 +187,69 @@ test("the sender's pane comes only from presence's x-herdr.terminal", async () =
   const h = await started(service(mod.METHODS, { "presence.list": ok([{ address: "data.agent.mbp.review", state: "idle", ext: { "x-herdr.terminal": "t7" } }]) }));
   expect(h.view.terminalOf("data.agent.mbp.review")).toBe("t7");
   expect(h.view.terminalOf("data.agent.mbp.other")).toBe(null);
+});
+
+test("a reply going somewhere other than the sender says where, cleaned", () => {
+  const { replyNote } = load().mod;
+  expect(replyNote({ from: "data.agent.mbp.a", reply_to: "data.agent.mbp.b\x1b[31m" })).toBe("Reply goes to data.agent.mbp.b");
+  expect(replyNote({ from: "data.agent.mbp.a", reply_to: "data.agent.mbp.a" })).toBe(null);
+  expect(replyNote({ from: "data.agent.mbp.a" })).toBe(null);
+});
+
+// A failing watch (here bad usage, exit 64) backs off instead of running
+// every tick, and its bug is reported once.
+test("a failing watch backs off and reports its bug once", async () => {
+  const { mod } = load();
+  const h = await started(service(mod.METHODS), Array.from({ length: 20 }, () => ({ code: 64, stderr: "unknown flag --json" })));
+  const watches = () => h.calls.filter((c) => c.args[0] === "watch").length;
+  expect(watches()).toBe(1);
+  for (let i = 0; i < 5; i++) { h.clock.now += 500; h.view.tick(h.cx); await h.settle(); }
+  expect(watches()).toBe(2); // 1 s, then 2 s: only the first delay passed in 2.5 s
+  for (let i = 0; i < 4; i++) { h.clock.now += 1000; h.view.tick(h.cx); await h.settle(); }
+  expect(watches()).toBe(3);
+  expect(h.toasts.filter((t: any) => t.title === "crosstalk inbox: bug")).toHaveLength(1);
+});
+
+test("a start-up error other than a too-old crosstalk is retried", async () => {
+  const { mod } = load();
+  let whoamis = 0;
+  const h = await started(service(mod.METHODS, { whoami: () => (++whoamis === 1 ? fails("timeout", "herdr-core is slow") : ok({ address: "data.person.abhi", verified: true, person: true })) }));
+  expect(h.view.ready).toBe(false);
+  h.view.tick(h.cx); await h.settle();
+  expect(whoamis).toBe(1); // still inside the back-off
+  h.clock.now += 1000; h.view.tick(h.cx); await h.settle();
+  expect(whoamis).toBe(2);
+  expect(h.view.ready).toBe(true);
+});
+
+test("a too-old crosstalk waits for a reload", async () => {
+  const h = await started(service(["whoami"]));
+  h.clock.now += 3_600_000; h.view.tick(h.cx); await h.settle();
+  expect(h.calls.filter((c) => c.args[1] === "rpc.discover")).toHaveLength(1);
+});
+
+test("requests that arrive inside the merge window toast together when it ends", async () => {
+  const { mod } = load();
+  const h = await started(service(mod.METHODS, { fetch: ok([msg("01R", { kind: "core.request" })]) }));
+  expect(h.toasts).toHaveLength(1);
+  h.clock.now += 5000;
+  h.view.setInbox([msg("01R", { kind: "core.request" }), msg("01S", { kind: "core.request", from: "data.agent.mbp.build" }), msg("01T", { kind: "core.request" })]);
+  expect(h.toasts).toHaveLength(1);
+  h.clock.now += 30_000; h.view.tick(h.cx);
+  expect(h.toasts).toHaveLength(2);
+  expect(h.toasts[1].title).toBe("2 requests");
+  h.clock.now += 60_000; h.view.tick(h.cx);
+  expect(h.toasts).toHaveLength(2);
+});
+
+test("after close nothing updates", async () => {
+  const { mod } = load();
+  const h = await started(service(mod.METHODS, { fetch: ok([msg("01A")]) }));
+  await h.view.close();
+  h.view.setInbox([]);
+  await h.view.refresh(h.cx);
+  expect(h.shared["crosstalk.unread"]).toBe(1);
+  const before = h.calls.length;
+  h.clock.now += 120_000; h.view.tick(h.cx); await h.settle();
+  expect(h.calls.length).toBe(before);
 });

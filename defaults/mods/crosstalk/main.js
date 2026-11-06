@@ -13,7 +13,7 @@ const METHODS = ["whoami", "fetch", "ack", "nack", "publish", "watch", "task.lis
 // `crosstalk` exit codes: a response arrived (even an error), bad usage,
 // the service can't be reached or started, watch timed out.
 const EXIT = { ok: 0, usage: 64, unavailable: 69, timeout: 124 };
-const WATCH = "60s"; // a stray watch outlives close() by at most this long
+const WATCH = "60s"; // the CLI's own timeout: a watch waiting at close() ends by then
 const MERGE_MS = 30000; // at most one request toast per window
 const PREVIEW = 200, FULL = 64 * 1024, SNOOZE_S = 600;
 const TERMINAL = "x-herdr.terminal";
@@ -58,13 +58,14 @@ function missingMethods(discovered) {
 }
 
 // Untrusted text for display: no escape sequences, control characters (other
-// than newline and tab) or bidirectional overrides; capped with a marker.
+// than newline and tab), bidirectional overrides, line or paragraph
+// separators, or zero-width characters; capped with a marker.
 function clean(text, max) {
   let s = String(text ?? "")
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, "")
     .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "")
-    .replace(/[‎‏؜‪-‮⁦-⁩]/g, "");
+    .replace(/[\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, "");
   if (s.length > max) s = s.slice(0, max) + " … (truncated)";
   return s;
 }
@@ -83,13 +84,20 @@ function replyEnvelope(original, text) {
   return e;
 }
 
+// Where a reply goes when that is not the sender: reply_to is the sender's
+// choice, so the person sees it before answering.
+function replyNote(e) {
+  return e.reply_to && e.reply_to !== e.from ? `Reply goes to ${clean(e.reply_to, 200)}` : null;
+}
+
 const kindLabel = (kind) => ({ "core.request": "request", "core.mail": "mail", "core.message": "message" })[kind] ?? kind;
 
 export default class Crosstalk extends View {
   init(_props, cx) {
     this.tab = "inbox"; this.me = null; this.problem = null; this.inbox = []; this.tasks = []; this.agents = [];
     this.open = null; this.watching = false; this.closed = false; this.retryAt = 0; this.delay = 1000;
-    this.toasted = new Set(); this.lastToast = 0; this.ready = false;
+    this.toasted = new Set(); this.pending = new Set(); this.lastToast = -Infinity; this.ready = false;
+    this.starting = false; this.reported = new Set();
     this.input = InputState.new({ placeholder: "Reply…" });
     this.input.on("submit", (_e, cx) => this.reply(cx));
     cx.spawn(async (cx) => { await this.start(cx); });
@@ -99,27 +107,42 @@ export default class Crosstalk extends View {
   async close() { this.closed = true; }
 
   async start(cx) {
+    this.starting = true;
+    try { await this.connect(cx); } finally { this.starting = false; }
+  }
+
+  async connect(cx) {
     const d = await rpc("rpc.discover");
     if (d.error) return this.fail(d.error, cx);
     const missing = missingMethods(d.result);
     if (missing.length) return this.fail({ kind: "unsupported", message: "this crosstalk is too old for the inbox", hint: `missing: ${missing.join(", ")}` }, cx);
     const who = await rpc("whoami");
     if (who.error) return this.fail(who.error, cx);
+    if (this.closed) return;
     this.me = who.result; this.ready = true; this.problem = null; this.delay = 1000; this.retryAt = 0;
     await this.refresh(cx);
     this.arm(cx);
   }
 
+  // Every failure backs off (1 s doubling to 60 s), except a crosstalk too
+  // old for the mod, which waits for a reload. A bug is reported once.
   fail(error, cx) {
-    this.problem = error;
-    if (error.kind === "bug") notify({ title: "crosstalk inbox: bug", body: `${error.message} ${error.hint}`.trim(), level: "error" });
-    if (error.kind === "unavailable") { this.retryAt = Date.now() + this.delay; this.delay = Math.min(this.delay * 2, 60000); }
+    this.problem = { kind: error.kind, message: clean(error.message, 300), hint: clean(error.hint, 300) };
+    const key = `${error.kind}:${error.message}`;
+    if (error.kind === "bug" && !this.reported.has(key)) {
+      this.reported.add(key);
+      notify({ title: "crosstalk inbox: bug", body: `${this.problem.message} ${this.problem.hint}`.trim(), level: "error" });
+    }
+    this.retryAt = error.kind === "unsupported" ? Infinity : Date.now() + this.delay;
+    this.delay = Math.min(this.delay * 2, 60000);
     cx.notify();
   }
 
   tick(cx) {
-    if (this.closed || Date.now() < this.retryAt) return;
-    if (!this.ready) { if (this.problem?.kind === "unavailable") { this.problem = { ...this.problem, retrying: true }; cx.spawn(async (cx) => { await this.start(cx); }); this.retryAt = Infinity; } return; }
+    if (this.closed) return;
+    this.flushToasts();
+    if (Date.now() < this.retryAt) return;
+    if (!this.ready) { if (!this.starting) cx.spawn(async (cx) => { await this.start(cx); }); return; }
     this.arm(cx);
   }
 
@@ -139,6 +162,7 @@ export default class Crosstalk extends View {
   }
 
   async refresh(cx, what) {
+    if (this.closed) return;
     const all = !what || what === "missed";
     if (all || what === "message" || what === "ctl.receipt") {
       const f = await rpc("fetch", { limit: 200 });
@@ -153,25 +177,37 @@ export default class Crosstalk extends View {
       const t = await rpc("task.list");
       if (!t.error) this.tasks = Array.isArray(t.result) ? t.result : t.result?.tasks ?? [];
     }
-    cx.notify();
+    if (!this.closed) cx.notify();
   }
 
   setInbox(deliveries) {
+    if (this.closed) return;
     this.inbox = deliveries.filter((d) => d.state !== "acked");
     if (this.open && !this.inbox.some((d) => d.envelope.id === this.open)) this.open = null;
     setShared("crosstalk.unread", this.inbox.length);
-    const requests = this.inbox.filter((d) => d.envelope.kind === "core.request" && !this.toasted.has(d.envelope.id));
+    const ids = new Set(this.inbox.map((d) => d.envelope.id));
+    for (const set of [this.toasted, this.pending]) for (const id of set) if (!ids.has(id)) set.delete(id);
+    for (const d of this.inbox) if (d.envelope.kind === "core.request" && !this.toasted.has(d.envelope.id)) this.pending.add(d.envelope.id);
+    this.flushToasts();
+  }
+
+  // New requests toast together, at most once per merge window; ones that
+  // arrive inside a window wait for its end (tick), never dropped.
+  flushToasts() {
+    if (!this.pending.size || Date.now() - this.lastToast < MERGE_MS) return;
+    const requests = this.inbox.filter((d) => this.pending.has(d.envelope.id));
     for (const d of requests) this.toasted.add(d.envelope.id);
-    if (requests.length && Date.now() - this.lastToast >= MERGE_MS) {
-      this.lastToast = Date.now();
-      notify({ title: requests.length === 1 ? `Request from ${preview(requests[0].envelope.from)}` : `${requests.length} requests`, body: requests.length === 1 ? preview(bodyText(requests[0].envelope)) : "", level: "info", action: { name: "mod.open", args: { name: "crosstalk" } } });
-    }
+    this.pending.clear();
+    if (!requests.length) return;
+    this.lastToast = Date.now();
+    notify({ title: requests.length === 1 ? `Request from ${preview(requests[0].envelope.from)}` : `${requests.length} requests`, body: requests.length === 1 ? preview(bodyText(requests[0].envelope)) : "", level: "info", action: { name: "mod.open", args: { name: "crosstalk" } } });
   }
 
   act(method, params, cx, after) {
     cx.spawn(async (cx) => {
       const r = await rpc(method, params);
-      if (r.error) this.note = `${method}: ${r.error.kind}${r.error.hint ? ` (${r.error.hint})` : ""}`;
+      if (this.closed) return;
+      if (r.error) this.note = clean(`${method}: ${r.error.kind}${r.error.hint ? ` (${r.error.hint})` : ""}`, 300);
       else { this.note = null; after?.(); }
       await this.refresh(cx);
     });
@@ -207,7 +243,9 @@ export default class Crosstalk extends View {
     if (!d) return null;
     const e = d.envelope, term = this.terminalOf(e.from);
     const button = (id, label, on) => div().id(id).h(26).px(10).flex().items_center().rounded(6).border_1().border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover)).text_size(11).on_click(on).child(label);
+    const goes = replyNote(e);
     return v_flex().flex_none().p(10).gap(8).border_t(1).border_color(t.border)
+      .when(Boolean(goes), (el) => el.child(div().text_size(11).text_color(t.blocked).child(goes)))
       .child(h_flex().gap(6)
         .child(button("ack", "Done", (_e, cx) => this.act("ack", { id: e.id }, cx)))
         .child(button("snooze", "Snooze 10 min", (_e, cx) => this.act("nack", { id: e.id, delay_s: SNOOZE_S }, cx)))
