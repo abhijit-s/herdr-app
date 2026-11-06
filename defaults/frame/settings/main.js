@@ -197,6 +197,78 @@ const DEFAULT_FONT = "JetBrains Mono";
 const DEFAULT_UI_FONT = "Geist";
 const DEFAULT_UI_FONT_WEIGHT = 400;
 
+// Search -----------------------------------------------------------------
+
+// Lower case, with settings.json's _ - . read as spaces, so "cell_rounding"
+// finds "Cell rounding". Keeps the length, so spans index the original text: a
+// letter whose lower case is longer ("İ") stays as it is.
+const fold = (s) => s.replace(/[\s\S]/g, (c) => { const l = c.toLowerCase(); return l.length === 1 ? l : c; }).replace(/[_\-.]/g, " ");
+
+/** The typed words to look for; none while nothing is typed. */
+export function searchWords(query) {
+  return fold(query).split(/\s+/).filter(Boolean);
+}
+
+// Whether one typo (a letter added, dropped or changed, or two swapped) makes
+// `a` into `b`.
+function oneTypo(a, b) {
+  if (Math.abs(a.length - b.length) > 1 || a === b) return a === b;
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  const rest = (x, y) => a.slice(x) === b.slice(y);
+  return rest(i + 1, i + 1) || rest(i + 1, i) || rest(i, i + 1) || (a[i] === b[i + 1] && a[i + 1] === b[i] && rest(i + 2, i + 2));
+}
+
+/**
+ * Where `word` (from searchWords) falls in `text`: [start, end], or null. Anywhere
+ * as typed (a prefix or a substring); with `typos`, words of four letters or more
+ * also find a whole word of the text one typo away that starts with the same
+ * letter ("roundng" finds "rounding", "sound" doesn't find "round").
+ */
+export function wordSpan(word, text, typos) {
+  const t = fold(text);
+  const at = t.indexOf(word);
+  if (at >= 0) return [at, at + word.length];
+  if (!typos || word.length < 4) return null;
+  for (const m of t.matchAll(/[a-z0-9]+/g)) {
+    if (m[0][0] === word[0] && oneTypo(word, m[0])) return [m.index, m.index + m[0].length];
+  }
+  return null;
+}
+
+/**
+ * How a setting matches `words`: every word must fall in its title, its keys
+ * (settings.json names), its description or its section's heading. The spans
+ * to mark per field, or null. Titles and keys forgive a typo; the longer
+ * descriptions only match as typed, where a typo would find too much.
+ */
+export function matchSetting(words, entry) {
+  if (!words.length) return null;
+  const spans = { title: [], about: [], keys: entry.keys.map(() => []) };
+  for (const w of words) {
+    let hit = false;
+    const mark = (list, span) => { if (span) { list.push(span); hit = true; } };
+    mark(spans.title, wordSpan(w, entry.title, true));
+    entry.keys.forEach((k, i) => mark(spans.keys[i], wordSpan(w, k, true)));
+    mark(spans.about, entry.about ? wordSpan(w, entry.about, false) : null);
+    if (!hit && !(entry.heading && wordSpan(w, entry.heading, false))) return null;
+  }
+  return spans;
+}
+
+/** `text` cut into [piece, marked] runs by `spans`, overlaps merged. */
+export function markRuns(text, spans) {
+  const lit = new Array(text.length).fill(false);
+  for (const [a, b] of spans) for (let i = a; i < b && i < text.length; i++) lit[i] = true;
+  const runs = [];
+  for (let i = 0; i < text.length; i++) {
+    const last = runs[runs.length - 1];
+    if (last && last[1] === lit[i]) last[0] += text[i];
+    else runs.push([text[i], lit[i]]);
+  }
+  return runs;
+}
+
 export default class Settings extends View {
   init(_props, cx) {
     const asked = props()?.section;
@@ -226,6 +298,17 @@ export default class Settings extends View {
     this.machineResults = {};
     this.machineEdit = null;
     this.machineNotice = null;
+    // Search: the typed words, an index of every page's settings (built again
+    // only when what the pages draw from changes), and what the words match.
+    this.query = "";
+    this.words = [];
+    this.place = { page: this.section, heading: "" };
+    this.index = null;
+    this.matched = null;
+    this.searchInput = InputState.new({ placeholder: "Search settings" });
+    this.searchInput.on("change", (_e, cx) => { this.setQuery(this.searchInput.value(), false); cx.notify(); });
+    this.searchInput.on("focus", (_e, cx) => { this.searchFocused = true; cx.notify(); });
+    this.searchInput.on("blur", (_e, cx) => { this.searchFocused = false; cx.notify(); });
     this.handle = cx.focus_handle();
     this.handle.focus();
     cx.spawn(async (cx) => {
@@ -366,14 +449,227 @@ export default class Settings extends View {
     closeOverlay(props().overlay);
   }
 
+  // Search ---------------------------------------------------------------
+
+  setQuery(query, toInput = true) {
+    this.query = query;
+    this.words = searchWords(query);
+    if (toInput && this.searchInput.value() !== query) {
+      this.searchInput.set_value(query);
+      const end = encodeURIComponent(query).replace(/%[0-9A-F]{2}/g, "_").length;
+      this.searchInput.set_selected_range({ start: end, end });
+    }
+  }
+
+  // True while the pages draw as search results (not while the index is built).
+  filtering() {
+    return this.words?.length > 0 && !this.indexing;
+  }
+
+  // Every page's settings, from the pages themselves: what row() and block() see.
+  buildIndex(t, cx) {
+    // Pages not opened yet haven't read what they list: read it now, and index
+    // again once it's here (results() sees the list change).
+    if (this.machineList === null && !this.machineLoading && !this.machineError) cx.spawn(async (cx) => { await this.loadMachines(); cx.notify(); });
+    this.index = new Map();
+    this.indexing = true;
+    try {
+      for (const s of SECTIONS) {
+        this.place = { page: s.id, heading: "" };
+        this.page(s.id, t, cx);
+      }
+    } finally {
+      this.indexing = false;
+    }
+    this.indexStale = false;
+    this.matched = null;
+  }
+
+  page(id, t, cx) {
+    switch (id) {
+      case "look": return this.look(t, cx);
+      case "text": return this.text(t);
+      case "keyboard": return this.keyboard(t);
+      case "machines": return this.machines(t);
+      case "alerts": return this.alerts(t);
+      case "privacy": return this.privacy(t);
+      default: return this.updates(t);
+    }
+  }
+
+  // Every page with a match, each showing only its matches under their headings.
+  results(t, cx) {
+    // What the pages draw from: descriptions and conditional rows follow it (an
+    // update check, a theme's panels), so a change means a new index.
+    const from = JSON.stringify([settings(), updates(), telemetry(), layoutSpacing(), this.person, this.machineList, this.layoutFile?.name, this.layoutFile?.raw]);
+    if (!this.index || this.indexStale || from !== this.indexedFrom) this.buildIndex(t, cx);
+    this.indexedFrom = from;
+    const m = this.match();
+    const found = SECTIONS.filter((s) => m.pages.has(s.id));
+    if (!found.length) {
+      return v_flex()
+        .id("st-none")
+        .w_full()
+        .pt(48)
+        .gap(6)
+        .items_center()
+        .child(div().text_size(14).text_color(t.foreground).child("No settings match"))
+        .child(div().text_size(12.5).text_color(t.dim).child(`Nothing has “${this.query.trim()}” in its name, description or settings.json key.`));
+    }
+    return v_flex()
+      .w_full()
+      .children(
+        found.map((s) => {
+          this.place = { page: s.id, heading: "" };
+          return v_flex()
+            .w_full()
+            .pb(22)
+            .child(
+              h_flex()
+                .id(`st-found-${s.id}`)
+                .gap(8)
+                .pb(10)
+                .items_center()
+                .cursor_pointer()
+                .tooltip(`Open ${s.title}`)
+                .on_click((_e, cx) => this.go(s.id, cx))
+                .child(svg(I(s.icon)).size(14).text_color(t.accent))
+                .child(div().text_size(15).font_semibold().text_color(t.foreground).child(s.title)),
+            )
+            .child(this.page(s.id, t, cx));
+        }),
+      );
+  }
+
+  // Shows page `id`, leaving any search.
+  go(id, cx) {
+    this.setQuery("");
+    this.section = id;
+    this.picking = null;
+    this.machineEdit = null;
+    this.handle.focus();
+    if (id === "machines") cx.spawn(async (cx) => { await this.loadMachines(); cx.notify(); });
+    // The layout file may have changed while another page showed.
+    if (id === "look") cx.spawn(async (cx) => { if (await this.loadLayoutFile()) cx.notify(); });
+    cx.notify();
+  }
+
+  // A key typed with nothing focused that takes keys (no field, no list) starts
+  // a search with it.
+  typesIntoSearch(e) {
+    const m = e.modifiers ?? {};
+    const c = e.key_char;
+    if (this.searchFocused || this.picking || this.renameFocused || this.machineEdit) return false;
+    // Option types characters on macOS; elsewhere Alt is a shortcut.
+    if (m.control || m.platform || m.function || (m.alt && window()?.platform !== "macos")) return false;
+    if (typeof c !== "string" || c.length !== 1 || c < " " || c === "\u007f") return false;
+    return !(c === " " && !this.query);
+  }
+
+  // What the words match in the index, once per change of words or index.
+  match() {
+    const q = this.words.join(" ");
+    if (this.matched?.q === q && this.matched.index === this.index) return this.matched;
+    const spans = new Map();
+    const headings = new Set();
+    const pages = new Set();
+    for (const e of this.index.values()) {
+      const hit = matchSetting(this.words, e);
+      spans.set(e.id, hit);
+      if (hit) {
+        headings.add(`${e.page}|${e.heading}`);
+        pages.add(e.page);
+      }
+    }
+    this.matched = { q, index: this.index, spans, headings, pages };
+    return this.matched;
+  }
+
+  // While searching, how a setting matches: its spans, or false to hide it;
+  // null otherwise. Building the index records it instead.
+  searchHit(title, about, keys) {
+    if (!this.words?.length) return null;
+    const { page, heading } = this.place;
+    const id = `${page}|${heading}|${title}`;
+    const entry = { id, page, heading, title, about: typeof about === "string" ? about : "", keys: [keys ?? []].flat().filter(Boolean) };
+    if (this.indexing) {
+      this.index.set(id, entry);
+      return null;
+    }
+    const m = this.match();
+    if (m.spans.has(id)) return m.spans.get(id) ?? false;
+    // Shown since the index was built: matched here, indexed with the next build.
+    const hit = matchSetting(this.words, entry);
+    m.spans.set(id, hit);
+    this.indexStale = true;
+    return hit ?? false;
+  }
+
+  // A piece of a page that isn't a row (a picker, a list) but is a setting:
+  // search finds it by `title`, `about` and `keys`, and shows it unmarked.
+  block(title, about, keys, el) {
+    return this.searchHit(title, about, keys) === false ? div() : el;
+  }
+
+  // Notes and spacing between settings: not shown in search results.
+  plain(el) {
+    return this.filtering() ? div() : el;
+  }
+
+  // Text with `spans` marked. `wrap`: it may run over lines, so each word is its
+  // own piece and lines break between them. Marks tint the background only, so
+  // nothing moves as they change.
+  marked(t, text, spans, wrap) {
+    const piece = ([s, lit]) => div().child(s).when(lit, (el) => el.bg(t.accent.length === 7 ? `${t.accent}40` : t.raised).rounded(2));
+    const runs = markRuns(text, spans);
+    if (!wrap) return h_flex().children(runs.map(piece));
+    const words = [[]];
+    for (const [s, lit] of runs) {
+      s.split(/( )/).forEach((part) => {
+        if (part === " ") words.push([]);
+        else if (part) words[words.length - 1].push([part, lit]);
+      });
+    }
+    return h_flex().flex_wrap().children(words.filter((w) => w.length).map((w) => h_flex().mr(3.5).children(w.map(piece))));
+  }
+
+  // A row as a search result: its matches marked, and the settings.json names
+  // it writes.
+  foundRow(t, title, about, control, keys, hit) {
+    return h_flex()
+      .w_full()
+      .gap(16)
+      .py(12)
+      .items_center()
+      .border_b(1)
+      .border_color(t.border)
+      .child(
+        v_flex()
+          .flex_1()
+          .min_w(0)
+          .gap(3)
+          .child(div().text_size(14).text_color(t.foreground).child(this.marked(t, title, hit.title, false)))
+          .when(Boolean(about), (el) => el.child(div().text_size(12.5).line_height("18px").text_color(t.dim).child(typeof about === "string" ? this.marked(t, about, hit.about, true) : about)))
+          .when(keys.length > 0, (el) =>
+            el.child(h_flex().gap(8).flex_wrap().children(keys.map((k, i) => div().font_family(DEFAULT_FONT).text_size(11.5).text_color(t.muted).child(this.marked(t, k, hit.keys[i], false)))))),
+      )
+      .child(div().flex_none().child(control));
+  }
+
   // Pieces ---------------------------------------------------------------
 
   heading(t, text) {
+    (this.place ??= { page: this.section, heading: "" }).heading = text;
+    if (this.filtering() && !this.matched.headings.has(`${this.place.page}|${text}`)) return div();
     return div().pt(6).pb(8).text_size(12).font_semibold().text_color(t.dim).child(text.toUpperCase());
   }
 
-  // One setting: what it is on the left, the control on the right.
-  row(t, title, about, control) {
+  // One setting: what it is on the left, the control on the right. `keys`: the
+  // settings.json names it writes, which search finds and shows.
+  row(t, title, about, control, keys) {
+    const hit = this.searchHit(title, about, keys);
+    if (hit === false) return div();
+    if (hit) return this.foundRow(t, title, about, control, [keys ?? []].flat().filter(Boolean), hit);
     return h_flex()
       .w_full()
       .gap(16)
@@ -740,35 +1036,33 @@ export default class Settings extends View {
     return v_flex()
       .w_full()
       .child(this.heading(t, "Layout"))
-      .child(this.layoutPicker(t, cx))
-      .child(div().h(18))
+      .child(this.block("Layout", "The layout Herdr draws its window with.", "layout", this.layoutPicker(t, cx)))
+      .child(this.plain(div().h(18)))
       .child(this.spacing(t, cx))
-      .child(div().h(18))
+      .child(this.plain(div().h(18)))
       .child(this.heading(t, "Theme"))
-      .child(this.row(t, "Appearance", "Light or dark, or as your system is now.", this.choicePicker(t, "st-ap", "appearance", APPEARANCES)))
-      .child(div().pt(12).pb(8).text_size(12.5).text_color(t.dim).child("For the layout you're in: each layout keeps its own light and dark theme."))
-      .child(div().pb(6).text_size(12.5).font_medium().text_color(t.muted).child("Dark"))
-      .child(this.themePicker(t, false))
-      .child(div().pt(10).pb(6).text_size(12.5).font_medium().text_color(t.muted).child("Light"))
-      .child(this.themePicker(t, true))
-      .child(div().h(12))
-      .child(this.row(t, "App icon", "The Dock's icon. An install from a checkout puts it on the app too.", this.iconPicker(t)))
-      .child(div().h(18))
+      .child(this.row(t, "Appearance", "Light or dark, or as your system is now.", this.choicePicker(t, "st-ap", "appearance", APPEARANCES), "appearance"))
+      .child(this.plain(div().pt(12).pb(8).text_size(12.5).text_color(t.dim).child("For the layout you're in: each layout keeps its own light and dark theme.")))
+      .child(this.block("Dark theme", "Colours for the layout you're in, when dark.", "theme.dark", v_flex().w_full().child(div().pb(6).text_size(12.5).font_medium().text_color(t.muted).child("Dark")).child(this.themePicker(t, false))))
+      .child(this.block("Light theme", "Colours for the layout you're in, when light.", "theme.light", v_flex().w_full().child(div().pt(10).pb(6).text_size(12.5).font_medium().text_color(t.muted).child("Light")).child(this.themePicker(t, true))))
+      .child(this.plain(div().h(12)))
+      .child(this.row(t, "App icon", "The Dock's icon. An install from a checkout puts it on the app too.", this.iconPicker(t), "app_icon"))
+      .child(this.plain(div().h(18)))
       .child(this.heading(t, "Inactive window"))
       .child(this.contrast(t, "unfocused_dim", "Dim when inactive", "Fades this far toward the background while Herdr isn't the active window."))
-      .child(this.row(t, "Dim", "The whole window, or only terminal text.", this.choicePicker(t, "st-ds", "unfocused_dim_scope", DIM_SCOPES)))
+      .child(this.row(t, "Dim", "The whole window, or only terminal text.", this.choicePicker(t, "st-ds", "unfocused_dim_scope", DIM_SCOPES), "unfocused_dim_scope"))
       .child(this.row(t, "Panel colours", settings().panels_in_use === "classic" && this.person.panel_colors !== "classic"
         ? "This theme or layout keeps classic panels, so it has no sidebar shade."
-        : "Tinted takes each theme's own hue. Classic is plain grey with a darker sidebar, so it has no sidebar shade.", this.choicePicker(t, "st-pc", "panel_colors", PANEL_COLORS)))
+        : "Tinted takes each theme's own hue. Classic is plain grey with a darker sidebar, so it has no sidebar shade.", this.choicePicker(t, "st-pc", "panel_colors", PANEL_COLORS), "panel_colors"))
       .when(this.person.panel_colors !== "classic" && settings().panels_in_use !== "classic", (el) =>
-        el.child(this.row(t, "Sidebar shade", "A shade darker sidebar on dark themes, while Herdr is the active window or always.", this.choicePicker(t, "st-ss", "sidebar_shade", SIDEBAR_SHADES))),
+        el.child(this.row(t, "Sidebar shade", "A shade darker sidebar on dark themes, while Herdr is the active window or always.", this.choicePicker(t, "st-ss", "sidebar_shade", SIDEBAR_SHADES), "sidebar_shade")),
       )
-      .child(div().h(18))
+      .child(this.plain(div().h(18)))
       .child(this.heading(t, "Mouse"))
       .child(this.followsMouse(t, cx))
-      .child(div().h(18))
+      .child(this.plain(div().h(18)))
       .child(this.heading(t, "Panes"))
-      .child(this.row(t, "New tabs arrange", "New tabs start in this arrangement: splits and closes arrange their panes again.", this.choicePicker(t, "st-da", "default_arrange", ARRANGES)));
+      .child(this.row(t, "New tabs arrange", "New tabs start in this arrangement: splits and closes arrange their panes again.", this.choicePicker(t, "st-da", "default_arrange", ARRANGES), "default_arrange"));
   }
 
   text(t) {
@@ -823,6 +1117,7 @@ export default class Settings extends View {
               .child(this.fontButton(t, which, family))
               // The panels' text follows zoom: they size their rows to it.
               .when(Boolean(sizeKey), (el) => el.child(this.stepper(t, `st-${sizeKey}`, `${Math.round(sizeNow)}`, (_e, cx) => size(sizeKey, sizeNow, -1, cx), (_e, cx) => size(sizeKey, sizeNow, 1, cx)))),
+            [which, sizeKey],
           ),
         )
         .when(this.picking === which, (el) => el.child(this.fontList(t, which, def)));
@@ -841,17 +1136,18 @@ export default class Settings extends View {
             .items_center()
             .child(this.stepper(t, "st-zoom", zoomShown, () => run("app.zoom_out"), () => run("app.zoom_in")))
             .child(this.button(t, "st-zoom-reset", "Reset", () => run("app.zoom_reset"))),
+          "zoom",
         ),
       )
-      .child(this.row(t, "Zoom steps", "Whole points move the terminals' text a point at a time, as Ghostty does; the panels scale with it.", this.choicePicker(t, "st-zs", "zoom_step", ZOOM_STEPS)))
-      .child(this.row(t, "Interface zoom", "Panels, tabs and popups, on top of zoom. Terminals keep their size.", scaleStepper("ui_zoom", s.ui_zoom)))
-      .child(this.row(t, "Interface text size", "The panels' text only: spacing and icons keep their size.", scaleStepper("ui_text_scale", s.ui_text_scale)))
+      .child(this.row(t, "Zoom steps", "Whole points move the terminals' text a point at a time, as Ghostty does; the panels scale with it.", this.choicePicker(t, "st-zs", "zoom_step", ZOOM_STEPS), "zoom_step"))
+      .child(this.row(t, "Interface zoom", "Panels, tabs and popups, on top of zoom. Terminals keep their size.", scaleStepper("ui_zoom", s.ui_zoom), "ui_zoom"))
+      .child(this.row(t, "Interface text size", "The panels' text only: spacing and icons keep their size.", scaleStepper("ui_text_scale", s.ui_text_scale), "ui_text_scale"))
       .child(fontRow("ui_font", null, "Interface font", s.ui_font_family, DEFAULT_UI_FONT))
-      .child(this.row(t, "Interface font weight", "Panels, tabs and popups. Bold text stays as much bolder; terminals keep theirs.", this.stepper(t, "st-ui_font_weight", `${uiWeight}`, (_e, cx) => uiWeightStep(-25, cx), (_e, cx) => uiWeightStep(25, cx))))
+      .child(this.row(t, "Interface font weight", "Panels, tabs and popups. Bold text stays as much bolder; terminals keep theirs.", this.stepper(t, "st-ui_font_weight", `${uiWeight}`, (_e, cx) => uiWeightStep(-25, cx), (_e, cx) => uiWeightStep(25, cx)), "ui_font_weight"))
       .child(this.thicken(t, "ui_font_thicken", "Thicken interface text", "Panels, tabs and popups as heavy whatever their color (On), or unsmoothed (Off). Terminals follow their own."))
       .child(this.contrast(t, "ui_text_contrast", "Interface contrast", "Crisper edges on the panels' text, at the same weight. Terminals follow their own."))
-      .child(this.row(t, "Interface text smoothing", "Trial. Subpixel colors each edge by your display's stripes, on 1x displays; others stay grayscale.", this.choicePicker(t, "st-uitr", "ui_text_rendering", TEXT_RENDERINGS)))
-      .child(div().h(18))
+      .child(this.row(t, "Interface text smoothing", "Trial. Subpixel colors each edge by your display's stripes, on 1x displays; others stay grayscale.", this.choicePicker(t, "st-uitr", "ui_text_rendering", TEXT_RENDERINGS), "ui_text_rendering"))
+      .child(this.plain(div().h(18)))
       .child(this.heading(t, "Terminal text"))
       .child(fontRow("font", "font_size", "Font", s.font_family, DEFAULT_FONT, s.font_size))
       .child(
@@ -860,6 +1156,7 @@ export default class Settings extends View {
           "Weight",
           own("font_weight", s.font_weight, 500) ? "This layout sets its own; yours shows in the others." : "Bold text is at least 700.",
           this.stepper(t, "st-font_weight", `${s.font_weight}`, (_e, cx) => step("font_weight", s.font_weight, -25, 100, 900, cx), (_e, cx) => step("font_weight", s.font_weight, 25, 100, 900, cx)),
+          "font_weight",
         ),
       )
       .child(
@@ -868,14 +1165,15 @@ export default class Settings extends View {
           "Bold weight",
           own("font_weight_bold", s.font_weight_bold, null) ? "This layout sets its own; yours shows in the others." : "Unset, 700 or the weight when that is heavier.",
           this.stepper(t, "st-font_weight_bold", `${bold}`, (_e, cx) => boldStep(-25, cx), (_e, cx) => boldStep(25, cx)),
+          "font_weight_bold",
         ),
       )
       .child(this.thicken(t, "font_thicken", "Thicken", "Terminal text as heavy whatever its color (On), as Ghostty's font-thicken does, or unsmoothed (Off)."))
       .child(this.contrast(t, "text_contrast", "Contrast", "Crisper edges on terminal text, at the same weight."))
       .child(this.contrast(t, "faint_opacity", "Faint text", "How opaque dim (faint) terminal text draws. 0.5, as Ghostty's faint-opacity.", 0.5))
-      .child(this.row(t, "Text smoothing", "Trial. Subpixel colors each edge by your display's stripes, on 1x displays; others stay grayscale.", this.choicePicker(t, "st-tr", "text_rendering", TEXT_RENDERINGS)))
+      .child(this.row(t, "Text smoothing", "Trial. Subpixel colors each edge by your display's stripes, on 1x displays; others stay grayscale.", this.choicePicker(t, "st-tr", "text_rendering", TEXT_RENDERINGS), "text_rendering"))
       .when(this.person.text_rendering === "subpixel" || this.person.ui_text_rendering === "subpixel", (el) =>
-        el.child(this.row(t, "Subpixel order", "Your display's color stripes, left to right. Most are RGB.", this.choicePicker(t, "st-so", "subpixel_order", SUBPIXEL_ORDERS))),
+        el.child(this.row(t, "Subpixel order", "Your display's color stripes, left to right. Most are RGB.", this.choicePicker(t, "st-so", "subpixel_order", SUBPIXEL_ORDERS), "subpixel_order")),
       )
       .child(
         this.row(
@@ -883,6 +1181,7 @@ export default class Settings extends View {
           "Line height",
           ownFraction("line_height", s.line_height, 1.15) ? "This layout sets its own; yours shows in the others." : "Row height, as a multiple of the font's height.",
           this.stepper(t, "st-line_height", fraction(s.line_height), (_e, cx) => step("line_height", s.line_height, -0.05, 0.8, 2, cx), (_e, cx) => step("line_height", s.line_height, 0.05, 0.8, 2, cx)),
+          "line_height",
         ),
       )
       .child(
@@ -891,10 +1190,11 @@ export default class Settings extends View {
           "Letter spacing",
           ownFraction("letter_spacing", s.letter_spacing, 0) ? "This layout sets its own; yours shows in the others." : "Px added to each letter's width.",
           this.stepper(t, "st-letter_spacing", fraction(s.letter_spacing), (_e, cx) => step("letter_spacing", s.letter_spacing, -0.5, -2, 10, cx), (_e, cx) => step("letter_spacing", s.letter_spacing, 0.5, -2, 10, cx)),
+          "letter_spacing",
         ),
       )
-      .child(this.row(t, "Cell width", "Whole pixels puts each cell on device pixels, so letters sit evenly.", this.choicePicker(t, "st-cw", "cell_width", CELL_WIDTHS)))
-      .child(this.row(t, "Cell rounding", "Nearest keeps rows (and whole-pixel cells) within half a pixel of the font's size; Outward rounds rows up and whole-pixel cells down.", this.choicePicker(t, "st-cr", "cell_rounding", CELL_ROUNDINGS)))
+      .child(this.row(t, "Cell width", "Whole pixels puts each cell on device pixels, so letters sit evenly.", this.choicePicker(t, "st-cw", "cell_width", CELL_WIDTHS), "cell_width"))
+      .child(this.row(t, "Cell rounding", "Nearest keeps rows (and whole-pixel cells) within half a pixel of the font's size; Outward rounds rows up and whole-pixel cells down.", this.choicePicker(t, "st-cr", "cell_rounding", CELL_ROUNDINGS), "cell_rounding"))
       .child(
         this.row(
           t,
@@ -906,6 +1206,7 @@ export default class Settings extends View {
               else q.font_ligatures = true;
             }, cx),
           ),
+          "font_ligatures",
         ),
       );
   }
@@ -924,7 +1225,7 @@ export default class Settings extends View {
       });
     }
     const box = v_flex().w_full().child(this.heading(t, "Spacing"));
-    const note = (text) => div().pt(10).text_size(12.5).line_height("18px").text_color(t.dim).child(text);
+    const note = (text) => this.plain(div().pt(10).text_size(12.5).line_height("18px").text_color(t.dim).child(text));
     // layoutSpacing(), not layout(): this redraws when spacing changes, not on
     // every resize or click on the layout.
     const shown = layoutSpacing();
@@ -971,7 +1272,7 @@ export default class Settings extends View {
         set(key, Array.isArray(next) && next[0] === next[1] ? next[0] : next, cx);
       };
       const r = reset(key);
-      return this.row(t, title, about, h_flex().gap(8).items_center().child(steps(`st-sp-${key}`, now, to, key)).when(Boolean(r), (el) => el.child(r)));
+      return this.row(t, title, about, h_flex().gap(8).items_center().child(steps(`st-sp-${key}`, now, to, key)).when(Boolean(r), (el) => el.child(r)), `layout.spacing.${key}`);
     };
     const [x, y] = s.terminal_padding;
     const axis = (i) => (d, cx) => set("terminal_padding", i === 0 ? [stepSpacing(x, d), y] : [x, stepSpacing(y, d)], cx);
@@ -999,6 +1300,7 @@ export default class Settings extends View {
             .child(steps("st-sp-terminal_padding-x", x, axis(0)))
             .child(steps("st-sp-terminal_padding-y", y, axis(1)))
             .when(Boolean(tr), (el) => el.child(tr)),
+          "layout.spacing.terminal_padding",
         ),
       )
       .children(missing.map((m) => note(`This layout ${m}.`)))
@@ -1023,9 +1325,9 @@ export default class Settings extends View {
       }, cx);
     return v_flex()
       .w_full()
-      .child(this.row(t, label, hint, this.choicePicker(t, `st-${key}`, key, THICKENS)))
+      .child(this.row(t, label, hint, this.choicePicker(t, `st-${key}`, key, THICKENS), key))
       .when(on, (el) =>
-        el.child(this.row(t, "Thicken strength", "Like Ghostty's font-thicken-strength; 0 to 96 look the same.", this.stepper(t, `st-${strengthKey}`, `${strength}`, (_e, cx) => go(-16, cx), (_e, cx) => go(16, cx)))),
+        el.child(this.row(t, "Thicken strength", "Like Ghostty's font-thicken-strength; 0 to 96 look the same.", this.stepper(t, `st-${strengthKey}`, `${strength}`, (_e, cx) => go(-16, cx), (_e, cx) => go(16, cx)), strengthKey)),
       );
   }
 
@@ -1041,7 +1343,7 @@ export default class Settings extends View {
         if (next === base) delete q[key];
         else q[key] = next;
       }, cx);
-    return this.row(t, label, hint, this.stepper(t, `st-${key}`, `${Math.round(now * 10) / 10}`, (_e, cx) => go(-0.1, cx), (_e, cx) => go(0.1, cx)));
+    return this.row(t, label, hint, this.stepper(t, `st-${key}`, `${Math.round(now * 10) / 10}`, (_e, cx) => go(-0.1, cx), (_e, cx) => go(0.1, cx)), key);
   }
 
   // Focus follows mouse: a toggle, then its delay (50 ms steps) while it's on.
@@ -1068,10 +1370,11 @@ export default class Settings extends View {
               else q.focus_follows_mouse = true;
             }, cx),
           ),
+          "focus_follows_mouse",
         ),
       )
       .when(on, (el) =>
-        el.child(this.row(t, "Focus delay", "How long the pointer rests on a pane first.", this.stepper(t, "st-focus_follows_mouse_delay_ms", `${ms} ms`, (_e, cx) => delay(-50, cx), (_e, cx) => delay(50, cx)))),
+        el.child(this.row(t, "Focus delay", "How long the pointer rests on a pane first.", this.stepper(t, "st-focus_follows_mouse_delay_ms", `${ms} ms`, (_e, cx) => delay(-50, cx), (_e, cx) => delay(50, cx)), "focus_follows_mouse_delay_ms")),
       );
   }
 
@@ -1086,8 +1389,8 @@ export default class Settings extends View {
     return v_flex()
       .w_full()
       .child(this.heading(t, "Option key"))
-      .child(div().pb(12).text_size(13).text_color(t.dim).child("Use Option for terminal shortcuts or to type accents and special characters."))
-      .children(choices.map(([value, label]) => {
+      .child(this.plain(div().pb(12).text_size(13).text_color(t.dim).child("Use Option for terminal shortcuts or to type accents and special characters.")))
+      .child(this.block("Option key", "Use Option for terminal shortcuts (Alt) or to type accents and special characters. Keyboard.", "option_as_alt", v_flex().w_full().children(choices.map(([value, label]) => {
         const on = (this.person.option_as_alt ?? "auto") === value;
         return h_flex()
           .id(`st-option-${value}`)
@@ -1101,7 +1404,7 @@ export default class Settings extends View {
           .on_click((_e, cx) => this.change((p) => { p.option_as_alt = value; }, cx))
           .child(div().text_color(on ? t.accent : t.muted).child(on ? "◉" : "○"))
           .child(div().text_size(14).text_color(t.foreground).child(label));
-      }));
+      }))));
   }
 
   // Machines -------------------------------------------------------------
@@ -1222,14 +1525,14 @@ export default class Settings extends View {
     const version = updates().core.version;
     return v_flex().w_full()
       .child(this.heading(t, "Machines"))
-      .child(div().pb(8).text_size(12.5).line_height("18px").text_color(t.dim).child("Your computers, reached over ssh. Their terminals keep running when you disconnect."))
+      .child(this.plain(div().pb(8).text_size(12.5).line_height("18px").text_color(t.dim).child("Your computers, reached over ssh. Their terminals keep running when you disconnect.")))
       .child(this.row(t, "This computer", `Connected · ${version ? `hc ${version}` : "hc version unknown"}`, div().w(7).h(7).rounded(4).bg(t.ansi2)))
-      .children((this.machineList ?? []).map((m) => this.machineRow(t, m, version)))
-      .when(this.machineList === null && !this.machineError, (el) => el.child(h_flex().py(14).gap(8).items_center().child(svg("mods/workspace-chrome/spinner.svg").size(12).text_color(t.working).spin(900)).child(div().text_size(12.5).text_color(t.dim).child("Reading machines…"))))
-      .when(this.machineList?.length === 0, (el) => el.child(div().py(14).text_size(12.5).text_color(t.dim).child("No other machines yet.")))
-      .when(Boolean(this.machineError), (el) => el.child(div().py(10).text_size(12.5).text_color(t.blocked).child(this.machineError)))
-      .when(Boolean(this.machineNotice), (el) => el.child(div().py(10).text_size(12.5).text_color(t.ansi2).child(this.machineNotice)))
-      .child(h_flex().pt(16).child(this.button(t, "st-m-add", "Add a machine", () => run("mod.open", { name: "machine-add" }))));
+      .children((this.machineList ?? []).map((m) => this.block(m.name, `${m.target ?? ""} machine ssh`, null, this.machineRow(t, m, version))))
+      .when(this.machineList === null && !this.machineError && !this.filtering(), (el) => el.child(h_flex().py(14).gap(8).items_center().child(svg("mods/workspace-chrome/spinner.svg").size(12).text_color(t.working).spin(900)).child(div().text_size(12.5).text_color(t.dim).child("Reading machines…"))))
+      .when(this.machineList?.length === 0 && !this.filtering(), (el) => el.child(div().py(14).text_size(12.5).text_color(t.dim).child("No other machines yet.")))
+      .when(Boolean(this.machineError) && !this.filtering(), (el) => el.child(div().py(10).text_size(12.5).text_color(t.blocked).child(this.machineError)))
+      .when(Boolean(this.machineNotice) && !this.filtering(), (el) => el.child(div().py(10).text_size(12.5).text_color(t.ansi2).child(this.machineNotice)))
+      .child(this.block("Add a machine", "Another computer, reached over ssh.", null, h_flex().pt(16).child(this.button(t, "st-m-add", "Add a machine", () => run("mod.open", { name: "machine-add" })))));
   }
 
   // Alerts ---------------------------------------------------------------
@@ -1247,11 +1550,12 @@ export default class Settings extends View {
           "Play sounds",
           "When an agent needs you, and when one finishes while you're not looking. A note shows in the corner either way.",
           this.toggle(t, "st-sounds", on, (_e, cx) => this.change((p) => (p.sounds = { ...(p.sounds ?? {}), enabled: !on }), cx)),
+          "sounds.enabled",
         ),
       )
-      .child(this.row(t, "An agent needs you", file(sounds.blocked), this.button(t, "st-play-blocked", "Play", () => playSound("blocked"))))
-      .child(this.row(t, "An agent finished", file(sounds.done), this.button(t, "st-play-done", "Play", () => playSound("done"))))
-      .child(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("Want your own sounds? Ask your agent to set sounds.done and sounds.blocked in settings.json to an MP3."))
+      .child(this.row(t, "An agent needs you", file(sounds.blocked), this.button(t, "st-play-blocked", "Play", () => playSound("blocked")), "sounds.blocked"))
+      .child(this.row(t, "An agent finished", file(sounds.done), this.button(t, "st-play-done", "Play", () => playSound("done")), "sounds.done"))
+      .child(this.plain(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("Want your own sounds? Ask your agent to set sounds.done and sounds.blocked in settings.json to an MP3.")))
       .child(this.heading(t, "Notifications"))
       .child(
         this.row(
@@ -1261,6 +1565,7 @@ export default class Settings extends View {
             ? "Your alert_command runs instead of a system notification."
             : "When away: only while Herdr isn't the app in front. Never for the agent you're looking at.",
           this.choicePicker(t, "st-sn", "system_notifications", SYSTEM_NOTIFICATIONS),
+          ["system_notifications", "alert_command"],
         ),
       )
       .child(
@@ -1274,6 +1579,7 @@ export default class Settings extends View {
               else p.dock_bounce = true;
             }, cx),
           ),
+          "dock_bounce",
         ),
       )
       .child(this.heading(t, "After a restart"))
@@ -1283,6 +1589,7 @@ export default class Settings extends View {
           "Resume agents after restart",
           "Agents that ran in terminals now back to a plain shell, such as Claude Code: Ask shows a note to resume them, Auto resumes them, Off leaves the shells.",
           this.choicePicker(t, "st-ra", "resume_agents", RESUME_AGENTS),
+          "resume_agents",
         ),
       );
   }
@@ -1338,11 +1645,11 @@ export default class Settings extends View {
       .child(this.heading(t, "Herdr"))
       .child(this.row(t, `Herdr ${u.app.version}`, app[0], h_flex().gap(8).flex_none()
         .child(this.button(t, "st-whats-new", "What's new", () => { closeOverlay(props()?.overlay); run("app.whats_new"); }))
-        .when(Boolean(app[1]), (el) => el.child(app[1]))))
-      .child(div().h(18))
+        .when(Boolean(app[1]), (el) => el.child(app[1])), "update"))
+      .child(this.plain(div().h(18)))
       .child(this.heading(t, "herdr-core"))
-      .child(this.row(t, `herdr-core ${c.version ?? ""}`, core[0], core[1] ?? div()))
-      .child(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("Herdr looks for both every hour and tells you in the corner. herdr-core runs your terminals, so they keep running through its updates."));
+      .child(this.row(t, `herdr-core ${c.version ?? ""}`, core[0], core[1] ?? div(), "update"))
+      .child(this.plain(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("Herdr looks for both every hour and tells you in the corner. herdr-core runs your terminals, so they keep running through its updates.")));
   }
 
 
@@ -1390,6 +1697,7 @@ export default class Settings extends View {
               else delete p.telemetry;
             }, cx),
           ),
+          "telemetry",
         ),
       )
       .child(
@@ -1403,12 +1711,66 @@ export default class Settings extends View {
           }),
         ),
       );
-    if (!this.showData) return body;
+    if (!this.showData || this.filtering()) return body;
     if (!s?.enabled) return body.child(div().pt(14).text_size(13).text_color(t.dim).child("Nothing is collected or sent while it's off."));
     return body
       .children(s.queued.map((r, i) => this.report(t, `st-tq-${i}`, `Waiting to send: ${r.day}`, "Sent as is, soon.", r)))
       .when(Boolean(s.draft), (el) => el.child(this.report(t, "st-td", "Today so far", "A draft: it changes until the day ends (UTC), then goes out once.", s.draft)))
       .when(Boolean(s.last_sent), (el) => el.child(this.report(t, "st-tl", `Last sent: ${s.last_sent.report.day}`, `Sent ${at(s.last_sent.at)}.`, s.last_sent.report)));
+  }
+
+  // cmd-f (ctrl-f) and typing start a search; esc clears it, then leaves the
+  // field, then closes what's open.
+  onKey(e, cx) {
+    const k = e.key;
+    const m = e.modifiers ?? {};
+    if (k === "f" && (window()?.platform === "macos" ? m.platform : m.control) && !m.alt && !m.shift) {
+      this.searchInput.focus();
+      this.searchInput.set_selected_range({ start: 0, end: encodeURIComponent(this.query).replace(/%[0-9A-F]{2}/g, "_").length });
+      cx.stop_propagation();
+      cx.notify();
+      return;
+    }
+    if (this.searchFocused || this.query) {
+      if (k !== "escape") {
+        if (!this.typesIntoSearch(e)) return;
+        this.searchInput.focus();
+        this.setQuery(this.query + e.key_char);
+      } else if (this.query) {
+        this.setQuery("");
+        // A font list or rename opened in the results isn't on the page now shown.
+        if (this.picking || this.machineEdit) {
+          this.picking = null;
+          this.machineEdit = null;
+          this.handle.focus();
+        }
+      } else this.handle.focus();
+      cx.stop_propagation();
+      cx.notify();
+      return;
+    }
+    if (this.typesIntoSearch(e)) {
+      this.searchInput.focus();
+      this.setQuery(e.key_char);
+      cx.stop_propagation();
+      cx.notify();
+      return;
+    }
+    if (this.machineEdit) {
+      if (k === "escape") this.machineEdit = null;
+      else return;
+      this.handle.focus();
+      cx.stop_propagation();
+      cx.notify();
+      return;
+    }
+    if (k === "escape") {
+      if (this.picking) this.picking = null;
+      else return this.close();
+      this.handle.focus();
+    } else return;
+    cx.stop_propagation();
+    cx.notify();
   }
 
   // ----------------------------------------------------------------------
@@ -1425,9 +1787,25 @@ export default class Settings extends View {
       .border_r(1)
       .border_color(t.border)
       .child(div().px(10).pt(6).pb(12).text_size(16).font_semibold().text_color(t.foreground).child("Settings"))
+      .child(
+        h_flex()
+          .id("st-search")
+          .mb(8)
+          .h(30)
+          .px(8)
+          .gap(6)
+          .items_center()
+          .rounded(7)
+          .border_1()
+          .border_color(this.searchFocused ? t.accent : t.border)
+          .bg(t.background)
+          .child(svg("mods/workspace-chrome/search.svg").size(13).flex_none().text_color(t.dim))
+          .child(Input.new(this.searchInput).flex_1().min_w(0).h(28).text_size(13).text_color(t.foreground)),
+      )
       .children(
         SECTIONS.map((s) => {
-          const on = s.id === this.section;
+          // While searching no page is the one shown.
+          const on = s.id === this.section && !this.words.length;
           return h_flex()
             .id(`st-s-${s.id}`)
             .gap(10)
@@ -1438,16 +1816,7 @@ export default class Settings extends View {
             .cursor_pointer()
             .bg(on ? t.raised : "#00000000")
             .hover((st) => st.bg(t.raised))
-            .on_click((_e, cx) => {
-              this.section = s.id;
-              this.picking = null;
-              this.machineEdit = null;
-              this.handle.focus();
-              if (s.id === "machines") cx.spawn(async (cx) => { await this.loadMachines(); cx.notify(); });
-              // The layout file may have changed while another page showed.
-              if (s.id === "look") cx.spawn(async (cx) => { if (await this.loadLayoutFile()) cx.notify(); });
-              cx.notify();
-            })
+            .on_click((_e, cx) => this.go(s.id, cx))
             .child(svg(I(s.icon)).size(15).text_color(on ? t.accent : t.dim))
             .child(div().flex_1().text_size(13.5).text_color(on ? t.foreground : t.muted).child(s.title))
             .when(s.id === "updates" && waiting, (el) => el.child(div().w(7).h(7).rounded(4).bg(t.accent)));
@@ -1460,24 +1829,7 @@ export default class Settings extends View {
       .h(620)
       .min_h(0)
       .items_start()
-      .on_key_down((e, cx) => {
-        const k = e.key;
-        if (this.machineEdit) {
-          if (k === "escape") this.machineEdit = null;
-          else return;
-          this.handle.focus();
-          cx.stop_propagation();
-          cx.notify();
-          return;
-        }
-        if (k === "escape") {
-          if (this.picking) this.picking = null;
-          else return this.close();
-          this.handle.focus();
-        } else return;
-        cx.stop_propagation();
-        cx.notify();
-      })
+      .on_key_down((e, cx) => this.onKey(e, cx))
       .child(nav.h_full().child(div().flex_1()).child(this.button(t, "st-feedback", "Send feedback", () => { closeOverlay(props()?.overlay); run("app.feedback"); })))
       .child(
         // A bar that always shows: the pages are taller than the dialog and
@@ -1498,21 +1850,7 @@ export default class Settings extends View {
                 div()
                   .px(28)
                   .py(22)
-                  .child(
-                    this.section === "look"
-                      ? this.look(t, cx)
-                      : this.section === "text"
-                        ? this.text(t)
-                      : this.section === "keyboard"
-                        ? this.keyboard(t)
-                      : this.section === "machines"
-                        ? this.machines(t)
-                      : this.section === "alerts"
-                        ? this.alerts(t)
-                        : this.section === "privacy"
-                          ? this.privacy(t)
-                          : this.updates(t),
-                  ),
+                  .child(this.words.length ? this.results(t, cx) : ((this.place = { page: this.section, heading: "" }), this.page(this.section, t, cx))),
               ),
           )
           .child(Scrollbar.vertical("st-body").mode("always").absolute().inset_0()),

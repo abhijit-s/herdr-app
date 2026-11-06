@@ -20,14 +20,24 @@ class Element {
   }
 }
 const element = () => new Element();
+// What `hc machine ls` lists.
+let machineDisk: any[] = [];
+// An input field: its text, whether it was focused, and the range last selected.
+const fakeInput = () => {
+  const input = { text: "", focused: false, selected: null as any, on() {}, focus() { input.focused = true; }, value: () => input.text, set_value(v: string) { input.text = v; }, set_selected_range(r: any) { input.selected = r; } };
+  return input;
+};
 // The app's layoutSpacing() for a tree: the mod's own spacingFieldsOf, set once the mod loads.
 let fieldsOf: (tree: any) => any = () => null;
 const source = await readFile(new URL("../defaults/frame/settings/main.js", import.meta.url), "utf8");
 let composed: Record<string, any> = {};
 const values: Record<string, any> = {
   View: class {}, div: element, svg: element, image: element, v_flex: element, h_flex: element,
-  Scrollbar: element, Input: { new: element }, InputState: { new: () => ({ on() {}, focus() {} }) },
+  Scrollbar: element, Input: { new: element }, InputState: { new: () => fakeInput() },
   settings: () => composed, window: () => ({ platform: "linux" }), props: () => ({}),
+  // Pages search reads besides Text and Look: a build from source that checks nothing.
+  updates: () => ({ app: { version: "0.1.0", updates: false }, core: { version: "0.1.17" }, checks: false }), telemetry: () => null,
+  hc: async (args: string[]) => (args.join(" ") === "machine ls --json" ? { code: 0, stdout: JSON.stringify({ machines: machineDisk }) } : { code: 1, stderr: "no" }),
   appHome: () => "/home", notify: (n: any) => { disk.toasts.push(n); },
   shared: (key: string) => (key === "layout" ? layoutDisk.name : undefined), run: (name: string, args: any) => { layoutDisk.runs.push([name, args]); },
   layout: () => { layoutDisk.layoutReads++; return layoutDisk.shown; },
@@ -71,10 +81,10 @@ const names = [...source.matchAll(/^import \{([^}]*)\}/gm)].flatMap(m => m[1].sp
 const args = names.map(name => values[name] ?? (() => undefined));
 const body = source
   .replace(/^import .*;\n/gm, "")
-  .replace("export function scaleStep", "function scaleStep")
+  .replace(/^export function /gm, "function ")
   .replace("export default class Settings", "const Settings = class Settings")
-  + "\nreturn { Settings, scaleStep, spacingOf, spacingFieldsOf, sameSpacing, settlePending };";
-const { Settings, scaleStep, spacingOf, spacingFieldsOf, sameSpacing, settlePending } = new Function(...names, body)(...args);
+  + "\nreturn { Settings, scaleStep, spacingOf, spacingFieldsOf, sameSpacing, settlePending, searchWords, wordSpan, matchSetting, markRuns };";
+const { Settings, scaleStep, spacingOf, spacingFieldsOf, sameSpacing, settlePending, searchWords, wordSpan, matchSetting, markRuns } = new Function(...names, body)(...args);
 fieldsOf = spacingFieldsOf;
 const spacingOfTree = (tree: any) => spacingOf(spacingFieldsOf(tree));
 
@@ -560,4 +570,236 @@ test("re-reading an unchanged layout file asks for no redraw", async () => {
   expect(await view.loadLayoutFile()).toBe(false);
   expect(view.layoutFile.tree).toBeNull();
   layoutDisk.readFail = undefined;
+});
+
+// Search ----------------------------------------------------------------------
+
+/** Every text an element tree draws, in order. */
+function texts(root: any): string[] {
+  if (typeof root === "string") return [root];
+  return (root?.nodes ?? []).flatMap(texts);
+}
+const t = new Proxy({}, { get: () => "#000000" });
+const searchCx = { spawn() {}, notify() {}, stop_propagation() {} };
+
+/** A Settings window searching for `query`: what its results draw, and the view. */
+function search(query: string, person: Record<string, any> = {}) {
+  composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, letter_spacing: 0, ui_scale_ranges: { ui_zoom: [0.75, 1.5], ui_text_scale: [0.8, 1.3] } };
+  const view = new Settings();
+  view.init({}, { ...searchCx, focus_handle: () => ({ focus() {} }), timer: { every() {}, after() {} } });
+  view.person = person;
+  for (const part of ["layoutPicker", "spacing", "themePicker", "fontButton", "fontList", "iconPicker"]) view[part] = element;
+  view.setQuery(query);
+  return { view, root: view.results(t, searchCx) };
+}
+
+test("search words are lower case, with settings.json's _ - . as spaces", () => {
+  expect(searchWords("  Cell_Rounding  zoom-step ")).toEqual(["cell", "rounding", "zoom", "step"]);
+  expect(searchWords("   ")).toEqual([]);
+});
+
+test("a word matches as a prefix or substring anywhere, and with one typo only in titles and keys", () => {
+  expect(wordSpan("round", "Cell rounding", true)).toEqual([5, 10]);
+  expect(wordSpan("ound", "Cell rounding", true)).toEqual([6, 10]);
+  expect(wordSpan("roundng", "Cell rounding", true)).toEqual([5, 13]);
+  expect(wordSpan("ligatrues", "Ligatures", true)).toEqual([0, 9]);
+  expect(wordSpan("zooom", "Zoom steps", true)).toEqual([0, 4]);
+  // Short words and descriptions only match as typed.
+  expect(wordSpan("zom", "Zoom steps", true)).toBeNull();
+  expect(wordSpan("zoom", "Zom", true)).toEqual([0, 3]);
+  // A typo is forgiven against a whole word that starts the same.
+  expect(wordSpan("sound", "Cell rounding", true)).toBeNull();
+  expect(wordSpan("sound", "Round", true)).toBeNull();
+  expect(wordSpan("roun", "Cell rounding", true)).toEqual([5, 9]);
+  expect(wordSpan("roundng", "Cell rounding", false)).toBeNull();
+  expect(wordSpan("rounding", "cell_rounding", true)).toEqual([5, 13]);
+});
+
+test("every word must match the title, a key, the description or the heading", () => {
+  const entry = { title: "Cell rounding", about: "Nearest keeps rows within half a pixel.", keys: ["cell_rounding"], heading: "Terminal text" };
+  expect(matchSetting(searchWords("cell rounding"), entry)).toEqual({ title: [[0, 4], [5, 13]], about: [], keys: [[[0, 4], [5, 13]]] });
+  expect(matchSetting(searchWords("pixel"), entry)?.about).toEqual([[33, 38]]);
+  expect(matchSetting(searchWords("terminal"), entry)).not.toBeNull();
+  expect(matchSetting(searchWords("cell zoom"), entry)).toBeNull();
+  expect(matchSetting([], entry)).toBeNull();
+});
+
+test("marked text is cut into runs, overlaps merged", () => {
+  expect(markRuns("Cell rounding", [[5, 9], [7, 13]])).toEqual([["Cell ", false], ["rounding", true]]);
+  expect(markRuns("abc", [])).toEqual([["abc", false]]);
+});
+
+test("search shows only matching settings, under their page and heading", () => {
+  const { root } = search("rounding");
+  const shown = texts(root).join("|");
+  expect(find(root, "st-found-text")).toBeDefined();
+  expect(find(root, "st-found-look")).toBeUndefined();
+  expect(shown).toContain("rounding");
+  expect(shown).toContain("TERMINAL TEXT");
+  expect(shown).not.toContain("Ligatures");
+  expect(shown).not.toContain("SIZE");
+  // The row's settings.json key shows, marked where it matched.
+  expect(shown).toContain("cell_|rounding");
+});
+
+test("search finds a setting by its settings.json key, and forgives a typo", () => {
+  for (const q of ["cell_rounding", "roundng"]) {
+    const shown = texts(search(q).root).join("|");
+    expect(shown).toContain("rounding");
+    expect(shown).not.toContain("Cell width");
+  }
+  const icon = search("icon").root;
+  expect(find(icon, "st-found-look")).toBeDefined();
+  expect(texts(icon).join("|")).not.toContain("Appearance");
+  // Notes between settings aren't results.
+  expect(texts(icon).join("|")).not.toContain("For the layout you're in");
+});
+
+test("a search with no match says so", () => {
+  const { root } = search("qqqzzz");
+  expect(find(root, "st-none")).toBeDefined();
+  expect(texts(root).join("|")).toContain("No settings match");
+});
+
+test("the index is built once per window and again only after a setting changes", () => {
+  const { view } = search("zoom");
+  let builds = 0;
+  const build = view.buildIndex.bind(view);
+  view.buildIndex = (...a: any[]) => { builds++; return build(...a); };
+  for (const q of ["zoo", "zoom st", "font", "rounding"]) {
+    view.setQuery(q);
+    view.results(t, searchCx);
+  }
+  expect(builds).toBe(0);
+  // Drawing again with the same words matches nothing again.
+  const matched = view.matched;
+  view.results(t, searchCx);
+  expect(view.matched).toBe(matched);
+  view.person = { cell_rounding: "nearest" }; // settings.json written
+  view.results(t, searchCx);
+  expect(builds).toBe(1);
+});
+
+test("with nothing typed, pages draw as before and nothing is indexed or matched", () => {
+  composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, letter_spacing: 0, ui_scale_ranges: { ui_zoom: [0.75, 1.5], ui_text_scale: [0.8, 1.3] } };
+  const view = new Settings();
+  view.init({}, { ...searchCx, focus_handle: () => ({ focus() {} }), timer: { every() {}, after() {} } });
+  view.person = {};
+  for (const part of ["fontButton", "fontList"]) view[part] = element;
+  view.match = () => { throw new Error("matched with nothing typed"); };
+  const shown = texts(view.text(t)).join("|");
+  expect(shown).toContain("Ligatures");
+  expect(shown).toContain("Cell rounding");
+  expect(view.index).toBeNull();
+});
+
+test("cmd-f focuses the field, typing with nothing focused searches, esc clears then leaves", () => {
+  const { view } = search("");
+  let closed = 0;
+  view.close = () => closed++;
+  const key = (key: string, key_char?: string, modifiers: Record<string, boolean> = {}) => view.onKey({ key, key_char, modifiers }, searchCx);
+  key("f", "f", { control: true }); // the harness's window is Linux: ctrl-f
+  expect(view.searchInput.focused).toBe(true);
+  expect(view.query).toBe("");
+  view.searchInput.focused = false;
+  key("z", "z");
+  expect(view.query).toBe("z");
+  expect(view.searchInput.text).toBe("z");
+  expect(view.searchInput.focused).toBe(true);
+  key("o", "o"); // the field isn't focused in this harness: the window adds it
+  expect(view.query).toBe("zo");
+  // Shortcuts and a lone space don't start a search.
+  view.setQuery("");
+  key("s", "s", { control: true });
+  key("space", " ");
+  expect(view.query).toBe("");
+  // Esc clears the words, then leaves the field, and only then closes the window.
+  view.setQuery("zoom");
+  view.searchFocused = true;
+  key("escape");
+  expect(view.query).toBe("");
+  expect(closed).toBe(0);
+  key("escape");
+  expect(closed).toBe(0);
+  view.searchFocused = false;
+  key("escape");
+  expect(closed).toBe(1);
+});
+
+/** A search on a window opened at `section`, its spawned work run when `settle` is awaited. */
+function searchFrom(section: string) {
+  composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, letter_spacing: 0, ui_scale_ranges: { ui_zoom: [0.75, 1.5], ui_text_scale: [0.8, 1.3] } };
+  const pending: Promise<void>[] = [];
+  const cx = { ...searchCx, spawn: (f: (cx: any) => Promise<void>) => pending.push(f(cx)), focus_handle: () => ({ focus() {} }), timer: { every() {}, after() {} } };
+  const view = new Settings();
+  view.init({}, cx);
+  view.section = section;
+  view.person = {};
+  for (const part of ["layoutPicker", "themePicker", "fontButton", "fontList", "iconPicker"]) view[part] = element;
+  const shown = (query: string) => { view.setQuery(query); return texts(view.results(t, cx)).join("|"); };
+  const settle = async () => { while (pending.length) await pending.shift(); };
+  return { view, shown, settle };
+}
+
+test("search finds machines and spacing that a page not yet opened reads in", async () => {
+  machineDisk = [{ name: "buildbox", target: "me@buildbox", state: "connected", version: "0.1.17" }];
+  Object.assign(layoutDisk, { name: "mine", raw: JSON.stringify(deck()), shown: deck(), readFail: undefined });
+  const { shown, settle } = searchFrom("updates");
+  shown("buildbox");
+  shown("pane gap");
+  await settle();
+  expect(shown("buildbox")).toContain("me@buildbox");
+  expect(shown("pane gap")).toContain("layout.spacing.|pane|_|gap");
+});
+
+test("the spacing rows are found once the layout file is read, with nothing else changing", async () => {
+  machineDisk = [];
+  Object.assign(layoutDisk, { name: "mine", raw: JSON.stringify(deck()), shown: deck(), readFail: undefined });
+  const { view, shown, settle } = searchFrom("updates");
+  await view.loadMachines(); // the machine list is in before the search starts
+  shown("pane gap");
+  await settle();
+  expect(shown("pane gap")).toContain("layout.spacing.|pane|_|gap");
+});
+
+test("a description that changed since indexing is matched as it is now", () => {
+  const { view, shown } = searchFrom("look");
+  expect(shown("keeps classic")).not.toContain("Panel colours");
+  composed.panels_in_use = "classic";
+  // Its page has no other match, so only a new index can show it.
+  expect(shown("keeps classic")).toContain("Panel colours");
+  // The same state draws from the same index.
+  const index = view.index;
+  shown("keeps");
+  expect(view.index).toBe(index);
+});
+
+test("typing into the focused field is left to the field", () => {
+  const { view } = search("zo");
+  let stopped = 0;
+  view.searchFocused = true;
+  view.onKey({ key: "o", key_char: "o", modifiers: {} }, { ...searchCx, stop_propagation: () => stopped++ });
+  expect(view.query).toBe("zo");
+  expect(stopped).toBe(0);
+});
+
+test("esc leaves the field for the window, and closes a list opened in the results", () => {
+  const { view } = search("font");
+  let focused = 0;
+  view.handle = { focus: () => focused++ };
+  view.picking = "font";
+  view.onKey({ key: "escape", modifiers: {} }, searchCx);
+  expect(view.query).toBe("");
+  expect(view.picking).toBeNull();
+  expect(focused).toBe(1);
+  view.searchFocused = true;
+  view.onKey({ key: "escape", modifiers: {} }, searchCx);
+  expect(focused).toBe(2);
+});
+
+test("alt starts no search off macOS, and marks keep their place after a letter whose lower case is longer", () => {
+  const { view } = search("");
+  view.onKey({ key: "x", key_char: "x", modifiers: { alt: true } }, searchCx);
+  expect(view.query).toBe("");
+  expect(wordSpan("box", "İbox", false)).toEqual([1, 4]);
 });
