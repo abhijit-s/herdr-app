@@ -1916,7 +1916,13 @@ fn step_zoom(font_size: f32, zoom: f32, step: ZoomStep, steps: i32, (lo, hi): (f
     let now = font_size * zoom;
     let from = if steps > 0 { (now + POINT_SLACK).floor() } else { (now - POINT_SLACK).ceil() };
     let points = (from + steps as f32).max((font_size * lo).ceil()).min((font_size * hi).floor());
-    (points / font_size).max(lo).min(hi)
+    let next = (points / font_size).max(lo).min(hi);
+    // An end that isn't on a whole point: the nearest point inside it is
+    // behind the text, so the press stays at the end instead of turning back.
+    if (steps > 0 && next < zoom) || (steps < 0 && next > zoom) {
+        return zoom;
+    }
+    next
 }
 
 /// The terminals' zoom: their text, cells and padding.
@@ -2499,6 +2505,29 @@ mod tests {
         assert_eq!(stepped(14.0, 1.0, ZoomStep::Point).pane_font_size(top), 21.0, "the app's reset keeps the pane's zoom");
         assert_eq!(point.next_pane_zoom(top, 0), None, "the pane's reset keeps the app's");
         assert_eq!(stepped(14.0, 0.5, ZoomStep::Tenth).pane_font_size(0.5), 7.0, "the small end: 0.5 × 0.5 stops at font_size × 0.5");
+        assert_eq!(stepped(14.0, 0.5, ZoomStep::Tenth).pane_scale(0.5), 0.5, "and so does the letter-spacing scale");
+    }
+
+    /// An end that isn't a whole point never turns a press back: it moves
+    /// the text toward the end or leaves it there.
+    #[test]
+    fn a_press_at_an_end_off_a_whole_point_never_turns_back() {
+        // Pane at 3 (42 pt), then the app one step up (15/14): Ctrl+= keeps 42.
+        let up = stepped(14.0, 15.0 / 14.0, ZoomStep::Point);
+        let next = up.next_pane_zoom(3.0, 1).unwrap();
+        assert!(up.pane_font_size(next) >= up.pane_font_size(3.0) - 0.001, "{} -> {}", up.pane_font_size(3.0), up.pane_font_size(next));
+        // Pane at 0.5 (7 pt), app one step down (13/14): Ctrl+- doesn't grow it.
+        let down = stepped(14.0, 13.0 / 14.0, ZoomStep::Point);
+        let next = down.next_pane_zoom(0.5, -1).unwrap();
+        assert!(down.pane_font_size(next) <= down.pane_font_size(0.5) + 0.001, "{} -> {}", down.pane_font_size(0.5), down.pane_font_size(next));
+        // A layout's own 12.5 pt at the app's top (2.96) and bottom (0.5).
+        let top = stepped(12.5, 2.96, ZoomStep::Point);
+        assert!(top.pane_font_size(top.next_pane_zoom(1.0, 1).unwrap_or(1.0)) >= top.pane_font_size(1.0), "Ctrl+= at the top shrank the text");
+        let bottom = stepped(12.5, 0.5, ZoomStep::Point);
+        assert!(bottom.pane_font_size(bottom.next_pane_zoom(1.0, -1).unwrap_or(1.0)) <= bottom.pane_font_size(1.0), "Ctrl+- at the bottom grew the text");
+        // The app's own zoom keys share the stepping: 12.5 pt at zoom 0.5 and 3.
+        assert_eq!(stepped(12.5, 0.5, ZoomStep::Point).next_zoom(-1), 0.5, "app Ctrl+- at the bottom");
+        assert_eq!(stepped(12.5, 3.0, ZoomStep::Point).next_zoom(1), 3.0, "app Ctrl+= at the top");
     }
 
     #[test]

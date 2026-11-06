@@ -6877,8 +6877,15 @@ export default class Recent extends View {
             this.sync(window, cx);
             let reply = this.run_as("pane.zoom_text_in", json!({ "pane": "a" }), false, window, cx);
             assert!(reply.get("error").is_none(), "{reply}");
-            // Made this frame, it isn't drawn yet: the zoom fits it to a's area rather than the hint it attached with.
-            assert_ne!(this.terms[&format!("a{}", super::SWAP)].view.read(cx).dimensions(), (120, 40), "the swapped-in view was fitted to its pane");
+            // Made this frame, it isn't drawn yet (off screen), so the zoom
+            // refits it there: to a's area at its new cell, not the hint it
+            // attached with (120 × 40).
+            let sv = this.terms[&format!("a{}", super::SWAP)].view.read(cx);
+            assert!(!sv.on_screen_this_frame(), "the swapped-in view is off screen when zoomed");
+            let area = this.shown_area(this.model.tab("t").unwrap(), "a").unwrap();
+            assert_ne!(sv.dimensions(), (120, 40), "the swapped-in view was refitted");
+            assert_eq!(sv.dimensions(), crate::terminal::grid_size(area, sv.cell()), "to a's area at its zoomed cell");
+            assert!(sv.cell().width > crate::terminal::cell_size(window).width, "its cell is the zoomed one");
             let swapped = this.terms[&format!("a{}", super::SWAP)].view.read(cx).text_size();
             assert_eq!((swapped, this.terms["a"].view.read(cx).text_size()), (Some(14.0 * 1.1), None), "the swapped-in view zooms, a's own doesn't");
             this.publish(cx);

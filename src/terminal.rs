@@ -471,6 +471,12 @@ impl TerminalView {
         self.grid.borrow().vt.tail_text(n)
     }
 
+    /// The cell the grid was last fitted with.
+    #[cfg(test)]
+    pub fn cell(&self) -> Size<Pixels> {
+        self.grid.borrow().cell
+    }
+
     /// Whether a key or paste was sent to the program since the last ask.
     #[cfg(test)]
     pub fn take_typed(&self) -> bool {
