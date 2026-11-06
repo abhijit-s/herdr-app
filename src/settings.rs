@@ -282,7 +282,7 @@ pub fn themes() -> Vec<(String, Theme)> {
         .iter()
         .map(|n| n.to_string())
         .chain(files)
-        .filter_map(|n| palette(&n).ok().map(|(p, o)| (n, resolve(&p, &o))))
+        .filter_map(|n| palette(&n).ok().map(|(p, o)| (n, resolve(&p, &o, panels_in_use(get().panel_colors, &p, &o, get().look_paints_panels), false))))
         .collect()
 }
 
@@ -290,68 +290,166 @@ fn hex(c: u32) -> String {
     format!("#{c:06x}")
 }
 
+/// `a` moved toward `b` by `t`; a negative `t` moves away, clamped per channel.
 fn mix(a: u32, b: u32, t: f32) -> u32 {
     [16, 8, 0].iter().fold(0, |acc, s| {
         let (x, y) = (((a >> s) & 255) as f32, ((b >> s) & 255) as f32);
-        acc | (((x * (1.0 - t) + y * t).round() as u32) << s)
+        acc | ((x * (1.0 - t) + y * t).round().clamp(0.0, 255.0) as u32) << s
     })
+}
+
+fn with_alpha(c: u32, a: f32) -> String {
+    format!("#{c:06x}{:02x}", (a * 255.0).round() as u32)
 }
 
 /// Every color the app and mods use, resolved. Values are `#rrggbb` or `#rrggbbaa`.
 pub type Theme = BTreeMap<String, String>;
 
-/// The panel colors around a palette. `chrome` (sidebars, bars) and
-/// `canvas` (behind cards) step away from the terminal's background:
-/// darker on a dark theme, toward warm grey on a light one.
-fn resolve(p: &Palette, overrides: &BTreeMap<String, String>) -> Theme {
+/// How far each panel color sits from the terminal's background, as a step
+/// toward the theme's own foreground (negative steps away), so panels take
+/// the theme's tint rather than plain grey. The steps are fitted to a
+/// family of hand-tuned editor themes; light themes need smaller steps
+/// toward their dark ink, except the sidebar, which they shade more.
+struct Steps {
+    canvas: f32,
+    chrome: f32,
+    /// `chrome` with `sidebar_shade` on: where a dark theme's window
+    /// backdrop sits while active, level with `canvas`. Light themes keep
+    /// their sidebar as is.
+    chrome_active: f32,
+    popover: f32,
+    raised: f32,
+    border: f32,
+    input: f32,
+    hover: f32,
+    selected: f32,
+    muted: f32,
+    dim: f32,
+}
+
+const DARK_STEPS: Steps =
+    Steps { canvas: -0.022, chrome: 0.016, chrome_active: -0.022, popover: 0.066, raised: 0.086, border: 0.153, input: 0.26, hover: 0.042, selected: 0.075, muted: 0.614, dim: 0.459 };
+const LIGHT_STEPS: Steps =
+    Steps { canvas: 0.015, chrome: 0.068, chrome_active: 0.068, popover: 0.0, raised: 0.035, border: 0.096, input: 0.214, hover: 0.048, selected: 0.09, muted: 0.752, dim: 0.598 };
+
+fn contrast(a: u32, b: u32) -> f32 {
+    let rgb = |c: u32| Rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
+    crate::vt::contrast(rgb(a), rgb(b))
+}
+
+/// Panel colors, each a step from the terminal's background toward its
+/// foreground (`Steps`). Panel text uses a neutral ink (`ink`) for
+/// contrast, its quieter tiers stepped toward it the same way. `shaded`
+/// takes `chrome` a shade darker (`sidebar_shade`), level with `canvas`
+/// even when the theme sets that; `ring` is the accent in use (`accent`,
+/// the theme's or its override) when it reads at 3:1, else the classic
+/// mix, else black or white: always 3:1.
+fn tinted_panels(p: &Palette, ink: u32, shaded: bool, accent: u32, own_canvas: Option<&String>) -> Vec<(&'static str, String)> {
     let bg = p.background;
-    let light = is_light(bg);
-    let fg = if light { 0x1b1b1e } else { 0xeeeeef };
-    let [working, blocked, done] = p.status.unwrap_or([p.ansi[3], p.ansi[1], p.ansi[4]]);
-    let (popover, raised, hover, selected, border, input, canvas, chrome) = if light {
-        let warm = 0xe8e8e2;
-        (hex(bg), hex(mix(bg, 0, 0.035)), "#0000000c".into(), "#00000012".into(), "#00000017".into(), "#00000026".into(), mix(bg, warm, 0.2), mix(bg, warm, 0.6))
-    } else {
-        (
-            hex(mix(bg, 0xffffff, 0.06)),
-            hex(mix(bg, 0xffffff, 0.09)),
-            "#ffffff0e".into(),
-            "#ffffff17".into(),
-            "#ffffff18".into(),
-            "#ffffff24".into(),
-            mix(bg, 0, 0.16),
-            mix(bg, 0, 0.32),
-        )
+    let s = if is_light(bg) { &LIGHT_STEPS } else { &DARK_STEPS };
+    let tint = |t: f32| hex(mix(bg, p.foreground, t));
+    let ring = [accent, mix(bg, ink, 0.7)].into_iter().find(|c| contrast(*c, bg) >= 3.0).unwrap_or(if contrast(0, bg) > contrast(0xffffff, bg) { 0 } else { 0xffffff });
+    let dim = hex(mix(bg, ink, s.dim));
+    let canvas = tint(s.canvas);
+    let chrome = match (shaded, own_canvas) {
+        (false, _) => tint(s.chrome),
+        (true, Some(own)) if !is_light(bg) => own.clone(),
+        (true, _) => tint(s.chrome_active),
     };
-    let mut t: Theme = [
-        ("background", hex(bg)),
-        ("terminal_foreground", hex(p.foreground)),
-        ("foreground", hex(fg)),
-        ("surface", hex(bg)),
+    vec![
+        ("canvas", canvas),
+        ("chrome", chrome),
+        ("popover", tint(s.popover)),
+        ("raised", tint(s.raised)),
+        ("hover", with_alpha(p.foreground, s.hover)),
+        ("selected", with_alpha(p.foreground, s.selected)),
+        ("border", tint(s.border)),
+        ("input", tint(s.input)),
+        ("muted", hex(mix(bg, ink, s.muted))),
+        ("dim", dim.clone()),
+        ("ring", hex(ring)),
+        ("idle", dim.clone()),
+        ("unknown", dim),
+    ]
+}
+
+/// Panel colors as Herdr first drew them: plain white, black and warm grey
+/// around the background, translucent borders. `chrome` (sidebars, bars)
+/// and `canvas` (behind cards) step away from the terminal's background:
+/// darker on a dark theme, toward warm grey on a light one.
+fn classic_panels(bg: u32, ink: u32) -> Vec<(&'static str, String)> {
+    let light = is_light(bg);
+    let (popover, raised, hover, selected, border, input, canvas, chrome): (String, String, &str, &str, &str, &str, u32, u32) = if light {
+        let warm = 0xe8e8e2;
+        (hex(bg), hex(mix(bg, 0, 0.035)), "#0000000c", "#00000012", "#00000017", "#00000026", mix(bg, warm, 0.2), mix(bg, warm, 0.6))
+    } else {
+        (hex(mix(bg, 0xffffff, 0.06)), hex(mix(bg, 0xffffff, 0.09)), "#ffffff0e", "#ffffff17", "#ffffff18", "#ffffff24", mix(bg, 0, 0.16), mix(bg, 0, 0.32))
+    };
+    vec![
         ("canvas", hex(canvas)),
         ("chrome", hex(chrome)),
         ("popover", popover),
         ("raised", raised),
-        ("hover", hover),
-        ("selected", selected),
-        ("border", border),
-        ("input", input),
-        ("muted", hex(mix(bg, fg, if light { 0.66 } else { 0.6 }))),
-        ("dim", hex(mix(bg, fg, if light { 0.46 } else { 0.38 }))),
+        ("hover", hover.into()),
+        ("selected", selected.into()),
+        ("border", border.into()),
+        ("input", input.into()),
+        ("muted", hex(mix(bg, ink, if light { 0.66 } else { 0.6 }))),
+        ("dim", hex(mix(bg, ink, if light { 0.46 } else { 0.38 }))),
+        ("ring", hex(mix(bg, ink, 0.7))),
+        ("idle", hex(mix(bg, ink, 0.38))),
+        ("unknown", hex(mix(bg, ink, 0.38))),
+    ]
+}
+
+/// Whether a theme's or look's colors paint its own panels.
+fn paints_own_panels(colors: &BTreeMap<String, String>) -> bool {
+    ["surface", "popover", "raised"].iter().any(|k| colors.contains_key(*k))
+}
+
+/// The derivation panels use: `chosen`, except that a theme or look that
+/// paints its own panels (a deliberate look, such as Win98's or the
+/// Terminals layout's), or whose foreground can't carry a tint (barely
+/// apart from the background, or on the wrong side of it), keeps the
+/// classic one for whatever it leaves unset. A person's own settings.json
+/// colors don't decide it: they only replace colors.
+fn panels_in_use(chosen: PanelColors, p: &Palette, theme_colors: &BTreeMap<String, String>, look_paints_panels: bool) -> PanelColors {
+    let (bg, fg) = (p.background, p.foreground);
+    let backwards = (contrast(fg, 0) > contrast(bg, 0)) == is_light(bg);
+    if look_paints_panels || paints_own_panels(theme_colors) || contrast(fg, bg) < 3.0 || backwards { PanelColors::Classic } else { chosen }
+}
+
+/// Every color around a palette: the terminal's own, then the panels
+/// (`panel_colors`, `sidebar_shade`), then `overrides` over all of them.
+fn resolve(p: &Palette, overrides: &BTreeMap<String, String>, panels: PanelColors, shaded: bool) -> Theme {
+    let bg = p.background;
+    let light = is_light(bg);
+    let ink = if light { 0x1b1b1e } else { 0xeeeeef };
+    let [working, blocked, done] = p.status.unwrap_or([p.ansi[3], p.ansi[1], p.ansi[4]]);
+    let panels = match panels {
+        PanelColors::Tinted => {
+            let accent = overrides.get("accent").and_then(|v| u32::from_str_radix(v.trim_start_matches('#').get(..6)?, 16).ok()).unwrap_or(p.ansi[4]);
+            tinted_panels(p, ink, shaded, accent, overrides.get("canvas"))
+        }
+        PanelColors::Classic => classic_panels(bg, ink),
+    };
+    let mut t: Theme = [
+        ("background", hex(bg)),
+        ("terminal_foreground", hex(p.foreground)),
+        ("foreground", hex(ink)),
+        ("surface", hex(bg)),
         ("accent", hex(p.ansi[4])),
         ("accent_foreground", hex(bg)),
-        ("solid", hex(fg)),
+        ("solid", hex(ink)),
         ("solid_foreground", hex(if light { 0xffffff } else { mix(bg, 0, 0.28) })),
-        ("ring", hex(mix(bg, fg, 0.7))),
         ("selection", hex(p.selection)),
         ("cursor", hex(p.cursor.unwrap_or(p.foreground))),
         ("working", hex(working)),
         ("blocked", hex(blocked)),
         ("done", hex(done)),
-        ("idle", hex(mix(bg, fg, 0.38))),
-        ("unknown", hex(mix(bg, fg, 0.38))),
     ]
     .into_iter()
+    .chain(panels)
     .map(|(k, v)| (k.to_owned(), v))
     .collect();
     for (i, c) in p.ansi.iter().enumerate() {
@@ -361,6 +459,334 @@ fn resolve(p: &Palette, overrides: &BTreeMap<String, String>) -> Theme {
         t.insert(k.clone(), v.clone());
     }
     t
+}
+
+#[cfg(test)]
+mod derivation_tests {
+    use super::*;
+
+    /// Shapes the steps have to hold for: presets, shipped files (with their
+    /// own `colors`), and public themes at the extremes (pure black, near
+    /// black, pastel and plain light).
+    fn themes() -> Vec<(String, Palette, BTreeMap<String, String>)> {
+        let file = |bg: &str, fg: &str, accent: &str| {
+            let mut ansi = vec!["\"#808080\"".to_owned(); 16];
+            ansi[4] = format!("\"{accent}\"");
+            let text = format!(r#"{{"background":"{bg}","foreground":"{fg}","selection":"{fg}","ansi":[{}]}}"#, ansi.join(","));
+            parse_theme_file("fixture", &text).unwrap()
+        };
+        let mut out: Vec<_> = PRESETS.iter().map(|n| (n.to_string(), preset(n).unwrap().clone(), BTreeMap::new())).collect();
+        for (name, text) in THEMES {
+            let (p, own) = parse_theme_file(name, text).unwrap();
+            out.push((name.to_string(), p, own));
+        }
+        for (name, bg, fg, accent) in [
+            ("ayu-mirage", "#1f2430", "#cccac2", "#6dcbfa"),
+            ("ayu-light", "#f8f9fa", "#5c6166", "#3199e1"),
+            ("github-dark-default", "#0d1117", "#e6edf3", "#58a6ff"),
+            ("modus-vivendi", "#000000", "#ffffff", "#2fafff"),
+            ("moonfly", "#080808", "#bdbdbd", "#80a0ff"),
+            ("rose-pine-dawn", "#faf4ed", "#575279", "#56949f"),
+            ("zenburn", "#3f3f3f", "#dcdccc", "#8cd0d3"),
+        ] {
+            let (p, own) = file(bg, fg, accent);
+            out.push((name.into(), p, own));
+        }
+        out
+    }
+
+    /// What `set` draws for a theme file and its own colors under `chosen`.
+    fn drawn(p: &Palette, own: &BTreeMap<String, String>, chosen: PanelColors, shaded: bool) -> Theme {
+        resolve(p, own, panels_in_use(chosen, p, own, false), shaded)
+    }
+
+    /// The palettes alone, for rules about what a theme leaves unset.
+    fn palettes() -> Vec<(String, Palette)> {
+        themes().into_iter().map(|(n, p, _)| (n, p)).collect()
+    }
+
+    fn rgb(t: &Theme, k: &str) -> u32 {
+        u32::from_str_radix(&t[k][1..7], 16).unwrap()
+    }
+
+    fn lightness(c: u32) -> f32 {
+        contrast(c, 0)
+    }
+
+    #[test]
+    fn panels_layer_away_from_the_terminal() {
+        for ((name, p), shaded) in palettes().into_iter().flat_map(|p| [(p.clone(), false), (p, true)]) {
+            let t = resolve(&p, &BTreeMap::new(), PanelColors::Tinted, shaded);
+            let (chrome, canvas) = (lightness(rgb(&t, "chrome")), lightness(rgb(&t, "canvas")));
+            assert!(if is_light(p.background) { chrome < canvas } else { canvas <= chrome }, "{name}: chrome {chrome} against canvas {canvas}, shaded {shaded}");
+            let [canvas, surface, popover, raised] = ["canvas", "surface", "popover", "raised"].map(|k| lightness(rgb(&t, k)));
+            if is_light(p.background) {
+                assert!(canvas < surface && raised < popover && popover <= surface, "{name}: light layers {canvas} {surface} {popover} {raised}");
+            } else {
+                assert!(canvas <= surface && surface < popover && popover < raised, "{name}: dark layers {canvas} {surface} {popover} {raised}");
+            }
+        }
+    }
+
+    /// Floors are the lowest each text tier reached on any panel across 90
+    /// public themes before the steps were tuned, so no theme reads worse.
+    #[test]
+    fn panel_text_keeps_its_contrast() {
+        for ((name, p), shaded) in palettes().into_iter().flat_map(|p| [(p.clone(), false), (p, true)]) {
+            let t = resolve(&p, &BTreeMap::new(), PanelColors::Tinted, shaded);
+            for panel in ["surface", "canvas", "chrome", "popover", "raised"] {
+                for (text, floor) in [("foreground", 6.9), ("muted", 3.35), ("dim", 2.1)] {
+                    let c = contrast(rgb(&t, text), rgb(&t, panel));
+                    assert!(c >= floor, "{name}: {text} on {panel} is {c:.2}, under {floor}");
+                }
+            }
+            assert!(contrast(rgb(&t, "ring"), p.background) >= 3.0, "{name}: ring {} on {:06x}", t["ring"], p.background);
+        }
+    }
+
+    #[test]
+    fn explicit_colors_win() {
+        let colors: BTreeMap<String, String> =
+            ["canvas", "chrome", "popover", "raised", "border", "hover", "dim", "ring"].iter().map(|k| (k.to_string(), "#123456".into())).collect();
+        for ((name, p), shaded) in palettes().into_iter().flat_map(|p| [(p.clone(), false), (p, true)]) {
+            let t = resolve(&p, &colors, PanelColors::Tinted, shaded);
+            for k in colors.keys() {
+                assert_eq!(t[k], "#123456", "{name}: {k}, shaded {shaded}");
+            }
+        }
+    }
+
+    #[test]
+    fn ring_follows_the_accent_in_use() {
+        let p = preset("graphite").unwrap();
+        let accent: BTreeMap<String, String> = [("accent".to_owned(), "#3b82f6".to_owned())].into();
+        assert_eq!(resolve(p, &accent, PanelColors::Tinted, false)["ring"], "#3b82f6", "an overridden accent rings too");
+        let grey = parse_theme_file("grey", r##"{"background":"#707070","foreground":"#e0e0e0","selection":"#909090","ansi":["#000000","#000000","#000000","#000000","#787878","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000"]}"##).unwrap().0;
+        let ring = resolve(&grey, &BTreeMap::new(), PanelColors::Tinted, false)["ring"].clone();
+        assert!(contrast(u32::from_str_radix(&ring[1..], 16).unwrap(), 0x707070) >= 3.0, "a mid grey still rings at 3:1: {ring}");
+        let translucent: BTreeMap<String, String> = [("accent".to_owned(), "#3b82f6cc".to_owned())].into();
+        assert_eq!(resolve(p, &translucent, PanelColors::Tinted, false)["ring"], "#3b82f6", "an #rrggbbaa accent rings in its color");
+        let faint: BTreeMap<String, String> = [("accent".to_owned(), "#22252a".to_owned())].into();
+        let t = resolve(p, &faint, PanelColors::Tinted, false);
+        assert_eq!(t["ring"], hex(mix(p.background, 0xeeeeef, 0.7)), "an accent under 3:1 falls back");
+        let own: BTreeMap<String, String> = [("accent".to_owned(), "#3b82f6".to_owned()), ("ring".to_owned(), "#ff0000".to_owned())].into();
+        assert_eq!(resolve(p, &own, PanelColors::Tinted, false)["ring"], "#ff0000", "an own ring wins");
+    }
+
+    #[test]
+    fn panels_take_the_theme_tint() {
+        let p = parse_theme_file("t", r##"{"background":"#101820","foreground":"#80c0ff","selection":"#203040","ansi":["#000000","#000000","#000000","#000000","#4080ff","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000"]}"##).unwrap().0;
+        let t = resolve(&p, &BTreeMap::new(), PanelColors::Tinted, false);
+        assert_eq!(t["border"], hex(mix(0x101820, 0x80c0ff, DARK_STEPS.border)));
+        assert_eq!(t["hover"], with_alpha(0x80c0ff, DARK_STEPS.hover));
+        let border = rgb(&t, "border");
+        assert!(border & 255 > (border >> 16) & 255, "a blue foreground tints the border blue: {border:06x}");
+    }
+
+    #[test]
+    fn sidebar_shade_darkens_chrome_only_when_it_shades() {
+        let shades = |mode: SidebarShade| [true, false].map(|active| mode.shades(active));
+        assert_eq!(shades(SidebarShade::Flat), [false, false]);
+        assert_eq!(shades(SidebarShade::Active), [true, false]);
+        assert_eq!(shades(SidebarShade::Always), [true, true]);
+        for (name, p) in palettes() {
+            let [flat, shaded] = [false, true].map(|s| resolve(&p, &BTreeMap::new(), PanelColors::Tinted, s));
+            assert_eq!(flat.iter().filter(|(k, v)| shaded[*k] != **v).map(|(k, _)| k.as_str()).collect::<Vec<_>>(), if is_light(p.background) || flat["chrome"] == shaded["chrome"] { vec![] } else { vec!["chrome"] }, "{name}");
+            if !is_light(p.background) && p.background != 0 {
+                assert!(lightness(rgb(&shaded, "chrome")) < lightness(rgb(&flat, "chrome")), "{name}: the shade is darker");
+                assert_eq!(shaded["chrome"], shaded["canvas"], "{name}: the shade sits level with canvas");
+            }
+        }
+        let p = preset("graphite").unwrap();
+        let own: BTreeMap<String, String> = [("chrome".to_owned(), "#202020".to_owned())].into();
+        assert_eq!(resolve(p, &own, PanelColors::Tinted, true)["chrome"], "#202020", "a theme's own chrome is never shaded");
+        let canvas: BTreeMap<String, String> = [("canvas".to_owned(), "#3a3f4b".to_owned())].into();
+        assert_eq!(resolve(p, &canvas, PanelColors::Tinted, true)["chrome"], "#3a3f4b", "the shade sits level with a theme's own canvas");
+        assert_ne!(resolve(p, &canvas, PanelColors::Tinted, false)["chrome"], "#3a3f4b", "flat, chrome stays its own step");
+    }
+
+    #[test]
+    fn sidebar_shade_defaults_to_flat_and_refuses_others() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.sidebar_shade, SidebarShade::Flat);
+        assert_eq!(serde_json::to_value(&default).unwrap().get("sidebar_shade"), None);
+        for (value, mode) in [("flat", SidebarShade::Flat), ("active", SidebarShade::Active), ("always", SidebarShade::Always)] {
+            let person: Person = serde_json::from_value(serde_json::json!({"sidebar_shade": value})).unwrap();
+            assert_eq!(Settings::compose(&person, &crate::layout::Look::default(), true).sidebar_shade, mode);
+        }
+        for (mode, value) in [(SidebarShade::Active, "active"), (SidebarShade::Always, "always")] {
+            assert_eq!(serde_json::to_value(Person { sidebar_shade: mode, ..Person::default() }).unwrap()["sidebar_shade"], value);
+        }
+        for bad in [serde_json::json!({"sidebar_shade": "dark"}), serde_json::json!({"sidebar_shade": true})] {
+            assert!(serde_json::from_value::<Person>(bad.clone()).is_err(), "{bad} is refused");
+        }
+    }
+
+    /// Classic is the derivation Herdr shipped before tinted panels, value for
+    /// value: the fixture is that build's `resolve` output for these themes.
+    #[test]
+    fn classic_panels_are_the_first_derivation_exactly() {
+        let before: BTreeMap<String, Theme> = serde_json::from_str(include_str!("../tests/fixtures/master-panels.json")).unwrap();
+        for (name, p, own) in themes() {
+            for shaded in [false, true] {
+                assert_eq!(drawn(&p, &own, PanelColors::Classic, shaded), before[&name], "{name}, shaded {shaded}");
+            }
+        }
+        assert_eq!(before.len(), themes().len());
+    }
+
+    /// Over its own colors, a theme's hover and selected fills stay visible
+    /// on its popovers and surfaces, and its text reads no worse than the
+    /// classic panels drew it.
+    #[test]
+    fn own_colors_keep_fills_visible_and_text_readable() {
+        let over = |top: &str, under: &str| {
+            let (c, a) = (u32::from_str_radix(&top[1..7], 16).unwrap(), if top.len() == 9 { u32::from_str_radix(&top[7..9], 16).unwrap() as f32 / 255.0 } else { 1.0 });
+            let under = u32::from_str_radix(&under[1..7], 16).unwrap();
+            mix(under, c, a)
+        };
+        let apart = |a: u32, b: u32| [16, 8, 0].iter().map(|s| (((a >> s) & 255) as i32 - ((b >> s) & 255) as i32).abs()).max().unwrap();
+        for (name, p, own) in themes() {
+            for shaded in [false, true] {
+                let t = drawn(&p, &own, PanelColors::Tinted, shaded);
+                let classic = drawn(&p, &own, PanelColors::Classic, shaded);
+                for fill in ["hover", "selected"] {
+                    for panel in ["popover", "surface"] {
+                        let under = rgb(&t, panel);
+                        assert!(apart(over(&t[fill], &t[panel]), under) >= 4, "{name}: {fill} {} on {panel} {} is barely visible", t[fill], t[panel]);
+                    }
+                }
+                for panel in ["surface", "canvas", "chrome", "popover", "raised"] {
+                    for (text, floor) in [("foreground", 6.9f32), ("muted", 3.35), ("dim", 2.1)] {
+                        let c = contrast(rgb(&t, text), rgb(&t, panel));
+                        let before = contrast(rgb(&classic, text), rgb(&classic, panel));
+                        assert!(c >= floor.min(before) - 0.005, "{name}: {text} on {panel} is {c:.2}, under {floor} and classic's {before:.2}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// A theme or look that paints its own panels, or whose foreground can't
+    /// carry a tint, keeps the classic derivation for what it leaves unset;
+    /// a person's own colors only replace colors.
+    #[test]
+    fn deliberate_looks_and_weak_foregrounds_keep_classic_panels() {
+        let win98 = THEMES.iter().find(|(n, _)| *n == "win98").unwrap().1;
+        let (p, own) = parse_theme_file("win98", win98).unwrap();
+        assert_eq!(drawn(&p, &own, PanelColors::Tinted, true), drawn(&p, &own, PanelColors::Classic, true), "win98 draws as before");
+        let terminals: crate::layout::Look = serde_json::from_str(include_str!("../defaults/layouts/terminals.json")).unwrap();
+        let look = Settings::compose(&Person::default(), &terminals, true);
+        assert!(look.look_paints_panels, "the Terminals look paints its own panels");
+        for name in PRESETS {
+            let p = preset(name).unwrap();
+            assert_eq!(panels_in_use(PanelColors::Tinted, p, &BTreeMap::new(), look.look_paints_panels), PanelColors::Classic, "Terminals over {name}");
+        }
+        let person = Person { colors: [("surface".to_owned(), "#202020".to_owned())].into(), ..Person::default() };
+        let mine = Settings::compose(&person, &crate::layout::Look::default(), true);
+        assert!(!mine.look_paints_panels, "a person's own surface doesn't decide the derivation");
+        let graphite = preset("graphite").unwrap();
+        assert_eq!(panels_in_use(mine.panel_colors, graphite, &BTreeMap::new(), mine.look_paints_panels), PanelColors::Tinted);
+        let t = resolve_for(&mine, graphite, &BTreeMap::new());
+        assert_eq!((t["surface"].as_str(), t["chrome"].clone()), ("#202020", tinted_panels(graphite, 0xeeeeef, false, graphite.ansi[4], None)[1].1.clone()), "it only replaces surface");
+        let weak = |bg: &str, fg: &str| parse_theme_file("weak", &format!(r##"{{"background":"{bg}","foreground":"{fg}","selection":"{fg}","ansi":["#000000","#000000","#000000","#000000","#4080ff","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000"]}}"##)).unwrap().0;
+        for (bg, fg) in [("#202020", "#2a2a2a"), ("#303845", "#101010"), ("#f4f4f4", "#ffffff"), ("#e0e0e0", "#c8c8c8"), ("#707070", "#000000")] {
+            let p = weak(bg, fg);
+            assert_eq!(panels_in_use(PanelColors::Tinted, &p, &BTreeMap::new(), false), PanelColors::Classic, "{fg} on {bg}");
+        }
+    }
+
+    #[test]
+    fn panel_colors_default_to_tinted_and_refuse_others() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.panel_colors, PanelColors::Tinted);
+        assert_eq!(serde_json::to_value(&default).unwrap().get("panel_colors"), None);
+        for (value, mode) in [("tinted", PanelColors::Tinted), ("classic", PanelColors::Classic)] {
+            let person: Person = serde_json::from_value(serde_json::json!({"panel_colors": value})).unwrap();
+            assert_eq!(Settings::compose(&person, &crate::layout::Look::default(), true).panel_colors, mode);
+        }
+        assert_eq!(serde_json::to_value(Person { panel_colors: PanelColors::Classic, ..Person::default() }).unwrap()["panel_colors"], "classic");
+        for bad in [serde_json::json!({"panel_colors": "rex"}), serde_json::json!({"panel_colors": 1})] {
+            assert!(serde_json::from_value::<Person>(bad.clone()).is_err(), "{bad} is refused");
+        }
+    }
+
+    #[test]
+    fn only_a_dark_tinted_active_shade_follows_focus() {
+        let dark = preset("graphite").unwrap();
+        let light = preset("paper").unwrap();
+        let with = |shade, panels| Settings { sidebar_shade: shade, panel_colors: panels, ..Settings::default() };
+        let none = BTreeMap::new();
+        let chrome: BTreeMap<String, String> = [("chrome".to_owned(), "#202020".to_owned())].into();
+        assert!(shade_follows_focus(&with(SidebarShade::Active, PanelColors::Tinted), dark, &none));
+        assert!(!shade_follows_focus(&with(SidebarShade::Flat, PanelColors::Tinted), dark, &none), "flat");
+        assert!(!shade_follows_focus(&with(SidebarShade::Always, PanelColors::Tinted), dark, &none), "always: shaded either way");
+        assert!(!shade_follows_focus(&with(SidebarShade::Active, PanelColors::Classic), dark, &none), "classic");
+        assert!(!shade_follows_focus(&with(SidebarShade::Active, PanelColors::Tinted), light, &none), "light");
+        assert!(!shade_follows_focus(&with(SidebarShade::Active, PanelColors::Tinted), dark, &chrome), "the theme's own chrome");
+        let mine = Settings { colors: chrome.clone(), ..with(SidebarShade::Active, PanelColors::Tinted) };
+        assert!(!shade_follows_focus(&mine, dark, &none), "settings' or a look's own chrome");
+        let look = Settings { look_paints_panels: true, ..with(SidebarShade::Active, PanelColors::Tinted) };
+        assert!(!shade_follows_focus(&look, dark, &none), "a look that keeps classic panels");
+        for shaded in [false, true] {
+            for (s, p) in [(with(SidebarShade::Flat, PanelColors::Tinted), dark), (with(SidebarShade::Active, PanelColors::Tinted), light), (mine.clone(), dark)] {
+                let (a, b) = WINDOW_ACTIVE.with(|w| {
+                    w.set(shaded);
+                    let a = resolve_for(&s, p, &none);
+                    w.set(!shaded);
+                    (a, resolve_for(&s, p, &none))
+                });
+                assert_eq!(a, b, "a case that skips focus really doesn't change with it");
+            }
+        }
+    }
+
+    #[test]
+    fn mods_read_the_settings_built_at_the_last_set() {
+        std::thread::spawn(|| {
+            set(Settings { theme: "graphite".into(), zoom: 1.0, ..Settings::default() });
+            let first = for_mods();
+            assert!(std::sync::Arc::ptr_eq(&first, &for_mods()), "every read hands out the same value");
+            assert_eq!(*first, get().for_mods());
+            set(Settings { theme: "graphite".into(), zoom: 1.25, ..Settings::default() });
+            let second = for_mods();
+            assert!(!std::sync::Arc::ptr_eq(&first, &second), "a set builds it again");
+            assert_eq!(second["zoom"], 1.25);
+            assert_eq!(*second, get().for_mods());
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// Focus changes resolve again from the palette `set` read: only
+    /// `chrome` moves, and only when the state does. The window test
+    /// `sidebar_shade_focus` corrupts a theme file on disk between the two.
+    #[test]
+    fn reshade_follows_focus_from_the_last_palette() {
+        std::thread::spawn(|| {
+            let s = Settings { theme: "graphite".into(), sidebar_shade: SidebarShade::Active, ..Settings::default() };
+            set_window_active(false);
+            set(s);
+            let flat = theme();
+            set_window_active(true);
+            assert!(reshade());
+            let shaded = theme();
+            assert_ne!(shaded["chrome"], flat["chrome"]);
+            assert_eq!(shaded.iter().filter(|(k, v)| flat[*k] != **v).count(), 1, "only chrome moves");
+            assert!(!reshade(), "no change, no redraw");
+            set_window_active(false);
+            assert!(reshade());
+            assert_eq!(theme(), flat);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn mix_clamps_past_the_ends() {
+        assert_eq!(mix(0x000000, 0xffffff, -0.5), 0x000000);
+        assert_eq!(mix(0xffffff, 0x000000, -0.5), 0xffffff);
+    }
 }
 
 /// settings.json: preferences used where a layout leaves its look unset.
@@ -462,6 +888,12 @@ pub struct Person {
     /// background.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unfocused_dim_color: Option<String>,
+    /// When the sidebars and bars take a shade darker: `flat`, `active` or `always`.
+    #[serde(skip_serializing_if = "SidebarShade::is_flat")]
+    pub sidebar_shade: SidebarShade,
+    /// How panels derive unset colors: `tinted` or `classic`.
+    #[serde(skip_serializing_if = "PanelColors::is_tinted")]
+    pub panel_colors: PanelColors,
     /// Trial: smooth terminal text with a coverage per color channel
     /// (subpixel, on 1x displays) rather than one (grayscale) (macOS).
     #[serde(skip_serializing_if = "TextRendering::is_grayscale")]
@@ -629,6 +1061,43 @@ pub enum DimScope {
 impl DimScope {
     fn is_window(&self) -> bool {
         *self == DimScope::Window
+    }
+}
+
+/// When the sidebars and bars (`chrome`) take a shade darker than their
+/// flat color: never, while the window is active, or always.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarShade {
+    #[default]
+    Flat,
+    Active,
+    Always,
+}
+
+impl SidebarShade {
+    fn is_flat(&self) -> bool {
+        *self == SidebarShade::Flat
+    }
+
+    fn shades(self, window_active: bool) -> bool {
+        self == SidebarShade::Always || (self == SidebarShade::Active && window_active)
+    }
+}
+
+/// How panels derive the colors a theme leaves unset: tinted toward the
+/// theme's own foreground, or classic white, black and warm grey.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PanelColors {
+    #[default]
+    Tinted,
+    Classic,
+}
+
+impl PanelColors {
+    fn is_tinted(&self) -> bool {
+        *self == PanelColors::Tinted
     }
 }
 
@@ -804,6 +1273,8 @@ impl Default for Person {
             unfocused_dim: 0.0,
             unfocused_dim_scope: DimScope::Window,
             unfocused_dim_color: None,
+            sidebar_shade: SidebarShade::Flat,
+            panel_colors: PanelColors::Tinted,
             text_rendering: TextRendering::Grayscale,
             ui_text_rendering: TextRendering::Grayscale,
             subpixel_order: SubpixelOrder::Rgb,
@@ -857,6 +1328,13 @@ pub struct Settings {
     pub unfocused_dim_scope: DimScope,
     /// The color the window fades toward, as written (`dim_color` reads it).
     pub unfocused_dim_color: Option<String>,
+    /// When the sidebars and bars take a shade darker.
+    pub sidebar_shade: SidebarShade,
+    /// How panels derive the colors a theme leaves unset.
+    pub panel_colors: PanelColors,
+    /// The layout's look paints its own panels (`panels_in_use`).
+    #[serde(skip)]
+    pub look_paints_panels: bool,
     /// Terminal text's smoothing (subpixel only where the display allows).
     pub text_rendering: TextRendering,
     /// The panels' text's smoothing.
@@ -941,6 +1419,9 @@ impl Default for Settings {
             unfocused_dim: 0.0,
             unfocused_dim_scope: DimScope::Window,
             unfocused_dim_color: None,
+            sidebar_shade: SidebarShade::Flat,
+            panel_colors: PanelColors::Tinted,
+            look_paints_panels: false,
             text_rendering: TextRendering::Grayscale,
             ui_text_rendering: TextRendering::Grayscale,
             subpixel_order: SubpixelOrder::Rgb,
@@ -1005,6 +1486,9 @@ impl Settings {
             unfocused_dim: person.unfocused_dim,
             unfocused_dim_scope: person.unfocused_dim_scope,
             unfocused_dim_color: person.unfocused_dim_color.clone(),
+            sidebar_shade: person.sidebar_shade,
+            panel_colors: person.panel_colors,
+            look_paints_panels: look.colors.as_ref().is_some_and(paints_own_panels),
             text_rendering: person.text_rendering,
             ui_text_rendering: person.ui_text_rendering,
             subpixel_order: person.subpixel_order,
@@ -1145,7 +1629,19 @@ pub fn path() -> std::path::PathBuf {
 
 thread_local! {
     static CURRENT: RefCell<(Rc<Settings>, Rc<Theme>)> =
-        RefCell::new((Rc::new(Settings::default()), Rc::new(resolve(&GRAPHITE, &BTreeMap::new()))));
+        RefCell::new((Rc::new(Settings::default()), Rc::new(resolve(&GRAPHITE, &BTreeMap::new(), PanelColors::Tinted, false))));
+    static WINDOW_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The theme's palette and own colors as `set` last read them, so a
+    /// focus change resolves again without reading the theme file.
+    static PALETTE: RefCell<(Palette, BTreeMap<String, String>)> = RefCell::new((GRAPHITE.clone(), BTreeMap::new()));
+    /// How many times `reshade` ran, for tests.
+    #[cfg(test)]
+    static RESHADES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Whether a focus change can change the theme (`shade_follows_focus`).
+    static FOLLOWS_FOCUS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// `settings()` as mods read it, built once per `set`: mods call it from
+    /// render, some once per element.
+    static FOR_MODS: RefCell<std::sync::Arc<serde_json::Value>> = RefCell::new(std::sync::Arc::new(Settings::default().for_mods()));
 }
 
 const ZOOM_MIN: f32 = 0.5;
@@ -1153,6 +1649,11 @@ const ZOOM_MAX: f32 = 3.0;
 
 pub fn get() -> Rc<Settings> {
     CURRENT.with(|c| c.borrow().0.clone())
+}
+
+/// The settings mods read (`settings()`), as of the last `set`.
+pub fn for_mods() -> std::sync::Arc<serde_json::Value> {
+    FOR_MODS.with_borrow(std::sync::Arc::clone)
 }
 
 /// The resolved theme: every color by name.
@@ -1200,6 +1701,56 @@ pub fn write_person(person: &Person) -> std::io::Result<()> {
     crate::persist::write_atomic(&path(), serde_json::to_string_pretty(person).unwrap_or_default() + "\n")
 }
 
+/// Notes whether the window is active, which `sidebar_shade` follows;
+/// `set` applies it.
+pub fn set_window_active(active: bool) {
+    WINDOW_ACTIVE.with(|w| w.set(active));
+}
+
+fn resolve_for(s: &Settings, p: &Palette, own: &BTreeMap<String, String>) -> Theme {
+    let mut colors = own.clone();
+    colors.extend(s.colors.clone());
+    resolve(p, &colors, panels_in_use(s.panel_colors, p, own, s.look_paints_panels), s.sidebar_shade.shades(WINDOW_ACTIVE.with(|w| w.get())))
+}
+
+/// Whether focus can change the theme these settings draw: only a dark
+/// tinted theme in `sidebar_shade`'s `active` mode whose chrome isn't its
+/// own (flat and always don't change with focus; classic panels and light
+/// themes have no shade).
+fn shade_follows_focus(s: &Settings, p: &Palette, own: &BTreeMap<String, String>) -> bool {
+    s.sidebar_shade == SidebarShade::Active
+        && panels_in_use(s.panel_colors, p, own, s.look_paints_panels) == PanelColors::Tinted
+        && !is_light(p.background)
+        && !own.contains_key("chrome")
+        && !s.colors.contains_key("chrome")
+}
+
+#[cfg(test)]
+pub fn reshades() -> u32 {
+    RESHADES.get()
+}
+
+/// Whether the window's focus can change the theme now, as of the last `set`.
+pub fn follows_focus() -> bool {
+    FOLLOWS_FOCUS.get()
+}
+
+/// Resolves the theme again for the window's focus (`set_window_active`)
+/// from the palette `set` last read; returns whether that changed it. Only
+/// `sidebar_shade` follows focus, so only `chrome` can change.
+pub fn reshade() -> bool {
+    #[cfg(test)]
+    RESHADES.set(RESHADES.get() + 1);
+    CURRENT.with(|c| {
+        let theme = PALETTE.with_borrow(|(p, own)| resolve_for(&c.borrow().0, p, own));
+        if *c.borrow().1 == theme {
+            return false;
+        }
+        c.borrow_mut().1 = Rc::new(theme);
+        true
+    })
+}
+
 /// Installs new settings; returns whether anything changed.
 pub fn set(s: Settings) -> bool {
     #[cfg(target_os = "macos")]
@@ -1213,9 +1764,11 @@ pub fn set(s: Settings) -> bool {
     CURRENT.with(|c| {
         // Read the theme even when the settings are the same: its file may
         // have new colors under the same name.
-        let (p, mut colors) = palette(&s.theme).unwrap_or_else(|_| (GRAPHITE.clone(), BTreeMap::new()));
-        colors.extend(s.colors.clone());
-        let theme = resolve(&p, &colors);
+        let (p, own) = palette(&s.theme).unwrap_or_else(|_| (GRAPHITE.clone(), BTreeMap::new()));
+        let theme = resolve_for(&s, &p, &own);
+        FOLLOWS_FOCUS.set(shade_follows_focus(&s, &p, &own));
+        PALETTE.set((p, own));
+        FOR_MODS.set(std::sync::Arc::new(s.for_mods()));
         if *c.borrow().0 == s && *c.borrow().1 == theme {
             return false;
         }
@@ -1364,6 +1917,8 @@ impl Settings {
         let mut v = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
         if let Some(o) = v.as_object_mut() {
             o.insert("ui_scale".into(), serde_json::json!(self.ui_scale()));
+            let in_use = PALETTE.with_borrow(|(p, own)| panels_in_use(self.panel_colors, p, own, self.look_paints_panels));
+            o.insert("panels_in_use".into(), serde_json::json!(in_use));
             o.insert("ui_scale_ranges".into(), serde_json::json!({ "ui_zoom": UI_ZOOM_RANGE, "ui_text_scale": UI_TEXT_SCALE_RANGE }));
         }
         v
@@ -1983,7 +2538,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

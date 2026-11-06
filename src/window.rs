@@ -612,6 +612,8 @@ pub struct AppWindow {
     _tasks: Vec<Task<()>>,
     /// Gives the keyboard back when what had it leaves the screen (`restore_focus`).
     _focus_lost: Option<Subscription>,
+    /// Shades the sidebars as the window gains or loses focus (`sidebar_shade`).
+    _activation: Option<Subscription>,
     /// Remembers where the window is (`place.rs`); the write waiting to settle.
     _place: Option<Subscription>,
     place_write: Option<Task<()>>,
@@ -709,10 +711,13 @@ impl AppWindow {
             focus: cx.focus_handle(),
             _tasks: Vec::new(),
             _focus_lost: None,
+            _activation: None,
             _place: None,
             place_write: None,
         };
         w._focus_lost = Some(cx.on_focus_lost(window, |this, window, cx| this.restore_focus(window, cx)));
+        settings::set_window_active(window.is_window_active());
+        w._activation = Some(cx.observe_window_activation(window, |this, window, cx| this.shade_sidebar(window, cx)));
         w._place = Some(cx.observe_window_bounds(window, |this, window, cx| {
             if let Some(t) = crate::place::changed(window, cx) {
                 this.place_write = Some(t);
@@ -1051,11 +1056,28 @@ impl AppWindow {
             self.report_layout(&problems.join("; "));
         }
         if settings::set(s) {
-            for term in self.terms.values() {
-                term.view.read(cx).refresh_theme();
-            }
-            mods::apply_theme(cx);
-            self.refresh_mods(cx);
+            self.theme_changed(window, cx);
+        }
+    }
+
+    fn theme_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for term in self.terms.values() {
+            term.view.read(cx).refresh_theme();
+        }
+        mods::apply_theme(cx);
+        self.refresh_mods(cx);
+        window.refresh();
+    }
+
+    /// `sidebar_shade` follows the window's focus; when nothing can change
+    /// (`settings::follows_focus`), it does nothing more. Only `chrome` can change,
+    /// which neither terminals nor the kit's tokens use: the mods that read
+    /// `theme()` redraw, and the window.
+    fn shade_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        settings::set_window_active(window.is_window_active());
+        if settings::follows_focus() && settings::reshade() {
+            mods::bump_revision("theme");
+            self.refresh_snapshot_mods(cx);
             window.refresh();
         }
     }
@@ -7627,6 +7649,93 @@ export default class Probe extends View {
     #[test]
     fn the_whole_window_dims_while_inactive() {
         in_own_process("unfocused_dim_window");
+    }
+
+    #[test]
+    fn the_sidebar_shade_follows_focus() {
+        in_own_process("sidebar_shade_focus");
+    }
+
+    /// `sidebar_shade` swaps `chrome` as the window gains and loses focus,
+    /// with no poll in between: the theme everything reads changes at once.
+    #[gpui::test]
+    fn sidebar_shade_focus(cx: &mut gpui::TestAppContext) {
+        use crate::settings::SidebarShade;
+        use serde_json::json;
+        if !running_alone("sidebar_shade_focus") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        let chrome = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            crate::settings::theme()["chrome"].clone()
+        };
+        view.update_in(cx, |this, window, cx| {
+            this.person.appearance = crate::settings::Appearance::Dark;
+            this.person.sidebar_shade = SidebarShade::Active;
+            this.apply_look(window, cx);
+        });
+        cx.update(|window, _| window.activate_window());
+        let shaded = chrome(cx);
+        cx.deactivate_window();
+        let flat = chrome(cx);
+        assert_ne!(shaded, flat, "active, the dark default theme's sidebar is a shade darker");
+        assert_eq!(crate::settings::theme()["canvas"], shaded, "the shade sits level with canvas");
+        cx.update(|window, _| window.activate_window());
+        assert_eq!(chrome(cx), shaded, "focused again, shaded again");
+        for (mode, active, inactive) in [(SidebarShade::Flat, &flat, &flat), (SidebarShade::Always, &shaded, &shaded)] {
+            view.update_in(cx, |this, window, cx| {
+                this.person.sidebar_shade = mode;
+                this.apply_look(window, cx);
+            });
+            assert_eq!(&chrome(cx), active, "{mode:?} while active");
+            let before = (crate::mods::revision("theme"), crate::settings::reshades());
+            cx.deactivate_window();
+            assert_eq!(&chrome(cx), inactive, "{mode:?} while inactive");
+            cx.update(|window, _| window.activate_window());
+            chrome(cx);
+            assert_eq!(crate::mods::revision("theme"), before.0, "{mode:?}: focus changes bump nothing");
+            assert_eq!(crate::settings::reshades(), before.1, "{mode:?}: focus changes resolve nothing");
+        }
+        view.update_in(cx, |this, window, cx| {
+            this.person.sidebar_shade = SidebarShade::Active;
+            this.person.colors.insert("chrome".into(), "#202020".into());
+            this.apply_look(window, cx);
+        });
+        assert_eq!(chrome(cx), "#202020", "an own chrome wins while active");
+        cx.deactivate_window();
+        assert_eq!(chrome(cx), "#202020", "an own chrome wins while inactive");
+
+        // A theme file on disk: focus changes resolve it from the palette last
+        // read. With the home moved to an empty folder, any read of the file
+        // would fail and fall back to Graphite. Writing the file below can't
+        // reload the look behind the test's back: the watcher's 80 ms batching
+        // timer runs on gpui's fake clock, which this test never advances.
+        let file = crate::mods::app_dir().join("themes/focus-test.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, r##"{"background":"#1d2330","foreground":"#c8d0e0","selection":"#3a4660","ansi":["#000000","#e06c75","#98c379","#e5c07b","#61afef","#c678dd","#56b6c2","#abb2bf","#5c6370","#e06c75","#98c379","#e5c07b","#61afef","#c678dd","#56b6c2","#ffffff"]}"##).unwrap();
+        view.update_in(cx, |this, window, cx| {
+            this.person.colors.remove("chrome");
+            this.person.theme = Some(crate::layout::ThemeChoice::One("focus-test".into()));
+            this.apply_look(window, cx);
+        });
+        let flat = chrome(cx);
+        assert_eq!(crate::settings::theme()["background"], "#1d2330", "the file's theme is showing");
+        let home = crate::mods::app_dir();
+        let empty = std::env::temp_dir().join(format!("herdr-focus-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).unwrap();
+        // SAFETY: this test runs alone in its own process (`in_own_process`).
+        unsafe { std::env::set_var("HERDR_APP_HOME", &empty) };
+        assert!(!crate::settings::theme_exists("focus-test"), "the theme file is out of reach");
+        cx.update(|window, _| window.activate_window());
+        let shaded = chrome(cx);
+        assert_ne!(shaded, flat, "focus shades the file's theme");
+        assert_eq!(crate::settings::theme()["background"], "#1d2330", "a focus change reads no theme file");
+        cx.deactivate_window();
+        assert_eq!(chrome(cx), flat);
+        assert_eq!(crate::settings::theme()["background"], "#1d2330");
+        unsafe { std::env::set_var("HERDR_APP_HOME", &home) };
+        std::fs::remove_dir_all(&empty).unwrap();
     }
 
     /// With `unfocused_dim` over the window (the default scope), blurring lays

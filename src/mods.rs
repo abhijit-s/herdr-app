@@ -617,6 +617,12 @@ fn publish(key: &'static str, set: impl FnOnce(&mut Snapshot) -> (Value, Value))
     changed
 }
 
+/// How many times `key` changed, for tests.
+#[cfg(test)]
+pub fn revision(key: &str) -> u64 {
+    REVISIONS.with_borrow(|r| r.get(key).copied().unwrap_or(0))
+}
+
 /// Something mods read changed: the copies that read it redraw.
 pub fn bump_revision(key: &str) {
     REVISIONS.with_borrow_mut(|r| match r.get_mut(key) {
@@ -1196,8 +1202,14 @@ fn module(inst: Instance, copy: u64) -> HostModule {
             Ok(to_host(&Value::Array(list)))
         })
         .function("window", reader(reads.clone(), "window", |s| &s.window))
-        .function("theme", |_| Ok(to_host(&serde_json::to_value(&*crate::settings::theme()).unwrap_or(Value::Null))))
-        .function("settings", |_| Ok(to_host(&crate::settings::get().for_mods())))
+        .function("theme", {
+            let reads = reads.clone();
+            move |_| {
+                record(&reads, "theme");
+                Ok(to_host(&serde_json::to_value(&*crate::settings::theme()).unwrap_or(Value::Null)))
+            }
+        })
+        .function("settings", |_| Ok(HostValue::Json(crate::settings::for_mods())))
         .function("keys", |_| Ok(HostValue::Json(keys_part())))
         .function("openOverlay", |a| {
             let mut spec = from_host(a.value(0)?);
@@ -1429,6 +1441,37 @@ mod tests {
             assert!(!snapshot_changed(1));
             drop(reads);
             assert!(!snapshot_changed(1));
+        }).join().unwrap();
+    }
+
+    /// A focus change that shades the sidebar bumps `theme`: only the copies
+    /// whose `herdr` module answered `theme()` redraw.
+    #[test]
+    fn a_theme_bump_refreshes_only_theme_readers() {
+        std::thread::spawn(|| {
+            let none = gpui_shell::HostArguments::new([]);
+            let themed = module(Instance { name: "themed".into(), props: Value::Null }, 101);
+            let other = module(Instance { name: "other".into(), props: Value::Null }, 102);
+            themed.call("theme", &none).unwrap();
+            other.call("spaces", &none).unwrap();
+            assert!(!snapshot_changed(101) && !snapshot_changed(102));
+            bump_revision("theme");
+            assert!(snapshot_changed(101), "a copy that read theme() redraws");
+            assert!(!snapshot_changed(102), "one that didn't stays");
+        }).join().unwrap();
+    }
+
+    /// `settings()` hands out the value built at the last settings change,
+    /// without building it again per call.
+    #[test]
+    fn settings_hands_out_the_value_built_at_the_last_change() {
+        std::thread::spawn(|| {
+            let host = module(Instance { name: "reader".into(), props: Value::Null }, 103);
+            let none = gpui_shell::HostArguments::new([]);
+            match host.call("settings", &none).unwrap() {
+                HostValue::Json(v) => assert!(std::sync::Arc::ptr_eq(&v, &crate::settings::for_mods())),
+                other => panic!("settings() answered {other:?}"),
+            }
         }).join().unwrap();
     }
 

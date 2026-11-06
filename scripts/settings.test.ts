@@ -292,6 +292,17 @@ test("dim when inactive sits on the look page, its scope writes text and leaves 
   const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "look");
   expect(pick({ unfocused_dim: 0.3 }, "st-ds-Text")).toEqual({ unfocused_dim: 0.3, unfocused_dim_scope: "text" });
   expect(pick({ unfocused_dim: 0.3, unfocused_dim_scope: "text" }, "st-ds-Window")).toEqual({ unfocused_dim: 0.3 });
+  expect(pick({}, "st-ss-Darker when active")).toEqual({ sidebar_shade: "active" });
+  expect(pick({}, "st-ss-Always darker")).toEqual({ sidebar_shade: "always" });
+  expect(pick({ sidebar_shade: "active" }, "st-ss-Flat")).toEqual({});
+  expect(pick({}, "st-pc-Classic")).toEqual({ panel_colors: "classic" });
+  expect(pick({ panel_colors: "classic" }, "st-pc-Tinted")).toEqual({});
+  const shadeShown = (person: Record<string, any>) => click(person, {}, "st-ss-Flat", ["choicePicker", "shown?"], "look") !== undefined;
+  expect(shadeShown({})).toBe(true);
+  expect(shadeShown({ panel_colors: "classic" })).toBe(false);
+  const shadeShownOver = (inUse: string) => click({}, { panels_in_use: inUse }, "st-ss-Flat", ["choicePicker", "shown?"], "look") !== undefined;
+  expect(shadeShownOver("tinted")).toBe(true);
+  expect(shadeShownOver("classic")).toBe(false);
 });
 
 test("subpixel order shows only while either text is subpixel, and leaves rgb out", () => {
