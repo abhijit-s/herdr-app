@@ -403,6 +403,8 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Files: `src/focus_history.rs`, `src/window.rs` (`here`, `note_focus`, `flush_focus`, `drain_documents`, the core tick, `reconnected`), `src/hc.rs` (`Pushed::focus`), `src/mods.rs` (`Snapshot::places`, `publish_places`, `recentPlaces`), `src/main.rs`, `defaults/herdr.d.ts`, `defaults/AGENTS.md`
 - Upstream: none yet
 
+`fix/fetch-tab` (branched from `master`, fork only): a keys.json `"mod:<name>"` section wins inside that mod from the first start, not only after a keys.json reload. gpui-shell bound `ShellRoot`'s keys (tab, shift-tab to move between tab stops, cmd-c) lazily in `ShellRoot::new`, after `keys::install` had taken its snapshot of the kit's bindings (`KitKeys`), so on a fresh start they were live and one context deeper than `mod == <name>`: tab left a mod's search field instead of reaching the mod; a reload rebuilt the keymap from the snapshot and dropped them. `HERDR:` change in `vendor/gpui-kit/crates/shell/src/lib.rs` (`init` binds them up front; `install_key_bindings` in `root.rs` stays guarded by `KeyBindingsInstalled`), so they are always in the snapshot; `keys::tab` matches a mod section as `mod == <name> > ShellRoot`, the kit's depth, where the later binding (keys.json's) wins. Every mod renders under a `ShellRoot`, so all mod sections keep matching. Test `window::tests::a_mod_section_key_beats_the_kits_tab_from_the_first_start` (fails with either half reverted).
+
 ### Rejected text experiments
 
 Two text-quality experiments measured against the shipped thicken, contrast and weight settings, and not kept. The numbers are here so neither is tried again without a new reason.
