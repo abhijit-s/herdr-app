@@ -67,10 +67,10 @@ const DIM_SCOPES = [
   ["window", "Window"],
   ["text", "Text"],
 ];
-// When the sidebar takes a shade darker; Active is the default, left out of settings.json.
+// When the sidebar takes a shade darker; Flat is the default, left out of settings.json.
 const SIDEBAR_SHADES = [
-  ["active", "Darker when active"],
   ["flat", "Flat"],
+  ["active", "Darker when active"],
   ["always", "Always darker"],
 ];
 const RESUME_AGENTS = [

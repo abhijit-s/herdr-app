@@ -259,9 +259,9 @@ test("dim when inactive sits on the look page, its scope writes text and leaves 
   const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "look");
   expect(pick({ unfocused_dim: 0.3 }, "st-ds-Text")).toEqual({ unfocused_dim: 0.3, unfocused_dim_scope: "text" });
   expect(pick({ unfocused_dim: 0.3, unfocused_dim_scope: "text" }, "st-ds-Window")).toEqual({ unfocused_dim: 0.3 });
-  expect(pick({}, "st-ss-Flat")).toEqual({ sidebar_shade: "flat" });
+  expect(pick({}, "st-ss-Darker when active")).toEqual({ sidebar_shade: "active" });
   expect(pick({}, "st-ss-Always darker")).toEqual({ sidebar_shade: "always" });
-  expect(pick({ sidebar_shade: "flat" }, "st-ss-Darker when active")).toEqual({});
+  expect(pick({ sidebar_shade: "active" }, "st-ss-Flat")).toEqual({});
 });
 
 test("subpixel order shows only while either text is subpixel, and leaves rgb out", () => {

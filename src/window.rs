@@ -7649,6 +7649,7 @@ export default class Probe extends View {
         };
         view.update_in(cx, |this, window, cx| {
             this.person.appearance = crate::settings::Appearance::Dark;
+            this.person.sidebar_shade = SidebarShade::Active;
             this.apply_look(window, cx);
         });
         cx.update(|window, _| window.activate_window());

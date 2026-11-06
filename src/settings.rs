@@ -511,15 +511,17 @@ mod derivation_tests {
     }
 
     #[test]
-    fn sidebar_shade_defaults_to_active_and_refuses_others() {
+    fn sidebar_shade_defaults_to_flat_and_refuses_others() {
         let default: Person = serde_json::from_str("{}").unwrap();
-        assert_eq!(default.sidebar_shade, SidebarShade::Active);
+        assert_eq!(default.sidebar_shade, SidebarShade::Flat);
         assert_eq!(serde_json::to_value(&default).unwrap().get("sidebar_shade"), None);
         for (value, mode) in [("flat", SidebarShade::Flat), ("active", SidebarShade::Active), ("always", SidebarShade::Always)] {
             let person: Person = serde_json::from_value(serde_json::json!({"sidebar_shade": value})).unwrap();
             assert_eq!(Settings::compose(&person, &crate::layout::Look::default(), true).sidebar_shade, mode);
         }
-        assert_eq!(serde_json::to_value(Person { sidebar_shade: SidebarShade::Flat, ..Person::default() }).unwrap()["sidebar_shade"], "flat");
+        for (mode, value) in [(SidebarShade::Active, "active"), (SidebarShade::Always, "always")] {
+            assert_eq!(serde_json::to_value(Person { sidebar_shade: mode, ..Person::default() }).unwrap()["sidebar_shade"], value);
+        }
         for bad in [serde_json::json!({"sidebar_shade": "dark"}), serde_json::json!({"sidebar_shade": true})] {
             assert!(serde_json::from_value::<Person>(bad.clone()).is_err(), "{bad} is refused");
         }
@@ -632,7 +634,7 @@ pub struct Person {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unfocused_dim_color: Option<String>,
     /// When the sidebars and bars take a shade darker: `flat`, `active` or `always`.
-    #[serde(skip_serializing_if = "SidebarShade::is_active")]
+    #[serde(skip_serializing_if = "SidebarShade::is_flat")]
     pub sidebar_shade: SidebarShade,
     /// Trial: smooth terminal text with a coverage per color channel
     /// (subpixel, on 1x displays) rather than one (grayscale) (macOS).
@@ -809,15 +811,15 @@ impl DimScope {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SidebarShade {
-    Flat,
     #[default]
+    Flat,
     Active,
     Always,
 }
 
 impl SidebarShade {
-    fn is_active(&self) -> bool {
-        *self == SidebarShade::Active
+    fn is_flat(&self) -> bool {
+        *self == SidebarShade::Flat
     }
 
     fn shades(self, window_active: bool) -> bool {
@@ -997,7 +999,7 @@ impl Default for Person {
             unfocused_dim: 0.0,
             unfocused_dim_scope: DimScope::Window,
             unfocused_dim_color: None,
-            sidebar_shade: SidebarShade::Active,
+            sidebar_shade: SidebarShade::Flat,
             text_rendering: TextRendering::Grayscale,
             ui_text_rendering: TextRendering::Grayscale,
             subpixel_order: SubpixelOrder::Rgb,
@@ -1137,7 +1139,7 @@ impl Default for Settings {
             unfocused_dim: 0.0,
             unfocused_dim_scope: DimScope::Window,
             unfocused_dim_color: None,
-            sidebar_shade: SidebarShade::Active,
+            sidebar_shade: SidebarShade::Flat,
             text_rendering: TextRendering::Grayscale,
             ui_text_rendering: TextRendering::Grayscale,
             subpixel_order: SubpixelOrder::Rgb,
@@ -2188,7 +2190,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Flat, ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();
