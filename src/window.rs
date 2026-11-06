@@ -4888,8 +4888,13 @@ impl AppWindow {
         if let Some(bg) = &f.background {
             el = paint(el, bg);
         }
-        if let Some(l) = line {
-            el = el.border(settings::z(l.width)).border_color(c(&l.color));
+        let width = line.map_or(0.0, |(width, _)| width);
+        if let Some((_, color)) = line {
+            el = el.border(settings::z(width)).border_color(c(color));
+        }
+        let pad = pane_size::frame_inset(f) - width;
+        if pad > 0.0 {
+            el = el.p(settings::z(pad));
         }
         el = shadow(el, f.shadow.as_deref());
         let body = div().flex_1().min_h_0().flex().child(inner);
@@ -4897,8 +4902,10 @@ impl AppWindow {
         let head = div().flex_none().h(settings::z(pane_size::header_height(h))).w_full().flex()
             .child(self.render_slot(&format!("{}#frame", n.id), cx));
         if h.hover() {
-            let head = head.absolute().left_0().right_0().opacity(0.).group_hover(group, |s| s.opacity(1.));
-            let head = if h.bottom() { head.bottom_0() } else { head.top_0() };
+            // Absolute children sit against the padding box: inset by the pad so the header stays put as the focus moves.
+            let at = settings::z(pad.max(0.0));
+            let head = head.absolute().left(at).right(at).opacity(0.).group_hover(group, |s| s.opacity(1.));
+            let head = if h.bottom() { head.bottom(at) } else { head.top(at) };
             return el.child(body).child(head).into_any_element();
         }
         if h.bottom() { el.child(body).child(head) } else { el.child(head).child(body) }.into_any_element()
@@ -7641,6 +7648,49 @@ export default class Recent extends View {
             this.run("tab.rename", json!({}), window, cx);
             assert_eq!(prompts(this), 1, "and a third opens it again");
         }));
+    }
+
+    #[test]
+    fn moving_the_focus_keeps_framed_terminals_their_size() {
+        in_own_process("focus_keeps_framed_sizes");
+    }
+
+    /// Tab t: a | b in a frame whose focus line is far wider than its border.
+    /// Both terminals get the same grid whichever has the focus: each sits in
+    /// by the wider line, the narrower one padded out.
+    #[gpui::test]
+    fn focus_keeps_framed_sizes(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use serde_json::json;
+        if !running_alone("focus_keeps_framed_sizes") {
+            return;
+        }
+        let frame = json!({ "lone": true, "border": { "width": 1, "color": "border" }, "focus": { "width": 30, "color": "focus" } });
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active", "pane": frame } }));
+        let grids = |cx: &mut gpui::VisualTestContext, focus: &str| {
+            view.update_in(cx, |this, window, cx| {
+                this.model.focus_pane(focus);
+                this.sync(window, cx);
+            });
+            cx.run_until_parked();
+            view.update(cx, |this, cx| {
+                let area = this.shown_area(this.model.tab("t").unwrap(), "a").unwrap();
+                (this.terms["a"].view.read(cx).dimensions(), this.terms["b"].view.read(cx).dimensions(), area)
+            })
+        };
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.select_tab("t");
+            this.sync(window, cx);
+        });
+        let (a, b, area) = grids(cx, "a");
+        assert_eq!(a, b, "a focused: the same grid for both");
+        assert_eq!(grids(cx, "b"), (a, b, area), "b focused: nothing resized");
+        view.update_in(cx, |_, window, _| assert_eq!(a, crate::terminal::grid_size(area, crate::terminal::cell_size(window)), "the grid fills the area a new terminal starts in"));
     }
 
     #[test]

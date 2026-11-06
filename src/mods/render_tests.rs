@@ -505,6 +505,28 @@ fn cell_rounding_row_shows_the_pick(cx: &mut TestAppContext) {
     }
 }
 
+/// The Look page's Panes section has Focus border (From theme, then the
+/// theme's colors as swatches) and Focus border width, each showing the
+/// person's pick.
+#[gpui::test]
+fn focus_border_rows_show_the_pick(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut p = props();
+    p["section"] = json!("look");
+    for (person, colour, width) in [("{}", "st-fc-theme", "st-fw-Layout"), (r##"{ colors: { focus: "#ff8800" }, focus_border_width: 2 }"##, "st-fc-#ff8800", "st-fw-2 px")] {
+        let values = fixture(true, p.clone(), updates("current", "current"));
+        let tree = describe_with_values(cx, &staged, "frame/settings", values, Some(&format!("this.load = async () => {{}}; this.person = {person};"))).unwrap();
+        let (names, border, wide) = (tree.find("Name panes automatically").expect("names"), tree.find("Focus border").expect("Focus border"), tree.find("Focus border width").expect("width"));
+        assert!(names < border && border < wide, "under Panes, after Name panes automatically");
+        let picked: Vec<_> = tree.lines().filter(|l| l.contains("st-fw-") && l.contains(".border_1")).collect();
+        assert!(picked.len() == 1 && picked[0].contains(width), "{person}: {picked:?}");
+        let ringed: Vec<_> = tree.lines().filter(|l| l.contains("st-fc-") && l.contains(".border_color") && !l.contains("#00000000")).collect();
+        assert!(ringed.len() == 1 && ringed[0].contains(colour), "{person}: {ringed:?}");
+        assert!(tree.lines().filter(|l| l.contains("st-fc-#")).count() >= 2, "the theme's colors are offered: {tree}");
+    }
+}
+
 /// Searching the Settings window: the field sits in the sidebar, every page
 /// with a match shows under its own heading with only its matches (controls
 /// working), and a search with none says so.

@@ -304,6 +304,36 @@ test("the new tabs arrangement writes its mode and leaves off out", () => {
   expect(pick({ default_arrange: "rows", zoom: 1.1 }, "st-da-Off")).toEqual({ zoom: 1.1 });
 });
 
+test("focus border width writes 1 to 3 px and leaves the layout's width out", () => {
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "look");
+  expect(pick({}, "st-fw-2 px")).toEqual({ focus_border_width: 2 });
+  expect(pick({ focus_border_width: 2 }, "st-fw-3 px")).toEqual({ focus_border_width: 3 });
+  expect(pick({ focus_border_width: 3, zoom: 1.1 }, "st-fw-Layout")).toEqual({ zoom: 1.1 });
+});
+
+test("focus border picks a theme color into colors.focus and from theme takes it out", () => {
+  const theme = new Proxy({ ansi1: "#E06C75", ansi4: "#61afef", terminal_foreground: "#abb2bf" } as Record<string, string>, { get: (o, k: string) => o[k] ?? (k.startsWith("ansi") ? undefined : "#000000") });
+  const swatch = (person: Record<string, any>, id: string) => {
+    composed = {};
+    const view = new Settings();
+    view.person = person;
+    for (const part of ["layoutPicker", "spacing", "themePicker", "choicePicker", "fontButton", "fontList", "iconPicker"]) view[part] = element;
+    let written: Record<string, any> | undefined;
+    view.change = (edit: (q: Record<string, any>) => void) => { written = structuredClone(person); edit(written); };
+    const button = find(view.look(theme, {}), id);
+    if (!button) return undefined;
+    button.calls.on_click[0](null, {});
+    return written;
+  };
+  expect(swatch({}, "st-fc-#e06c75")).toEqual({ colors: { focus: "#e06c75" } });
+  expect(swatch({ colors: { accent: "#123456" } }, "st-fc-#61afef")).toEqual({ colors: { accent: "#123456", focus: "#61afef" } });
+  expect(swatch({ colors: { focus: "#61afef" }, zoom: 1.1 }, "st-fc-theme")).toEqual({ zoom: 1.1 });
+  expect(swatch({ colors: { focus: "#61afef", accent: "#123456" } }, "st-fc-theme")).toEqual({ colors: { accent: "#123456" } });
+  // A color written by hand shows as its own swatch.
+  expect(swatch({ colors: { focus: "#FF8800" } }, "st-fc-#ff8800")).toEqual({ colors: { focus: "#ff8800" } });
+  expect(swatch({}, "st-fc-#ff8800")).toBeUndefined();
+});
+
 test("name panes automatically sits under the look page's panes, writes true and leaves off out", () => {
   expect(click({}, {}, "st-pane_auto_names", [], "look")).toEqual({ pane_auto_names: true });
   expect(click({ pane_auto_names: true, zoom: 1.1 }, {}, "st-pane_auto_names", [], "look")).toEqual({ zoom: 1.1 });
