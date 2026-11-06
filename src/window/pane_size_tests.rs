@@ -116,6 +116,15 @@ fn hidden_tabs_follow(cx: &mut gpui::TestAppContext) {
     let fitted = dims(cx);
     eprintln!("hidden tab: {before:?} before the window grew, {fitted:?} once it settled");
     assert_ne!(fitted, before, "a settled window must size the hidden tab's terminals");
+    // Spacing that shrinks every pane's grid refits hidden tabs too, with the window unchanged.
+    view.update_in(cx, |this, window, cx| this.run("layout.spacing", serde_json::json!({ "terminal_padding": [40, 40], "pane_gap": 40 }), window, cx));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    view.update_in(cx, |this, window, cx| this.fit_hidden_tabs(window, cx));
+    view.update_in(cx, |this, window, cx| this.fit_hidden_tabs(window, cx));
+    let spaced = dims(cx);
+    eprintln!("hidden tab: {fitted:?} before the spacing changed, {spaced:?} after");
+    assert!(spaced[0].0 < fitted[0].0 && spaced[0].1 < fitted[0].1, "spacing must refit the hidden tab's terminals");
+    let fitted = spaced;
     // Shown, the panes draw with the size they were given: nothing changes.
     view.update_in(cx, |this, window, cx| {
         this.model.select_tab("ta");

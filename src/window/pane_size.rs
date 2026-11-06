@@ -115,8 +115,9 @@ fn pane_size(n: &Node, size: Size<Pixels>, target: &str, frame: Option<&PaneFram
     }
 }
 
-/// The tab area and the cell size.
-type Geometry = (Size<Pixels>, Size<Pixels>);
+/// The tab area, the cell size, and what else sizes a pane's grid: the
+/// terminals' padding, the tab block's own padding and its pane frame.
+type Geometry = (Size<Pixels>, Size<Pixels>, (f32, f32), (f32, f32), Option<PaneFrame>);
 
 /// Whether hidden tabs fit the window: the geometry seen at the last tick, and
 /// whether they were sized for it.
@@ -167,12 +168,16 @@ impl AppWindow {
     /// redraw. Once the window settles (the same at two ticks), they are sized as their
     /// panes would be, so the programs redraw out of sight.
     pub(super) fn fit_hidden_tabs(&mut self, window: &Window, cx: &App) {
-        let Some((_, area)) = self.context_area() else { return };
+        let Some((context, area)) = self.context_area() else { return };
+        let frame = match context.content() {
+            Some(Content::Context { pane, .. }) => pane.clone(),
+            _ => None,
+        };
         let cell = crate::terminal::cell_size(window);
-        let now = (area, cell);
-        match self.hidden_fit {
-            HiddenFit::Done(g) if g == now => return,
-            HiddenFit::Seen(g) if g == now => self.hidden_fit = HiddenFit::Done(now),
+        let now = (area, cell, settings::get().terminal_padding_px(), padding(context), frame);
+        match &self.hidden_fit {
+            HiddenFit::Done(g) if *g == now => return,
+            HiddenFit::Seen(g) if *g == now => self.hidden_fit = HiddenFit::Done(now),
             _ => {
                 self.hidden_fit = HiddenFit::Seen(now);
                 return;

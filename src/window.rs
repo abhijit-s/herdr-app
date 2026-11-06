@@ -3775,6 +3775,10 @@ impl AppWindow {
                 }
             }
             "layout.spacing" => {
+                // Clicks made over the shipped stand-in of a broken file are dropped on repair.
+                if !self.layout_file_ok {
+                    return self.fail(format!("layout.spacing: layouts/{}.json has errors: fix it first", self.layout_name));
+                }
                 let spacing = match serde_json::from_value::<layout_sync::Spacing>(if a.is_null() { json!({}) } else { a.clone() }) {
                     Ok(s) => s,
                     Err(e) => return self.fail(format!("layout.spacing: {e}")),

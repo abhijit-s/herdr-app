@@ -237,6 +237,11 @@ Spacing clicks come from `layout.spacing` (the Settings window's Look page,
 under Spacing): the tab block's `pane.gap`, the `padding` and `gap` of the
 row or column holding the tab block, and the root's `terminal_padding`.
 They work on shipped and personal layouts alike and never change the file.
+The tab block is the one on screen (not a hidden one or a stack's other
+child). Spacing clicks are 0 to 40 px; a file value above 40 shows as is, and
+the first step moves it to 40. An area click stays on its node if the file
+later moves the tab block elsewhere; `layout.reset` clears it.
+`layout.spacing` fails while the layout file has errors.
 `layout.reset {name}` resets a shipped layout and its clicks, keeping its
 previous file aside as `<name>.json.old-<time>`.
 
