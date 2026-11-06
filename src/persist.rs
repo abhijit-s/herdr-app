@@ -83,6 +83,7 @@ mod tests {
     fn atomic_write_keeps_the_files_permissions() {
         use std::os::unix::fs::PermissionsExt;
         let root = std::env::temp_dir().join(format!("herdr-persist-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let file = root.join("settings.json");
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
