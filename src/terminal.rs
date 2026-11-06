@@ -3385,7 +3385,7 @@ mod tests {
         let original = crate::settings::get();
         let window = cx.add_window(|_, _| Empty);
         window.update(cx, |_, window, _| {
-            let mut at = |rounding| {
+            let at = |rounding| {
                 let mut s = (*original).clone();
                 (s.font_size, s.zoom, s.line_height, s.letter_spacing) = (13.0, 1.0, 1.0, 0.0);
                 (s.cell_width, s.cell_rounding) = (crate::settings::CellWidth::Pixel, rounding);

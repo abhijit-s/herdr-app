@@ -459,6 +459,31 @@ fn cell_rounding_row_shows_the_pick(cx: &mut TestAppContext) {
     }
 }
 
+/// The Look page's App icon row: a previewed tile per built-in, the
+/// person's outlined, and an image file shown as its path.
+#[gpui::test]
+fn app_icon_picker_outlines_the_pick(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut p = props();
+    p["section"] = json!("look");
+    for (person, picked) in [("{}", Some("classic")), (r#"{ app_icon: "mirage" }"#, Some("mirage")), (r#"{ app_icon: "~/mine.icns" }"#, None)] {
+        let values = fixture(true, p.clone(), updates("current", "current"));
+        let tree = describe_with_values(cx, &staged, "frame/settings", values, Some(&format!("this.load = async () => {{}}; this.person = {person};"))).unwrap();
+        assert!(tree.contains("App icon"), "{tree}");
+        let tiles: Vec<_> = tree.lines().filter(|l| l.contains("st-icon-") && !l.contains("st-icon-file")).collect();
+        assert_eq!(tiles.len(), 6, "{tiles:?}");
+        for name in ["classic", "midnight", "mirage", "glass", "phosphor", "graphite"] {
+            assert!(tree.contains(&format!("frame/settings/app-icons/{name}.png")), "{name} preview");
+        }
+        let outlined: Vec<_> = tiles.iter().filter(|l| !l.contains("#00000000")).collect();
+        match picked {
+            Some(name) => assert!(outlined.len() == 1 && outlined[0].contains(&format!("st-icon-{name}")), "{person}: {outlined:?}"),
+            None => assert!(outlined.is_empty() && tree.contains("Your file: ~/mine.icns"), "{person}: {outlined:?}"),
+        }
+    }
+}
+
 #[gpui::test]
 fn long_theme_names_stay_inside_their_card(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
