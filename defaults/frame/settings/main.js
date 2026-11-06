@@ -2,7 +2,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { hc, run, theme, themes, fonts, updates, telemetry, settings, layouts, shared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window } from "herdr";
+import { hc, run, theme, themes, fonts, updates, telemetry, settings, layoutSpacing, layouts, shared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window } from "herdr";
 
 const I = (name) => `frame/settings/${name}.svg`;
 
@@ -15,6 +15,90 @@ export function scaleStep(asked, composed, delta, [lo, hi]) {
   const within = (v) => Math.max(lo, Math.min(hi, v));
   const from = typeof asked === "number" && Number.isFinite(asked) ? within(asked) : composed;
   return Math.round(within(from + delta) * 100) / 100;
+}
+
+// Spacing around the shown tab's panes (layout.spacing): Herdr's values
+// when the layout leaves them out. Padding is [y, x], as layouts write it;
+// terminal_padding is [x, y].
+const SPACING_DEFAULTS = { pane_gap: 0, area_padding: [0, 0], area_gap: 0, terminal_padding: [10, 6] };
+const SPACING_RANGE = [0, 40];
+
+// The tab block on screen, as Herdr finds it (the first visible one: hidden
+// nodes and a stack's other children don't count), and the node holding it.
+function tabBlock(node, parent = null) {
+  if (!node || typeof node !== "object" || node.hidden) return null;
+  const c = node.content;
+  if (node.type === "block" && c && typeof c === "object" && ("tab" in c || "context" in c)) return { block: node, parent };
+  const children = (Array.isArray(node.children) ? node.children : []).filter((child) => child && !child.hidden);
+  const shown = node.type === "stack" ? [children.find((child) => child.id === node.active) ?? children[0]].filter(Boolean) : children;
+  for (const child of shown) {
+    const found = tabBlock(child, node);
+    if (found) return found;
+  }
+  return null;
+}
+
+// The spacing fields a layout tree writes, in layoutSpacing()'s shape (the
+// app's `layout_sync::spacing_fields`): null when no block shows a tab;
+// otherwise `pane` (a pane frame) and `area` (a row or column around the tab
+// block), and each field as written, left out when unset. For the layout
+// file, which the app doesn't publish.
+function spacingFieldsOf(tree) {
+  const found = tabBlock(tree);
+  if (!found) return null;
+  const pane = found.block.content.pane;
+  const area = ["row", "column"].includes(found.parent?.type) ? found.parent : null;
+  const out = { pane: Boolean(pane && typeof pane === "object"), area: Boolean(area) };
+  const fields = { pane_gap: out.pane ? pane.gap : undefined, area_padding: area?.padding, area_gap: area?.gap, terminal_padding: tree.terminal_padding };
+  for (const [key, value] of Object.entries(fields)) if (value !== undefined && value !== null) out[key] = value;
+  return out;
+}
+
+// Spacing values arrive as f32 widened to f64 (2.3 as 2.299999952...).
+function sameSpacing(a, b) {
+  const pair = (v) => (typeof v === "number" ? [v, v] : v);
+  // `"gap": null` in a file is the field left out.
+  [a, b] = [a ?? undefined, b ?? undefined];
+  if (a === undefined || b === undefined) return a === b;
+  const [x, y] = [pair(a), pair(b)];
+  return Array.isArray(x) && Array.isArray(y) && x.length === y.length && x.every((v, i) => Math.abs(v - y[i]) < 0.005);
+}
+
+// Each spacing value shown, from spacing fields, or null for one the layout
+// has no place for (no pane frame, no row or column around the tab block);
+// null when no block shows a tab.
+function spacingOf(fields) {
+  if (!fields) return null;
+  const num = (v, d) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+  const pair = (v, d) => (typeof v === "number" ? [v, v] : Array.isArray(v) && v.length === 2 ? v.map((x) => num(x, 0)) : d);
+  return {
+    pane_gap: fields.pane ? num(fields.pane_gap, SPACING_DEFAULTS.pane_gap) : null,
+    area_padding: fields.area ? pair(fields.area_padding, SPACING_DEFAULTS.area_padding) : null,
+    area_gap: fields.area ? num(fields.area_gap, SPACING_DEFAULTS.area_gap) : null,
+    terminal_padding: pair(fields.terminal_padding, SPACING_DEFAULTS.terminal_padding),
+  };
+}
+
+// How long a step waits to show in layoutSpacing() before the stepper lets it go
+// (a refused layout.spacing never shows); `settleLater` times it.
+const SPACING_PENDING_MS = 1000;
+
+// Drops pending steps layoutSpacing() now shows, expired ones, and all of them when
+// the shown layout changed; true when any went.
+function settlePending(pending, shown, now) {
+  let dropped = false;
+  for (const [key, { value, at }] of Object.entries(pending)) {
+    if (sameSpacing(value, shown?.[key]) || now - at > SPACING_PENDING_MS) {
+      delete pending[key];
+      dropped = true;
+    }
+  }
+  return dropped;
+}
+
+function stepSpacing(v, d) {
+  const [lo, hi] = SPACING_RANGE;
+  return Math.max(lo, Math.min(hi, Math.round(v + d)));
 }
 
 const SECTIONS = [
@@ -103,6 +187,7 @@ export default class Settings extends View {
     this.raw = null;
     this.previews = {}; // layout name -> its "preview" picture
     this.previewsOf = "";
+    this.layoutFile = null; // the shown layout's file: { name, tree }
     this.showData = false;
     this.machineList = null;
     this.machineLoading = false;
@@ -127,6 +212,13 @@ export default class Settings extends View {
       cx.notify();
     });
     cx.timer.every(3000, (cx) => {
+      if (this.section === "look") {
+        // The layout file may change under us (an agent, an editor).
+        cx.spawn(async (cx) => {
+          if (await this.loadLayoutFile()) cx.notify();
+        });
+        return;
+      }
       if (this.section !== "machines") return;
       cx.spawn(async (cx) => {
         await this.loadMachines();
@@ -202,6 +294,42 @@ export default class Settings extends View {
       }
     }
     return { title: "Not saved to settings.json", body: String(error?.message ?? error) };
+  }
+
+  // The shown layout's file as written, to tell its values from clicks on
+  // them; null when it can't be read or doesn't parse. True when it changed
+  // since the last read, so an unchanged file costs no redraw.
+  async loadLayoutFile() {
+    const name = shared("layout") ?? "main";
+    let raw;
+    try {
+      raw = await readTextFile(`${appHome()}/layouts/${name}.json`);
+    } catch (e) {
+      // Kept as text so the same failure compares equal next time (no parse).
+      raw = `\u0000${e?.message ?? e}`;
+    }
+    if (this.layoutFile?.name === name && this.layoutFile.raw === raw) return false;
+    let tree = null;
+    try {
+      tree = raw ? JSON.parse(raw) : null;
+    } catch {}
+    // No tree: Herdr shows its shipped stand-in. It takes layout.spacing for
+    // a missing file but refuses it for one it can't read or parse.
+    this.layoutFile = { name, raw, missing: raw === null, tree: tree && typeof tree === "object" && !Array.isArray(tree) ? tree : null };
+    return true;
+  }
+
+  // One timer, only while a step is pending: once the newest one expires,
+  // whatever layoutSpacing() hasn't shown (a refused layout.spacing) goes.
+  settleLater(cx) {
+    this.spacingTimer?.cancel();
+    this.spacingTimer = null;
+    if (Object.keys(this.spacingPending ?? {}).length === 0) return;
+    this.spacingTimer = cx.timer.after(SPACING_PENDING_MS + 50, (cx) => {
+      this.spacingTimer = null;
+      if (settlePending(this.spacingPending, spacingOf(layoutSpacing()), Date.now())) cx.notify();
+      this.settleLater(cx);
+    });
   }
 
   close() {
@@ -546,6 +674,8 @@ export default class Settings extends View {
       .child(this.heading(t, "Layout"))
       .child(this.layoutPicker(t, cx))
       .child(div().h(18))
+      .child(this.spacing(t, cx))
+      .child(div().h(18))
       .child(this.heading(t, "Theme"))
       .child(this.row(t, "Appearance", "Light or dark, or as your system is now.", this.choicePicker(t, "st-ap", "appearance", APPEARANCES)))
       .child(div().pt(12).pb(8).text_size(12.5).text_color(t.dim).child("For the layout you're in: each layout keeps its own light and dark theme."))
@@ -698,6 +828,101 @@ export default class Settings extends View {
           ),
         ),
       );
+  }
+
+  // The shown layout's spacing (layoutSpacing() has its clicks on it):
+  // set as clicks on it, so its file stays as written. Reset shows where a
+  // value differs from the file's (set or not) and puts the file's back.
+  spacing(t, cx) {
+    const name = shared("layout") ?? "main";
+    if (this.layoutFile?.name !== name && this.layoutFileFor !== name) {
+      this.layoutFileFor = name;
+      cx.spawn(async (cx) => {
+        await this.loadLayoutFile();
+        this.layoutFileFor = null;
+        cx.notify();
+      });
+    }
+    const box = v_flex().w_full().child(this.heading(t, "Spacing"));
+    const note = (text) => div().pt(10).text_size(12.5).line_height("18px").text_color(t.dim).child(text);
+    // layoutSpacing(), not layout(): this redraws when spacing changes, not on
+    // every resize or click on the layout.
+    const shown = layoutSpacing();
+    const s = spacingOf(shown);
+    if (!s) return box.child(note("This layout shows no tab's panes."));
+    // Herdr refuses layout.spacing while the file doesn't parse: no steppers then.
+    if (this.layoutFile?.name !== name) return box;
+    if (!this.layoutFile.tree && !this.layoutFile.missing) return box.child(note(`layouts/${name}.json can't be read or has errors: fix it to change spacing.`));
+    // A step not yet in layoutSpacing() (layout.spacing applies after this returns):
+    // the next step counts from it, so quick clicks each move one. Steps
+    // belong to the layout they were made on.
+    if (this.spacingPendingFor !== name) this.spacingPending = {};
+    this.spacingPendingFor = name;
+    this.spacingPending ??= {};
+    settlePending(this.spacingPending, s, Date.now());
+    for (const [key, { value }] of Object.entries(this.spacingPending)) s[key] = value;
+    const raw = shown;
+    // A missing file's values are the shipped stand-in's, which this can't
+    // see: no Reset then.
+    const fileRaw = this.layoutFile.tree ? spacingFieldsOf(this.layoutFile.tree) ?? {} : null;
+    const clicked = (key) => fileRaw !== null && !sameSpacing(raw[key], fileRaw[key]);
+    const round = (v) => Math.round(v * 100) / 100;
+    // Pairs read x, y (sides, then top and bottom), as terminal padding does;
+    // layouts write padding [y, x].
+    const show = (v, key) => {
+      if (!Array.isArray(v)) return `${round(v)}`;
+      const [a, b] = key === "area_padding" ? [v[1], v[0]] : v;
+      return sameSpacing(a, b) ? `${round(a)}` : `${round(a)}, ${round(b)}`;
+    };
+    const set = (key, value, cx) => {
+      if (key === "reset") for (const k of value) delete this.spacingPending[k];
+      else this.spacingPending[key] = { value, at: Date.now() };
+      run("layout.spacing", { [key]: value });
+      this.settleLater(cx);
+      cx.notify();
+    };
+    const steps = (id, value, to, key) => this.stepper(t, id, show(value, key), (_e, cx) => to(-1, cx), (_e, cx) => to(1, cx));
+    const reset = (key) => (clicked(key) ? this.button(t, `st-sp-${key}-reset`, "Reset", (_e, cx) => set("reset", [key], cx)) : null);
+    const px = (key, title, about) => {
+      if (s[key] === null) return null;
+      const now = s[key];
+      const to = (d, cx) => {
+        const next = Array.isArray(now) ? now.map((v) => stepSpacing(v, d)) : stepSpacing(now, d);
+        set(key, Array.isArray(next) && next[0] === next[1] ? next[0] : next, cx);
+      };
+      const r = reset(key);
+      return this.row(t, title, about, h_flex().gap(8).items_center().child(steps(`st-sp-${key}`, now, to, key)).when(Boolean(r), (el) => el.child(r)));
+    };
+    const [x, y] = s.terminal_padding;
+    const axis = (i) => (d, cx) => set("terminal_padding", i === 0 ? [stepSpacing(x, d), y] : [x, stepSpacing(y, d)], cx);
+    const tr = reset("terminal_padding");
+    const missing = [
+      s.pane_gap === null ? "doesn't frame its panes, so they have no gap to set" : null,
+      s.area_gap === null ? "has no row or column around its panes, so their container has no spacing to set" : null,
+    ].filter(Boolean);
+    return box
+      .children(
+        [
+          px("pane_gap", "Pane gap", "Space between a tab's panes."),
+          px("area_padding", "Pane container padding", "Padding inside the row or column the panes sit in: sides, then top and bottom."),
+          px("area_gap", "Pane container gap", "Space between the panes and what sits beside them in that row or column."),
+        ].filter(Boolean),
+      )
+      .child(
+        this.row(
+          t,
+          "Terminal padding",
+          "Space between a terminal's edge and its text: sides, then top and bottom.",
+          h_flex()
+            .gap(8)
+            .items_center()
+            .child(steps("st-sp-terminal_padding-x", x, axis(0)))
+            .child(steps("st-sp-terminal_padding-y", y, axis(1)))
+            .when(Boolean(tr), (el) => el.child(tr)),
+        ),
+      )
+      .children(missing.map((m) => note(`This layout ${m}.`)))
+      .child(note("For the layout you're in. Its file stays as written; a later edit of the same value there wins."));
   }
 
   // Font thickening (`key` is font_thicken for terminals, ui_font_thicken for
@@ -1139,6 +1364,8 @@ export default class Settings extends View {
               this.machineEdit = null;
               this.handle.focus();
               if (s.id === "machines") cx.spawn(async (cx) => { await this.loadMachines(); cx.notify(); });
+              // The layout file may have changed while another page showed.
+              if (s.id === "look") cx.spawn(async (cx) => { if (await this.loadLayoutFile()) cx.notify(); });
               cx.notify();
             })
             .child(svg(I(s.icon)).size(15).text_color(on ? t.accent : t.dim))

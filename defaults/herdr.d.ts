@@ -79,6 +79,9 @@ export function playSound(sound: string): null;
  *   Shipped layouts/mods are replaced at start; edits move to <name>-edited.
  *   Herdr (main) inherits settings; Herdr 98 and Terminals bring their own look. Clone to change shipped looks beyond theme picks.
  *   layout.reset {name?} resets a shipped layout and its clicks.
+ *   layout.spacing {pane_gap?, area_padding?, area_gap?, terminal_padding?, reset?: string[]} sets space around
+ *   the shown tab's panes (px 0 to 40) as clicks, on any layout: the tab block's pane.gap, the padding and gap of
+ *   the row or column holding it, the root's terminal_padding [x, y]; reset puts those named back as the file has them.
  * App: mod.open {name}, overlay.close {id?}, app.help, app.reset, app.theme {name}, app.zoom_in|zoom_out|zoom_reset.
  * Mods: "<mod>.<command>" delivers <command> to that mod's nextCommand().
  */
@@ -264,11 +267,17 @@ export interface Place {
  *  with `import * as herdr from "herdr"` and `typeof herdr.recentPlaces === "function"`. Live. */
 export function recentPlaces(): Place[];
 
-/** The shown layout (layouts/<name>.json). Its name is shared("layout").
+/** The shown layout (layouts/<name>.json) with its clicks on it. Its name is shared("layout").
  *  Root `terminal_menu?: string` chooses a terminal right-click menu mod (default: "menu").
  *  Unknown names warn and fall back to "menu". This replaces the menu, not its items.
  *  Opens a pointer popup with mod.json overlay width/height (default 220×260). */
 export function layout(): unknown;
+
+/** The shown layout's spacing, as layout.spacing sets it (with its clicks), or null when no
+ *  block shows a tab. `pane`: the tab block has a pane frame; `area`: a row or column holds it.
+ *  Each field is as written, absent when unset: `pane_gap`, `area_padding` (number or [y, x]),
+ *  `area_gap`, `terminal_padding` ([x, y]). A reader redraws only when these change. */
+export function layoutSpacing(): { pane: boolean; area: boolean; pane_gap?: number; area_padding?: number | [number, number]; area_gap?: number; terminal_padding?: [number, number] } | null;
 
 /** The names of every layout in layouts/ (main first). */
 export function layouts(): string[];

@@ -1972,6 +1972,7 @@ impl AppWindow {
         changed |= mods::publish_focused(focused.unwrap_or(Value::Null));
         changed |= mods::publish_floats(self.float_placements());
         changed |= mods::publish_layout(&self.chrome);
+        changed |= mods::publish_spacing(layout_sync::spacing_fields(&self.chrome));
         changed |= self.note_focus(Instant::now());
         if changed {
             self.refresh_snapshot_mods(cx);
@@ -3772,6 +3773,24 @@ impl AppWindow {
                     n.size = Some(Span::Px { px: px as f32 });
                 } else if let Some(w) = a.get("weight").and_then(Value::as_f64) {
                     n.size = Some(Span::Weight { weight: w as f32 });
+                }
+            }
+            "layout.spacing" => {
+                // Clicks made over the shipped stand-in of a broken file are dropped on repair.
+                if !self.layout_file_ok {
+                    return self.fail(format!("layout.spacing: layouts/{}.json has errors: fix it first", self.layout_name));
+                }
+                let spacing = match serde_json::from_value::<layout_sync::Spacing>(if a.is_null() { json!({}) } else { a.clone() }) {
+                    Ok(s) => s,
+                    Err(e) => return self.fail(format!("layout.spacing: {e}")),
+                };
+                if let Err(e) = spacing.apply(&mut self.chrome, &self.file_chrome) {
+                    return self.fail(format!("layout.spacing: {e}"));
+                }
+                // terminal_padding reaches the terminals through the composed settings;
+                // gaps and padding are read from the tree as it draws.
+                if spacing.changes_look() {
+                    self.apply_look(window, cx);
                 }
             }
             "layout.reset" => {

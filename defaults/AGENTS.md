@@ -230,9 +230,19 @@ No-longer-shipped things go if
 untouched, otherwise they stay.
 
 Clicks (sizes, shown/hidden, stack child, floating spots, theme picks,
-background, text size, pane header height and border/focus look) live
-in `layouts/.state/` and survive restarts. Don't edit those files.
+background, text size, pane header height and border/focus look, and
+spacing) live in `layouts/.state/` and survive restarts. Don't edit those files.
 A deliberate layout-file edit beats a click on that field.
+Spacing clicks come from `layout.spacing` (the Settings window's Look page,
+under Spacing): the tab block's `pane.gap`, the `padding` and `gap` of the
+row or column holding the tab block, and the root's `terminal_padding`.
+They work on shipped and personal layouts alike and never change the file.
+The tab block is the one on screen (not a hidden one or a stack's other
+child). Spacing clicks are 0 to 40 px; a file value above 40 shows as is, and
+the first step moves it to 40. An area click stays on its node if the file
+later moves the tab block elsewhere; `layout.reset` clears it.
+`layout.spacing` fails while the layout file has errors. Mods read the
+result with `layoutSpacing()`, which redraws only when spacing changes.
 `layout.reset {name}` resets a shipped layout and its clicks, keeping its
 previous file aside as `<name>.json.old-<time>`.
 
@@ -664,6 +674,10 @@ The main ones:
   `layout.resize {id, px | weight}`, `layout.select {stack, child}`, `layout.set {layout}`
   (personal tree edits; on shipped layouts only click/look fields change),
   `layout.reset {name?}` (reset a shipped layout and its clicks),
+  `layout.spacing {pane_gap?, area_padding?, area_gap?, terminal_padding?, reset?}`
+  (space around the shown tab's panes as clicks, px 0 to 40; `area_*` is the row or
+  column holding the tab block, `terminal_padding` `[x, y]` the root's; `reset` lists
+  names to put back as the file has them),
   `layout.clone {name, as?}` (duplicate, then switch; default `<name>-copy`).
 - App: `mod.clone {name, as?}` (duplicate; default `<name>-copy`), `mod.open {name}` (again: closes it), `overlay.close {id?}`, `app.help` (again: closes it), `app.palette` (again: closes it), `app.settings {section?}`
   (sections: `look`, `text`, `machines`, `alerts`, `updates`, `privacy`; Machines lists, updates, renames and removes ssh machines; settings edit the same files you do).
