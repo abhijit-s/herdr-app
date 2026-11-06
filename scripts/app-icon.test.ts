@@ -8,11 +8,11 @@ import { join, resolve } from "node:path";
 const ROOT = resolve(import.meta.dir, "..");
 const read = (path: string) => readFileSync(join(ROOT, path));
 
-function install(platform: "macos" | "linux", settings: object | string | null) {
+function install(platform: "macos" | "linux", settings: object | string | null, env: Record<string, string> = {}) {
   const home = mkdtempSync(join(tmpdir(), "herdr-icon-home-"));
   if (settings !== null) writeFileSync(join(home, "settings.json"), typeof settings === "string" ? settings : JSON.stringify(settings));
   const dest = mkdtempSync(join(tmpdir(), "herdr-icon-dest-"));
-  const run = Bun.spawnSync(["bash", "scripts/app-icon", platform, dest], { cwd: ROOT, env: { ...process.env, HERDR_APP_HOME: home } });
+  const run = Bun.spawnSync(["bash", "scripts/app-icon", platform, dest], { cwd: ROOT, env: { ...process.env, HERDR_APP_HOME: home, ...env } });
   return { dest, home, code: run.exitCode, out: run.stdout.toString().trim(), err: run.stderr.toString() };
 }
 const bundleIcon = (dest: string) => readFileSync(join(dest, "Contents/Resources/Herdr.icns"));
@@ -52,6 +52,38 @@ test("macOS: an .icns file is copied; a missing file or an SVG keeps classic and
   }
 });
 
+test("a ~/ path is the home folder's; a relative path installs classic, as Herdr refuses it", () => {
+  const fakeHome = mkdtempSync(join(tmpdir(), "herdr-icon-userhome-"));
+  writeFileSync(join(fakeHome, "mine.icns"), read("assets/icons/variants/midnight.icns"));
+  const r = install("macos", { app_icon: "~/mine.icns" }, { HOME: fakeHome });
+  expect(bundleIcon(r.dest).equals(read("assets/icons/variants/midnight.icns"))).toBe(true);
+  const rel = install("macos", { app_icon: "assets/icons/variants/glass.icns" });
+  expect(rel.code).toBe(0);
+  expect(rel.err).toContain("classic");
+  expect(bundleIcon(rel.dest).equals(read("assets/icons/Herdr.icns"))).toBe(true);
+});
+
+test.if(process.platform === "darwin")("macOS: a .png that isn't one installs classic and the install goes on", () => {
+  const dir = mkdtempSync(join(tmpdir(), "herdr-icon-bad-"));
+  writeFileSync(join(dir, "bad.png"), "not a png");
+  const r = install("macos", { app_icon: join(dir, "bad.png") });
+  expect(r.code).toBe(0);
+  expect(r.err).toContain("classic");
+  expect(bundleIcon(r.dest).equals(read("assets/icons/Herdr.icns"))).toBe(true);
+});
+
+test("without python3 the classic icon installs", () => {
+  const bin = mkdtempSync(join(tmpdir(), "herdr-icon-bin-"));
+  for (const tool of ["bash", "dirname", "cp", "mkdir", "touch", "realpath"]) {
+    const found = Bun.which(tool);
+    if (found) Bun.spawnSync(["ln", "-s", found, join(bin, tool)]);
+  }
+  const r = install("macos", { app_icon: "mirage" }, { PATH: bin });
+  expect(r.code).toBe(0);
+  expect(r.err).toContain("python3");
+  expect(bundleIcon(r.dest).equals(read("assets/icons/Herdr.icns"))).toBe(true);
+});
+
 test.if(process.platform === "darwin")("macOS: a .png file is converted to an .icns", () => {
   const r = install("macos", { app_icon: join(ROOT, "defaults/frame/settings/app-icons/mirage.png") });
   expect(r.code).toBe(0);
@@ -68,6 +100,10 @@ test("Linux: a built-in's SVG becomes the launcher icon; a PNG file is named by 
   const file = install("linux", { app_icon: png });
   expect(file.out).toBe(png);
   expect(existsSync(join(file.dest, "icons/hicolor/scalable/apps/herdr-app.svg"))).toBe(false);
+  const icns = install("linux", { app_icon: join(ROOT, "assets/icons/variants/glass.icns") });
+  expect(icns.out).toBe("herdr-app");
+  expect(icns.err).toContain("classic");
+  expect(readFileSync(join(icns.dest, "icons/hicolor/scalable/apps/herdr-app.svg")).equals(read("assets/icons/herdr-ui-icon-clean.svg"))).toBe(true);
 });
 
 test("the install scripts take their icon from scripts/app-icon", () => {

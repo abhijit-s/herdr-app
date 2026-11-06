@@ -10,7 +10,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 platform=$1 dest=$2
 home=${HERDR_APP_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr-app}
-choice=$(python3 -c '
+classic_icns=assets/icons/Herdr.icns classic_svg=assets/icons/herdr-ui-icon-clean.svg
+if command -v python3 >/dev/null; then
+  choice=$(python3 -c '
 import json, sys
 try:
     v = json.load(open(sys.argv[1])).get("app_icon", "classic")
@@ -18,20 +20,41 @@ except (OSError, ValueError, AttributeError):
     v = "classic"
 print(v if isinstance(v, str) and v else "classic")
 ' "$home/settings.json")
+else
+  echo "app_icon: python3 is needed to read settings.json; installing the classic icon" >&2
+  choice=classic
+fi
 
 case $choice in
-  classic) icns=assets/icons/Herdr.icns svg=assets/icons/herdr-ui-icon-clean.svg ;;
+  classic) icns=$classic_icns svg=$classic_svg ;;
   midnight | mirage | glass | phosphor | graphite) icns=assets/icons/variants/$choice.icns svg=assets/icons/variants/$choice.svg ;;
   *)
-    file=${choice/#\~/$HOME}
-    if [[ ! -f $file ]]; then
-      echo "app_icon: $choice is not a built-in icon or a file; keeping classic" >&2
-      icns=assets/icons/Herdr.icns svg=assets/icons/herdr-ui-icon-clean.svg
+    # As Herdr reads it: an absolute path, or one from ~/.
+    file=$choice
+    # shellcheck disable=SC2088 # a literal ~/ in settings.json, expanded here
+    [[ $choice == "~/"* ]] && file=$HOME/${choice#"~/"}
+    if [[ $file != /* || ! -f $file ]]; then
+      echo "app_icon: $choice is not a built-in icon or an existing absolute or ~/ path; installing classic" >&2
+      icns=$classic_icns svg=$classic_svg
     else
       icns=$file svg=$file
     fi
     ;;
 esac
+
+# An .icns holds fixed sizes: the PNG scaled to each, as scripts/app-icons.py does.
+png_icns() {
+  local work status=0
+  work=$(mktemp -d)
+  mkdir "$work/icon.iconset"
+  for base in 16 32 128 256 512; do
+    sips -z "$base" "$base" "$1" --out "$work/icon.iconset/icon_${base}x${base}.png" >/dev/null 2>&1 || status=1
+    sips -z $((base * 2)) $((base * 2)) "$1" --out "$work/icon.iconset/icon_${base}x${base}@2x.png" >/dev/null 2>&1 || status=1
+  done
+  [[ $status == 0 ]] && iconutil -c icns "$work/icon.iconset" -o "$2" 2>/dev/null || status=1
+  rm -rf "$work"
+  return "$status"
+}
 
 case $platform in
   macos)
@@ -40,19 +63,14 @@ case $platform in
     case $icns in
       *.icns) cp "$icns" "$out" ;;
       *.png)
-        # An .icns holds fixed sizes: scale the PNG to each, as scripts/app-icons.py does.
-        set=$(mktemp -d)/icon.iconset
-        mkdir -p "$set"
-        for base in 16 32 128 256 512; do
-          sips -z "$base" "$base" "$icns" --out "$set/icon_${base}x${base}.png" >/dev/null
-          sips -z $((base * 2)) $((base * 2)) "$icns" --out "$set/icon_${base}x${base}@2x.png" >/dev/null
-        done
-        iconutil -c icns "$set" -o "$out"
-        rm -rf "$(dirname "$set")"
+        if ! png_icns "$icns" "$out"; then
+          echo "app_icon: $choice could not be made into an .icns; installing classic in the bundle" >&2
+          cp "$classic_icns" "$out"
+        fi
         ;;
       *)
-        echo "app_icon: macOS bundles take an .icns or .png; keeping classic in the bundle (the Dock still shows $choice)" >&2
-        cp assets/icons/Herdr.icns "$out"
+        echo "app_icon: macOS bundles take an .icns or .png; installing classic in the bundle (the Dock still shows $choice)" >&2
+        cp "$classic_icns" "$out"
         ;;
     esac
     # Finder and the Dock read a bundle's icon again once the bundle changes.
@@ -62,7 +80,11 @@ case $platform in
     mkdir -p "$dest/icons/hicolor/scalable/apps"
     case $svg in
       *.svg) cp "$svg" "$dest/icons/hicolor/scalable/apps/herdr-app.svg"; echo herdr-app ;;
-      *) realpath "$svg" ;;
+      *.png) realpath "$svg" ;;
+      *)
+        echo "app_icon: Linux launchers take an .svg or .png; installing classic" >&2
+        cp "$classic_svg" "$dest/icons/hicolor/scalable/apps/herdr-app.svg"; echo herdr-app
+        ;;
     esac
     ;;
   *) echo "usage: scripts/app-icon macos <Herdr.app> | linux <data dir>" >&2; exit 2 ;;

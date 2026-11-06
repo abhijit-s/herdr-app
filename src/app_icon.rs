@@ -15,7 +15,9 @@ pub enum AppIcon {
     Glass,
     Phosphor,
     Graphite,
-    /// An .icns, .png or .svg (a leading `~` is the home folder).
+    /// An .icns, .png or .svg, by an absolute path or one from `~/` (the
+    /// home folder): Herdr and the install scripts run from different folders,
+    /// so a relative path would name a different file in each.
     File(String),
 }
 
@@ -35,6 +37,7 @@ impl AppIcon {
     }
 
     /// The image: built-ins are in the binary, so any build shows them.
+    #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
     pub fn bytes(&self) -> std::io::Result<std::borrow::Cow<'static, [u8]>> {
         let built_in: &'static [u8] = match self {
             AppIcon::Classic => include_bytes!("../assets/icons/Herdr.icns"),
@@ -49,6 +52,7 @@ impl AppIcon {
     }
 }
 
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 fn expand_home(path: &str) -> std::path::PathBuf {
     match path.strip_prefix("~/") {
         Some(rest) => std::env::home_dir().unwrap_or_default().join(rest),
@@ -64,11 +68,11 @@ impl TryFrom<String> for AppIcon {
             return Ok(icon.clone());
         }
         let ext = std::path::Path::new(&v).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-        if v.contains('/') && ext.is_some_and(|e| FILE_TYPES.contains(&e.as_str())) {
+        if (v.starts_with('/') || v.starts_with("~/")) && ext.is_some_and(|e| FILE_TYPES.contains(&e.as_str())) {
             return Ok(AppIcon::File(v));
         }
         let names: Vec<_> = BUILT_IN.iter().map(|(name, _)| *name).collect();
-        Err(format!("app_icon {v:?} is not one of {} or a path to an .icns, .png or .svg file", names.join(", ")))
+        Err(format!("app_icon {v:?} is not one of {} or an absolute or ~/ path to an .icns, .png or .svg file", names.join(", ")))
     }
 }
 
@@ -81,13 +85,16 @@ impl From<AppIcon> for String {
     }
 }
 
+#[cfg(target_os = "macos")]
 thread_local! {
-    /// What the Dock shows, once set: None until the first settings arrive.
+    /// What the Dock shows, once set: None until an icon loads.
     static SHOWN: std::cell::RefCell<Option<AppIcon>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Shows `icon` in the Dock unless it already is. Settings arrive on the main
-/// thread; anywhere else (tests) this does nothing.
+/// thread; anywhere else (tests) this does nothing. A file that can't be read
+/// or decoded is tried again with the next settings, so one made afterwards
+/// still shows.
 #[cfg(target_os = "macos")]
 pub fn follow(icon: &AppIcon) {
     use objc2::AllocAnyThread as _;
@@ -95,7 +102,6 @@ pub fn follow(icon: &AppIcon) {
     if SHOWN.with_borrow(|shown| shown.as_ref() == Some(icon)) {
         return;
     }
-    SHOWN.set(Some(icon.clone()));
     let bytes = match icon.bytes() {
         Ok(bytes) => bytes,
         Err(e) => return tracing::warn!("app_icon {}: {e}", String::from(icon.clone())),
@@ -106,6 +112,7 @@ pub fn follow(icon: &AppIcon) {
     };
     // SAFETY: on the main thread (`mtm`), with an image AppKit itself decoded.
     unsafe { objc2_app_kit::NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)) };
+    SHOWN.set(Some(icon.clone()));
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -121,10 +128,10 @@ mod tests {
             assert_eq!(AppIcon::try_from(name.to_string()), Ok(icon.clone()));
             assert_eq!(String::from(icon), name);
         }
-        for path in ["~/icons/mine.icns", "/tmp/a.PNG", "./x.svg"] {
+        for path in ["~/icons/mine.icns", "/tmp/a.PNG", "/x y/z.svg"] {
             assert_eq!(AppIcon::try_from(path.to_string()), Ok(AppIcon::File(path.into())));
         }
-        for bad in ["blueprint", "Mirage", "custom", "mine.icns", "/tmp/a.jpg", ""] {
+        for bad in ["blueprint", "Mirage", "custom", "mine.icns", "./x.svg", "icons/x.png", "~user/x.png", "/tmp/a.jpg", ""] {
             assert!(AppIcon::try_from(bad.to_string()).is_err(), "{bad:?}");
         }
     }
@@ -166,7 +173,18 @@ mod tests {
         }
     }
 
+    /// SVG files decode too (AppKit's own SVG support), as the docs promise.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn appkit_reads_an_svg_file() {
+        use objc2::AllocAnyThread as _;
+        let svg = AppIcon::File(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icons/variants/mirage.svg").into());
+        let data = objc2_foundation::NSData::with_bytes(&svg.bytes().unwrap());
+        assert!(objc2_app_kit::NSImage::initWithData(objc2_app_kit::NSImage::alloc(), &data).is_some());
+    }
+
     /// Off the main thread (where tests run) following an icon changes nothing.
+    #[cfg(target_os = "macos")]
     #[test]
     fn following_off_the_main_thread_does_nothing() {
         follow(&AppIcon::Mirage);
