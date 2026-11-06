@@ -204,7 +204,8 @@ export interface PaneInfo {
   name: string | null;
   /** With `pane_auto_names` on: two words from the pane's id ("hazy-inlet"),
    *  the same every time, set only while nobody named the pane, no agent or
-   *  command runs in it and its title is empty, a shell's name or a folder.
+   *  command runs in it and its title is empty, the terminal's address (its
+   *  title before the shell sets one), a shell's name or a folder.
    *  Show it in place of the shell's name: `p.name || p.auto_name || ...`.
    *  Display only; null otherwise, and always for a mod pane. */
   auto_name: string | null;
