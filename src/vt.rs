@@ -29,7 +29,8 @@ impl Rgb {
     }
 }
 
-fn contrast(a: Rgb, b: Rgb) -> f32 {
+/// WCAG contrast ratio of two colors.
+pub(crate) fn contrast(a: Rgb, b: Rgb) -> f32 {
     let (x, y) = (a.luminance(), b.luminance());
     (x.max(y) + 0.05) / (x.min(y) + 0.05)
 }

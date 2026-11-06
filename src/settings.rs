@@ -332,17 +332,9 @@ const DARK_STEPS: Steps =
 const LIGHT_STEPS: Steps =
     Steps { canvas: 0.015, chrome: 0.068, chrome_active: 0.068, popover: 0.0, raised: 0.035, border: 0.096, input: 0.214, hover: 0.048, selected: 0.09, muted: 0.752, dim: 0.598 };
 
-/// WCAG contrast ratio of two colors.
 fn contrast(a: u32, b: u32) -> f32 {
-    let lum = |c: u32| {
-        let ch = |s: u32| {
-            let v = ((c >> s) & 255) as f32 / 255.0;
-            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
-        };
-        0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0)
-    };
-    let (x, y) = (lum(a), lum(b));
-    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    let rgb = |c: u32| Rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
+    crate::vt::contrast(rgb(a), rgb(b))
 }
 
 /// Panel colors, each a step from the terminal's background toward its
