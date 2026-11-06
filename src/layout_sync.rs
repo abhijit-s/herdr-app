@@ -379,7 +379,8 @@ pub fn tab_area(root: &Node) -> Option<(&Node, Option<&Node>)> {
 }
 
 fn clamp_spacing(v: f32) -> f32 {
-    if v.is_finite() { v.clamp(0.0, SPACING_MAX) } else { 0.0 }
+    // A number past f32's range arrives as infinity and clamps like any other.
+    if v.is_nan() { 0.0 } else { v.clamp(0.0, SPACING_MAX) }
 }
 
 fn clamp_padding(p: Padding) -> Padding {
@@ -689,6 +690,15 @@ mod tests {
         // A stack directly around the tab block is no area.
         let stacked = node(json!({ "id": "root", "type": "stack", "children": [{ "id": "t", "type": "block", "content": { "tab": "active" } }] }));
         assert_eq!(tab_area(&stacked).map(|(b, a)| (b.id.clone(), a.is_none())), Some(("t".into(), true)));
+    }
+
+    #[test]
+    fn spacing_past_f32s_range_clamps_to_its_end() {
+        let file = deck();
+        let mut now = file.clone();
+        spacing(json!({ "pane_gap": 1e39, "area_gap": -1e39, "terminal_padding": [1e39, 3] })).apply(&mut now, &file).unwrap();
+        assert_eq!((main_gap(&now), now.find("work-body").unwrap().gap, now.look.terminal_padding), (Some(40.0), Some(0.0), Some([40.0, 3.0])));
+        assert_eq!((clamp_spacing(f32::NAN), clamp_spacing(f32::INFINITY), clamp_spacing(f32::NEG_INFINITY)), (0.0, 40.0, 0.0));
     }
 
     #[test]

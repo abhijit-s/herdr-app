@@ -116,8 +116,9 @@ fn pane_size(n: &Node, size: Size<Pixels>, target: &str, frame: Option<&PaneFram
 }
 
 /// The tab area, the cell size, and what else sizes a pane's grid: the
-/// terminals' padding, the tab block's own padding and its pane frame.
-type Geometry = (Size<Pixels>, Size<Pixels>, (f32, f32), (f32, f32), Option<PaneFrame>);
+/// terminals' padding, the panels' scale (padding, borders and headers
+/// follow it), the tab block's own padding and its pane frame.
+type Geometry = (Size<Pixels>, Size<Pixels>, (f32, f32), f32, (f32, f32), Option<PaneFrame>);
 
 /// Whether hidden tabs fit the window: the geometry seen at the last tick, and
 /// whether they were sized for it.
@@ -174,7 +175,7 @@ impl AppWindow {
             _ => None,
         };
         let cell = crate::terminal::cell_size(window);
-        let now = (area, cell, settings::get().terminal_padding_px(), padding(context), frame);
+        let now = (area, cell, settings::get().terminal_padding_px(), settings::ui_scale(), padding(context), frame);
         match &self.hidden_fit {
             HiddenFit::Done(g) if *g == now => return,
             HiddenFit::Seen(g) if *g == now => self.hidden_fit = HiddenFit::Done(now),

@@ -116,15 +116,19 @@ fn hidden_tabs_follow(cx: &mut gpui::TestAppContext) {
     let fitted = dims(cx);
     eprintln!("hidden tab: {before:?} before the window grew, {fitted:?} once it settled");
     assert_ne!(fitted, before, "a settled window must size the hidden tab's terminals");
-    // Spacing that shrinks every pane's grid refits hidden tabs too, with the window unchanged.
-    view.update_in(cx, |this, window, cx| this.run("layout.spacing", serde_json::json!({ "terminal_padding": [40, 40], "pane_gap": 40 }), window, cx));
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    view.update_in(cx, |this, window, cx| this.fit_hidden_tabs(window, cx));
-    view.update_in(cx, |this, window, cx| this.fit_hidden_tabs(window, cx));
-    let spaced = dims(cx);
-    eprintln!("hidden tab: {fitted:?} before the spacing changed, {spaced:?} after");
-    assert!(spaced[0].0 < fitted[0].0 && spaced[0].1 < fitted[0].1, "spacing must refit the hidden tab's terminals");
-    let fitted = spaced;
+    // Spacing that changes the hidden panes' grids refits them too, with the window unchanged:
+    // each part of what sizes a grid on its own (terminal padding, then the pane frame's gap).
+    let mut fitted = fitted;
+    for (args, what) in [(serde_json::json!({ "terminal_padding": [40, 40] }), "terminal padding"), (serde_json::json!({ "pane_gap": 40 }), "pane gap")] {
+        view.update_in(cx, |this, window, cx| this.run("layout.spacing", args, window, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        view.update_in(cx, |this, window, cx| this.fit_hidden_tabs(window, cx));
+        view.update_in(cx, |this, window, cx| this.fit_hidden_tabs(window, cx));
+        let spaced = dims(cx);
+        eprintln!("hidden tab: {fitted:?} before the {what} changed, {spaced:?} after");
+        assert!(spaced[0].0 < fitted[0].0, "{what} must refit the hidden tab's terminals");
+        fitted = spaced;
+    }
     // Shown, the panes draw with the size they were given: nothing changes.
     view.update_in(cx, |this, window, cx| {
         this.model.select_tab("ta");
@@ -132,4 +136,26 @@ fn hidden_tabs_follow(cx: &mut gpui::TestAppContext) {
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_eq!(dims(cx), fitted, "hidden tabs must have been sized as their panes draw them");
+}
+
+#[test]
+fn spacing_refuses_a_broken_layout_file() {
+    in_own_process("spacing_refuses_broken");
+}
+
+#[gpui::test]
+fn spacing_refuses_broken(cx: &mut gpui::TestAppContext) {
+    if !running_alone("spacing_refuses_broken") { return; }
+    let main: serde_json::Value = serde_json::from_str(include_str!("../../defaults/layouts/main.json")).unwrap();
+    let (view, cx) = open_window(cx, "size-probe", "export default () => null;", main);
+    let (answer, changed) = view.update_in(cx, |this, window, cx| {
+        let before = this.chrome.clone();
+        // What a layout file that stopped parsing leaves: the shipped stand-in shows.
+        this.layout_file_ok = false;
+        let answer = this.run_as("layout.spacing", serde_json::json!({ "pane_gap": 3 }), false, window, cx);
+        (answer, this.chrome != before)
+    });
+    eprintln!("layout.spacing on a broken file: {answer}");
+    assert!(answer["error"].as_str().is_some_and(|e| e.contains("has errors: fix it first")), "{answer}");
+    assert!(!changed, "a refused layout.spacing must leave the layout as it was");
 }
