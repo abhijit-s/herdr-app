@@ -459,6 +459,36 @@ fn cell_rounding_row_shows_the_pick(cx: &mut TestAppContext) {
     }
 }
 
+/// Searching the Settings window: the field sits in the sidebar, every page
+/// with a match shows under its own heading with only its matches (controls
+/// working), and a search with none says so.
+#[gpui::test]
+fn settings_search_filters_every_page(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut search = |q: &str| {
+        let values = fixture(true, props(), updates("current", "current"));
+        describe_with_values(cx, &staged, "frame/settings", values, Some(&format!("this.load = async () => {{}}; this.person = {{}}; this.setQuery({q:?});"))).unwrap()
+    };
+    let tree = search("");
+    assert!(tree.contains("st-search"), "{tree}");
+    assert!(!tree.contains("st-found-"), "no results with nothing typed: {tree}");
+
+    let tree = search("rounding");
+    assert!(tree.contains("st-found-text") && tree.contains("st-cr-Nearest"), "{tree}");
+    assert!(tree.contains("cell_"), "the row's settings.json key: {tree}");
+    for hidden in ["st-found-look", "st-found-alerts", "st-cw-", "st-font_ligatures", "Ligatures"] {
+        assert!(!tree.contains(hidden), "{hidden} shows: {tree}");
+    }
+
+    let tree = search("sound");
+    assert!(tree.contains("st-found-alerts") && tree.contains("st-sounds"), "{tree}");
+    assert!(!tree.contains("st-found-text"), "{tree}");
+
+    let tree = search("qqqzzz");
+    assert!(tree.contains("st-none") && tree.contains("No settings match"), "{tree}");
+}
+
 /// The Look page's App icon row: a previewed tile per built-in, the
 /// person's outlined, and an image file shown as its path.
 #[gpui::test]
