@@ -694,6 +694,29 @@ mod derivation_tests {
         }
     }
 
+    /// Focus changes resolve again from the palette `set` read, without
+    /// the theme file: only `chrome` moves, and only when the state does.
+    #[test]
+    fn reshade_follows_focus_from_the_last_palette() {
+        std::thread::spawn(|| {
+            let s = Settings { theme: "graphite".into(), sidebar_shade: SidebarShade::Active, ..Settings::default() };
+            set_window_active(false);
+            set(s);
+            let flat = theme();
+            set_window_active(true);
+            assert!(reshade());
+            let shaded = theme();
+            assert_ne!(shaded["chrome"], flat["chrome"]);
+            assert_eq!(shaded.iter().filter(|(k, v)| flat[*k] != **v).count(), 1, "only chrome moves");
+            assert!(!reshade(), "no change, no redraw");
+            set_window_active(false);
+            assert!(reshade());
+            assert_eq!(theme(), flat);
+        })
+        .join()
+        .unwrap();
+    }
+
     #[test]
     fn mix_clamps_past_the_ends() {
         assert_eq!(mix(0x000000, 0xffffff, -0.5), 0x000000);
@@ -1537,7 +1560,10 @@ pub fn path() -> std::path::PathBuf {
 thread_local! {
     static CURRENT: RefCell<(Rc<Settings>, Rc<Theme>)> =
         RefCell::new((Rc::new(Settings::default()), Rc::new(resolve(&GRAPHITE, &BTreeMap::new(), PanelColors::Tinted, false))));
-    static WINDOW_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    static WINDOW_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The theme's palette and own colors as `set` last read them, so a
+    /// focus change resolves again without reading the theme file.
+    static PALETTE: RefCell<(Palette, BTreeMap<String, String>)> = RefCell::new((GRAPHITE.clone(), BTreeMap::new()));
 }
 
 const ZOOM_MIN: f32 = 0.5;
@@ -1598,6 +1624,26 @@ pub fn set_window_active(active: bool) {
     WINDOW_ACTIVE.with(|w| w.set(active));
 }
 
+fn resolve_for(s: &Settings, p: &Palette, own: &BTreeMap<String, String>) -> Theme {
+    let mut colors = own.clone();
+    colors.extend(s.colors.clone());
+    resolve(p, &colors, s.panel_colors, s.sidebar_shade.shades(WINDOW_ACTIVE.with(|w| w.get())))
+}
+
+/// Resolves the theme again for the window's focus (`set_window_active`)
+/// from the palette `set` last read; returns whether that changed it. Only
+/// `sidebar_shade` follows focus, so only `chrome` can change.
+pub fn reshade() -> bool {
+    CURRENT.with(|c| {
+        let theme = PALETTE.with_borrow(|(p, own)| resolve_for(&c.borrow().0, p, own));
+        if *c.borrow().1 == theme {
+            return false;
+        }
+        c.borrow_mut().1 = Rc::new(theme);
+        true
+    })
+}
+
 /// Installs new settings; returns whether anything changed.
 pub fn set(s: Settings) -> bool {
     #[cfg(target_os = "macos")]
@@ -1611,9 +1657,9 @@ pub fn set(s: Settings) -> bool {
     CURRENT.with(|c| {
         // Read the theme even when the settings are the same: its file may
         // have new colors under the same name.
-        let (p, mut colors) = palette(&s.theme).unwrap_or_else(|_| (GRAPHITE.clone(), BTreeMap::new()));
-        colors.extend(s.colors.clone());
-        let theme = resolve(&p, &colors, s.panel_colors, s.sidebar_shade.shades(WINDOW_ACTIVE.with(|w| w.get())));
+        let (p, own) = palette(&s.theme).unwrap_or_else(|_| (GRAPHITE.clone(), BTreeMap::new()));
+        let theme = resolve_for(&s, &p, &own);
+        PALETTE.set((p, own));
         if *c.borrow().0 == s && *c.borrow().1 == theme {
             return false;
         }

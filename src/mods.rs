@@ -1189,7 +1189,13 @@ fn module(inst: Instance, copy: u64) -> HostModule {
             Ok(to_host(&Value::Array(list)))
         })
         .function("window", reader(reads.clone(), "window", |s| &s.window))
-        .function("theme", |_| Ok(to_host(&serde_json::to_value(&*crate::settings::theme()).unwrap_or(Value::Null))))
+        .function("theme", {
+            let reads = reads.clone();
+            move |_| {
+                record(&reads, "theme");
+                Ok(to_host(&serde_json::to_value(&*crate::settings::theme()).unwrap_or(Value::Null)))
+            }
+        })
         .function("settings", |_| Ok(to_host(&crate::settings::get().for_mods())))
         .function("keys", |_| Ok(HostValue::Json(keys_part())))
         .function("openOverlay", |a| {
@@ -1422,6 +1428,24 @@ mod tests {
             assert!(!snapshot_changed(1));
             drop(reads);
             assert!(!snapshot_changed(1));
+        }).join().unwrap();
+    }
+
+    /// A focus change that shades the sidebar bumps `theme`: only the copies
+    /// that read `theme()` redraw.
+    #[test]
+    fn a_theme_bump_refreshes_only_theme_readers() {
+        std::thread::spawn(|| {
+            let (themed, other) = (Rc::new(RefCell::new(LiveReads::default())), Rc::new(RefCell::new(LiveReads::default())));
+            LIVE_READS.with_borrow_mut(|copies| {
+                copies.insert(1, Rc::downgrade(&themed));
+                copies.insert(2, Rc::downgrade(&other));
+            });
+            record(&themed, "theme");
+            read(&other, "agents", |s| &s.agents);
+            bump_revision("theme");
+            assert!(snapshot_changed(1));
+            assert!(!snapshot_changed(2));
         }).join().unwrap();
     }
 

@@ -1069,12 +1069,15 @@ impl AppWindow {
         window.refresh();
     }
 
-    /// `sidebar_shade` follows the window's focus: the settings in use, with
-    /// the theme resolved again for the new state, only when that changes it.
+    /// `sidebar_shade` follows the window's focus. Only `chrome` can change,
+    /// which neither terminals nor the kit's tokens use: the mods that read
+    /// `theme()` redraw, and the window.
     fn shade_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         settings::set_window_active(window.is_window_active());
-        if settings::set((*settings::get()).clone()) {
-            self.theme_changed(window, cx);
+        if settings::reshade() {
+            mods::bump_revision("theme");
+            self.refresh_snapshot_mods(cx);
+            window.refresh();
         }
     }
 
