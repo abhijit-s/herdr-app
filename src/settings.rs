@@ -282,7 +282,7 @@ pub fn themes() -> Vec<(String, Theme)> {
         .iter()
         .map(|n| n.to_string())
         .chain(files)
-        .filter_map(|n| palette(&n).ok().map(|(p, o)| (n, resolve(&p, &o, get().panel_colors, false))))
+        .filter_map(|n| palette(&n).ok().map(|(p, o)| (n, resolve(&p, &o, panels_in_use(get().panel_colors, &p, &o, false), false))))
         .collect()
 }
 
@@ -401,15 +401,21 @@ fn classic_panels(bg: u32, ink: u32) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// Whether a theme keeps the classic panels for whatever it leaves unset
-/// even while tinted: one that paints its own panels (a deliberate look,
-/// such as Win98's), or whose foreground can't carry a tint (barely apart
-/// from the background, or on the wrong side of it).
-fn keeps_classic_panels(p: &Palette, overrides: &BTreeMap<String, String>) -> bool {
+/// Whether a theme's or look's colors paint its own panels.
+fn paints_own_panels(colors: &BTreeMap<String, String>) -> bool {
+    ["surface", "popover", "raised"].iter().any(|k| colors.contains_key(*k))
+}
+
+/// The derivation panels use: `chosen`, except that a theme or look that
+/// paints its own panels (a deliberate look, such as Win98's or the
+/// Terminals layout's), or whose foreground can't carry a tint (barely
+/// apart from the background, or on the wrong side of it), keeps the
+/// classic one for whatever it leaves unset. A person's own settings.json
+/// colors don't decide it: they only replace colors.
+fn panels_in_use(chosen: PanelColors, p: &Palette, theme_colors: &BTreeMap<String, String>, look_paints_panels: bool) -> PanelColors {
     let (bg, fg) = (p.background, p.foreground);
-    let own = ["surface", "popover", "raised"].iter().any(|k| overrides.contains_key(*k));
     let backwards = (contrast(fg, 0) > contrast(bg, 0)) == is_light(bg);
-    own || contrast(fg, bg) < 3.0 || backwards
+    if look_paints_panels || paints_own_panels(theme_colors) || contrast(fg, bg) < 3.0 || backwards { PanelColors::Classic } else { chosen }
 }
 
 /// Every color around a palette: the terminal's own, then the panels
@@ -420,11 +426,11 @@ fn resolve(p: &Palette, overrides: &BTreeMap<String, String>, panels: PanelColor
     let ink = if light { 0x1b1b1e } else { 0xeeeeef };
     let [working, blocked, done] = p.status.unwrap_or([p.ansi[3], p.ansi[1], p.ansi[4]]);
     let panels = match panels {
-        PanelColors::Tinted if !keeps_classic_panels(p, overrides) => {
+        PanelColors::Tinted => {
             let accent = overrides.get("accent").and_then(|v| u32::from_str_radix(v.trim_start_matches('#').get(..6)?, 16).ok()).unwrap_or(p.ansi[4]);
             tinted_panels(p, ink, shaded, accent, overrides.get("canvas"))
         }
-        _ => classic_panels(bg, ink),
+        PanelColors::Classic => classic_panels(bg, ink),
     };
     let mut t: Theme = [
         ("background", hex(bg)),
@@ -486,6 +492,11 @@ mod derivation_tests {
             out.push((name.into(), p, own));
         }
         out
+    }
+
+    /// What `set` draws for a theme file and its own colors under `chosen`.
+    fn drawn(p: &Palette, own: &BTreeMap<String, String>, chosen: PanelColors, shaded: bool) -> Theme {
+        resolve(p, own, panels_in_use(chosen, p, own, false), shaded)
     }
 
     /// The palettes alone, for rules about what a theme leaves unset.
@@ -612,7 +623,7 @@ mod derivation_tests {
         let before: BTreeMap<String, Theme> = serde_json::from_str(include_str!("../tests/fixtures/master-panels.json")).unwrap();
         for (name, p, own) in themes() {
             for shaded in [false, true] {
-                assert_eq!(resolve(&p, &own, PanelColors::Classic, shaded), before[&name], "{name}, shaded {shaded}");
+                assert_eq!(drawn(&p, &own, PanelColors::Classic, shaded), before[&name], "{name}, shaded {shaded}");
             }
         }
         assert_eq!(before.len(), themes().len());
@@ -631,8 +642,8 @@ mod derivation_tests {
         let apart = |a: u32, b: u32| [16, 8, 0].iter().map(|s| (((a >> s) & 255) as i32 - ((b >> s) & 255) as i32).abs()).max().unwrap();
         for (name, p, own) in themes() {
             for shaded in [false, true] {
-                let t = resolve(&p, &own, PanelColors::Tinted, shaded);
-                let classic = resolve(&p, &own, PanelColors::Classic, shaded);
+                let t = drawn(&p, &own, PanelColors::Tinted, shaded);
+                let classic = drawn(&p, &own, PanelColors::Classic, shaded);
                 for fill in ["hover", "selected"] {
                     for panel in ["popover", "surface"] {
                         let under = rgb(&t, panel);
@@ -650,24 +661,32 @@ mod derivation_tests {
         }
     }
 
-    /// A theme that paints its own panels, or whose foreground can't carry a
-    /// tint, keeps the classic derivation for everything it leaves unset.
+    /// A theme or look that paints its own panels, or whose foreground can't
+    /// carry a tint, keeps the classic derivation for what it leaves unset;
+    /// a person's own colors only replace colors.
     #[test]
     fn deliberate_looks_and_weak_foregrounds_keep_classic_panels() {
         let win98 = THEMES.iter().find(|(n, _)| *n == "win98").unwrap().1;
         let (p, own) = parse_theme_file("win98", win98).unwrap();
-        assert_eq!(resolve(&p, &own, PanelColors::Tinted, true), resolve(&p, &own, PanelColors::Classic, true), "win98 draws as before");
-        let terminals: serde_json::Value = serde_json::from_str(include_str!("../defaults/layouts/terminals.json")).unwrap();
-        let look: BTreeMap<String, String> = serde_json::from_value(terminals.pointer("/colors").or_else(|| terminals.pointer("/look/colors")).cloned().unwrap_or_default()).unwrap();
-        assert!(look.contains_key("surface"), "the Terminals look paints its own panels");
+        assert_eq!(drawn(&p, &own, PanelColors::Tinted, true), drawn(&p, &own, PanelColors::Classic, true), "win98 draws as before");
+        let terminals: crate::layout::Look = serde_json::from_str(include_str!("../defaults/layouts/terminals.json")).unwrap();
+        let look = Settings::compose(&Person::default(), &terminals, true);
+        assert!(look.look_paints_panels, "the Terminals look paints its own panels");
         for name in PRESETS {
             let p = preset(name).unwrap();
-            assert_eq!(resolve(p, &look, PanelColors::Tinted, true), resolve(p, &look, PanelColors::Classic, true), "Terminals over {name}");
+            assert_eq!(panels_in_use(PanelColors::Tinted, p, &BTreeMap::new(), look.look_paints_panels), PanelColors::Classic, "Terminals over {name}");
         }
+        let person = Person { colors: [("surface".to_owned(), "#202020".to_owned())].into(), ..Person::default() };
+        let mine = Settings::compose(&person, &crate::layout::Look::default(), true);
+        assert!(!mine.look_paints_panels, "a person's own surface doesn't decide the derivation");
+        let graphite = preset("graphite").unwrap();
+        assert_eq!(panels_in_use(mine.panel_colors, graphite, &BTreeMap::new(), mine.look_paints_panels), PanelColors::Tinted);
+        let t = resolve_for(&mine, graphite, &BTreeMap::new());
+        assert_eq!((t["surface"].as_str(), t["chrome"].clone()), ("#202020", tinted_panels(graphite, 0xeeeeef, false, graphite.ansi[4], None)[1].1.clone()), "it only replaces surface");
         let weak = |bg: &str, fg: &str| parse_theme_file("weak", &format!(r##"{{"background":"{bg}","foreground":"{fg}","selection":"{fg}","ansi":["#000000","#000000","#000000","#000000","#4080ff","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000"]}}"##)).unwrap().0;
         for (bg, fg) in [("#202020", "#2a2a2a"), ("#303845", "#101010"), ("#f4f4f4", "#ffffff"), ("#e0e0e0", "#c8c8c8"), ("#707070", "#000000")] {
             let p = weak(bg, fg);
-            assert_eq!(resolve(&p, &BTreeMap::new(), PanelColors::Tinted, true), resolve(&p, &BTreeMap::new(), PanelColors::Classic, true), "{fg} on {bg}");
+            assert_eq!(panels_in_use(PanelColors::Tinted, &p, &BTreeMap::new(), false), PanelColors::Classic, "{fg} on {bg}");
         }
     }
 
@@ -1259,6 +1278,9 @@ pub struct Settings {
     pub sidebar_shade: SidebarShade,
     /// How panels derive the colors a theme leaves unset.
     pub panel_colors: PanelColors,
+    /// The layout's look paints its own panels (`panels_in_use`).
+    #[serde(skip)]
+    pub look_paints_panels: bool,
     /// Terminal text's smoothing (subpixel only where the display allows).
     pub text_rendering: TextRendering,
     /// The panels' text's smoothing.
@@ -1345,6 +1367,7 @@ impl Default for Settings {
             unfocused_dim_color: None,
             sidebar_shade: SidebarShade::Flat,
             panel_colors: PanelColors::Tinted,
+            look_paints_panels: false,
             text_rendering: TextRendering::Grayscale,
             ui_text_rendering: TextRendering::Grayscale,
             subpixel_order: SubpixelOrder::Rgb,
@@ -1411,6 +1434,7 @@ impl Settings {
             unfocused_dim_color: person.unfocused_dim_color.clone(),
             sidebar_shade: person.sidebar_shade,
             panel_colors: person.panel_colors,
+            look_paints_panels: look.colors.as_ref().is_some_and(paints_own_panels),
             text_rendering: person.text_rendering,
             ui_text_rendering: person.ui_text_rendering,
             subpixel_order: person.subpixel_order,
@@ -1619,7 +1643,7 @@ pub fn set_window_active(active: bool) {
 fn resolve_for(s: &Settings, p: &Palette, own: &BTreeMap<String, String>) -> Theme {
     let mut colors = own.clone();
     colors.extend(s.colors.clone());
-    resolve(p, &colors, s.panel_colors, s.sidebar_shade.shades(WINDOW_ACTIVE.with(|w| w.get())))
+    resolve(p, &colors, panels_in_use(s.panel_colors, p, own, s.look_paints_panels), s.sidebar_shade.shades(WINDOW_ACTIVE.with(|w| w.get())))
 }
 
 /// Resolves the theme again for the window's focus (`set_window_active`)
@@ -1800,6 +1824,8 @@ impl Settings {
         let mut v = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
         if let Some(o) = v.as_object_mut() {
             o.insert("ui_scale".into(), serde_json::json!(self.ui_scale()));
+            let in_use = PALETTE.with_borrow(|(p, own)| panels_in_use(self.panel_colors, p, own, self.look_paints_panels));
+            o.insert("panels_in_use".into(), serde_json::json!(in_use));
             o.insert("ui_scale_ranges".into(), serde_json::json!({ "ui_zoom": UI_ZOOM_RANGE, "ui_text_scale": UI_TEXT_SCALE_RANGE }));
         }
         v

@@ -267,6 +267,9 @@ test("dim when inactive sits on the look page, its scope writes text and leaves 
   const shadeShown = (person: Record<string, any>) => click(person, {}, "st-ss-Flat", ["choicePicker", "shown?"], "look") !== undefined;
   expect(shadeShown({})).toBe(true);
   expect(shadeShown({ panel_colors: "classic" })).toBe(false);
+  const shadeShownOver = (inUse: string) => click({}, { panels_in_use: inUse }, "st-ss-Flat", ["choicePicker", "shown?"], "look") !== undefined;
+  expect(shadeShownOver("tinted")).toBe(true);
+  expect(shadeShownOver("classic")).toBe(false);
 });
 
 test("subpixel order shows only while either text is subpixel, and leaves rgb out", () => {
