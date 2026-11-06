@@ -26,8 +26,21 @@ const values: Record<string, any> = {
   View: class {}, div: element, svg: element, image: element, v_flex: element, h_flex: element,
   Scrollbar: element, Input: { new: element }, InputState: { new: () => ({ on() {}, focus() {} }) },
   settings: () => composed, window: () => ({ platform: "linux" }), props: () => ({}),
-  appHome: () => "/home", readTextFile: async () => { if (disk.readFail) throw new Error(disk.readFail); return disk.raw; }, notify: (n: any) => { disk.toasts.push(n); },
-  writeTextFile: async (_path: string, text: string, expected: string | null) => {
+  appHome: () => "/home", notify: (n: any) => { disk.toasts.push(n); },
+  shared: (key: string) => (key === "layout" ? layoutDisk.name : undefined), run: (name: string, args: any) => { layoutDisk.runs.push([name, args]); },
+  layout: () => layoutDisk.shown,
+  readTextFile: async (path: string) => {
+    if (path.startsWith("/home/layouts/")) return path === `/home/layouts/${layoutDisk.name}.json` ? layoutDisk.raw : null;
+    if (disk.readFail) throw new Error(disk.readFail);
+    return disk.raw;
+  },
+  writeTextFile: async (path: string, text: string, expected: string | null) => {
+    if (path.startsWith("/home/layouts/")) {
+      layoutDisk.writes++;
+      if (path !== `/home/layouts/${layoutDisk.name}.json` || expected !== layoutDisk.raw) throw new Error("changed since read");
+      layoutDisk.raw = text;
+      return;
+    }
     disk.writes++;
     if (disk.fail) throw new Error(disk.fail);
     if (expected !== disk.raw) throw new Error("changed since read");
@@ -36,14 +49,16 @@ const values: Record<string, any> = {
 };
 // settings.json as the mod sees it through readTextFile / writeTextFile.
 const disk: { raw: string | null; writes: number; fail?: string; readFail?: string; toasts: any[] } = { raw: null, writes: 0, toasts: [] };
+// The shown layout's file (layouts/<name>.json), apart from settings.json.
+const layoutDisk: { name: string; raw: string | null; shown: any; writes: number; runs: any[] } = { name: "mine", raw: null, shown: null, writes: 0, runs: [] };
 const names = [...source.matchAll(/^import \{([^}]*)\}/gm)].flatMap(m => m[1].split(",").map(n => n.trim()));
 const args = names.map(name => values[name] ?? (() => undefined));
 const body = source
   .replace(/^import .*;\n/gm, "")
   .replace("export function scaleStep", "function scaleStep")
   .replace("export default class Settings", "const Settings = class Settings")
-  + "\nreturn { Settings, scaleStep };";
-const { Settings, scaleStep } = new Function(...names, body)(...args);
+  + "\nreturn { Settings, scaleStep, spacingOf };";
+const { Settings, scaleStep, spacingOf } = new Function(...names, body)(...args);
 
 function find(root: Element, id: string): Element {
   if (root?.calls?.id?.[0] === id) return root;
@@ -59,7 +74,7 @@ function click(person: Record<string, any>, shown: Record<string, any>, id: stri
   composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, letter_spacing: 0, ui_scale_ranges: { ui_zoom: [0.75, 1.5], ui_text_scale: [0.8, 1.3] }, ...shown };
   const view = new Settings();
   view.person = person;
-  for (const part of ["layoutPicker", "themePicker", "choicePicker", "fontButton", "fontList"]) if (!real.includes(part)) view[part] = element;
+  for (const part of ["layoutPicker", "spacing", "themePicker", "choicePicker", "fontButton", "fontList"]) if (!real.includes(part)) view[part] = element;
   let written: Record<string, any> | undefined;
   view.change = (edit: (q: Record<string, any>) => void) => {
     written = structuredClone(person);
@@ -276,4 +291,75 @@ test("resume agents after restart sits on the alerts page, writes auto or off an
   expect(pick({}, "st-ra-Auto")).toEqual({ resume_agents: "auto" });
   expect(pick({ resume_agents: "auto" }, "st-ra-Off")).toEqual({ resume_agents: "off" });
   expect(pick({ resume_agents: "off", zoom: 1.1 }, "st-ra-Ask")).toEqual({ zoom: 1.1 });
+});
+
+// A layout like agent-deck: the tab block in a row beside a panel.
+const deck = () => ({
+  id: "root", type: "row", terminal_padding: [14, 12],
+  children: [
+    { id: "side", type: "column", children: [] },
+    { id: "work-body", type: "row", padding: 4, gap: 8, children: [
+      { id: "main", type: "block", content: { tab: "active", pane: { radius: 10, gap: 6, lone: true } } },
+      { id: "panel", type: "column", children: [] },
+    ] },
+  ],
+});
+
+test("spacing reads the tab block's pane gap, its container's padding and gap, and the root's terminal padding", () => {
+  expect(spacingOf(deck())).toEqual({ pane_gap: 6, area_padding: [4, 4], area_gap: 8, terminal_padding: [14, 12] });
+  // Unset, Herdr's defaults; no pane frame or no row or column around the tab block: nothing to set there.
+  expect(spacingOf({ id: "root", type: "block", content: { context: "active" } })).toEqual({ pane_gap: null, area_padding: null, area_gap: null, terminal_padding: [10, 6] });
+  expect(spacingOf({ id: "root", type: "column", padding: [6, 2], children: [{ type: "block", content: { tab: "active", pane: {} } }] })).toEqual({ pane_gap: 0, area_padding: [6, 2], area_gap: 0, terminal_padding: [10, 6] });
+  expect(spacingOf({ id: "root", type: "row", children: [{ type: "block", content: { mod: "x" } }] })).toBeNull();
+});
+
+/** The Look page's Spacing group, `shown` being layout() and `file` the layout's file; clicks `id`. */
+async function spacingClick(shown: any, file: any, id?: string) {
+  Object.assign(layoutDisk, { name: "mine", raw: file === null ? null : JSON.stringify(file), shown, writes: 0, runs: [] });
+  const view = new Settings();
+  await view.loadLayoutFile();
+  const group = view.spacing(new Proxy({}, { get: () => "#000000" }), {});
+  const button = id ? find(group, id) : undefined;
+  button?.calls.on_click[0](null, { notify() {} });
+  return { group, button, runs: layoutDisk.runs };
+}
+
+test("spacing steppers run layout.spacing, never write the layout file, and stay within 0 to 40", async () => {
+  expect((await spacingClick(deck(), deck(), "st-sp-pane_gap-plus")).runs).toEqual([["layout.spacing", { pane_gap: 7 }]]);
+  expect((await spacingClick(deck(), deck(), "st-sp-area_padding-minus")).runs).toEqual([["layout.spacing", { area_padding: 3 }]]);
+  expect((await spacingClick(deck(), deck(), "st-sp-area_gap-plus")).runs).toEqual([["layout.spacing", { area_gap: 9 }]]);
+  expect((await spacingClick(deck(), deck(), "st-sp-terminal_padding-y-minus")).runs).toEqual([["layout.spacing", { terminal_padding: [14, 11] }]]);
+  const uneven = deck();
+  uneven.children[1].padding = [4, 6] as any;
+  expect((await spacingClick(uneven, uneven, "st-sp-area_padding-plus")).runs).toEqual([["layout.spacing", { area_padding: [5, 7] }]]);
+  const edge = deck();
+  edge.children[1].gap = 40;
+  edge.children[1].children[0].content.pane!.gap = 0;
+  expect((await spacingClick(edge, edge, "st-sp-area_gap-plus")).runs).toEqual([["layout.spacing", { area_gap: 40 }]]);
+  expect((await spacingClick(edge, edge, "st-sp-pane_gap-minus")).runs).toEqual([["layout.spacing", { pane_gap: 0 }]]);
+  expect(layoutDisk.writes).toBe(0);
+});
+
+test("reset shows only where a value differs from the layout file, and clears that click", async () => {
+  const clicked = deck();
+  clicked.children[1].gap = 12;
+  clicked.terminal_padding = [8, 4];
+  const { group, runs } = await spacingClick(clicked, deck(), "st-sp-area_gap-reset");
+  expect(runs).toEqual([["layout.spacing", { reset: ["area_gap"] }]]);
+  expect(find(group, "st-sp-terminal_padding-reset")).toBeDefined();
+  expect(find(group, "st-sp-pane_gap-reset")).toBeUndefined();
+  expect(find(group, "st-sp-area_padding-reset")).toBeUndefined();
+  // A file that can't be read or parsed offers no reset, but the steppers still work.
+  const broken = await spacingClick(clicked, null, "st-sp-pane_gap-plus");
+  expect(find(broken.group, "st-sp-area_gap-reset")).toBeUndefined();
+  expect(broken.runs).toEqual([["layout.spacing", { pane_gap: 7 }]]);
+});
+
+test("a layout with nothing to space hides those controls and says why", async () => {
+  const alone = { id: "root", type: "block", content: { tab: "active" } };
+  const { group } = await spacingClick(alone, alone);
+  for (const id of ["st-sp-pane_gap-plus", "st-sp-area_padding-plus", "st-sp-area_gap-plus"]) expect(find(group, id)).toBeUndefined();
+  expect(find(group, "st-sp-terminal_padding-x-plus")).toBeDefined();
+  const none = await spacingClick({ id: "root", type: "row", children: [] }, null);
+  expect(find(none.group, "st-sp-terminal_padding-x-plus")).toBeUndefined();
 });
