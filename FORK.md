@@ -207,7 +207,7 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 - An `alert_command` starts in the home folder (the app's own is `/` when opened from the Finder) and in its own process group; still running after 30 s, the whole group is killed (`alert::reap`), so a hung one doesn't keep its thread and programs forever. One that doesn't start posts the system notification instead (`alert::Sent::Fallback`), and an error toast says why, once per distinct reason (`alert_command_errors`, cleared when a settings reload changes `alert_command`). A shell line always starts, so a missing program only shows as exit 127: one that started returns `alert::Sent::Ran` with a channel on which the reaper thread sends why a non-zero exit failed (`alert::exit_failure`), and the window then posts the system notification and the same once-per-reason toast. One killed by a signal is only logged at warn level.
 - A status of `error` is its own alert (`model::Alert::Error`, `HERDR_AGENT_STATE=error`), rung, bounced and toasted as "needs you" is (`Alert::needs_you`), so an adapter can tell a stopped agent from one waiting on a question.
 - Files: `src/alert.rs`, `src/model.rs` (`Alert`), `src/window.rs` (`alert`, `tend_terminals`, `notified`, the response handler in `AppWindow::new`), `src/settings.rs`, `src/main.rs`, `defaults/frame/settings/main.js`, `defaults/AGENTS.md`
-- Upstream: none yet
+- Upstream: pull request #634 (`feat/system-notifications-upstream`), awaiting review
 
 ### Off-screen terminal output
 
@@ -236,7 +236,7 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 - Measured (isolated headless app, agent-deck layout, 31 fake agents, 1708×1398 window): heap at 31 terminals 116–120 → 44–50 MB; footprint 278–280 → 200–212 MB (the freed pages turn reclaimable); the render-state row cache 49.2 → 1.6 MB and the `Cell` rows 24.5 → 0.8 MB (malloc_history). Worst frame in the second after a tab switch p50 22–25 ms either way, also into a released tab (22–24 ms); steady streaming CPU unchanged (311–318 vs 335 M instructions/s).
 - Files: `src/vt.rs` (`Vt::release_frame_caches`, `Shared::released`, `on_render_hold`, `Vt::new`, test `released_frame_caches_read_the_same_frame_again`), `src/terminal.rs` (`HIDDEN_CHECK`, `watch_hidden`, `release_frame_caches`, `drawing` for tests), `src/window.rs` (test `a_hidden_terminal_frees_its_drawing_and_draws_the_same_when_shown`)
-- Upstream: none yet
+- Upstream: pull request #546 (`perf/release-hidden-terminal-caches`), awaiting review
 
 ### Spinners turn without a draw
 
@@ -267,7 +267,7 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 - Measured with the perf probe's `load.py` (headless agent-deck, 30 fake agents, two runs per side, a heavily loaded machine: read script time and instructions over wall time). Script time per mod frame (p50): idle 12.9 → 6.8 ms, status storm 14.6 → 7.8 ms; mod-frame p50 idle 21.6 → 16.6 ms, storm 25.8 → 18.9 ms; app instructions idle 166 → 137, storm 740 → 603 M/s. Most of the rest is GPUI layout, prepaint and materialize of the panels' trees (~6–8 ms), the agents list above all.
 - Files: `vendor/gpui-kit/crates/shell/src/host_modules.rs` (`HostValue::Json`), `vendor/gpui-kit/crates/shell/src/engine/quickjs/host_modules.rs` (`json_into_js`, test), `src/mods.rs` (`shared_part`, `keys_part`, `cached_part`, tests), `defaults/mods/tabs/main.js`, `defaults/AGENTS.md`
-- Upstream: none yet
+- Upstream: pull request #545 (`perf/shared-mod-reads`), awaiting review
 
 ### Interface zoom and text size
 
