@@ -649,6 +649,12 @@ pub fn publish_spaces(v: Value) -> bool {
 pub fn publish_agents(v: Value) -> bool {
     publish("agents", |s| (std::mem::replace(&mut s.agents, v.clone()), v))
 }
+/// `panes()` as last published, for tests.
+#[cfg(test)]
+pub fn published_panes() -> Value {
+    SNAPSHOT.with(|s| s.borrow().panes.clone())
+}
+
 pub fn publish_panes(v: Value) -> bool {
     publish("panes", |s| (std::mem::replace(&mut s.panes, v.clone()), v))
 }

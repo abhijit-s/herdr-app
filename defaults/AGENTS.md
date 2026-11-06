@@ -399,7 +399,7 @@ The tab block says how each pane of the shown tab is wrapped:
   pane has the keyboard; `gap` is the space between panes.
 - `header`: a mod drawn on each pane, one copy per pane, with
   `props().pane` and `props().terminal`. It reads its live facts from
-  `panes()` (name, title, folder, branch, agent status, focused, zoomed) and its
+  `panes()` (name, title, folder, branch, agent status, focused, zoomed, text_size) and its
   buttons run pane commands with that pane (`pane.split`, `pane.zoom`,
   `pane.close`). `position`: `top` or `bottom`; `reveal: "hover"` shows it
   only while the pointer is on the pane, drawn over the terminal so the
@@ -598,6 +598,7 @@ The main ones:
 - Panes: `pane.split {direction: "right" | "down", pane?, argv? | mod?, props?}` (a new
   terminal, or a mod pane), `pane.close {pane?}`, `pane.rename {pane?, name}` ("": its program's name again),
   `pane.zoom {pane?}`, `pane.focus {pane | terminal}`, `pane.go {direction}`, `pane.swap {direction}`.
+  `pane.zoom_text_in {pane?}`, `pane.zoom_text_out {pane?}`, `pane.zoom_text_reset {pane?}` zoom one terminal pane's text (default: the terminal with the keyboard, else the focused pane) on top of the app's `zoom`, a zoom step at a time (`zoom_step`: whole points of the pane's own size, or tenths), as Ghostty's per-surface font size does. The pane's cells follow `cell_width` and `cell_rounding`, its program gets the new rows and columns, and other panes, the panels and the layout don't change. Its size is `font_size × its zoom × zoom`: changing or resetting the app's zoom keeps the pane's, and resetting the pane's keeps the app's. It lasts as long as the pane and isn't saved. `panes()` has the pane's `text_size` (px, app zoom included) while it differs from the default, and the shipped `pane` header shows it ("16pt"). macOS binds Ctrl+= (and Ctrl++), Ctrl+- and Ctrl+0 in `global` (Cmd+= and friends stay `app.zoom_*`); other platforms leave them unbound, since Ctrl+= is `app.zoom_in` there. With `pane_zoom_keys` off, or no terminal holding the keyboard, a key bound to them is left unhandled, so the focused terminal's program gets it as if it were unbound. With the setting on, Ctrl+- (^_, undo in zsh, readline and emacs) and Ctrl+0 don't reach programs; turn `pane_zoom_keys` off to give them back. A pane zoomed by command while its tab is hidden is resized at once, so its program gets the new rows and columns before the tab shows. However the pane's and the app's zoom multiply, the text stays between `font_size × 0.5` and `font_size × 3`, the app zoom's own range, and a press never goes past that. At `zoom_step` `"point"` a press moves the pane's own size (`font_size × its zoom`) by a whole point, so at an app zoom other than 1 the drawn text moves by `zoom` points per press (2 points at zoom 2), not by one. A swapped-in terminal (`terminal.show`) has its own zoom, and the keys and `text_size` follow the view on screen. Keys bound in the object form (`{"command": "pane.zoom_text_in"}`) follow `pane_zoom_keys` too.
   `pane.go` prefers the most recently focused pane along the nearest edge in that
   direction; unvisited panes fall back to overlap, then top/left layout order.
   `pane.go` also reaches visible mods whose `mod.json` says `"focusable": true`, and
@@ -685,7 +686,7 @@ The main ones:
   (sections: `look`, `text`, `machines`, `alerts`, `updates`, `privacy`; Machines lists, updates, renames and removes ssh machines; settings edit the same files you do; its search field, focused by cmd-f or ctrl-f or by typing, finds a setting by its name, description or settings.json key, such as `cell_rounding`, and shows each page's matches with their controls).
   `app.check_updates` (only a successful check reports Up to date; a failed check clears the checked time and can be retried), `app.update_core` (a newer herdr-core of this generation, terminals kept;
   never one a package manager owns), `app.welcome`, `app.whats_new`, `app.feedback {message?, from?}` (from `"person"` or `"agent"`; opens a review window, where the person can paste up to 3 screenshots; never sends until the person clicks Send), `app.reset`,
-  `app.theme {name}`, `app.zoom_in`, `app.zoom_out`, `app.zoom_reset`,
+  `app.theme {name}`, `app.zoom_in`, `app.zoom_out`, `app.zoom_reset` (the whole app; a terminal pane's own text: `pane.zoom_text_*`),
   `app.update` (restart into a downloaded update).
   Add machine lists all named ssh-config hosts in a scrollable list. Setup
   prompts open above the picker; close the setup terminal to return to the
@@ -725,6 +726,7 @@ What's about the user, never a look:
 - `zoom` scales the whole app: terminals, mods, the layout's px sizes
   (0.5 to 3; the zoom keys change it). Write sizes as designed at zoom 1.
 - `zoom_step`: what one press of the zoom keys moves. `"tenth"` (default) steps `zoom` by 0.1, so 12 pt text goes 13.2, 14.4, 15.6. `"point"` steps the terminals' text a whole point at a time, as Ghostty's font size does (12 to 13, 14, 15), by setting `zoom` to the new size over `font_size`; the panels scale by the same factor. From between two points (a zoom set in tenths), the first press goes to the nearest whole point in its direction. Reset still goes to zoom 1. Changing `font_size` (or switching to a layout with its own) keeps `zoom`, so the text can sit between points until the next press.
+- `pane_zoom_keys` (default true): keys bound to `pane.zoom_text_in`, `pane.zoom_text_out` and `pane.zoom_text_reset` (Ctrl+=, Ctrl+- and Ctrl+0 on macOS) zoom the focused terminal's text. `false` leaves those keys to the program; the commands still run from the palette, mods and `herdr-app do`. The Settings window's Text page has it under Zoom steps ("Pane zoom keys").
 - `ui_zoom` (0.75 to 1.5, default 1): the panels only, on top of `zoom`: the layout's px sizes, pane headers, tabs, overlays, popups, toasts and every mod's px (text, spacing, icons). Terminals keep their text, cells and padding (`zoom` alone). A mod's px are drawn at `zoom × ui_zoom` (at most 3): divide window px by `settings().ui_scale`, which is that product. `settings().ui_scale_ranges` has both ranges.
 - `ui_text_scale` (0.8 to 1.3, default 1): the panels' text only, on top of their zoom: mods' `text_size(...)` (px or `"1rem"`), px and rem `line_height`s, editor `font_size`, and Herdr's own panel text. The window's rem leaves it out, so rem spacing, icons, row heights and terminals keep their size, and a big scale can crowd a fixed-height row.
 - `sounds`: `{ "enabled": true, "done": "<file>", "blocked": "<file>" }`.

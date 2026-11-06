@@ -275,6 +275,30 @@ Show only this pane of its tab, or all again.
 |---|---|
 | `pane` | no |
 
+## `pane.zoom_text_in`
+
+Make a terminal pane's text bigger (default: the focused terminal) by one zoom step, on top of the app's zoom; its program gets the new rows and columns. Kept for the life of the pane's terminal view.
+
+| Argument | Required |
+|---|---|
+| `pane` | no |
+
+## `pane.zoom_text_out`
+
+Make a terminal pane's text smaller (default: the focused terminal) by one zoom step.
+
+| Argument | Required |
+|---|---|
+| `pane` | no |
+
+## `pane.zoom_text_reset`
+
+Put a terminal pane's text (default: the focused terminal) back at the app's size.
+
+| Argument | Required |
+|---|---|
+| `pane` | no |
+
 ## `pane.focus`
 
 Focus a pane (or the pane showing a terminal).

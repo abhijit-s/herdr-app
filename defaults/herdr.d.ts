@@ -56,6 +56,7 @@ export function playSound(sound: string): null;
  *   tab.close {id?}, tab.rename {id?, name}, tab.move {id, index}, tab.select {index | id},
  *   tab.next, tab.prev.
  * Panes: pane.split {direction: "right" | "down", pane?}, pane.close {pane?}, pane.zoom {pane?},
+ *   pane.zoom_text_in|zoom_text_out|zoom_text_reset {pane?} (a terminal pane's own text size, on top of the app's zoom),
  *   pane.focus {pane | terminal}, pane.go {direction}, pane.swap {direction}, focus.toggle_follows_mouse. Pane menus get target { pane, terminal }.
  *   pane.arrange {mode: "tiled" | "bsp" | "master" | "columns" | "rows" | "next" | "off", tab?} rebuilds a tab's panes evenly in that shape
  *   (next: the one after the tab's last, from tiled); terminals, mod panes and focus stay, a zoomed pane unzooms. The tab keeps
@@ -211,6 +212,9 @@ export interface PaneInfo {
   program: Program;
   focused: boolean;
   zoomed: boolean;
+  /** The text size in px while the pane's own text zoom (pane.zoom_text_*) sets it,
+   *  the app's zoom included; null at the default size. */
+  text_size?: number | null;
   /** The app's top-center grip can rearrange this pane. False when zoomed or alone. */
   movable: boolean;
 }

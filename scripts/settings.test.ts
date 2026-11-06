@@ -125,6 +125,14 @@ test("interface scale steppers step 5% from the value in use", () => {
   expect(click({ ui_zoom: 1.05, font_size: 15 }, { ui_zoom: 1.05, ui_text_scale: 1 }, "st-ui_zoom-minus")).toEqual({ font_size: 15 });
 });
 
+test("pane zoom keys: on unless false, and a click toggles the key in settings.json", () => {
+  // On by default: the click writes false.
+  expect(click({}, {}, "st-pane_zoom_keys")).toEqual({ pane_zoom_keys: false });
+  expect(click({ zoom: 1.1 }, { pane_zoom_keys: true }, "st-pane_zoom_keys")).toEqual({ zoom: 1.1, pane_zoom_keys: false });
+  // Off: the click turns it back on by leaving the key out.
+  expect(click({ pane_zoom_keys: false, zoom: 1.1 }, { pane_zoom_keys: false }, "st-pane_zoom_keys")).toEqual({ zoom: 1.1 });
+});
+
 test("scale steps stay in the range Rust publishes, in hundredths", () => {
   const f32 = (v: number) => Math.fround(v);
   expect(scaleStep(undefined, 1, 0.05, [f32(0.8), f32(1.3)])).toBe(1.05);

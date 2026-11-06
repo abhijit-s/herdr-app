@@ -798,6 +798,10 @@ pub struct Person {
     /// What one press of the zoom keys moves.
     #[serde(skip_serializing_if = "ZoomStep::is_tenth")]
     pub zoom_step: ZoomStep,
+    /// The pane text zoom keys (`pane.zoom_text_*`) zoom the focused
+    /// terminal's text; off, the keys they're bound to reach the program.
+    #[serde(skip_serializing_if = "is_true")]
+    pub pane_zoom_keys: bool,
     /// How big the panels are drawn on top of `zoom` (chrome, mods, overlays;
     /// not the terminals' text or cells). 0.75..1.5.
     #[serde(skip_serializing_if = "is_one")]
@@ -1299,6 +1303,7 @@ impl Default for Person {
         Person {
             zoom: 1.0,
             zoom_step: ZoomStep::Tenth,
+            pane_zoom_keys: true,
             ui_zoom: 1.0,
             ui_text_scale: 1.0,
             sounds: Sounds::default(),
@@ -1403,6 +1408,7 @@ pub struct Settings {
     /// How big the whole app is drawn (1 = as designed). The zoom keys change it.
     pub zoom: f32,
     pub zoom_step: ZoomStep,
+    pub pane_zoom_keys: bool,
     /// The panels' size on top of `zoom` (terminals' text and cells excluded).
     pub ui_zoom: f32,
     /// The panels' text size on top of their zoom.
@@ -1489,6 +1495,7 @@ impl Default for Settings {
             ui_font_weight: UI_FONT_WEIGHT_DEFAULT,
             zoom: 1.0,
             zoom_step: ZoomStep::Tenth,
+            pane_zoom_keys: true,
             ui_zoom: 1.0,
             ui_text_scale: 1.0,
             asked_ui_scales: (1.0, 1.0),
@@ -1559,6 +1566,7 @@ impl Settings {
             ui_font_weight: person.ui_font_weight,
             zoom: person.zoom,
             zoom_step: person.zoom_step,
+            pane_zoom_keys: person.pane_zoom_keys,
             ui_zoom: clamp_scale(person.ui_zoom, UI_ZOOM_RANGE),
             ui_text_scale: clamp_scale(person.ui_text_scale, UI_TEXT_SCALE_RANGE),
             asked_ui_scales: (person.ui_zoom, person.ui_text_scale),
@@ -1881,6 +1889,28 @@ pub fn next_zoom(steps: i32) -> f32 {
     get().next_zoom(steps)
 }
 
+/// `zoom` (of text at `font_size`) `steps` presses of the zoom keys away (0
+/// resets), kept within `lo..=hi`: in tenths, or at whole points of
+/// `font_size × zoom`. From between two points (a zoom set in tenths, a
+/// layout's own font size) the first press goes to the nearest whole point in
+/// its direction. A zoom outside the range steps from its edge, so no press
+/// is lost undoing it.
+fn step_zoom(font_size: f32, zoom: f32, step: ZoomStep, steps: i32, (lo, hi): (f32, f32)) -> f32 {
+    if steps == 0 {
+        return 1.0;
+    }
+    let zoom = zoom.max(lo).min(hi);
+    // A font_size outside its range (reported, not refused) steps in
+    // tenths: at 0 or below there is no whole point to land on.
+    if step == ZoomStep::Tenth || !FONT_SIZE_RANGE.contains(&font_size) {
+        return (((zoom * 10.0).round() + steps as f32) / 10.0).max(lo).min(hi);
+    }
+    let now = font_size * zoom;
+    let from = if steps > 0 { (now + POINT_SLACK).floor() } else { (now - POINT_SLACK).ceil() };
+    let points = (from + steps as f32).max((font_size * lo).ceil()).min((font_size * hi).floor());
+    (points / font_size).max(lo).min(hi)
+}
+
 /// The terminals' zoom: their text, cells and padding.
 pub fn zoom() -> f32 {
     get().zoom
@@ -1991,30 +2021,43 @@ impl Settings {
         v
     }
 
-    /// The zoom `steps` presses of the zoom keys away (0 resets): in tenths,
-    /// or at whole points of the terminals' text. From between two points (a
-    /// zoom set in tenths, a layout's own font size) the first press goes to
-    /// the nearest whole point in its direction.
+    /// The zoom `steps` presses of the zoom keys away (0 resets; `step_zoom`).
     pub fn next_zoom(&self, steps: i32) -> f32 {
-        if steps == 0 {
-            return 1.0;
-        }
-        // A font_size outside its range (reported, not refused) steps in
-        // tenths: at 0 or below there is no whole point to land on.
-        if self.zoom_step == ZoomStep::Tenth || !FONT_SIZE_RANGE.contains(&self.font_size) {
-            return ((self.zoom * 10.0).round() + steps as f32).clamp(ZOOM_MIN * 10.0, ZOOM_MAX * 10.0) / 10.0;
-        }
-        let size = self.font_size;
-        let now = size * self.zoom;
-        let from = if steps > 0 { (now + POINT_SLACK).floor() } else { (now - POINT_SLACK).ceil() };
-        let points = (from + steps as f32).clamp((size * ZOOM_MIN).ceil(), (size * ZOOM_MAX).floor());
-        (points / size).clamp(ZOOM_MIN, ZOOM_MAX)
+        step_zoom(self.font_size, self.zoom, self.zoom_step, steps, (ZOOM_MIN, ZOOM_MAX))
+    }
+
+    /// A pane's own text zoom (`pane.zoom_text_*`) `steps` presses away from
+    /// `pane` (0 resets), stepped as the zoom keys step but from the pane's
+    /// own size, `font_size × pane`, and only as far as the app's zoom leaves
+    /// room for (`pane_font_size`'s range), so every press moves the text.
+    /// None: back at the default, 1.
+    pub fn next_pane_zoom(&self, pane: f32, steps: i32) -> Option<f32> {
+        let room = (ZOOM_MIN.max(ZOOM_MIN / self.zoom), ZOOM_MAX.min(ZOOM_MAX / self.zoom));
+        let next = step_zoom(self.font_size, pane, self.zoom_step, steps, room);
+        (next != 1.0).then_some(next)
     }
 
     /// The terminals' text size in px. At whole-point steps, a zoom that lands
     /// within float error of a whole point draws at exactly that point.
     pub fn terminal_font_size(&self) -> f32 {
-        let size = self.font_size * self.zoom;
+        self.on_point(self.font_size * self.zoom)
+    }
+
+    /// A pane's text size in px at its own text zoom `pane`: its size
+    /// (`font_size × pane`) times the app's zoom, each on a whole point when
+    /// within float error of one at whole-point steps, and within the app
+    /// zoom's own range (`font_size × 0.5` to `× 3`) however the two multiply.
+    pub fn pane_font_size(&self, pane: f32) -> f32 {
+        self.on_point(self.on_point(self.font_size * pane) * self.zoom).max(self.font_size * ZOOM_MIN).min(self.font_size * ZOOM_MAX)
+    }
+
+    /// The pane's whole scale on the terminals' design size: `zoom × pane`,
+    /// within the app zoom's range, as `ui_scale` caps its product.
+    pub fn pane_scale(&self, pane: f32) -> f32 {
+        (self.zoom * pane).max(ZOOM_MIN).min(ZOOM_MAX)
+    }
+
+    fn on_point(&self, size: f32) -> f32 {
         if self.zoom_step == ZoomStep::Point && (size - size.round()).abs() < POINT_SLACK {
             return size.round();
         }
@@ -2353,6 +2396,110 @@ mod tests {
     fn tenth_steps_leave_the_text_size_unrounded() {
         let s = stepped(10.0, 1.1, ZoomStep::Tenth);
         assert_eq!(s.terminal_font_size().to_bits(), (10.0f32 * 1.1).to_bits());
+    }
+
+    /// A pane's own text zoom steps as the app's zoom keys do, from the
+    /// pane's own size: tenths of it, or whole points of `font_size × pane`,
+    /// and a reset (or a step back to 1) is the default, None.
+    #[test]
+    fn pane_text_zoom_steps_like_the_zoom_keys_from_its_own_size() {
+        let tenth = stepped(14.0, 1.0, ZoomStep::Tenth);
+        assert_eq!([tenth.next_pane_zoom(1.0, 1), tenth.next_pane_zoom(1.0, -1), tenth.next_pane_zoom(1.1, 1)], [Some(1.1), Some(0.9), Some(1.2)]);
+        assert_eq!([tenth.next_pane_zoom(1.1, -1), tenth.next_pane_zoom(1.7, 0)], [None, None]);
+        assert_eq!(tenth.next_pane_zoom(3.0, 1), Some(3.0), "the zoom range's end");
+        // At whole points, from the pane's size (14), whatever the app's zoom.
+        for app in [1.0, 1.5] {
+            let point = stepped(14.0, app, ZoomStep::Point);
+            let up = point.next_pane_zoom(1.0, 1).unwrap();
+            assert_eq!(point.on_point(14.0 * up), 15.0, "app zoom {app}");
+            let down = point.next_pane_zoom(up, -2).unwrap();
+            assert_eq!(point.on_point(14.0 * down), 13.0, "app zoom {app}");
+            assert_eq!(point.next_pane_zoom(down, 1), None, "back at 14 is the default");
+        }
+        // From between points (14 × 1.1 = 15.4) to the nearest one each way.
+        let point = stepped(14.0, 1.0, ZoomStep::Point);
+        assert_eq!(point.pane_font_size(point.next_pane_zoom(1.1, 1).unwrap()), 16.0);
+        assert_eq!(point.pane_font_size(point.next_pane_zoom(1.1, -1).unwrap()), 15.0);
+    }
+
+    /// The app's zoom multiplies on top of the pane's size; changing or
+    /// resetting either keeps the other.
+    #[test]
+    fn app_zoom_multiplies_the_panes_own_text_size() {
+        let at = |zoom| stepped(14.0, zoom, ZoomStep::Point);
+        let pane = at(1.0).next_pane_zoom(1.0, 2).unwrap();
+        assert_eq!(at(1.0).pane_font_size(pane), 16.0);
+        assert_eq!(at(1.5).pane_font_size(pane), 24.0, "16 pt × 1.5");
+        assert_eq!(at(1.5).terminal_font_size(), 21.0, "other panes: 14 × 1.5");
+        assert_eq!(at(1.0).pane_font_size(pane), 16.0, "the app's reset keeps the pane's 16");
+        assert_eq!(at(1.5).next_pane_zoom(pane, 0), None, "the pane's reset keeps the app's zoom: it is the default again");
+        let tenth = stepped(14.0, 1.2, ZoomStep::Tenth);
+        assert_eq!(tenth.pane_font_size(1.1).to_bits(), (14.0f32 * 1.1 * 1.2).to_bits());
+    }
+
+    /// Pane zoom times app zoom stops at the largest zoom's size, and the
+    /// two still reset independently.
+    #[test]
+    fn a_pane_zoomed_on_a_zoomed_app_stops_at_the_largest_size() {
+        let at = |zoom| stepped(14.0, zoom, ZoomStep::Tenth);
+        assert_eq!(at(3.0).pane_font_size(3.0), 42.0);
+        assert_eq!(at(2.0).pane_font_size(2.0), 42.0);
+        assert_eq!(at(2.0).pane_scale(2.0), 3.0);
+        assert_eq!(at(1.0).pane_font_size(2.0), 28.0, "the app's reset keeps the pane's zoom");
+        assert_eq!(at(2.0).next_pane_zoom(2.0, 0), None, "the pane's reset keeps the app's");
+        assert_eq!(at(2.0).terminal_font_size(), 28.0);
+    }
+
+    /// At an app zoom of 2, Ctrl+= stops where the text reaches the largest
+    /// size (font 14: 21 pt of the pane's own, drawn at 42), with no press
+    /// lost above it, and the first Ctrl+- after shrinks it. The same holds
+    /// in tenths and at the small end, and a factor stored past the room (the
+    /// app zoomed in later) steps from the edge.
+    #[test]
+    fn no_pane_zoom_press_is_lost_at_the_ends() {
+        for step in [ZoomStep::Point, ZoomStep::Tenth] {
+            for app in [2.0, 0.5, 1.1] {
+                let s = stepped(14.0, app, step);
+                let mut pane = 1.0;
+                let mut drawn = s.pane_font_size(pane);
+                for dir in [1, -1] {
+                    loop {
+                        let next = s.next_pane_zoom(pane, dir).unwrap_or(1.0);
+                        let size = s.pane_font_size(next);
+                        if next == pane {
+                            break;
+                        }
+                        assert!(if dir > 0 { size > drawn } else { size < drawn }, "{step:?} app {app}: {pane} -> {next} draws {drawn} -> {size}");
+                        (pane, drawn) = (next, size);
+                    }
+                    // The pane's own range (0.5 to 3) at this app zoom, within the app zoom's.
+                    let end = if dir > 0 { 42.0f32.min(42.0 * app) } else { 7.0f32.max(7.0 * app) };
+                    let press = if step == ZoomStep::Point { app } else { 1.4 * app };
+                    assert!((drawn - end).abs() < press, "{step:?} app {app}: stopped at {drawn}, not near {end}");
+                    if dir > 0 {
+                        let back = s.next_pane_zoom(pane, -1).unwrap_or(1.0);
+                        assert!(s.pane_font_size(back) < drawn, "{step:?} app {app}: the first Ctrl+- at the top shrinks");
+                    }
+                }
+            }
+        }
+        let point = stepped(14.0, 2.0, ZoomStep::Point);
+        let top = std::iter::successors(Some(1.0), |p| point.next_pane_zoom(*p, 1)).take(40).last().unwrap();
+        assert_eq!(14.0 * top, 21.0, "the largest whole point of the pane's own size within the cap");
+        assert_eq!(point.pane_font_size(top), 42.0);
+        assert_eq!(14.0 * point.next_pane_zoom(3.0, -1).unwrap(), 20.0, "a factor past the room steps from its edge");
+        assert_eq!(stepped(14.0, 1.0, ZoomStep::Point).pane_font_size(top), 21.0, "the app's reset keeps the pane's zoom");
+        assert_eq!(point.next_pane_zoom(top, 0), None, "the pane's reset keeps the app's");
+        assert_eq!(stepped(14.0, 0.5, ZoomStep::Tenth).pane_font_size(0.5), 7.0, "the small end: 0.5 × 0.5 stops at font_size × 0.5");
+    }
+
+    #[test]
+    fn pane_zoom_keys_default_on() {
+        assert!(Person::default().pane_zoom_keys && Settings::default().pane_zoom_keys);
+        assert!(serde_json::to_value(Person::default()).unwrap().get("pane_zoom_keys").is_none());
+        let off: Person = serde_json::from_value(serde_json::json!({"pane_zoom_keys": false})).unwrap();
+        assert!(!Settings::compose(&off, &crate::layout::Look::default(), true).pane_zoom_keys);
+        assert_eq!(serde_json::to_value(&off).unwrap()["pane_zoom_keys"], false);
     }
 
     #[test]
@@ -2732,7 +2879,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, pane_zoom_keys: false, ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();
