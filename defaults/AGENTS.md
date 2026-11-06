@@ -1142,6 +1142,14 @@ All of it is in `herdr.d.ts`. In short:
   the focused pane under the window. Check `focused()?.pane` before offering pane controls.
   `panes()` still lists only model panes; none is focused while a terminal block is.
   For composition navigation: `run("pane.focus", {terminal: nextAddress})`.
+  `recentPlaces()`: where the person has been, newest first (pane, terminal, tab,
+  space, machine, at), one place per pane, at most 20. A place counts once they
+  stay on it 300 ms, by any means (keys, clicks, commands, `agent.focus`, tab and
+  space switches) on any Herdr client of this machine; overlays and popups never
+  count, so a go-to popup sees where the person was before it opened. A place is a
+  pane: `agent.focus` on a sub-agent shown only in an agent block records none. Closed panes
+  stay in it until pushed out: check them against `panes()`. Kept across restarts
+  in the core document `herdr.focus` (see herdr-core below).
   Terminal copy/paste and implicit right-click routing follow the focused block.
   Reads subscribe: a copy re-renders only when something it read (in render, a callback or a child) changes, so read what you show and no more. Each call returns a fresh copy of the whole list (tens of µs for 30 panes or terminals): read it once per render into a variable, not once per row. A hidden copy (another tab's pane header, an inactive stack child) is not redrawn; it catches up when shown.
 - Git: `gitStatus(folder, { on, files })`: the status of the repo `folder` is in (branch, head, upstream, ahead, behind, staged, unstaged, untracked, conflicted, root, name, linked; with `files: true`, each changed file's path and git's two status letters), `null` until the first answer, `false` outside a repo. Cached and shared by every mod: git runs once per change on disk (ignored folders don't count), never once per mod or per render, and the copy re-renders when that folder's answer changes. Read it in render instead of running `git status` on a timer. `nextGitStatus(folder, { on, files, after })` resolves with `{ status, revision }` once there is an answer newer than `after` (for work outside render); `refreshGitStatus(folder, { on })` asks again now. Another machine's folder (`on`) has no watcher: refresh it when a command ends there; it is also asked again when read a minute old. Older herdr-app builds lack these: `import * as herdr from "herdr"` and check `typeof herdr.gitStatus === "function"` to keep a fallback.
@@ -1206,6 +1214,24 @@ including a small herdr-core skill you can install with the user's permission.
 - Other machines: `hc machine ls`; `hc run --on <machine> ...` starts a
   terminal there (`vps/t7`), `hc exec --on <machine> git status` runs one
   command there and prints exactly its output.
+- Focus history: the core document `herdr.focus` (`doc.get`/`doc.set`, API only)
+  is `{"v": 1, "places": [{pane, terminal, tab, space, machine, at}, ...]}`,
+  newest first, at most 20, one place per pane; `pane` (a non-empty string) and
+  `at` (an integer, ms since the Unix epoch) are required; `terminal`, `tab`,
+  `space` and `machine` may be null or left out.
+  Herdr app windows write it on this machine's core when the person settles on a
+  pane; places on another machine stay here with their `machine` (remote cores are
+  never written). Any client may add to it: read, merge (the union by `pane`, the
+  later `at` winning, sorted by `at` newest first then `pane`, cut to 20), and
+  `doc.set` with the version read; on `conflict`, read and merge again. Write only
+  when the merge keeps a visit the stored list lacks (a new pane or a later `at`),
+  not to tidy another client's order or length. Keep what you don't read: other
+  top-level fields, other fields of a place, and entries without a `pane` and an
+  integer `at` (the app writes the first 20 of those back as they were, after the
+  places, and drops the rest). A `v`
+  above 1 is a newer shape: read it, don't write it. A value that isn't an object
+  with an integer `v` (and a `places` list) is unreadable: the app says so once and
+  its next write replaces it with a fresh `{"v": 1}`. Writing `{"v": 1, "places": []}` clears it.
 
 ## Keep in mind
 

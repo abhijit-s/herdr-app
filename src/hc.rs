@@ -50,6 +50,10 @@ pub struct EventLines {
 pub struct Pushed {
     /// A layout document changed, or events were missed: read them again.
     pub docs: bool,
+    /// This machine's focus history (`focus_history::NAME`) changed, or events were missed.
+    pub focus: bool,
+    /// The version the last of those changes left it at; None when unknown (`missed`).
+    pub focus_version: Option<u64>,
     pub terminals: bool,
 }
 
@@ -111,11 +115,18 @@ impl EventLines {
                     self.seq = p["seq"].as_u64().unwrap_or(self.seq);
                     self.resynced = true;
                     pushed.docs = true;
+                    pushed.focus = true;
+                    pushed.focus_version = None;
                     pushed.terminals = true;
                 }
                 Some("event") if p["seq"].as_u64().is_none_or(|s| s > self.seq) => {
                     self.seq = p["seq"].as_u64().unwrap_or(self.seq);
-                    if p["type"] == "doc" {
+                    if p["type"] == "doc" && p["data"]["name"] == crate::focus_history::NAME {
+                        if p["machine"].is_null() {
+                            pushed.focus = true;
+                            pushed.focus_version = p["data"]["version"].as_u64();
+                        }
+                    } else if p["type"] == "doc" {
                         pushed.docs = true;
                     } else {
                         pushed.terminals |= self.apply(p);
@@ -590,9 +601,18 @@ mod tests {
         assert!(addresses(&lines).is_empty() && lines.ended().len() == 1, "removed: gone from both");
         let missed = format!("{}\n", json!({"method": "missed", "params": {"seq": 20, "terminals": [rec("t9")]}}));
         let got = lines.push(missed.as_bytes());
-        assert!(got.terminals && got.docs, "missed: everything again");
+        assert!(got.terminals && got.docs && got.focus, "missed: everything again");
         assert_eq!(addresses(&lines), ["t9"]);
         assert!(lines.push(format!("{}\n", json!({"method": "event", "params": {"seq": 21, "type": "doc"}})).as_bytes()).docs);
+        // The focus history is read on its own: a write to it doesn't reread the layouts.
+        let doc = |seq: u64, name: &str, machine: Option<&str>| format!("{}\n", json!({"method": "event", "params": {"seq": seq, "type": "doc", "machine": machine, "data": {"name": name, "version": 2}}}));
+        let got = lines.push(doc(22, "herdr.focus", None).as_bytes());
+        assert!(got.focus && !got.docs);
+        assert_eq!(got.focus_version, Some(2), "the version, to tell an app's own write");
+        let got = lines.push(doc(23, "herdr.focus", Some("rohan")).as_bytes());
+        assert!(!got.focus && !got.docs, "another machine's history isn't this one's");
+        let got = lines.push(doc(24, "herdr-app", None).as_bytes());
+        assert!(got.docs && !got.focus);
     }
 
     #[test]
