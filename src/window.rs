@@ -7683,7 +7683,9 @@ export default class Probe extends View {
         assert_eq!(chrome(cx), "#202020", "an own chrome wins while inactive");
 
         // A theme file on disk: focus changes resolve it from the palette last
-        // read, so a half-written file can't flip the window to another theme.
+        // read. With the home moved to an empty folder (nothing written, so no
+        // file event reloads the look), any read of the file would fail and
+        // fall back to Graphite.
         let file = crate::mods::app_dir().join("themes/focus-test.json");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, r##"{"background":"#1d2330","foreground":"#c8d0e0","selection":"#3a4660","ansi":["#000000","#e06c75","#98c379","#e5c07b","#61afef","#c678dd","#56b6c2","#abb2bf","#5c6370","#e06c75","#98c379","#e5c07b","#61afef","#c678dd","#56b6c2","#ffffff"]}"##).unwrap();
@@ -7694,14 +7696,20 @@ export default class Probe extends View {
         });
         let flat = chrome(cx);
         assert_eq!(crate::settings::theme()["background"], "#1d2330", "the file's theme is showing");
-        std::fs::write(&file, "{\"background\": \"#1d23").unwrap();
+        let home = crate::mods::app_dir();
+        let empty = std::env::temp_dir().join(format!("herdr-focus-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).unwrap();
+        // SAFETY: this test runs alone in its own process (`in_own_process`).
+        unsafe { std::env::set_var("HERDR_APP_HOME", &empty) };
+        assert!(!crate::settings::theme_exists("focus-test"), "the theme file is out of reach");
         cx.update(|window, _| window.activate_window());
         let shaded = chrome(cx);
         assert_ne!(shaded, flat, "focus shades the file's theme");
-        assert_eq!(crate::settings::theme()["background"], "#1d2330", "a corrupt file on disk doesn't reach a focus change");
+        assert_eq!(crate::settings::theme()["background"], "#1d2330", "a focus change reads no theme file");
         cx.deactivate_window();
         assert_eq!(chrome(cx), flat);
         assert_eq!(crate::settings::theme()["background"], "#1d2330");
+        unsafe { std::env::set_var("HERDR_APP_HOME", &home) };
     }
 
     /// With `unfocused_dim` over the window (the default scope), blurring lays
