@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 const source = (await readFile(new URL("../defaults/mods/crosstalk/main.js", import.meta.url), "utf8"))
   .replace(/^import [\s\S]*?;\n/gm, "").replace("export default class Crosstalk", "class Crosstalk");
 
-const NAMES = ["parseRpc", "parseWatch", "missingMethods", "clean", "preview", "replyEnvelope", "replyNote", "Crosstalk", "METHODS"];
+const NAMES = ["parseRpc", "parseWatch", "missingMethods", "clean", "preview", "replyEnvelope", "replyNote", "senderLabel", "retryNote", "Crosstalk", "METHODS"];
 
 type Call = { command: string; args: string[]; options: unknown };
 type Reply = { code: number; stdout?: string; stderr?: string };
@@ -71,6 +71,7 @@ test("a watch is an event, a timeout, or an error", () => {
   expect(parseWatch({ code: 0, stdout: '{"type":"message","id":"x"}\n', stderr: "" })).toEqual({ event: { type: "message", id: "x" } });
   expect(parseWatch({ code: 69, stdout: "", stderr: "" }).error.kind).toBe("unavailable");
   expect(parseWatch({ code: 64, stdout: "", stderr: "" }).error.kind).toBe("bug");
+  expect(parseWatch(fails("unauthorised", "who are you"))).toEqual({ error: { kind: "unauthorised", message: "unauthorised", hint: "who are you" } });
 });
 
 test("untrusted text loses escapes, controls and bidirectional overrides, and is capped", () => {
@@ -80,6 +81,8 @@ test("untrusted text loses escapes, controls and bidirectional overrides, and is
   expect(clean("keep\ttabs\nand lines", 100)).toBe("keep\ttabs\nand lines");
   expect(clean("abcdef", 3)).toBe("abc … (truncated)");
   expect(clean("a\u2028b\u2029c\u200bd\u200de\ufefff\u2060g", 100)).toBe("abcdefg");
+  expect(clean("h\u{e0041}\u{e0042}i\u00adj\ufe0fk\u3164l\u206am", 100)).toBe("hijklm");
+  expect(clean("emoji 👍 stays", 100)).toBe("emoji 👍 stays");
   expect(preview("  two\n\nlines  ")).toBe("two lines");
   expect(preview("x".repeat(300)).length).toBe(200 + " … (truncated)".length);
 });
@@ -252,4 +255,49 @@ test("after close nothing updates", async () => {
   const before = h.calls.length;
   h.clock.now += 120_000; h.view.tick(h.cx); await h.settle();
   expect(h.calls.length).toBe(before);
+});
+
+test("the sender's verification comes only from from_verified being true", () => {
+  const { senderLabel } = load().mod;
+  expect(senderLabel({ from_verified: true })).toBe("verified");
+  expect(senderLabel({ from_verified: false })).toBe("unverified");
+  expect(senderLabel({ from_verified: "true" })).toBe("unverified");
+  expect(senderLabel({})).toBe("unverified");
+});
+
+test("every retried failure says it retries; a too-old crosstalk says what to do", () => {
+  const { retryNote } = load().mod;
+  expect(retryNote({ kind: "timeout" })).toBe(" · retrying");
+  expect(retryNote({ kind: "unavailable" })).toBe(" · retrying");
+  expect(retryNote({ kind: "unsupported" })).toContain("updating crosstalk");
+});
+
+test("a watch error printed with exit 0 backs off like any failure", async () => {
+  const { mod } = load();
+  const h = await started(service(mod.METHODS), Array.from({ length: 10 }, () => fails("unauthorised")));
+  const watches = () => h.calls.filter((c) => c.args[0] === "watch").length;
+  for (let i = 0; i < 5; i++) { h.view.tick(h.cx); await h.settle(); }
+  expect(watches()).toBe(1);
+  expect(h.view.problem.kind).toBe("unauthorised");
+});
+
+test("a failure after close changes nothing and toasts nothing", async () => {
+  const h = load({ "rpc.discover": { code: 64, stderr: "bad" } });
+  const view = new h.mod.Crosstalk();
+  view.init({}, h.cx);
+  await view.close();
+  await h.settle();
+  expect(h.toasts).toHaveLength(0);
+  expect(view.problem).toBe(null);
+});
+
+test("a request that leaves the inbox and returns is not toasted again", async () => {
+  const { mod } = load();
+  const h = await started(service(mod.METHODS, { fetch: ok([msg("01R", { kind: "core.request" })]) }));
+  expect(h.toasts).toHaveLength(1);
+  h.view.setInbox([]);
+  h.clock.now += 120_000;
+  h.view.setInbox([msg("01R", { kind: "core.request" })]);
+  h.view.tick(h.cx);
+  expect(h.toasts).toHaveLength(1);
 });

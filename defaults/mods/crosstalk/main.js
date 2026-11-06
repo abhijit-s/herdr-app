@@ -17,6 +17,7 @@ const WATCH = "60s"; // the CLI's own timeout: a watch waiting at close() ends b
 const MERGE_MS = 30000; // at most one request toast per window
 const PREVIEW = 200, FULL = 64 * 1024, SNOOZE_S = 600;
 const TERMINAL = "x-herdr.terminal";
+const TOASTED_MAX = 1000;
 
 const firstLine = (s) => String(s ?? "").trim().split("\n")[0] ?? "";
 
@@ -36,7 +37,11 @@ function parseRpc(r) {
 function parseWatch(r) {
   if (r.code === EXIT.timeout) return { timeout: true };
   if (r.code === EXIT.ok) {
-    try { return { event: JSON.parse(r.stdout.trim()) }; } catch { return { error: { kind: "bug", message: "crosstalk watch printed something that is not JSON", hint: "" } }; }
+    let printed;
+    try { printed = JSON.parse(r.stdout.trim()); } catch { return { error: { kind: "bug", message: "crosstalk watch printed something that is not JSON", hint: "" } }; }
+    // A service error printed like rpc's (exit 0, an error object) is an error, not an event.
+    if (printed && typeof printed === "object" && printed.error) return parseRpc(r);
+    return { event: printed };
   }
   return parseRpc(r);
 }
@@ -59,13 +64,14 @@ function missingMethods(discovered) {
 
 // Untrusted text for display: no escape sequences, control characters (other
 // than newline and tab), bidirectional overrides, line or paragraph
-// separators, or zero-width characters; capped with a marker.
+// separators, zero-width, filler or tag characters, or variation
+// selectors; capped with a marker.
 function clean(text, max) {
   let s = String(text ?? "")
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, "")
     .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "")
-    .replace(/[\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, "");
+    .replace(/[\u00ad\u061c\u115f\u1160\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}]/gu, "");
   if (s.length > max) s = s.slice(0, max) + " … (truncated)";
   return s;
 }
@@ -89,6 +95,12 @@ function replyEnvelope(original, text) {
 function replyNote(e) {
   return e.reply_to && e.reply_to !== e.from ? `Reply goes to ${clean(e.reply_to, 200)}` : null;
 }
+
+// The service stamps from_verified with from; anything but true is unverified.
+const senderLabel = (e) => (e.from_verified === true ? "verified" : "unverified");
+
+// What the person can expect after a failure.
+const retryNote = (problem) => (problem?.kind === "unsupported" ? " · reopen the inbox after updating crosstalk" : " · retrying");
 
 const kindLabel = (kind) => ({ "core.request": "request", "core.mail": "mail", "core.message": "message" })[kind] ?? kind;
 
@@ -127,6 +139,7 @@ export default class Crosstalk extends View {
   // Every failure backs off (1 s doubling to 60 s), except a crosstalk too
   // old for the mod, which waits for a reload. A bug is reported once.
   fail(error, cx) {
+    if (this.closed) return;
     this.problem = { kind: error.kind, message: clean(error.message, 300), hint: clean(error.hint, 300) };
     const key = `${error.kind}:${error.message}`;
     if (error.kind === "bug" && !this.reported.has(key)) {
@@ -169,10 +182,12 @@ export default class Crosstalk extends View {
       if (f.error) return this.fail(f.error, cx);
       this.setInbox(f.result ?? []);
     }
+    if (this.closed) return;
     if (all || what === "ctl.presence") {
       const p = await rpc("presence.list");
       if (!p.error) this.agents = p.result ?? [];
     }
+    if (this.closed) return;
     if (all) {
       const t = await rpc("task.list");
       if (!t.error) this.tasks = Array.isArray(t.result) ? t.result : t.result?.tasks ?? [];
@@ -186,7 +201,10 @@ export default class Crosstalk extends View {
     if (this.open && !this.inbox.some((d) => d.envelope.id === this.open)) this.open = null;
     setShared("crosstalk.unread", this.inbox.length);
     const ids = new Set(this.inbox.map((d) => d.envelope.id));
-    for (const set of [this.toasted, this.pending]) for (const id of set) if (!ids.has(id)) set.delete(id);
+    for (const id of this.pending) if (!ids.has(id)) this.pending.delete(id);
+    // A request toasts once, even if it leaves the inbox (snoozed) and comes
+    // back; the oldest are forgotten past TOASTED_MAX.
+    for (const id of this.toasted) { if (this.toasted.size <= TOASTED_MAX) break; this.toasted.delete(id); }
     for (const d of this.inbox) if (d.envelope.kind === "core.request" && !this.toasted.has(d.envelope.id)) this.pending.add(d.envelope.id);
     this.flushToasts();
   }
@@ -233,6 +251,7 @@ export default class Crosstalk extends View {
         .child(div().px(5).rounded(4).border_1().border_color(e.kind === "core.request" ? t.blocked : t.border).text_size(10).text_color(t.muted).child(kindLabel(clean(e.kind, 40))))
         // The sender is drawn outside the body, in the mod's own colours, so a body cannot imitate it.
         .child(div().text_size(11).text_color(t.accent).truncate().child(clean(e.from, 200)))
+        .child(div().text_size(10).text_color(e.from_verified === true ? t.dim : t.blocked).child(senderLabel(e)))
         .child(div().flex_1())
         .child(div().text_size(10).text_color(t.dim).child(clean(e.at, 40))))
       .child(div().text_size(12).text_color(t.foreground).when(!open, (el) => el.truncate()).child(open ? clean(bodyText(e), FULL) : preview(bodyText(e))));
@@ -258,7 +277,7 @@ export default class Crosstalk extends View {
     const tabBtn = (id, label) => div().id(`tab-${id}`).px(10).py(4).rounded(6).cursor_pointer().text_size(12).when(this.tab === id, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.tab = id; cx.notify(); }).child(label);
     const empty = (text) => div().p(10).text_color(t.dim).text_size(12).child(text);
     let body;
-    if (this.problem && !this.ready) body = empty(`${this.problem.message}${this.problem.hint ? ` · ${this.problem.hint}` : ""}${this.problem.kind === "unavailable" ? " · retrying" : ""}`);
+    if (this.problem && !this.ready) body = empty(`${this.problem.message}${this.problem.hint ? ` · ${this.problem.hint}` : ""}${retryNote(this.problem)}`);
     else if (this.tab === "inbox") body = this.inbox.length ? v_flex().children(this.inbox.map((d) => this.row(d, t))) : empty(this.ready ? "No messages" : "Connecting…");
     else if (this.tab === "tasks") body = this.tasks.length ? v_flex().children(this.tasks.map((k) => h_flex().id(`task-${k.id}`).px(10).py(6).gap(8)
       .child(div().w(80).text_size(10).text_color(t.muted).child(clean(k.status, 20)))
@@ -279,6 +298,6 @@ export default class Crosstalk extends View {
       .child(div().id("crosstalk-body").flex_1().min_h(0).overflow_y_scroll().p(6).child(body))
       .when(this.tab === "inbox" && Boolean(this.open), (el) => el.child(this.openActions(t)))
       .when(Boolean(this.note), (el) => el.child(div().px(12).pb(8).text_size(11).text_color(t.ansi1).child(this.note)))
-      .when(Boolean(this.problem && this.ready), (el) => el.child(div().px(12).pb(8).text_size(11).text_color(t.dim).child(`${this.problem.message}${this.problem.kind === "unavailable" ? " · retrying" : ""}`)));
+      .when(Boolean(this.problem && this.ready), (el) => el.child(div().px(12).pb(8).text_size(11).text_color(t.dim).child(`${this.problem.message}${retryNote(this.problem)}`)));
   }
 }
