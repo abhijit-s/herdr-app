@@ -20,6 +20,8 @@ class Element {
   }
 }
 const element = () => new Element();
+// What `hc machine ls` lists.
+let machineDisk: any[] = [];
 // An input field: its text, whether it was focused, and the range last selected.
 const fakeInput = () => {
   const input = { text: "", focused: false, selected: null as any, on() {}, focus() { input.focused = true; }, value: () => input.text, set_value(v: string) { input.text = v; }, set_selected_range(r: any) { input.selected = r; } };
@@ -35,6 +37,7 @@ const values: Record<string, any> = {
   settings: () => composed, window: () => ({ platform: "linux" }), props: () => ({}),
   // Pages search reads besides Text and Look: a build from source that checks nothing.
   updates: () => ({ app: { version: "0.1.0", updates: false }, core: { version: "0.1.17" }, checks: false }), telemetry: () => null,
+  hc: async (args: string[]) => (args.join(" ") === "machine ls --json" ? { code: 0, stdout: JSON.stringify({ machines: machineDisk }) } : { code: 1, stderr: "no" }),
   appHome: () => "/home", notify: (n: any) => { disk.toasts.push(n); },
   shared: (key: string) => (key === "layout" ? layoutDisk.name : undefined), run: (name: string, args: any) => { layoutDisk.runs.push([name, args]); },
   layout: () => { layoutDisk.layoutReads++; return layoutDisk.shown; },
@@ -672,7 +675,7 @@ test("the index is built once per window and again only after a setting changes"
   const matched = view.matched;
   view.results(t, searchCx);
   expect(view.matched).toBe(matched);
-  view.index = null; // as change() leaves it after writing settings.json
+  view.person = { cell_rounding: "nearest" }; // settings.json written
   view.results(t, searchCx);
   expect(builds).toBe(1);
 });
@@ -721,4 +724,72 @@ test("cmd-f focuses the field, typing with nothing focused searches, esc clears 
   view.searchFocused = false;
   key("escape");
   expect(closed).toBe(1);
+});
+
+/** A search on a window opened at `section`, its spawned work run when `settle` is awaited. */
+function searchFrom(section: string) {
+  composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, letter_spacing: 0, ui_scale_ranges: { ui_zoom: [0.75, 1.5], ui_text_scale: [0.8, 1.3] } };
+  const pending: Promise<void>[] = [];
+  const cx = { ...searchCx, spawn: (f: (cx: any) => Promise<void>) => pending.push(f(cx)), focus_handle: () => ({ focus() {} }), timer: { every() {}, after() {} } };
+  const view = new Settings();
+  view.init({}, cx);
+  view.section = section;
+  view.person = {};
+  for (const part of ["layoutPicker", "themePicker", "fontButton", "fontList", "iconPicker"]) view[part] = element;
+  const shown = (query: string) => { view.setQuery(query); return texts(view.results(t, cx)).join("|"); };
+  const settle = async () => { while (pending.length) await pending.shift(); };
+  return { view, shown, settle };
+}
+
+test("search finds machines and spacing that a page not yet opened reads in", async () => {
+  machineDisk = [{ name: "buildbox", target: "me@buildbox", state: "connected", version: "0.1.17" }];
+  Object.assign(layoutDisk, { name: "mine", raw: JSON.stringify(deck()), shown: deck(), readFail: undefined });
+  const { shown, settle } = searchFrom("updates");
+  shown("buildbox");
+  shown("pane gap");
+  await settle();
+  expect(shown("buildbox")).toContain("me@buildbox");
+  expect(shown("pane gap")).toContain("layout.spacing.|pane|_|gap");
+});
+
+test("a description that changed since indexing is matched as it is now", () => {
+  const { view, shown } = searchFrom("look");
+  expect(shown("keeps classic")).not.toContain("Panel colours");
+  composed.panels_in_use = "classic";
+  // Its page has no other match, so only a new index can show it.
+  expect(shown("keeps classic")).toContain("Panel colours");
+  // The same state draws from the same index.
+  const index = view.index;
+  shown("keeps");
+  expect(view.index).toBe(index);
+});
+
+test("typing into the focused field is left to the field", () => {
+  const { view } = search("zo");
+  let stopped = 0;
+  view.searchFocused = true;
+  view.onKey({ key: "o", key_char: "o", modifiers: {} }, { ...searchCx, stop_propagation: () => stopped++ });
+  expect(view.query).toBe("zo");
+  expect(stopped).toBe(0);
+});
+
+test("esc leaves the field for the window, and closes a list opened in the results", () => {
+  const { view } = search("font");
+  let focused = 0;
+  view.handle = { focus: () => focused++ };
+  view.picking = "font";
+  view.onKey({ key: "escape", modifiers: {} }, searchCx);
+  expect(view.query).toBe("");
+  expect(view.picking).toBeNull();
+  expect(focused).toBe(1);
+  view.searchFocused = true;
+  view.onKey({ key: "escape", modifiers: {} }, searchCx);
+  expect(focused).toBe(2);
+});
+
+test("alt starts no search off macOS, and marks keep their place after a letter whose lower case is longer", () => {
+  const { view } = search("");
+  view.onKey({ key: "x", key_char: "x", modifiers: { alt: true } }, searchCx);
+  expect(view.query).toBe("");
+  expect(wordSpan("box", "İbox", false)).toEqual([1, 4]);
 });

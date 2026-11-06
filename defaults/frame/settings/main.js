@@ -200,8 +200,9 @@ const DEFAULT_UI_FONT_WEIGHT = 400;
 // Search -----------------------------------------------------------------
 
 // Lower case, with settings.json's _ - . read as spaces, so "cell_rounding"
-// finds "Cell rounding". Keeps the length, so spans index the original text.
-const fold = (s) => s.toLowerCase().replace(/[_\-.]/g, " ");
+// finds "Cell rounding". Keeps the length, so spans index the original text: a
+// letter whose lower case is longer ("İ") stays as it is.
+const fold = (s) => s.replace(/[\s\S]/g, (c) => { const l = c.toLowerCase(); return l.length === 1 ? l : c; }).replace(/[_\-.]/g, " ");
 
 /** The typed words to look for; none while nothing is typed. */
 export function searchWords(query) {
@@ -297,9 +298,8 @@ export default class Settings extends View {
     this.machineResults = {};
     this.machineEdit = null;
     this.machineNotice = null;
-    // Search: the typed words, an index of every page's settings built once
-    // per window (again only after a setting or the machine list changes),
-    // and what the words match in it.
+    // Search: the typed words, an index of every page's settings (built again
+    // only when what the pages draw from changes), and what the words match.
     this.query = "";
     this.words = [];
     this.place = { page: this.section, heading: "" };
@@ -381,7 +381,6 @@ export default class Settings extends View {
     cx.spawn(async (cx) => {
       const failed = await this.save(edit);
       if (failed) notify({ ...failed, level: "error" });
-      this.index = null;
       cx.notify();
     });
   }
@@ -469,6 +468,9 @@ export default class Settings extends View {
 
   // Every page's settings, from the pages themselves: what row() and block() see.
   buildIndex(t, cx) {
+    // Pages not opened yet haven't read what they list: read it now, and index
+    // again once it's here (results() sees the list change).
+    if (this.machineList === null && !this.machineLoading && !this.machineError) cx.spawn(async (cx) => { await this.loadMachines(); cx.notify(); });
     this.index = new Map();
     this.indexing = true;
     try {
@@ -497,7 +499,11 @@ export default class Settings extends View {
 
   // Every page with a match, each showing only its matches under their headings.
   results(t, cx) {
-    if (!this.index || this.indexStale) this.buildIndex(t, cx);
+    // What the pages draw from: descriptions and conditional rows follow it (an
+    // update check, a theme's panels), so a change means a new index.
+    const from = JSON.stringify([settings(), updates(), telemetry(), layoutSpacing(), this.person, this.machineList, this.layoutFile?.raw]);
+    if (!this.index || this.indexStale || from !== this.indexedFrom) this.buildIndex(t, cx);
+    this.indexedFrom = from;
     const m = this.match();
     const found = SECTIONS.filter((s) => m.pages.has(s.id));
     if (!found.length) {
@@ -554,7 +560,9 @@ export default class Settings extends View {
     const m = e.modifiers ?? {};
     const c = e.key_char;
     if (this.searchFocused || this.picking || this.renameFocused || this.machineEdit) return false;
-    if (m.control || m.platform || m.function || typeof c !== "string" || c.length !== 1 || c < " " || c === "\u007f") return false;
+    // Option types characters on macOS; elsewhere Alt is a shortcut.
+    if (m.control || m.platform || m.function || (m.alt && window()?.platform !== "macos")) return false;
+    if (typeof c !== "string" || c.length !== 1 || c < " " || c === "\u007f") return false;
     return !(c === " " && !this.query);
   }
 
@@ -1415,7 +1423,6 @@ export default class Settings extends View {
       this.machineError = String(e);
     } finally {
       this.machineLoading = false;
-      this.index = null;
     }
   }
 
@@ -1729,8 +1736,15 @@ export default class Settings extends View {
         if (!this.typesIntoSearch(e)) return;
         this.searchInput.focus();
         this.setQuery(this.query + e.key_char);
-      } else if (this.query) this.setQuery("");
-      else this.handle.focus();
+      } else if (this.query) {
+        this.setQuery("");
+        // A font list or rename opened in the results isn't on the page now shown.
+        if (this.picking || this.machineEdit) {
+          this.picking = null;
+          this.machineEdit = null;
+          this.handle.focus();
+        }
+      } else this.handle.focus();
       cx.stop_propagation();
       cx.notify();
       return;
