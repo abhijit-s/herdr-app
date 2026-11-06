@@ -47,6 +47,8 @@ pub enum TerminalEvent {
     Ended,
     /// Right-click where the program doesn't take the mouse: the pane menu.
     ContextMenu(Point<Pixels>),
+    /// A mouse selection was copied on release.
+    Copied,
 }
 
 /// What the canvas closures need, shared outside the entity so prepaint can resize.
@@ -430,7 +432,7 @@ impl TerminalView {
     }
 
     /// Feeds relayed bytes in; returns false once the stream is over.
-    fn ingest(&mut self, batch: Vec<Stream>, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn ingest(&mut self, batch: Vec<Stream>, cx: &mut Context<Self>) -> bool {
         let mut open = true;
         let title = {
             let mut g = self.grid.borrow_mut();
@@ -624,7 +626,7 @@ impl TerminalView {
     /// Returns whether anything was copied. Does not clear the selection: mouse
     /// copy-on-select uses this and keeps the highlight.
     pub fn copy(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(text) = self.grid.borrow().vt.selection_text() else {
+        let Some(text) = self.grid.borrow().vt.selection_text().filter(|text| !text.is_empty()) else {
             return false;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
@@ -927,8 +929,11 @@ impl TerminalView {
         g.vt.select(step, col, row, x, y, cw, height);
         drop(g);
         if matches!(step, Select::Release) {
-            // Copy on select, as in Herdr.
-            self.copy(cx);
+            // Copy on select, as in Herdr. Only the terminal knows a copy
+            // happened, so it says so.
+            if self.copy(cx) {
+                cx.emit(TerminalEvent::Copied);
+            }
         }
         cx.notify();
     }
