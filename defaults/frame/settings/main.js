@@ -1076,6 +1076,48 @@ export default class Settings extends View {
           ),
           "pane_auto_names",
         ),
+      )
+      .child(this.row(t, "Working spinner", "What spins while an agent works: in pane headers, tabs, the agents list, the picker and peeks.", this.spinnerPicker(t), "working_spinner"));
+  }
+
+  // working_spinner: each choice spinning as it will; the ring (the default)
+  // leaves it out of settings.json, a name Herdr doesn't know shows the ring
+  // it draws, and your own frames select none.
+  spinnerPicker(t) {
+    const now = settings().working_spinner ? this.person.working_spinner : "ring";
+    const choices = [{ name: "ring" }, ...(settings().working_spinner_presets ?? [])];
+    return h_flex()
+      .max_w(360)
+      .flex_wrap()
+      .justify_end()
+      .gap(4)
+      .children(
+        choices.map((c) =>
+          h_flex()
+            .id(`st-ws-${c.name}`)
+            .gap(6)
+            .px(8)
+            .py(3)
+            .items_center()
+            .rounded(6)
+            .border_1()
+            .text_size(12)
+            .cursor_pointer()
+            .when(now === c.name, (el) => el.bg(t.raised).border_color(t.border).text_color(t.foreground))
+            .when(now !== c.name, (el) => el.border_color(t.background).text_color(t.muted).hover((s) => s.text_color(t.foreground)))
+            .on_click((_e, cx) =>
+              this.change((p) => {
+                if (c.name === "ring") delete p.working_spinner;
+                else p.working_spinner = c.name;
+              }, cx),
+            )
+            .child(
+              c.frames
+                ? div().min_w(12).flex_none().flex().justify_center().font_family(settings().font_family).text_color(t.working).frames(c.frames, c.interval_ms).child(c.frames[0])
+                : svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900),
+            )
+            .child(c.name),
+        ),
       );
   }
 

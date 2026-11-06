@@ -821,6 +821,10 @@ pub struct Person {
     /// their id (pane_names.rs); display only.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub pane_auto_names: bool,
+    /// The spinner mods show while an agent works, as written: a preset's
+    /// name or `{frames, interval_ms}` (read through `working_spinner`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working_spinner: Option<serde_json::Value>,
     /// What happens to recorded agents whose terminals are back to a shell
     /// after Herdr starts or the core comes back (resume.rs).
     #[serde(skip_serializing_if = "ResumeAgents::is_ask")]
@@ -1249,6 +1253,64 @@ impl Thicken {
     }
 }
 
+/// What mods animate while an agent works: each frame in turn, `interval_ms`
+/// apart, all padded to one width so the spinner holds still.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpinnerFrames {
+    pub frames: Vec<String>,
+    pub interval_ms: u32,
+}
+
+/// `working_spinner`'s presets besides `"ring"` (the spinning icon), each with its speed.
+const SPINNER_PRESETS: &[(&str, &[&str], u32)] = &[
+    ("braille", &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], 80),
+    ("braille-heavy", &["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"], 80),
+    ("orbit", &["⠁", "⠂", "⠄", "⡀", "⢀", "⠠", "⠐", "⠈"], 100),
+    ("line", &["|", "/", "-", "\\"], 100),
+    ("arc", &["◜", "◠", "◝", "◞", "◡", "◟"], 100),
+    ("quarters", &["◴", "◷", "◶", "◵"], 120),
+    ("pulse", &["·", "•", "●", "•"], 180),
+    ("sparkle", &["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"], 100),
+];
+
+const SPINNER_INTERVAL_MS: std::ops::RangeInclusive<u64> = 16..=1000;
+const SPINNER_MAX_FRAMES: usize = 32;
+const SPINNER_MAX_FRAME_CHARS: usize = 4;
+
+/// settings.json's `working_spinner`: Ok(None) for the ring (also when
+/// unset), else the frames; Err says why it falls back to the ring.
+fn working_spinner(v: Option<&serde_json::Value>) -> Result<Option<SpinnerFrames>, String> {
+    let fail = |why: String| Err(format!("working_spinner {why}: using \"ring\""));
+    let (frames, interval_ms): (Vec<String>, u64) = match v {
+        None => return Ok(None),
+        Some(serde_json::Value::String(name)) if name == "ring" => return Ok(None),
+        Some(serde_json::Value::String(name)) => match SPINNER_PRESETS.iter().find(|(n, ..)| n == name) {
+            Some((_, frames, ms)) => (frames.iter().map(|f| f.to_string()).collect(), u64::from(*ms)),
+            None => {
+                let names: Vec<&str> = std::iter::once("ring").chain(SPINNER_PRESETS.iter().map(|(n, ..)| *n)).collect();
+                return fail(format!("{name:?} is not one of {}", names.join(", ")));
+            }
+        },
+        Some(v) => {
+            let frames = v.get("frames").and_then(|f| serde_json::from_value::<Vec<String>>(f.clone()).ok());
+            let Some(frames) = frames else { return fail("needs a name or {\"frames\": [strings], \"interval_ms\": ms}".into()) };
+            let Some(ms) = v.get("interval_ms").and_then(serde_json::Value::as_u64).filter(|ms| SPINNER_INTERVAL_MS.contains(ms)) else {
+                return fail(format!("interval_ms {} is not an integer in 16..1000", v.get("interval_ms").unwrap_or(&serde_json::Value::Null)));
+            };
+            if frames.is_empty() || frames.len() > SPINNER_MAX_FRAMES {
+                return fail(format!("has {} frames, not 1 to {SPINNER_MAX_FRAMES}", frames.len()));
+            }
+            if let Some(f) = frames.iter().find(|f| !(1..=SPINNER_MAX_FRAME_CHARS).contains(&f.chars().count())) {
+                return fail(format!("frame {f:?} is not 1 to {SPINNER_MAX_FRAME_CHARS} characters"));
+            }
+            (frames, ms)
+        }
+    };
+    let width = frames.iter().map(|f| f.chars().count()).max().unwrap_or(0);
+    let frames = frames.into_iter().map(|f| format!("{f:<width$}")).collect();
+    Ok(Some(SpinnerFrames { frames, interval_ms: interval_ms as u32 }))
+}
+
 /// The weight the panels' text has unless something sets one: GPUI's normal.
 pub const UI_FONT_WEIGHT_DEFAULT: u16 = 400;
 
@@ -1314,6 +1376,7 @@ impl Default for Person {
             system_notifications: SystemNotifications::Background,
             dock_bounce: false,
             pane_auto_names: false,
+            working_spinner: None,
             resume_agents: ResumeAgents::Ask,
             alert_command: None,
             focus_follows_mouse: false,
@@ -1449,6 +1512,11 @@ pub struct Settings {
     pub dock_bounce: bool,
     pub pane_auto_names: bool,
     pub alert_command: Option<AlertCommand>,
+    /// The frames mods animate while an agent works; None: the ring.
+    pub working_spinner: Option<SpinnerFrames>,
+    /// Why settings.json's `working_spinner` fell back to the ring.
+    #[serde(skip)]
+    pub working_spinner_problem: Option<String>,
 }
 
 /// Attention sounds: when an agent needs you, and when one finished while you
@@ -1525,6 +1593,8 @@ impl Default for Settings {
             dock_bounce: false,
             pane_auto_names: false,
             alert_command: None,
+            working_spinner: None,
+            working_spinner_problem: None,
         }
     }
 }
@@ -1532,6 +1602,10 @@ impl Default for Settings {
 impl Settings {
     pub fn compose(person: &Person, look: &crate::layout::Look, system_dark: bool) -> Settings {
         let d = Settings::default();
+        let (working_spinner, working_spinner_problem) = match working_spinner(person.working_spinner.as_ref()) {
+            Ok(spinner) => (spinner, None),
+            Err(problem) => (None, Some(problem)),
+        };
         let mut colors = person.colors.clone();
         colors.extend(look.colors.clone().unwrap_or_default());
         let dark = match person.appearance {
@@ -1590,6 +1664,8 @@ impl Settings {
             dock_bounce: person.dock_bounce,
             pane_auto_names: person.pane_auto_names,
             alert_command: person.alert_command.clone(),
+            working_spinner,
+            working_spinner_problem,
             clipboard_write: person.clipboard_write,
             minimum_contrast: person.minimum_contrast,
             letter_spacing: look.letter_spacing.or(person.letter_spacing).unwrap_or(d.letter_spacing),
@@ -1685,6 +1761,7 @@ impl Settings {
         if let Some(bold) = self.font_weight_bold.filter(|w| !(100..=900).contains(w)) {
             out.push(format!("font_weight_bold {bold} is outside 100..900"));
         }
+        out.extend(self.working_spinner_problem.clone());
         if !(-2.0..=10.0).contains(&self.letter_spacing) {
             out.push(format!("letter_spacing {} is outside -2..10", self.letter_spacing));
         }
@@ -2022,8 +2099,8 @@ impl Settings {
     }
 
     /// What mods get as `settings()`: these settings, and `ui_scale` (what
-    /// their px are drawn at, to divide window px by) and the ranges of
-    /// `ui_zoom` and `ui_text_scale`.
+    /// their px are drawn at, to divide window px by), the ranges of
+    /// `ui_zoom` and `ui_text_scale`, and `working_spinner`'s presets.
     pub fn for_mods(&self) -> serde_json::Value {
         let mut v = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
         if let Some(o) = v.as_object_mut() {
@@ -2031,6 +2108,8 @@ impl Settings {
             let in_use = PALETTE.with_borrow(|(p, own)| panels_in_use(self.panel_colors, p, own, self.look_paints_panels));
             o.insert("panels_in_use".into(), serde_json::json!(in_use));
             o.insert("ui_scale_ranges".into(), serde_json::json!({ "ui_zoom": UI_ZOOM_RANGE, "ui_text_scale": UI_TEXT_SCALE_RANGE }));
+            let presets: Vec<_> = SPINNER_PRESETS.iter().map(|(name, frames, ms)| serde_json::json!({ "name": name, "frames": frames, "interval_ms": ms })).collect();
+            o.insert("working_spinner_presets".into(), presets.into());
         }
         v
     }
@@ -2912,11 +2991,82 @@ mod tests {
         }
     }
 
+    /// `working_spinner`: the ring unless set, each preset at its speed,
+    /// custom frames padded to one width, and anything else the ring with a
+    /// problem saying why.
+    #[test]
+    fn working_spinner_takes_presets_and_frames_and_falls_back_to_the_ring() {
+        use serde_json::json;
+        let compose = |v: serde_json::Value| Settings::compose(&serde_json::from_value(json!({"working_spinner": v})).unwrap(), &crate::layout::Look::default(), true);
+        let default = Settings::compose(&Person::default(), &crate::layout::Look::default(), true);
+        assert_eq!((&default.working_spinner, default.problems()), (&None, vec![]));
+        assert_eq!(default.for_mods()["working_spinner"], serde_json::Value::Null, "mods see the ring as null");
+        assert!(serde_json::to_value(Person::default()).unwrap().get("working_spinner").is_none());
+        let ring = compose(json!("ring"));
+        assert_eq!((&ring.working_spinner, ring.problems()), (&None, vec![]));
+        for (name, frames, ms) in SPINNER_PRESETS {
+            let s = compose(json!(name));
+            assert_eq!(s.working_spinner, Some(SpinnerFrames { frames: frames.iter().map(|f| f.to_string()).collect(), interval_ms: *ms }), "{name}");
+            assert!(s.problems().is_empty(), "{name}: {:?}", s.problems());
+            assert!(frames.iter().all(|f| f.chars().count() == 1), "{name}: one glyph a frame");
+        }
+        let listed = default.for_mods()["working_spinner_presets"].clone();
+        assert_eq!(listed.as_array().map(Vec::len), Some(SPINNER_PRESETS.len()));
+        assert_eq!(listed[0], json!({"name": "braille", "frames": ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], "interval_ms": 80}), "mods list the presets for a picker");
+        assert_eq!(compose(json!("braille")).for_mods()["working_spinner"], json!({"frames": ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], "interval_ms": 80}));
+        let custom = compose(json!({"frames": ["a", "bb", "c"], "interval_ms": 50}));
+        assert_eq!(custom.working_spinner, Some(SpinnerFrames { frames: vec!["a ".into(), "bb".into(), "c ".into()], interval_ms: 50 }), "padded to the widest");
+        let at_the_limits = [json!({"frames": ["◐"], "interval_ms": 16}), json!({"frames": vec!["abcd"; 32], "interval_ms": 1000})];
+        for ok in at_the_limits {
+            let s = compose(ok.clone());
+            assert!(s.working_spinner.is_some() && s.problems().is_empty(), "{ok}: {:?}", s.problems());
+        }
+        let bad = [
+            (json!("spiral"), "\"spiral\" is not one of ring, braille"),
+            (json!(""), "\"\" is not one of"),
+            (json!(42), "needs a name or"),
+            (json!({"interval_ms": 80}), "needs a name or"),
+            (json!({"frames": [1, 2], "interval_ms": 80}), "needs a name or"),
+            (json!({"frames": [], "interval_ms": 80}), "has 0 frames"),
+            (json!({"frames": vec!["a"; 33], "interval_ms": 80}), "has 33 frames"),
+            (json!({"frames": ["abcde"], "interval_ms": 80}), "frame \"abcde\" is not 1 to 4"),
+            (json!({"frames": ["a", ""], "interval_ms": 80}), "frame \"\" is not 1 to 4"),
+            (json!({"frames": ["a"], "interval_ms": 15}), "interval_ms 15 is not"),
+            (json!({"frames": ["a"], "interval_ms": 1001}), "interval_ms 1001 is not"),
+            (json!({"frames": ["a"], "interval_ms": 80.5}), "interval_ms 80.5 is not"),
+            (json!({"frames": ["a"]}), "interval_ms null is not"),
+            (json!({"frames": ["a"], "interval_ms": -5}), "interval_ms -5 is not"),
+        ];
+        for (v, why) in bad {
+            let s = compose(v.clone());
+            assert_eq!(s.working_spinner, None, "{v} falls back to the ring");
+            let problems = s.problems();
+            assert!(problems.len() == 1 && problems[0].starts_with("working_spinner ") && problems[0].contains(why) && problems[0].ends_with("using \"ring\""), "{v}: {problems:?}");
+        }
+    }
+
+    /// A changed `working_spinner` is a change `set` reports, so an edit of
+    /// settings.json redraws the mods (`apply_look`), which then read it.
+    #[test]
+    fn a_new_working_spinner_redraws_the_mods() {
+        std::thread::spawn(|| {
+            let braille: Person = serde_json::from_value(serde_json::json!({"working_spinner": "braille"})).unwrap();
+            set(Settings::compose(&Person::default(), &crate::layout::Look::default(), true));
+            assert_eq!(for_mods()["working_spinner"], serde_json::Value::Null);
+            assert!(set(Settings::compose(&braille, &crate::layout::Look::default(), true)), "the change redraws");
+            assert_eq!(for_mods()["working_spinner"]["interval_ms"], 80);
+            assert!(set(Settings::compose(&Person::default(), &crate::layout::Look::default(), true)), "and back");
+            assert_eq!(for_mods()["working_spinner"], serde_json::Value::Null);
+        })
+        .join()
+        .unwrap();
+    }
+
     /// The guide agents read (written to the home folder) explains every
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, pane_zoom_keys: false, pane_auto_names: true, ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, pane_zoom_keys: false, pane_auto_names: true, working_spinner: Some("braille".into()), ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

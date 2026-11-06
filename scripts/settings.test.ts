@@ -316,6 +316,25 @@ test("name panes automatically sits under the look page's panes, writes true and
   expect(shown).toContain("pane|_|auto|_|names");
 });
 
+test("the working spinner picker previews each choice, writes its name and leaves the ring out", () => {
+  const presets = { working_spinner_presets: [{ name: "braille", frames: ["⠋", "⠙"], interval_ms: 80 }, { name: "line", frames: ["|", "/"], interval_ms: 100 }] };
+  expect(click({}, presets, "st-ws-braille", [], "look")).toEqual({ working_spinner: "braille" });
+  expect(click({ working_spinner: "braille", zoom: 1.1 }, presets, "st-ws-line", [], "look")).toEqual({ working_spinner: "line", zoom: 1.1 });
+  expect(click({ working_spinner: "line", zoom: 1.1 }, presets, "st-ws-ring", [], "look")).toEqual({ zoom: 1.1 });
+  // What Herdr resolved: frames for a name it knows (or your own), null for the ring or a name it doesn't.
+  const drawn = (v: any) => (v && v !== "ring" && v !== "spiral" ? { frames: ["x"], interval_ms: 80 } : null);
+  const chip = (person: Record<string, any>, name: string) => click(person, { ...presets, working_spinner: drawn(person.working_spinner) }, `st-ws-${name}`, ["shown?"], "look");
+  const preview = (name: string) => chip({}, name).nodes[0].calls;
+  expect(preview("braille").frames).toEqual([["⠋", "⠙"], 80]);
+  expect(preview("ring").spin).toEqual([900]);
+  const chosen = (person: Record<string, any>, name: string) => chip(person, name).calls.bg !== undefined;
+  expect(chosen({}, "ring")).toBe(true);
+  expect(chosen({ working_spinner: "line" }, "line")).toBe(true);
+  expect(chosen({ working_spinner: "spiral" }, "ring")).toBe(true);
+  expect(chosen({ working_spinner: "line" }, "ring")).toBe(false);
+  expect(["ring", "braille", "line"].some((n) => chosen({ working_spinner: { frames: ["a"], interval_ms: 80 } }, n))).toBe(false);
+});
+
 test("dim when inactive sits on the look page, its scope writes text and leaves window out", () => {
   expect(click({}, {}, "st-unfocused_dim-plus", [], "look")).toEqual({ unfocused_dim: 0.1 });
   expect(click({ unfocused_dim: 0.3 }, {}, "st-unfocused_dim-minus", [], "look")).toEqual({ unfocused_dim: 0.2 });

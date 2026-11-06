@@ -1057,3 +1057,46 @@ fn pane_headers_show_the_automatic_name_after_the_persons(cx: &mut TestAppContex
         assert!(!tree.contains("hazy-inlet") && tree.contains(&format!("\"{fallback}\"")), "{entry}: without one, as before: {tree}");
     }
 }
+
+/// The pane header of a working agent, at the default `working_spinner`, is
+/// the header drawn before the setting existed, line for line: the ring.
+#[gpui::test]
+fn pane_header_draws_the_ring_by_default_as_it_always_has(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let tree = describe(cx, &staged, "mods/pane", true, json!({"pane":"p1","terminal":"t1"}), updates("current", "current"), None).unwrap();
+    assert_eq!(tree.trim_end(), r##"h_flex :id[Str("pane-head-p1")] .size_full .px[Number(10.0)] .gap[Number(8.0)] .items_center .bg[Str("#17191d")] .border_b[Number(1.0)] .border_color[Str("#34363a")] .text_size[Number(12.0)] :on_hover(fn) :on_click(fn)
+  div .flex_none .truncate .max_w[Number(260.0)] .font_medium .text_color[Str("#eeeeef")]
+    text "Pi"
+  div .flex_1 .truncate .text_color[Str("#7a7b7d")]
+    text "~/project"
+  svg "mods/workspace-chrome/spinner.svg" .size[Number(12.0)] .flex_none .text_color[Str("#e5c07b")] :spin[Number(900.0)]"##);
+}
+
+/// Every shipped mod that shows an agent at work draws the person's
+/// `working_spinner`: the ring unless it is set, else its frames, natively,
+/// in the terminal font and the working colour, in a box that keeps its width.
+#[gpui::test]
+fn agent_spinners_follow_the_working_spinner_setting(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let braille = r#":frames[Number(80.0), Str("⠋"), Str("⠙"), Str("⠹"), Str("⠸"), Str("⠼"), Str("⠴"), Str("⠦"), Str("⠧"), Str("⠇"), Str("⠏")]"#;
+    let working = crate::settings::theme()["working"].clone();
+    for (entry, p) in [("mods/pane", json!({"pane":"p1","terminal":"t1"})), ("mods/peek", json!({"terminal":"t1","overlay":"o1"})), ("mods/picker", props()), ("mods/tabs", props()), ("mods/agents", props())] {
+        let tree = describe(cx, &staged, entry, true, p.clone(), updates("current", "current"), None).unwrap();
+        assert!(tree.contains(r#"svg "mods/workspace-chrome/spinner.svg""#) && tree.contains(":spin[Number(900.0)]") && !tree.contains(":frames"), "{entry} draws the ring by default: {tree}");
+        let mut values = fixture(true, p, updates("current", "current"));
+        let settings = values.get_mut("settings").unwrap();
+        *settings = crate::settings::Settings::compose(&serde_json::from_value(json!({"working_spinner": "braille"})).unwrap(), &crate::layout::Look::default(), true).for_mods();
+        let font = settings["font_family"].as_str().unwrap().to_owned();
+        let tree = describe_with_values(cx, &staged, entry, values, None).unwrap();
+        assert!(!tree.contains(":spin["), "{entry}: no ring with braille chosen: {tree}");
+        let spinner = tree.lines().skip_while(|l| !l.contains(":frames[")).take(2).collect::<Vec<_>>();
+        assert_eq!(spinner.len(), 2, "{entry} draws the frames: {tree}");
+        assert!(spinner[0].contains(braille), "{entry}: {}", spinner[0]);
+        for style in [".min_w[Number(12.0)]", ".flex_none", ".justify_center", &format!(".font_family[Str({font:?})]"), &format!(".text_color[Str({working:?})]")] {
+            assert!(spinner[0].contains(style), "{entry} spinner lacks {style}: {}", spinner[0]);
+        }
+        assert_eq!(spinner[1].trim(), r#"text "⠋""#, "{entry} starts on the first frame");
+    }
+}
