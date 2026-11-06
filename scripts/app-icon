@@ -1,0 +1,69 @@
+#!/bin/bash
+# Installs the app icon settings.json's `app_icon` asks for: a built-in variant
+# (classic, midnight, mirage, glass, phosphor, graphite) or an image file.
+#   scripts/app-icon macos <Herdr.app>   writes Contents/Resources/Herdr.icns
+#   scripts/app-icon linux <data dir>    writes the launcher icon and prints
+#                                        the .desktop file's Icon= value
+# Release packages keep the classic icon; this is for installs from a checkout.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+platform=$1 dest=$2
+home=${HERDR_APP_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr-app}
+choice=$(python3 -c '
+import json, sys
+try:
+    v = json.load(open(sys.argv[1])).get("app_icon", "classic")
+except (OSError, ValueError, AttributeError):
+    v = "classic"
+print(v if isinstance(v, str) and v else "classic")
+' "$home/settings.json")
+
+case $choice in
+  classic) icns=assets/icons/Herdr.icns svg=assets/icons/herdr-ui-icon-clean.svg ;;
+  midnight | mirage | glass | phosphor | graphite) icns=assets/icons/variants/$choice.icns svg=assets/icons/variants/$choice.svg ;;
+  *)
+    file=${choice/#\~/$HOME}
+    if [[ ! -f $file ]]; then
+      echo "app_icon: $choice is not a built-in icon or a file; keeping classic" >&2
+      icns=assets/icons/Herdr.icns svg=assets/icons/herdr-ui-icon-clean.svg
+    else
+      icns=$file svg=$file
+    fi
+    ;;
+esac
+
+case $platform in
+  macos)
+    out="$dest/Contents/Resources/Herdr.icns"
+    mkdir -p "$(dirname "$out")"
+    case $icns in
+      *.icns) cp "$icns" "$out" ;;
+      *.png)
+        # An .icns holds fixed sizes: scale the PNG to each, as scripts/app-icons.py does.
+        set=$(mktemp -d)/icon.iconset
+        mkdir -p "$set"
+        for base in 16 32 128 256 512; do
+          sips -z "$base" "$base" "$icns" --out "$set/icon_${base}x${base}.png" >/dev/null
+          sips -z $((base * 2)) $((base * 2)) "$icns" --out "$set/icon_${base}x${base}@2x.png" >/dev/null
+        done
+        iconutil -c icns "$set" -o "$out"
+        rm -rf "$(dirname "$set")"
+        ;;
+      *)
+        echo "app_icon: macOS bundles take an .icns or .png; keeping classic in the bundle (the Dock still shows $choice)" >&2
+        cp assets/icons/Herdr.icns "$out"
+        ;;
+    esac
+    # Finder and the Dock read a bundle's icon again once the bundle changes.
+    touch "$dest"
+    ;;
+  linux)
+    mkdir -p "$dest/icons/hicolor/scalable/apps"
+    case $svg in
+      *.svg) cp "$svg" "$dest/icons/hicolor/scalable/apps/herdr-app.svg"; echo herdr-app ;;
+      *) realpath "$svg" ;;
+    esac
+    ;;
+  *) echo "usage: scripts/app-icon macos <Herdr.app> | linux <data dir>" >&2; exit 2 ;;
+esac

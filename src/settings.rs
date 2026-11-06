@@ -931,6 +931,9 @@ pub struct Person {
     /// Terminal cell width: the font's own advance, or rounded down to whole device pixels.
     #[serde(skip_serializing_if = "CellWidth::is_font")]
     pub cell_width: CellWidth,
+    /// The app's icon: a built-in variant or an image file.
+    #[serde(skip_serializing_if = "crate::app_icon::AppIcon::is_classic")]
+    pub app_icon: crate::app_icon::AppIcon,
     /// How the grid snaps to device pixels: to the nearest, or outward.
     #[serde(skip_serializing_if = "CellRounding::is_outward")]
     pub cell_rounding: CellRounding,
@@ -1337,6 +1340,7 @@ impl Default for Person {
             minimum_contrast: 1.0,
             letter_spacing: None,
             cell_width: CellWidth::Font,
+            app_icon: crate::app_icon::AppIcon::Classic,
             cell_rounding: CellRounding::Outward,
             option_as_alt: OptionAsAlt::Auto,
             appearance: Appearance::System,
@@ -1427,6 +1431,7 @@ pub struct Settings {
     pub letter_spacing: f32,
     pub cell_width: CellWidth,
     pub cell_rounding: CellRounding,
+    pub app_icon: crate::app_icon::AppIcon,
     pub option_as_alt: OptionAsAlt,
     pub sounds: Sounds,
     pub system_notifications: SystemNotifications,
@@ -1499,6 +1504,7 @@ impl Default for Settings {
             minimum_contrast: 1.0,
             letter_spacing: 0.0,
             cell_width: CellWidth::Font,
+            app_icon: crate::app_icon::AppIcon::Classic,
             cell_rounding: CellRounding::Outward,
             option_as_alt: OptionAsAlt::Auto,
             sounds: Sounds::default(),
@@ -1572,6 +1578,7 @@ impl Settings {
             minimum_contrast: person.minimum_contrast,
             letter_spacing: look.letter_spacing.or(person.letter_spacing).unwrap_or(d.letter_spacing),
             cell_width: person.cell_width,
+            app_icon: person.app_icon.clone(),
             cell_rounding: person.cell_rounding,
             option_as_alt: person.option_as_alt,
         }
@@ -1815,6 +1822,7 @@ pub fn reshade() -> bool {
 
 /// Installs new settings; returns whether anything changed.
 pub fn set(s: Settings) -> bool {
+    crate::app_icon::follow(&s.app_icon);
     #[cfg(target_os = "macos")]
     gpui_macos::set_option_as_alt(match s.option_as_alt {
         OptionAsAlt::Auto => None,

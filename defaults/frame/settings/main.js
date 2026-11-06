@@ -122,6 +122,15 @@ const ZOOM_STEPS = [
   ["tenth", "10%"],
   ["point", "Whole points"],
 ];
+// app_icon: the built-in icons, previewed from frame/settings/app-icons (scripts/app-icons.py).
+const APP_ICONS = [
+  ["classic", "Classic"],
+  ["midnight", "Midnight"],
+  ["mirage", "Mirage"],
+  ["glass", "Glass"],
+  ["phosphor", "Phosphor"],
+  ["graphite", "Graphite"],
+];
 const CELL_WIDTHS = [
   ["font", "Font"],
   ["pixel", "Whole pixels"],
@@ -525,6 +534,44 @@ export default class Settings extends View {
       );
   }
 
+  // The app icon: a tile per built-in; an image file (set in settings.json) shows as its path.
+  iconPicker(t) {
+    const now = this.person.app_icon ?? "classic";
+    const file = !APP_ICONS.some(([name]) => name === now);
+    return v_flex()
+      .gap(6)
+      .items_end()
+      .child(
+        h_flex()
+          .gap(6)
+          .flex_wrap()
+          .justify_end()
+          .children(
+            APP_ICONS.map(([name, label]) =>
+              v_flex()
+                .id(`st-icon-${name}`)
+                .items_center()
+                .gap(3)
+                .p(4)
+                .rounded(10)
+                .border_2()
+                .border_color(now === name ? t.accent : "#00000000")
+                .cursor_pointer()
+                .hover((s) => s.bg(t.raised))
+                .on_click((_e, cx) =>
+                  this.change((p) => {
+                    if (name === "classic") delete p.app_icon;
+                    else p.app_icon = name;
+                  }, cx),
+                )
+                .child(image(`frame/settings/app-icons/${name}.png`).w(40).h(40))
+                .child(div().text_size(11).text_color(now === name ? t.foreground : t.muted).child(label)),
+            ),
+          ),
+      )
+      .when(file, (el) => el.child(div().id("st-icon-file").text_size(11.5).text_color(t.dim).child(`Your file: ${now}`)));
+  }
+
   // One of a few values; picking the first (the default) leaves it out of settings.json.
   choicePicker(t, id, key, choices) {
     const def = choices[0][0];
@@ -704,6 +751,8 @@ export default class Settings extends View {
       .child(this.themePicker(t, false))
       .child(div().pt(10).pb(6).text_size(12.5).font_medium().text_color(t.muted).child("Light"))
       .child(this.themePicker(t, true))
+      .child(div().h(12))
+      .child(this.row(t, "App icon", "The Dock's icon. An install from a checkout puts it on the app too.", this.iconPicker(t)))
       .child(div().h(18))
       .child(this.heading(t, "Inactive window"))
       .child(this.contrast(t, "unfocused_dim", "Dim when inactive", "Fades this far toward the background while Herdr isn't the active window."))
