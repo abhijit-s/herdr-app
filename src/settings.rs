@@ -262,9 +262,22 @@ pub fn theme_is_light(name: &str) -> bool {
     palette(name).map(|(p, _)| is_light(p.background)).unwrap_or(false)
 }
 
-fn is_light(c: u32) -> bool {
+pub fn is_light(c: u32) -> bool {
     let ch = |s: u32| ((c >> s) & 255) as f32 / 255.0;
     0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0) > 0.5
+}
+
+/// What's wrong with a theme file as Herdr reads and draws it with default
+/// settings: a field or color it can't read, or `ring` or `focus` under 3:1
+/// on its background.
+#[cfg(test)]
+pub fn theme_file_problems(name: &str, text: &str) -> Vec<String> {
+    let (p, own) = match parse_theme_file(name, text) {
+        Ok(t) => t,
+        Err(e) => return vec![e],
+    };
+    let t = resolve_for(&Settings::default(), &p, &own);
+    ["ring", "focus"].into_iter().filter(|k| u32::from_str_radix(&t[*k][1..7], 16).map_or(true, |c| contrast(c, p.background) < 3.0)).map(|k| format!("{name}: {k} {} reads under 3:1 on {:06x}", t[k], p.background)).collect()
 }
 
 /// Every theme that can be shown, presets first, each with its colors

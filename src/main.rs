@@ -30,6 +30,7 @@ mod mod_files;
 mod process_cwd;
 mod programs;
 mod resume;
+mod rex_themes;
 mod remote_shell;
 mod settings;
 mod setup;
@@ -60,6 +61,7 @@ Usage:
   herdr-app status                 what the window shows, and any errors
   herdr-app shot [file.png]        save the last window frame (default: herdr-shot.png)
   herdr-app check <mod folder>     load a mod once and report what's wrong
+  herdr-app rex-themes [--dry-run] themes/rex-*.json from the installed Rex app's themes
   herdr-app --skill                Agent Skill: driving the window, and where hc fits
   herdr-app --version
 
@@ -99,6 +101,9 @@ fn main() {
         mods::install_check_policy();
         gpui_shell::host::main_with_components(gpui_shell::FrozenComponentRegistry::default());
         return;
+    }
+    if args.get(1).map(String::as_str) == Some("rex-themes") {
+        std::process::exit(rex_themes::main(&args[2..]));
     }
     if args.get(1).map(String::as_str) == Some("popup") {
         std::process::exit(control::popup(&args[2..]));

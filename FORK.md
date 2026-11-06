@@ -48,6 +48,19 @@ Each merge of `upstream/master` into `master`, with the conflict choices worth r
 
 ## Changes
 
+### Rex theme importer
+
+`feat/rex-themes` (branched from `master`, fork only): `herdr-app rex-themes [--dry-run] [--from <themes.json>]` writes `themes/rex-<id>.json` in the app home (`HERDR_APP_HOME` honoured) for each theme of the installed Rex app, read from `/Applications/Rex Beta.app/.../SuperDesignTokens.bundle/.../themes.json`. Rex is closed source, so its theme data is never committed: the importer reads the app on every run and writes only into the person's themes folder, and its tests use an invented fixture in Rex's schema.
+
+- Why a subcommand, not a script: it reuses the app's own theme parser and `app_dir()`, writes with `persist::write_atomic`, and its tests run in `just check` against the real theme loader (`settings::theme_file_problems`, test only); a bun script would have to re-implement both.
+- Palette: Rex's `source` (sRGB hex) gives `background`, `foreground`, `cursor`, `selection` (`selectionBackground`) and `ansi`. Rex's `palette` is the same in display-p3 floats.
+- Named colours: one table, `COLORS` in `src/rex_themes.rs`, maps a Rex token to a Herdr colour only where the meaning matches. Values come from Rex's `cssVariables` (sRGB, its design values); its `semantic` tokens are display-p3 and more saturated, so converting them clips in sRGB. `focus` is written only when it reads at 3:1 on the background, else Herdr's readable default applies.
+- Light and dark: Herdr tells them apart by the background. A theme Rex calls light whose background reads dark (or the reverse) is skipped with a message; none of the 41 shipped Rex themes is.
+- Idempotent: an existing file with the same text is left alone (unchanged), a different one rewritten (updated); nothing but `rex-<id>.json` is touched, and `rex-*` files Rex no longer has are kept. A theme with a colour that isn't `#rrggbb` or a CSS `rgb` value, or without 16 ANSI colours, is skipped with the reason and the rest still written (exit 1). A missing Rex is an error (exit 1), not a crash.
+- Tests: `rex_themes::tests::{maps_the_palette_and_the_matching_tokens, light_themes_load_as_light_and_a_mismatch_is_skipped, a_second_run_changes_only_what_changed_and_only_rex_files, a_missing_or_unreadable_rex_file_is_an_error, a_bad_color_skips_that_theme_only, a_focus_under_3_to_1_is_left_to_herdr, the_installed_rex_themes_all_load}` (the last imports the installed Rex's themes into a temporary folder when Rex is on the machine, and checks each loads with `ring` and `focus` at 3:1; nothing kept). Each guard mutation-checked.
+- Files: `src/rex_themes.rs`, `src/main.rs`, `src/settings.rs` (`is_light` public, `theme_file_problems`), `defaults/AGENTS.md`
+- Upstream: none (Rex-specific)
+
 ### Focus colour
 
 `feat/focus-colour` (branched from `master`, fork only): a named theme colour `focus` for the active pane's border, and a person setting `focus_border_width` (1 to 3 px) for its width. The shipped Herdr layout's pane frame draws `"focus": {"color": "focus"}` rather than `"accent"`.

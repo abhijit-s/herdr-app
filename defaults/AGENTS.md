@@ -355,6 +355,7 @@ layout's look and a block can differ:
   are upgraded to readable terminal colors; edited theme files are kept.
   A theme named like a layout (`themes/win98.json`) is
   that layout's own: Settings offers it only there.
+  `herdr-app rex-themes` writes `themes/rex-<name>.json` for each theme of the installed Rex app (read from the app on every run, never shipped), replacing only `rex-*` files; `--dry-run` lists what it would write.
 - `font` / `font_size` / `letter_spacing`: the terminals' (px at zoom 1); `ui_font`: the mods'
   (their text sizes are their own, in px, and follow zoom, `ui_zoom` and `ui_text_scale`). Optional: without
   them a layout uses settings.json's, else Herdr's (JetBrains Mono 14, Geist).
