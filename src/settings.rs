@@ -401,6 +401,17 @@ fn classic_panels(bg: u32, ink: u32) -> Vec<(&'static str, String)> {
     ]
 }
 
+/// Whether a theme keeps the classic panels for whatever it leaves unset
+/// even while tinted: one that paints its own panels (a deliberate look,
+/// such as Win98's), or whose foreground can't carry a tint (barely apart
+/// from the background, or on the wrong side of it).
+fn keeps_classic_panels(p: &Palette, overrides: &BTreeMap<String, String>) -> bool {
+    let (bg, fg) = (p.background, p.foreground);
+    let own = ["surface", "popover", "raised"].iter().any(|k| overrides.contains_key(*k));
+    let backwards = (contrast(fg, 0) > contrast(bg, 0)) == is_light(bg);
+    own || contrast(fg, bg) < 3.0 || backwards
+}
+
 /// Every color around a palette: the terminal's own, then the panels
 /// (`panel_colors`, `sidebar_shade`), then `overrides` over all of them.
 fn resolve(p: &Palette, overrides: &BTreeMap<String, String>, panels: PanelColors, shaded: bool) -> Theme {
@@ -409,8 +420,8 @@ fn resolve(p: &Palette, overrides: &BTreeMap<String, String>, panels: PanelColor
     let ink = if light { 0x1b1b1e } else { 0xeeeeef };
     let [working, blocked, done] = p.status.unwrap_or([p.ansi[3], p.ansi[1], p.ansi[4]]);
     let panels = match panels {
-        PanelColors::Tinted => tinted_panels(p, ink, shaded),
-        PanelColors::Classic => classic_panels(bg, ink),
+        PanelColors::Tinted if !keeps_classic_panels(p, overrides) => tinted_panels(p, ink, shaded),
+        _ => classic_panels(bg, ink),
     };
     let mut t: Theme = [
         ("background", hex(bg)),
@@ -587,6 +598,59 @@ mod derivation_tests {
             }
         }
         assert_eq!(before.len(), themes().len());
+    }
+
+    /// Over its own colors, a theme's hover and selected fills stay visible
+    /// on its popovers and surfaces, and its text reads no worse than the
+    /// classic panels drew it.
+    #[test]
+    fn own_colors_keep_fills_visible_and_text_readable() {
+        let over = |top: &str, under: &str| {
+            let (c, a) = (u32::from_str_radix(&top[1..7], 16).unwrap(), if top.len() == 9 { u32::from_str_radix(&top[7..9], 16).unwrap() as f32 / 255.0 } else { 1.0 });
+            let under = u32::from_str_radix(&under[1..7], 16).unwrap();
+            mix(under, c, a)
+        };
+        let apart = |a: u32, b: u32| [16, 8, 0].iter().map(|s| (((a >> s) & 255) as i32 - ((b >> s) & 255) as i32).abs()).max().unwrap();
+        for (name, p, own) in themes() {
+            for shaded in [false, true] {
+                let t = resolve(&p, &own, PanelColors::Tinted, shaded);
+                let classic = resolve(&p, &own, PanelColors::Classic, shaded);
+                for fill in ["hover", "selected"] {
+                    for panel in ["popover", "surface"] {
+                        let under = rgb(&t, panel);
+                        assert!(apart(over(&t[fill], &t[panel]), under) >= 4, "{name}: {fill} {} on {panel} {} is barely visible", t[fill], t[panel]);
+                    }
+                }
+                for panel in ["surface", "canvas", "chrome", "popover", "raised"] {
+                    for (text, floor) in [("foreground", 6.9f32), ("muted", 3.35), ("dim", 2.1)] {
+                        let c = contrast(rgb(&t, text), rgb(&t, panel));
+                        let before = contrast(rgb(&classic, text), rgb(&classic, panel));
+                        assert!(c >= floor.min(before) - 0.005, "{name}: {text} on {panel} is {c:.2}, under {floor} and classic's {before:.2}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// A theme that paints its own panels, or whose foreground can't carry a
+    /// tint, keeps the classic derivation for everything it leaves unset.
+    #[test]
+    fn deliberate_looks_and_weak_foregrounds_keep_classic_panels() {
+        let win98 = THEMES.iter().find(|(n, _)| *n == "win98").unwrap().1;
+        let (p, own) = parse_theme_file("win98", win98).unwrap();
+        assert_eq!(resolve(&p, &own, PanelColors::Tinted, true), resolve(&p, &own, PanelColors::Classic, true), "win98 draws as before");
+        let terminals: serde_json::Value = serde_json::from_str(include_str!("../defaults/layouts/terminals.json")).unwrap();
+        let look: BTreeMap<String, String> = serde_json::from_value(terminals.pointer("/colors").or_else(|| terminals.pointer("/look/colors")).cloned().unwrap_or_default()).unwrap();
+        assert!(look.contains_key("surface"), "the Terminals look paints its own panels");
+        for name in PRESETS {
+            let p = preset(name).unwrap();
+            assert_eq!(resolve(p, &look, PanelColors::Tinted, true), resolve(p, &look, PanelColors::Classic, true), "Terminals over {name}");
+        }
+        let weak = |bg: &str, fg: &str| parse_theme_file("weak", &format!(r##"{{"background":"{bg}","foreground":"{fg}","selection":"{fg}","ansi":["#000000","#000000","#000000","#000000","#4080ff","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000"]}}"##)).unwrap().0;
+        for (bg, fg) in [("#202020", "#2a2a2a"), ("#303845", "#101010"), ("#f4f4f4", "#ffffff"), ("#e0e0e0", "#c8c8c8"), ("#707070", "#000000")] {
+            let p = weak(bg, fg);
+            assert_eq!(resolve(&p, &BTreeMap::new(), PanelColors::Tinted, true), resolve(&p, &BTreeMap::new(), PanelColors::Classic, true), "{fg} on {bg}");
+        }
     }
 
     #[test]
