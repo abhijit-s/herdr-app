@@ -1972,6 +1972,7 @@ impl AppWindow {
         changed |= mods::publish_focused(focused.unwrap_or(Value::Null));
         changed |= mods::publish_floats(self.float_placements());
         changed |= mods::publish_layout(&self.chrome);
+        changed |= mods::publish_spacing(layout_sync::spacing_fields(&self.chrome));
         changed |= self.note_focus(Instant::now());
         if changed {
             self.refresh_snapshot_mods(cx);
@@ -3786,8 +3787,11 @@ impl AppWindow {
                 if let Err(e) = spacing.apply(&mut self.chrome, &self.file_chrome) {
                     return self.fail(format!("layout.spacing: {e}"));
                 }
-                // terminal_padding reaches the terminals through the composed settings.
-                self.apply_look(window, cx);
+                // terminal_padding reaches the terminals through the composed settings;
+                // gaps and padding are read from the tree as it draws.
+                if spacing.changes_look() {
+                    self.apply_look(window, cx);
+                }
             }
             "layout.reset" => {
                 let name = Self::owned(a, "name").unwrap_or_else(|| self.layout_name.clone());

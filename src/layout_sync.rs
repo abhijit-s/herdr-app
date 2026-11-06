@@ -390,7 +390,35 @@ fn clamp_padding(p: Padding) -> Padding {
     }
 }
 
+/// The spacing `layout.spacing` sets, as `root` has it, for mods
+/// (`layoutSpacing()`): null when no tab block shows; otherwise whether the
+/// tab block has a pane frame and a row or column around it, and each field
+/// as written (absent when unset).
+pub fn spacing_fields(root: &Node) -> Value {
+    let Some((block, area)) = tab_area(root) else { return Value::Null };
+    let mut out = serde_json::json!({ "pane": pane(block).is_some(), "area": area.is_some() });
+    let fields = [
+        ("pane_gap", serde_json::to_value(pane_gap(block))),
+        ("area_padding", serde_json::to_value(area.and_then(|a| a.padding))),
+        ("area_gap", serde_json::to_value(area.and_then(|a| a.gap))),
+        ("terminal_padding", serde_json::to_value(root.look.terminal_padding)),
+    ];
+    for (name, value) in fields {
+        match value {
+            Ok(Value::Null) | Err(_) => {}
+            Ok(v) => out[name] = v,
+        }
+    }
+    out
+}
+
 impl Spacing {
+    /// Whether applying these changes the composed settings (only terminal
+    /// padding is in them): the rest needs no `apply_look`.
+    pub fn changes_look(&self) -> bool {
+        self.terminal_padding.is_some() || self.reset.iter().any(|r| r == "terminal_padding")
+    }
+
     /// Sets these on `now`, the shown tree; a reset takes `file`'s value.
     /// All or nothing: on an error `now` is left as it was.
     pub fn apply(&self, now: &mut Node, file: &Node) -> Result<(), String> {
@@ -690,6 +718,24 @@ mod tests {
         // A stack directly around the tab block is no area.
         let stacked = node(json!({ "id": "root", "type": "stack", "children": [{ "id": "t", "type": "block", "content": { "tab": "active" } }] }));
         assert_eq!(tab_area(&stacked).map(|(b, a)| (b.id.clone(), a.is_none())), Some(("t".into(), true)));
+    }
+
+    #[test]
+    fn only_terminal_padding_recomposes_the_settings() {
+        assert!(!spacing(json!({ "pane_gap": 3, "area_padding": 2, "area_gap": 1 })).changes_look());
+        assert!(!spacing(json!({ "reset": ["pane_gap", "area_gap", "area_padding"] })).changes_look());
+        assert!(spacing(json!({ "terminal_padding": [4, 4] })).changes_look());
+        assert!(spacing(json!({ "pane_gap": 3, "reset": ["terminal_padding"] })).changes_look());
+    }
+
+    #[test]
+    fn mods_see_the_spacing_fields_as_written() {
+        let file = deck();
+        assert_eq!(spacing_fields(&file), json!({ "pane": true, "area": true, "pane_gap": 6.0, "area_padding": 4.0, "area_gap": 8.0, "terminal_padding": [14.0, 12.0] }));
+        let alone = node(json!({ "id": "root", "type": "block", "content": { "tab": "active" } }));
+        assert_eq!(spacing_fields(&alone), json!({ "pane": false, "area": false }));
+        let none = node(json!({ "id": "root", "type": "row", "children": [{ "id": "a", "type": "block", "content": { "mod": "x" } }] }));
+        assert_eq!(spacing_fields(&none), Value::Null);
     }
 
     #[test]

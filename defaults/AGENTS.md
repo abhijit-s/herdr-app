@@ -241,7 +241,8 @@ The tab block is the one on screen (not a hidden one or a stack's other
 child). Spacing clicks are 0 to 40 px; a file value above 40 shows as is, and
 the first step moves it to 40. An area click stays on its node if the file
 later moves the tab block elsewhere; `layout.reset` clears it.
-`layout.spacing` fails while the layout file has errors.
+`layout.spacing` fails while the layout file has errors. Mods read the
+result with `layoutSpacing()`, which redraws only when spacing changes.
 `layout.reset {name}` resets a shipped layout and its clicks, keeping its
 previous file aside as `<name>.json.old-<time>`.
 

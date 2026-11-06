@@ -593,12 +593,15 @@ pub struct Snapshot {
     pub floats: Value,
     /// { platform, titlebar, buttons, maximized, fullscreen, active }.
     pub window: Value,
+    /// The shown layout's spacing fields (`layout_sync::spacing_fields`): a
+    /// reader redraws when these change, not on every layout click.
+    pub spacing: Value,
 }
 
 impl Default for Snapshot {
     /// Lists start empty, never null, so mods can map over them right away.
     fn default() -> Self {
-        Snapshot { layout: Value::Null, spaces: json!([]), machines: json!([]), agents: json!([]), panes: json!([]), terminals: json!([]), focused: Value::Null, places: json!([]), floats: json!({}), window: Value::Null }
+        Snapshot { layout: Value::Null, spaces: json!([]), machines: json!([]), agents: json!([]), panes: json!([]), terminals: json!([]), focused: Value::Null, places: json!([]), floats: json!({}), window: Value::Null, spacing: Value::Null }
     }
 }
 
@@ -627,6 +630,9 @@ pub fn bump_revision(key: &str) {
 pub fn publish_layout(layout: &Node) -> bool {
     let v = serde_json::to_value(layout).unwrap_or(Value::Null);
     publish("layout", |s| (std::mem::replace(&mut s.layout, v.clone()), v))
+}
+pub fn publish_spacing(v: Value) -> bool {
+    publish("spacing", |s| (std::mem::replace(&mut s.spacing, v.clone()), v))
 }
 pub fn publish_machines(v: Value) -> bool {
     publish("machines", |s| (std::mem::replace(&mut s.machines, v.clone()), v))
@@ -1177,6 +1183,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
         .function("focused", reader(reads.clone(), "focused", |s| &s.focused))
         .function("recentPlaces", reader(reads.clone(), "places", |s| &s.places))
         .function("layout", reader(reads.clone(), "layout", |s| &s.layout))
+        .function("layoutSpacing", reader(reads.clone(), "spacing", |s| &s.spacing))
         .function("layouts", |_| Ok(to_host(&json!(crate::window::layout_names()))))
         .function("commands", |_| {
             let list: Vec<Value> = crate::commands::COMMANDS

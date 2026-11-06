@@ -273,6 +273,12 @@ export function recentPlaces(): Place[];
  *  Opens a pointer popup with mod.json overlay width/height (default 220×260). */
 export function layout(): unknown;
 
+/** The shown layout's spacing, as layout.spacing sets it (with its clicks), or null when no
+ *  block shows a tab. `pane`: the tab block has a pane frame; `area`: a row or column holds it.
+ *  Each field is as written, absent when unset: `pane_gap`, `area_padding` (number or [y, x]),
+ *  `area_gap`, `terminal_padding` ([x, y]). A reader redraws only when these change. */
+export function layoutSpacing(): { pane: boolean; area: boolean; pane_gap?: number; area_padding?: number | [number, number]; area_gap?: number; terminal_padding?: [number, number] } | null;
+
 /** The names of every layout in layouts/ (main first). */
 export function layouts(): string[];
 
