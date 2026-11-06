@@ -19,6 +19,7 @@ const COLORS: &[(&str, &str, &str)] = &[
     ("chrome", "surfaceSubtle", "--super-sidebar"),
     ("surface", "surface", "--super-pane"),
     ("popover", "surfaceRaised", "--super-raised"),
+    ("raised", "controlOnOverlay", "--super-control-on-overlay"),
     ("border", "strokeSubtle", "--super-border"),
     ("input", "stroke", "--super-border-strong"),
     ("hover", "controlHover", "--super-hover"),
@@ -29,6 +30,7 @@ const COLORS: &[(&str, &str, &str)] = &[
     ("accent", "accent", "--super-accent"),
     ("accent_foreground", "accentOnSolid", "--super-accent-on-solid"),
     ("focus", "accentBorder", "--super-accent-border"),
+    ("ring", "accentBorder", "--super-accent-border"),
     ("done", "success", "--super-success"),
     ("blocked", "danger", "--super-danger"),
 ];
@@ -121,7 +123,7 @@ pub fn main(args: &[String]) -> i32 {
         }
     };
     let count = |o: &Outcome| imported.iter().filter(|i| i.outcome == *o).count();
-    let mut skipped = 0;
+    let skipped = imported.iter().filter(|i| matches!(i.outcome, Outcome::Skipped(_))).count();
     for i in &imported {
         let kind = if i.light { "light" } else { "dark" };
         let did = match (&i.outcome, dry_run) {
@@ -131,7 +133,6 @@ pub fn main(args: &[String]) -> i32 {
             (Outcome::Updated, true) => "would update",
             (Outcome::Unchanged, _) => "unchanged",
             (Outcome::Skipped(why), _) => {
-                skipped += 1;
                 eprintln!("skipped    {}: {why}", i.file);
                 continue;
             }
@@ -173,10 +174,14 @@ pub fn import(from: &Path, to: &Path, dry_run: bool) -> Result<Vec<Imported>, St
         std::fs::create_dir_all(to).map_err(|e| format!("cannot make {}: {e}", to.display()))?;
     }
     let mut out = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
     for theme in &themes {
-        let file = format!("rex-{}", slug(&theme.id));
+        let slug = slug(&theme.id);
+        let file = format!("rex-{slug}");
         let light = theme.appearance == "light";
         let outcome = match convert(theme) {
+            _ if slug.is_empty() => Outcome::Skipped(format!("id {:?} has no letters or digits", theme.id)),
+            _ if !seen.insert(slug.clone()) => Outcome::Skipped(format!("id {:?} names the same file as an earlier theme", theme.id)),
             Err(why) => Outcome::Skipped(why),
             Ok(text) => {
                 let path = to.join(format!("{file}.json"));
@@ -224,8 +229,8 @@ fn convert(t: &RexTheme) -> Result<String, String> {
     for (herdr, token, var) in COLORS {
         let v = t.css.get(*var).ok_or(format!("no {token} ({var})"))?;
         let c = css(v).ok_or(format!("{token} ({var}) {v:?} is not an rgb color"))?;
-        // An explicit focus is drawn as is; one under 3:1 is left to Herdr's readable default.
-        if *herdr == "focus" && crate::vt::contrast(to_rgb(rgb(&c)), to_rgb(bg)) < 3.0 {
+        // Herdr guarantees focus and ring at 3:1; one that is translucent or under that is left to its readable default.
+        if matches!(*herdr, "focus" | "ring") && (c.len() > 7 || crate::vt::contrast(to_rgb(rgb(&c)), to_rgb(bg)) < 3.0) {
             continue;
         }
         colors.insert(herdr.to_string(), c);
@@ -238,7 +243,7 @@ fn convert(t: &RexTheme) -> Result<String, String> {
         ansi,
         colors,
     };
-    Ok(serde_json::to_string_pretty(&file).unwrap_or_default() + "\n")
+    Ok(serde_json::to_string_pretty(&file).expect("a theme file is plain strings") + "\n")
 }
 
 /// `#rrggbb` (any case) as lowercase, or why not.
@@ -287,7 +292,7 @@ mod tests {
             "palette": [], "semantic": {},
             "cssVariables": {
                 "--super-bg": channels(bg), "--super-sidebar": "11 12 13", "--super-pane": "12 13 14", "--super-raised": "20 21 22",
-                "--super-border": "30 31 32", "--super-border-strong": "40 41 42",
+                "--super-control-on-overlay": "25 26 27", "--super-border": "30 31 32", "--super-border-strong": "40 41 42",
                 "--super-hover": format!("rgb({} / 0.05)", channels(fg)), "--super-selected": format!("rgb({} / 0.1)", channels(fg)),
                 "--super-text": channels(fg), "--super-text-secondary": "150 150 150", "--super-text-tertiary": "110 110 110",
                 "--super-accent": format!("rgb({})", channels(accent)), "--super-accent-on-solid": "0 0 0", "--super-accent-border": channels(accent),
@@ -346,7 +351,7 @@ mod tests {
         assert_eq!(file["colors"], json!({
             "canvas": "#0a0b0c", "chrome": "#0b0c0d", "surface": "#0c0d0e", "popover": "#141516", "border": "#1e1f20", "input": "#28292a",
             "hover": "#d0d0d00d", "selected": "#d0d0d01a", "foreground": "#d0d0d0", "muted": "#969696", "dim": "#6e6e6e",
-            "accent": "#40e0c0", "accent_foreground": "#000000", "focus": "#40e0c0", "done": "#00c864", "blocked": "#e63c3c"
+            "accent": "#40e0c0", "accent_foreground": "#000000", "focus": "#40e0c0", "ring": "#40e0c0", "raised": "#191a1b", "done": "#00c864", "blocked": "#e63c3c"
         }));
         assert!(crate::settings::theme_file_problems("rex-night-sea", &text).is_empty(), "{:?}", crate::settings::theme_file_problems("rex-night-sea", &text));
     }
@@ -423,15 +428,31 @@ mod tests {
     }
 
     #[test]
-    fn a_focus_under_3_to_1_is_left_to_herdr() {
-        let dirs = Dirs::new("faint");
-        let mut faint = dark();
-        faint["cssVariables"]["--super-accent-border"] = json!("20 21 22");
-        import(&dirs.rex(&[faint]), &dirs.themes(), false).unwrap();
-        let text = std::fs::read_to_string(dirs.themes().join("rex-night-sea.json")).unwrap();
-        let file: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(file["colors"].get("focus"), None);
-        assert!(crate::settings::theme_file_problems("rex-night-sea", &text).is_empty());
+    fn a_focus_and_ring_under_3_to_1_or_translucent_are_left_to_herdr() {
+        for border in ["20 21 22", "rgb(64 224 192 / 0.5)"] {
+            let dirs = Dirs::new("faint");
+            let mut faint = dark();
+            faint["cssVariables"]["--super-accent-border"] = json!(border);
+            import(&dirs.rex(&[faint]), &dirs.themes(), false).unwrap();
+            let text = std::fs::read_to_string(dirs.themes().join("rex-night-sea.json")).unwrap();
+            let file: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!((file["colors"].get("focus"), file["colors"].get("ring")), (None, None), "{border}");
+            assert!(crate::settings::theme_file_problems("rex-night-sea", &text).is_empty());
+        }
+    }
+
+    #[test]
+    fn ids_that_make_no_file_or_the_same_file_are_skipped() {
+        let dirs = Dirs::new("ids");
+        let mut blank = dark();
+        blank["id"] = json!("--");
+        let mut again = light();
+        again["id"] = json!("Night_Sea");
+        let imported = import(&dirs.rex(&[dark(), blank, again]), &dirs.themes(), false).unwrap();
+        assert_eq!(imported[0].outcome, Outcome::Added);
+        assert!(matches!(&imported[1].outcome, Outcome::Skipped(why) if why.contains("no letters")), "{:?}", imported[1].outcome);
+        assert!(matches!(&imported[2].outcome, Outcome::Skipped(why) if why.contains("same file")), "{:?}", imported[2].outcome);
+        assert!(std::fs::read_to_string(dirs.themes().join("rex-night-sea.json")).unwrap().contains("#0a0b0c"), "the first keeps its file");
     }
 
     /// The installed Rex's own themes, when this machine has Rex: every one
