@@ -366,7 +366,7 @@ Metal gains what Zed's Linux and Windows backends have: a BGRA `Subpixel` atlas 
 Fork only, merged with `feat/font-weight-bold`: each render test stages the shipped mods in `/var/tmp/herdr-render-<pid>-<n>` (short, for macOS socket path limits) and removes it on drop. A mod's localStorage write runs on the executor and recreates the folder if it lands after that drop, so `describe_with_values` runs the executor until parked once the window closes, and no folder outlives its test.
 
 - Files: `src/mods/render_tests.rs` (`describe_with_values`)
-- Upstream: none yet
+- Upstream: pull request #662 (`fix/render-tests-cleanup-upstream`, with a regression test), awaiting review
 
 ### Handlers inside list rows
 
