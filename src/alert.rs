@@ -444,15 +444,27 @@ mod tests {
     #[test]
     fn a_hung_alert_command_is_killed_after_its_limit_with_what_it_started() {
         use std::io::BufRead;
-        // A shell line, as `alert_command` runs one: the shell waits on its own child.
-        let argv = command_argv(&AlertCommand::Shell("sleep 30 & echo $!; wait".into())).unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        // A shell line, as `alert_command` runs one: the shell waits on its own
+        // child. `wait $!`, not a bare `wait`: a bare one returns 0 however its
+        // child ended, so a `sleep` ended early by anything else made a clean
+        // exit that read as "not killed".
+        let argv = command_argv(&AlertCommand::Shell("sleep 30 & echo $!; wait $!".into())).unwrap();
         let mut child = command(&argv, &note(Alert::Done)).stdout(Stdio::piped()).spawn().unwrap();
         let mut line = String::new();
         std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
         let sleep: libc::pid_t = line.trim().parse().unwrap();
         let started = Instant::now();
         let status = reap(child, Duration::from_millis(300)).expect("reaped");
-        assert!(!status.success(), "killed, not finished");
+        // SAFETY: signal 0 only asks whether the process is there.
+        let alive = unsafe { libc::kill(sleep, 0) } == 0;
+        assert_eq!(
+            status.signal(),
+            Some(libc::SIGKILL),
+            "the limit killed the shell: got {status:?} after {:?}, its child {sleep} {}",
+            started.elapsed(),
+            if alive { "still running" } else { "already gone" },
+        );
         assert!(started.elapsed() < Duration::from_secs(5));
         // SAFETY: signal 0 only asks whether the process is there.
         let gone = || unsafe { libc::kill(sleep, 0) } != 0;

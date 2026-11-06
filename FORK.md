@@ -56,6 +56,14 @@ Each merge of `upstream/master` into `master`, with the conflict choices worth r
 - Files: `src/persist.rs`
 - Upstream: none yet
 
+### Hung alert command test
+
+`fix/alert-hung-test` (branched from `master`, fork only): `alert::tests::a_hung_alert_command_is_killed_after_its_limit_with_what_it_started` failed now and then ("killed, not finished"), 2 of 3 full runs on one evening while other jobs started and stopped processes on the machine, and 0 of 10 later, 3 of them in parallel. Its shell line ended in a bare `wait`, which returns 0 however its child ended, so a `sleep` ended early by anything outside the test made the shell exit cleanly and read as Herdr not killing it. The line now waits on that child (`wait $!`), and the test requires the shell to have been killed by SIGKILL, saying in its message what the shell's status was, how long it took and whether its child was still running. No cause inside the test binary was found: no code sets SIGCHLD to ignored, and every other kill in it is `Child::kill` on a child not yet waited for. Herdr's own code is unchanged.
+
+- Tests: the test above; reverting the kill entirely, or keeping only the shell's kill without its process group's, fails it.
+- Files: `src/alert.rs`
+- Upstream: none yet
+
 ### Pane text zoom
 
 `feat/pane-zoom` (branched from `master`, fork only): `pane.zoom_text_in`, `pane.zoom_text_out` and `pane.zoom_text_reset {pane?}` zoom one terminal pane's text (default: the terminal with the keyboard), as Ghostty's per-surface font size does, while `app.zoom_*` keeps zooming everything. macOS binds Ctrl+= (and Ctrl++), Ctrl+- and Ctrl+0 in `global`; Cmd+= and friends stay `app.zoom_*`. Linux and Windows leave the commands unbound, because Ctrl+= is already `app.zoom_in` there.
