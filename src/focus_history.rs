@@ -293,7 +293,11 @@ impl History {
         let problem = match result {
             Ok(stored) => {
                 self.retry_now();
-                if !stored.newer {
+                // A newer app's document is never written: what this window
+                // noted would only show in recentPlaces() without being shared.
+                if stored.newer {
+                    self.unsent.clear();
+                } else {
                     self.unsent.retain(|p| !sent.contains(p));
                 }
                 let problem = stored.unreadable.clone();
@@ -591,14 +595,21 @@ mod tests {
         assert_eq!(tried, [0, 1, 3, 7, 15, 31, 61, 91]);
         assert_eq!(*core.sets.lock().unwrap(), 8, "one write a round, not one a tick");
         assert!(history.error.as_deref().is_some_and(|e| e.contains("no space")));
-        // A new place, a doc event or a reconnect tries again at once.
+        // A new place, a doc event or a reconnect tries again at once, however long the wait.
+        assert!(!round(&mut history, secs(100)), "waiting until 121");
         history.note(at("b", 20));
-        assert!(round(&mut history, secs(92)));
-        history.changed(None);
-        assert!(round(&mut history, secs(93)));
-        history.reconnected();
-        assert!(round(&mut history, secs(94)));
-        assert!(!round(&mut history, secs(94)), "and backs off again");
+        assert!(round(&mut history, secs(100)));
+        let mut tick = 100;
+        for reset in ["doc event", "reconnect"] {
+            for _ in 0..20 {
+                tick += 1;
+                round(&mut history, secs(tick));
+            }
+            assert!(!round(&mut history, secs(tick)), "{reset}: still backing off");
+            if reset == "doc event" { history.changed(None) } else { history.reconnected() }
+            assert!(round(&mut history, secs(tick)), "{reset} tries again at once");
+            assert!(!round(&mut history, secs(tick)), "{reset}: and backs off again");
+        }
         // The core writes again: success ends the backoff.
         *core.refuse.lock().unwrap() = false;
         assert!(round(&mut history, secs(200)));
@@ -634,5 +645,18 @@ mod tests {
         assert_eq!(panes(&stored.places), ["p", "q"], "deduplicated with it");
         let written = core.doc.lock().unwrap().0["places"].as_array().unwrap().len();
         assert_eq!(written, 2 + MAX);
+    }
+
+    #[test]
+    fn places_noted_against_a_newer_apps_document_are_not_shown() {
+        let core = Fake::new(json!({ "v": 2, "places": [at("theirs", 5)] }), 3, 0);
+        let mut history = History::new();
+        history.note(at("mine", 10));
+        assert_eq!(panes(&history.places()), ["mine"]);
+        let (known, unsent) = history.due(Instant::now()).unwrap();
+        history.finished(&unsent, sync(&core, known, &unsent), Instant::now());
+        assert_eq!(panes(&history.places()), ["theirs"], "only what is shared");
+        assert!(!history.has_unsent());
+        assert_eq!(*core.sets.lock().unwrap(), 0);
     }
 }
