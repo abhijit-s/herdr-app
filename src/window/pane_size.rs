@@ -133,17 +133,19 @@ pub(super) enum HiddenFit {
 impl AppWindow {
     pub(super) fn initial_size(&self, root: &Node, pane: &str, window: &Window) -> Option<(u16, u16)> {
         let focused = root.path_to(pane)?.into_iter().collect();
-        self.displayed_size(root, root.panes().len(), pane, &focused, window)
+        let area = self.displayed_area(root, root.panes().len(), pane, &focused)?;
+        Some(crate::terminal::grid_size(area, crate::terminal::cell_size(window)))
     }
 
-    /// The grid `pane` gets when `tab` is the one shown.
-    pub(super) fn shown_size(&self, tab: &Tab, pane: &str, window: &Window) -> Option<(u16, u16)> {
+    /// The area `pane` gets when `tab` is the one shown (its terminal sizes
+    /// its grid in it at its own text size).
+    pub(super) fn shown_area(&self, tab: &Tab, pane: &str) -> Option<Size<Pixels>> {
         let focused = tab.focused_pane().and_then(|f| tab.root.path_to(&f)).unwrap_or_default().into_iter().collect();
-        self.displayed_size(tab.shown(), tab.root.panes().len(), pane, &focused, window)
+        self.displayed_area(tab.shown(), tab.root.panes().len(), pane, &focused)
     }
 
     /// `shown`: the tree on screen; `panes`: how many the tab has (its frame needs more than one, or `lone`).
-    fn displayed_size(&self, shown: &Node, panes: usize, pane: &str, focused: &HashSet<String>, window: &Window) -> Option<(u16, u16)> {
+    fn displayed_area(&self, shown: &Node, panes: usize, pane: &str, focused: &HashSet<String>) -> Option<Size<Pixels>> {
         let (context, area) = self.context_area()?;
         let frame = match context.content() {
             Some(Content::Context { pane: Some(frame), .. }) if frame.lone || panes > 1 => Some(frame),
@@ -153,8 +155,7 @@ impl AppWindow {
         // The absolute bounds canvas already excludes the context border (padding box).
         let (y, x) = padding(context);
         let size = inset(area, 2.0 * x * zoom, 2.0 * y * zoom);
-        let size = pane_size(shown, size, pane, frame, focused, zoom)?;
-        Some(crate::terminal::grid_size(size, crate::terminal::cell_size(window)))
+        pane_size(shown, size, pane, frame, focused, zoom)
     }
 
     /// The block tabs show in, and the area it was last drawn with.
@@ -184,14 +185,13 @@ impl AppWindow {
                 return;
             }
         }
-        let scale = window.scale_factor();
         let active = self.model.active_tab().map(|t| t.id.clone());
         for tab in self.model.tabs().filter(|t| Some(&t.id) != active.as_ref()) {
             for pane in tab.shown().panes() {
                 if let Some(t) = self.terms.get(&pane.id)
-                    && let Some((cols, rows)) = self.shown_size(tab, &pane.id, window)
+                    && let Some(area) = self.shown_area(tab, &pane.id)
                 {
-                    t.view.read(cx).fit(cols, rows, cell, scale);
+                    t.view.read(cx).fit(area, window);
                 }
             }
         }

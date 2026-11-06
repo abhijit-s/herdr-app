@@ -442,6 +442,51 @@ fn zoom_row_shows_points_at_whole_point_steps(cx: &mut TestAppContext) {
     }
 }
 
+/// The shipped pane header shows the pane's own text size (`text_size` in
+/// `panes()`) while it has one, and nothing at the default size.
+#[gpui::test]
+fn pane_header_shows_a_panes_own_text_size(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    for (text_size, shown) in [(None, None), (Some(16.0), Some("16pt")), (Some(15.400001), Some("15.4pt"))] {
+        let mut values = fixture(true, json!({"pane":"p1","terminal":"t1"}), updates("current", "current"));
+        values.get_mut("panes").unwrap()[0]["text_size"] = json!(text_size);
+        let tree = describe_with_values(cx, &staged, "mods/pane", values, None).unwrap();
+        assert!(tree.contains("pane-head-p1"), "{tree}");
+        match shown {
+            Some(label) => {
+                let line = tree.lines().skip_while(|l| !l.contains("pane-text-size-p1")).take(3).collect::<Vec<_>>().join("\n");
+                assert!(line.contains(label), "{text_size:?}: {line}");
+            }
+            None => assert!(!tree.contains("pane-text-size") && !tree.contains("pt\""), "{tree}"),
+        }
+    }
+}
+
+/// The Text page has a "Pane zoom keys" toggle under Zoom steps, on unless
+/// settings.json turns it off.
+#[gpui::test]
+fn pane_zoom_keys_toggle_shows_the_setting(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut p = props();
+    p["section"] = json!("text");
+    for on in [true, false] {
+        let mut values = fixture(true, p.clone(), updates("current", "current"));
+        values.get_mut("settings").unwrap()["pane_zoom_keys"] = json!(on);
+        let person = if on { "{}" } else { "{ pane_zoom_keys: false }" };
+        let tree = describe_with_values(cx, &staged, "frame/settings", values, Some(&format!("this.load = async () => {{}}; this.person = {person};"))).unwrap();
+        let steps = tree.find("Zoom steps").expect("Zoom steps");
+        let keys = tree.find("Pane zoom keys").expect("Pane zoom keys");
+        assert!(steps < keys, "under Zoom steps");
+        let toggle = tree.lines().skip_while(|l| !l.contains("st-pane_zoom_keys")).take(6).collect::<Vec<_>>().join("\n");
+        let other = tree.lines().skip_while(|l| !l.contains("st-font_ligatures")).take(6).collect::<Vec<_>>().join("\n");
+        let (ligatures_on, keys_on) = (other.contains("justify_end"), toggle.contains("justify_end"));
+        assert!(!ligatures_on, "ligatures are off in the fixture: {other}");
+        assert_eq!(keys_on, on, "{toggle}");
+    }
+}
+
 /// The Text page has a Cell rounding choice under Cell width, showing the
 /// person's pick.
 #[gpui::test]

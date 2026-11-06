@@ -1140,6 +1140,20 @@ export default class Settings extends View {
         ),
       )
       .child(this.row(t, "Zoom steps", "Whole points move the terminals' text a point at a time, as Ghostty does; the panels scale with it.", this.choicePicker(t, "st-zs", "zoom_step", ZOOM_STEPS), "zoom_step"))
+      .child(
+        this.row(
+          t,
+          "Pane zoom keys",
+          `${window()?.platform === "macos" ? "Ctrl = and Ctrl − (Ctrl 0 resets)" : "Keys bound to pane.zoom_text_in, _out and _reset in keys.json"} zoom only the focused terminal's text, in zoom steps, on top of Zoom. Off, those keys reach the program.`,
+          this.toggle(t, "st-pane_zoom_keys", s.pane_zoom_keys !== false, (_e, cx) =>
+            this.change((q) => {
+              if (s.pane_zoom_keys !== false) q.pane_zoom_keys = false;
+              else delete q.pane_zoom_keys;
+            }, cx),
+          ),
+          "pane_zoom_keys",
+        ),
+      )
       .child(this.row(t, "Interface zoom", "Panels, tabs and popups, on top of zoom. Terminals keep their size.", scaleStepper("ui_zoom", s.ui_zoom), "ui_zoom"))
       .child(this.row(t, "Interface text size", "The panels' text only: spacing and icons keep their size.", scaleStepper("ui_text_scale", s.ui_text_scale), "ui_text_scale"))
       .child(fontRow("ui_font", null, "Interface font", s.ui_font_family, DEFAULT_UI_FONT))

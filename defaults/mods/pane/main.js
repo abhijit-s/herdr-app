@@ -2,7 +2,8 @@
 //   { "tab": "active", "pane": { "header": { "content": { "mod": "pane" } } } }
 // Shows the program's icon (the app's program table), the pane's name
 // (pane.rename), else the agent's name or the terminal's title, the folder,
-// and the agent's status; buttons split, zoom and close this pane.
+// the pane's own text size while pane.zoom_text_* sets it, and the agent's
+// status; buttons split, zoom and close this pane.
 // Props from the app: { pane, terminal }. Click: focus the pane.
 
 import { View, div, svg, image } from "gpui-kit";
@@ -64,6 +65,7 @@ export default class Pane extends View {
       .when(Boolean(pic), (el) => el.child(pic))
       .child(div().flex_none().truncate().max_w(260).font_medium().text_color(t.foreground).child(name))
       .child(div().flex_1().truncate().text_color(t.dim).child(folder(p.cwd)))
+      .when(p.text_size != null, el => el.child(div().id(`pane-text-size-${pane}`).flex_none().text_size(10.5).text_color(t.dim).child(`${Math.round(p.text_size * 10) / 10}pt`)))
       .when(st === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
       .when(st === "blocked", el => el.child(div().flex_none().px(6).h(18).flex().items_center().rounded(5).bg(t.blocked + "26").text_size(10.5).font_semibold().text_color(t.blocked).child("Needs you")))
       .when(st === "done", el => el.child(div().size(7).flex_none().rounded(4).bg(t.done)))

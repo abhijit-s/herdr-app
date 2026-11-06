@@ -1815,6 +1815,12 @@ impl AppWindow {
         })
     }
 
+    /// Whether a key bound to `pane.zoom_text_*` zooms: `pane_zoom_keys` is on
+    /// and a terminal has the keyboard.
+    fn pane_zoom_keys_apply(&self, window: &Window, cx: &App) -> bool {
+        settings::get().pane_zoom_keys && self.terms.values().any(|t| t.view.read(cx).owns_keyboard_focus(window, cx))
+    }
+
     /// Peeks, floats and swapped-in views own keyboard focus without changing the model pane.
     fn focused_terminal(&self, window: &Window, cx: &App) -> Option<&Term> {
         self.terms.values().find(|t| t.view.read(cx).owns_keyboard_focus(window, cx))
@@ -1959,6 +1965,7 @@ impl AppWindow {
                         "cwd": self.cwds.get(addr), "branch": m.folder_info.get(addr).and_then(|f| f.branch.clone()),
                         "status": m.status(addr), "app": a.and_then(|a| a.app.clone()), "program": self.program(addr),
                         "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id),
+                        "text_size": self.terms.get(&p.id).and_then(|t| t.view.read(cx).text_size()),
                     }));
                     let Some(status) = m.status(addr) else { continue };
                     agents.push(json!({
@@ -3973,6 +3980,19 @@ impl AppWindow {
                 self.apply_look(window, cx);
             }
             "focus.toggle_follows_mouse" => return self.toggle_follows_mouse(person, window, cx),
+            "pane.zoom_text_in" | "pane.zoom_text_out" | "pane.zoom_text_reset" => {
+                let steps = match name {
+                    "pane.zoom_text_in" => 1,
+                    "pane.zoom_text_out" => -1,
+                    _ => 0,
+                };
+                let term = match Self::arg(a, "pane") {
+                    Some(pane) => self.pane_term(pane),
+                    None => self.focused_terminal(window, cx),
+                };
+                let Some(view) = term.map(|t| t.view.clone()) else { return self.fail("no terminal pane to zoom") };
+                view.update(cx, |v, cx| v.zoom_text(steps, cx));
+            }
             "app.zoom_in" | "app.zoom_out" | "app.zoom_reset" => {
                 let zoom = settings::next_zoom(match name {
                     "app.zoom_in" => 1,
@@ -5683,6 +5703,11 @@ impl Render for AppWindow {
                     }
                     return;
                 }
+                // Off (or no terminal focused), the pane zoom keys are the program's.
+                if a.id().starts_with("pane.zoom_text_") && !this.pane_zoom_keys_apply(w, cx) {
+                    cx.propagate();
+                    return;
+                }
                 this.run_action(a.id(), w, cx);
             }))
             .on_action(cx.listener(|this, a: &crate::keys::CommandBinding, w, cx| {
@@ -6564,6 +6589,118 @@ export default class Recent extends View {
         let (view, cx) = cx.add_window_view(|window, cx| super::AppWindow::new(core, requests, window, cx));
         assert_eq!(view.update(cx, |this, _| this.layout_name.clone()), "test");
         (view, cx)
+    }
+
+    #[test]
+    fn pane_text_zoom_keys_zoom_the_focused_pane_or_reach_the_program() {
+        in_own_process("pane_text_zoom");
+    }
+
+    /// Tab t: a | b, a focused. The pane zoom keys (Ctrl+=, -, 0 on macOS,
+    /// bound in keys.json here elsewhere) zoom only a's text: b keeps its
+    /// size and grid, the app's zoom stays, `panes()` has a's size. The app's
+    /// zoom (Cmd+= on macOS) multiplies on top and resetting either keeps the
+    /// other. With `pane_zoom_keys` off the keys go to a's program instead.
+    #[gpui::test]
+    fn pane_text_zoom(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use serde_json::json;
+        if !running_alone("pane_text_zoom") {
+            return;
+        }
+        if !cfg!(target_os = "macos") {
+            let keys = json!({"global": {"ctrl-=": "pane.zoom_text_in", "ctrl--": "pane.zoom_text_out", "ctrl-0": "pane.zoom_text_reset", "ctrl-alt-=": "app.zoom_in", "ctrl-alt-0": "app.zoom_reset"}});
+            std::fs::write(crate::keys::path(), keys.to_string()).unwrap();
+        }
+        let app_zoom_in = if cfg!(target_os = "macos") { "cmd-=" } else { "ctrl-alt-=" };
+        let app_zoom_reset = if cfg!(target_os = "macos") { "cmd-0" } else { "ctrl-alt-0" };
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.select_tab("t");
+            this.model.focus_pane("a");
+            this.sync(window, cx);
+        });
+        cx.run_until_parked();
+        // (a's text size, a's grid, b's text size, b's grid, a typed into, the app's zoom)
+        let state = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, cx| {
+            let (a, b) = (this.terms["a"].view.read(cx), this.terms["b"].view.read(cx));
+            (a.text_size(), a.dimensions(), b.text_size(), b.dimensions(), a.typed(), crate::settings::get().zoom)
+        });
+        let published = |pane: &str| crate::mods::published_panes().as_array().unwrap().iter().find(|p| p["pane"] == pane).map(|p| p["text_size"].clone()).unwrap();
+        let key = |cx: &mut gpui::VisualTestContext, k: &str| {
+            cx.simulate_keystrokes(k);
+            cx.run_until_parked();
+        };
+        let start = state(cx);
+        assert!(view.update_in(cx, |this, window, cx| this.terms["a"].view.read(cx).owns_keyboard_focus(window, cx)), "a has the keyboard");
+        assert_eq!((start.0, start.2, start.4, start.5), (None, None, false, 1.0));
+
+        key(cx, "ctrl-=");
+        let one = state(cx);
+        assert_eq!(one.0, Some(14.0 * 1.1), "a one tenth up");
+        assert!(one.1.0 < start.1.0, "a reflowed: {:?} -> {:?}", start.1, one.1);
+        assert_eq!((one.2, one.3), (None, start.3), "b untouched");
+        assert_eq!((one.4, one.5), (false, 1.0), "the key zoomed, not typed; the app's zoom stays");
+        assert_eq!((published("a"), published("b")), (json!(14.0f32 * 1.1), json!(null)));
+
+        key(cx, app_zoom_in);
+        let both = state(cx);
+        assert_eq!(both.5, 1.1, "the app's zoom keys stay app-wide");
+        assert_eq!(both.0, Some(14.0f32 * 1.1 * 1.1), "the app's zoom multiplies the pane's");
+        assert_eq!(published("a"), json!(14.0f32 * 1.1 * 1.1));
+        key(cx, app_zoom_reset);
+        assert_eq!(state(cx).0, Some(14.0f32 * 1.1), "the app's reset keeps the pane's zoom");
+        key(cx, app_zoom_in);
+        key(cx, "ctrl-0");
+        let reset = state(cx);
+        assert_eq!((reset.0, reset.5), (None, 1.1), "the pane's reset keeps the app's zoom");
+        key(cx, app_zoom_reset);
+        assert_eq!(state(cx).1, start.1, "back to a's own grid");
+        key(cx, "ctrl--");
+        assert_eq!(state(cx).0, Some(14.0 * 0.9));
+        key(cx, "ctrl-0");
+
+        // A zoomed pane in a hidden tab is fitted at its own size.
+        key(cx, "ctrl-=");
+        let zoomed = state(cx).1;
+        view.update_in(cx, |this, window, cx| {
+            this.model.add_tab("s", Tab::new("u", "", "d", "td"));
+            this.model.select_tab("u");
+            this.sync(window, cx);
+        });
+        cx.run_until_parked();
+        view.update_in(cx, |this, window, cx| {
+            this.hidden_fit = super::pane_size::HiddenFit::Unknown;
+            this.fit_hidden_tabs(window, cx);
+            this.fit_hidden_tabs(window, cx);
+            assert!(matches!(this.hidden_fit, super::pane_size::HiddenFit::Done(_)), "the hidden tab was fitted");
+        });
+        assert_eq!(state(cx).1, zoomed, "hidden, a keeps the zoomed grid");
+        view.update_in(cx, |this, window, cx| {
+            this.model.select_tab("t");
+            this.model.focus_pane("a");
+            this.sync(window, cx);
+        });
+        cx.run_until_parked();
+        key(cx, "ctrl-0");
+        assert_eq!(state(cx).0, None);
+
+        let person = crate::settings::Person { pane_zoom_keys: false, ..crate::settings::Person::default() };
+        crate::settings::write_person(&person).unwrap();
+        view.update_in(cx, |this, window, cx| {
+            this.watched.settings = None;
+            this.reload_config(window, cx);
+        });
+        cx.run_until_parked();
+        key(cx, "ctrl-=");
+        let off = state(cx);
+        assert_eq!(off.0, None, "off: no zoom");
+        assert!(off.4, "off: Ctrl+= reached a's program");
     }
 
     #[test]
