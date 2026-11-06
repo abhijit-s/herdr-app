@@ -569,7 +569,7 @@ export default class Settings extends View {
       .child(this.contrast(t, "unfocused_dim", "Dim when inactive", "Fades this far toward the background while Herdr isn't the active window."))
       .child(this.row(t, "Dim", "The whole window, or only terminal text.", this.choicePicker(t, "st-ds", "unfocused_dim_scope", DIM_SCOPES)))
       .child(this.row(t, "Panel colours", settings().panels_in_use === "classic" && this.person.panel_colors !== "classic"
-        ? "This theme or layout paints its own panels, so they stay classic here, with no sidebar shade."
+        ? "This theme or layout keeps classic panels, so it has no sidebar shade."
         : "Tinted takes each theme's own hue. Classic is plain grey with a darker sidebar, so it has no sidebar shade.", this.choicePicker(t, "st-pc", "panel_colors", PANEL_COLORS)))
       .when(this.person.panel_colors !== "classic" && settings().panels_in_use !== "classic", (el) =>
         el.child(this.row(t, "Sidebar shade", "A shade darker sidebar on dark themes, while Herdr is the active window or always.", this.choicePicker(t, "st-ss", "sidebar_shade", SIDEBAR_SHADES))),
