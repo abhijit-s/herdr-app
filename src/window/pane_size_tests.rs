@@ -159,3 +159,57 @@ fn spacing_refuses_broken(cx: &mut gpui::TestAppContext) {
     assert!(answer["error"].as_str().is_some_and(|e| e.contains("has errors: fix it first")), "{answer}");
     assert!(!changed, "a refused layout.spacing must leave the layout as it was");
 }
+
+#[test]
+fn hidden_tabs_follow_the_panel_scale_and_block_padding() {
+    in_own_process("hidden_tabs_follow_look");
+}
+
+/// The tab block fills the window, so neither change below moves its area or
+/// the terminals' cell: only the rest of the refit key can notice them.
+#[gpui::test]
+fn hidden_tabs_follow_look(cx: &mut gpui::TestAppContext) {
+    if !running_alone("hidden_tabs_follow_look") { return; }
+    let layout = serde_json::json!({ "id": "root", "type": "block",
+        "content": { "tab": "active", "pane": { "border": { "width": 10, "color": "border" }, "gap": 8, "lone": true } } });
+    let (view, cx) = open_window(cx, "size-probe", "export default () => null;", layout);
+    let mut root = crate::model::pane("a", "probe-a");
+    root.split("a", super::Axis::Row, crate::model::pane("a2", "probe-a2"), "s".into());
+    view.update_in(cx, |this, window, cx| {
+        this.folders.retain(|id, _| id == "size-probe");
+        this.model = crate::model::Model::default();
+        let mut tab = super::Tab::new("ta", "", "a", "probe-a");
+        tab.root = root;
+        tab.focus("a2");
+        this.model.add_space("space", "test", "/", tab);
+        this.model.add_tab("space", super::Tab::new("tb", "", "b", "probe-b"));
+        this.sync(window, cx);
+    });
+    let settle = |view: &gpui::Entity<super::AppWindow>, cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        view.update_in(cx, |this, window, cx| this.fit_hidden_tabs(window, cx));
+        view.update_in(cx, |this, window, cx| this.fit_hidden_tabs(window, cx));
+        view.update(cx, |this, cx| ["a", "a2"].map(|p| this.terms[p].view.read(cx).dimensions()))
+    };
+    let area = |view: &gpui::Entity<super::AppWindow>, cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.bounds.borrow().get("root").map(|b| b.size));
+    let fitted = settle(&view, cx);
+    let (area0, cell0) = (area(&view, cx), cx.update(|window, _| crate::terminal::cell_size(window)));
+    // The panels' zoom: the frame's border and gap grow, the area and cell don't.
+    view.update_in(cx, |this, window, cx| {
+        this.person.ui_zoom = 1.5;
+        this.apply_look(window, cx);
+    });
+    let zoomed = settle(&view, cx);
+    assert_eq!((area(&view, cx), cx.update(|window, _| crate::terminal::cell_size(window))), (area0, cell0), "the panels' zoom must leave the area and cell alone");
+    eprintln!("hidden tab: {fitted:?} at ui_zoom 1, {zoomed:?} at 1.5");
+    assert!(zoomed[0].0 < fitted[0].0, "the panels' scale must refit the hidden tab's terminals");
+    // The tab block's own padding, inside its bounds.
+    view.update_in(cx, |this, window, cx| {
+        this.chrome.padding = Some(crate::layout::Padding::All(30.0));
+        this.sync(window, cx);
+    });
+    let padded = settle(&view, cx);
+    assert_eq!(area(&view, cx), area0, "the block's padding must leave its bounds alone");
+    eprintln!("hidden tab: {zoomed:?} unpadded, {padded:?} with the block padded");
+    assert!(padded[0].0 < zoomed[0].0 && padded[0].1 < zoomed[0].1, "the block's padding must refit the hidden tab's terminals");
+}

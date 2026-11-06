@@ -452,7 +452,7 @@ test("a step layout() never shows (a refused call) expires, and steps don't carr
   const t = new Proxy({}, { get: () => "#000000" });
   find(view.spacing(t, {}), "st-sp-pane_gap-plus").calls.on_click[0](null, clickCx());
   expect(texts(view.spacing(t, {}))).toContain("7");
-  // What the 250 ms timer does: nothing to drop yet, then the step expires.
+  // What the one-shot settle timer (1050 ms after the newest step) does: nothing to drop yet, then the step expires.
   expect(settlePending(view.spacingPending, spacingOf(deck()), Date.now())).toBe(false);
   expect(settlePending(view.spacingPending, spacingOf(deck()), Date.now() + 1001)).toBe(true);
   expect(view.spacingPending).toEqual({});
