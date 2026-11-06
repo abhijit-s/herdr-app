@@ -626,7 +626,7 @@ impl TerminalView {
     /// Returns whether anything was copied. Does not clear the selection: mouse
     /// copy-on-select uses this and keeps the highlight.
     pub fn copy(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(text) = self.grid.borrow().vt.selection_text().filter(|text| !text.is_empty()) else {
+        let Some(text) = self.grid.borrow().vt.selection_text() else {
             return false;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
