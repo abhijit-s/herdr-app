@@ -1888,20 +1888,14 @@ impl AppWindow {
     fn copy_all(&mut self, address: String, window: &mut Window, cx: &mut Context<Self>) {
         // The core reads a full-screen program's history by scrolling it, holding
         // typed keys, for up to seconds: say so, or the pane seems to move by itself.
-        if self.terms.values().any(|t| t.address == address && t.view.read(cx).full_screen()) {
-            let note = json!({ "title": "Copying…", "body": "Scrolling the program to read its history", "level": "info", "timeout": 20000 });
-            self.show_copied_as(note, window, cx);
-        }
+        let copying = self.terms.values().any(|t| t.address == address && t.view.read(cx).full_screen()).then(|| self.show_copying(window, cx));
         let core = self.core.clone();
-        let read = cx.background_executor().spawn(async move {
-            // Past the core's own stitch deadline (15 s by default).
-            core.call_timeout("terminal.read", copy_all_params(&address), Duration::from_secs(30))
-        });
+        let read = cx.background_executor().spawn(async move { core.call_timeout("terminal.read", copy_all_params(&address), COPY_ALL_READ_LIMIT) });
         cx.spawn_in(window, async move |this, cx| {
             let read = read.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 let note = match read {
-                    Ok(r) if !r["text"].is_string() => json!({ "title": "Couldn't copy the terminal", "body": format!("unexpected reply: {r}"), "level": "error" }),
+                    Ok(r) if !r["text"].is_string() => Err(json!({ "title": "Couldn't copy the terminal", "body": format!("unexpected reply: {r}"), "level": "error" })),
                     Ok(r) => match copied_text(r["text"].as_str().unwrap_or_default()) {
                         Some((text, lines)) => {
                             cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -1909,19 +1903,38 @@ impl AppWindow {
                             if r["complete"] == json!(false) {
                                 note["body"] = json!("Some of its history wasn't available");
                             }
-                            return this.show_copied_as(note, window, cx);
+                            Ok(note)
                         }
-                        None => json!({ "title": "Nothing to copy", "level": "info" }),
+                        None => Err(json!({ "title": "Nothing to copy", "level": "info" })),
                     },
-                    Err(e) => json!({ "title": "Couldn't copy the terminal", "body": format!("{e:#}"), "level": "error" }),
+                    Err(e) => Err(json!({ "title": "Couldn't copy the terminal", "body": format!("{e:#}"), "level": "error" })),
                 };
-                if let Some(copying) = this.copied_toast.take() {
-                    this.remove_overlay(&copying, window, cx);
-                }
-                this.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": note }), window, cx);
+                this.copied_all(copying, note, window, cx);
             });
         })
         .detach();
+    }
+
+    /// The "Copying…" toast of one `copy_all`, its own: a selection copied
+    /// meanwhile says "Copied" beside it, and it stays up as long as the read may take.
+    fn show_copying(&mut self, window: &mut Window, cx: &mut Context<Self>) -> String {
+        let id = mods::new_overlay_id();
+        let timeout = (COPY_ALL_READ_LIMIT + Duration::from_secs(5)).as_millis() as u64;
+        let note = json!({ "title": "Copying…", "body": "Scrolling the program to read its history", "level": "info", "timeout": timeout });
+        self.open_overlay(id.clone(), json!({ "kind": "toast", "notification": note }), window, cx);
+        id
+    }
+
+    /// A `copy_all` finished: its "Copying…" toast goes, and what came of it
+    /// shows: copied, as a copy does, or why not.
+    fn copied_all(&mut self, copying: Option<String>, note: Result<Value, Value>, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = copying {
+            self.remove_overlay(&id, window, cx);
+        }
+        match note {
+            Ok(note) => self.show_copied_as(note, window, cx),
+            Err(note) => self.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": note }), window, cx),
+        }
     }
 
     fn shown_terminal_view(&self, address: &str, window: &Window, cx: &App) -> Result<Entity<TerminalView>, String> {
@@ -5772,6 +5785,10 @@ fn copy_all_params(address: &str) -> Value {
     json!({ "terminal": address, "lines": ALL_LINES })
 }
 
+/// How long `terminal.copy_all` waits for the core: past its own stitch
+/// deadline (15 s by default).
+const COPY_ALL_READ_LIMIT: Duration = Duration::from_secs(30);
+
 /// What `terminal.copy_all` puts on the clipboard, and its line count; `None`
 /// when there's no text. The rows below the last text are blank screen, not output.
 fn copied_text(read: &str) -> Option<(String, usize)> {
@@ -7045,6 +7062,45 @@ export default class Recent extends View {
 
         let missing = run("terminal.copy_all", json!({ "terminal": "t9" }), cx);
         assert!(missing.get("error").is_some(), "{missing}");
+    }
+
+    #[test]
+    fn copy_all_keeps_its_copying_toast_to_itself() {
+        in_own_process("copying_toast");
+    }
+
+    /// `copy_all`'s "Copying…" toast lasts as long as the read may, a
+    /// selection copied meanwhile says "Copied" beside it, and the read
+    /// finishing takes away only its own toast.
+    #[gpui::test]
+    fn copying_toast(cx: &mut gpui::TestAppContext) {
+        use super::{OverlayKind, COPY_ALL_READ_LIMIT};
+        use serde_json::json;
+        if !running_alone("copying_toast") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
+        cx.run_until_parked();
+        let toasts = |cx: &mut gpui::VisualTestContext| {
+            view.update(cx, |this, _| this.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).map(|o| o.id.clone()).collect::<Vec<_>>())
+        };
+        let copying = cx.update(|window, cx| view.update(cx, |this, cx| this.show_copying(window, cx)));
+        let lasts = view.update(cx, |this, _| this.overlays.iter().find(|o| o.id == copying).and_then(|o| o.expires).map(|at| at.saturating_duration_since(std::time::Instant::now())));
+        assert!(lasts.is_some_and(|d| d > COPY_ALL_READ_LIMIT), "Copying… ends before the read may: {lasts:?}");
+
+        cx.update(|window, cx| view.update(cx, |this, cx| this.show_copied(window, cx)));
+        let selection = view.update(cx, |this, _| this.copied_toast.clone()).unwrap();
+        assert_eq!(toasts(cx), [copying.clone(), selection.clone()], "a selection's Copied doesn't replace Copying…");
+
+        // Another copy_all failing takes nothing of this one's.
+        cx.update(|window, cx| view.update(cx, |this, cx| this.copied_all(None, Err(json!({ "title": "Nothing to copy" })), window, cx)));
+        assert!(toasts(cx).starts_with(&[copying.clone(), selection.clone()]), "{:?}", toasts(cx));
+
+        // This one failing: only its own toast goes.
+        cx.update(|window, cx| view.update(cx, |this, cx| this.copied_all(Some(copying.clone()), Err(json!({ "title": "Couldn't copy the terminal", "level": "error" })), window, cx)));
+        let left = toasts(cx);
+        assert!(!left.contains(&copying) && left.contains(&selection), "{left:?}");
+        assert_eq!(left.len(), 3, "the selection's, Nothing to copy, and why this one failed");
     }
 
     #[test]
