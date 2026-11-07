@@ -130,9 +130,12 @@ impl ThemeColors {
 
     /// From a resolved theme (settings.rs): `background`, `terminal_foreground`
     /// and `accent`. Focus only changes `chrome`, so it never redraws the icon.
+    /// A colour settings.json overrides with something unreadable falls back
+    /// to the theme's own (`surface`, `foreground`, `ansi4`), then Graphite's.
     pub fn of(theme: &crate::settings::Theme) -> ThemeColors {
-        let get = |k: &str, or: u32| theme.get(k).and_then(|v| u32::from_str_radix(v.trim_start_matches('#').get(..6)?, 16).ok()).unwrap_or(or);
-        ThemeColors::new(get("background", 0x17191d), get("terminal_foreground", 0xd2d4d9), get("accent", 0x96b2d7))
+        let read = |k: &str| theme.get(k).and_then(|v| u32::from_str_radix(v.strip_prefix('#')?.get(..6)?, 16).ok());
+        let get = |k: &str, then: &str, or: u32| read(k).or_else(|| read(then)).unwrap_or(or);
+        ThemeColors::new(get("background", "surface", 0x17191d), get("terminal_foreground", "foreground", 0xd2d4d9), get("accent", "ansi4", 0x96b2d7))
     }
 
     /// `template` with its `{field}`s filled.
@@ -260,10 +263,12 @@ impl ThemeIcons {
         Next::Draw
     }
 
-    fn drawn(&mut self, colors: ThemeColors, icns: std::sync::Arc<Vec<u8>>) {
+    /// A draw finished: `None` when it failed, which leaves the palette to be tried again.
+    fn drawn(&mut self, colors: ThemeColors, icns: Option<std::sync::Arc<Vec<u8>>>) {
         if self.drawing == Some(colors) {
             self.drawing = None;
         }
+        let Some(icns) = icns else { return };
         self.drawn.retain(|(c, _)| *c != colors);
         self.drawn.insert(0, (colors, icns));
         self.drawn.truncate(THEME_ICONS_KEPT);
@@ -305,7 +310,8 @@ pub fn follow(icon: &AppIcon, theme: &crate::settings::Theme) {
             Next::Draw => {
                 let drawing = std::thread::Builder::new().name("app-icon".into()).spawn(move || {
                     let start = std::time::Instant::now();
-                    let icns = std::sync::Arc::new(theme_icns(&colors));
+                    // A panic here would otherwise leave the palette marked as drawing for good.
+                    let icns = std::panic::catch_unwind(|| theme_icns(&colors)).ok().map(std::sync::Arc::new);
                     tracing::debug!("app_icon theme: drawn in {:?}", start.elapsed());
                     dispatch2::DispatchQueue::main().exec_async(move || theme_icon_drawn(colors, icns));
                 });
@@ -321,29 +327,41 @@ pub fn follow(icon: &AppIcon, theme: &crate::settings::Theme) {
 /// Back on the main thread with a drawn theme icon: kept, and shown if the
 /// settings still ask for it.
 #[cfg(target_os = "macos")]
-fn theme_icon_drawn(colors: ThemeColors, icns: std::sync::Arc<Vec<u8>>) {
+fn theme_icon_drawn(colors: ThemeColors, icns: Option<std::sync::Arc<Vec<u8>>>) {
     let Some(mtm) = objc2::MainThreadMarker::new() else { return };
     THEME_ICONS.with_borrow_mut(|icons| icons.drawn(colors, icns.clone()));
-    let want = Shown::Theme(colors);
-    if WANTED.with_borrow(|wanted| wanted.as_ref() == Some(&want)) && SHOWN.with_borrow(|shown| shown.as_ref() != Some(&want)) {
-        show(mtm, want, &icns);
+    let Some(icns) = icns else { return tracing::warn!("app_icon theme: drawing it failed") };
+    let show_it = WANTED.with_borrow(|wanted| SHOWN.with_borrow(|shown| shows_when_drawn(wanted.as_ref(), shown.as_ref(), colors)));
+    if show_it {
+        show(mtm, Shown::Theme(colors), &icns);
     }
+}
+
+/// Whether a theme icon drawn in `colors` goes to the Dock: only while the
+/// settings still ask for it (they may have moved to another theme or icon
+/// while it drew) and the Dock doesn't show it already.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+fn shows_when_drawn(wanted: Option<&Shown>, shown: Option<&Shown>, colors: ThemeColors) -> bool {
+    let drawn = Shown::Theme(colors);
+    wanted == Some(&drawn) && shown != Some(&drawn)
 }
 
 #[cfg(target_os = "macos")]
 fn show(mtm: objc2::MainThreadMarker, shown: Shown, bytes: &[u8]) {
     use objc2::AllocAnyThread as _;
+    let start = std::time::Instant::now();
+    let name = match &shown {
+        Shown::Icon(icon) => String::from(icon.clone()),
+        Shown::Theme(_) => THEME.to_owned(),
+    };
     let data = objc2_foundation::NSData::with_bytes(bytes);
     let Some(image) = objc2_app_kit::NSImage::initWithData(objc2_app_kit::NSImage::alloc(), &data) else {
-        let name = match shown {
-            Shown::Icon(icon) => String::from(icon),
-            Shown::Theme(_) => THEME.to_owned(),
-        };
         return tracing::warn!("app_icon {name}: not an image macOS can read");
     };
     // SAFETY: on the main thread (`mtm`), with an image AppKit itself decoded.
     unsafe { objc2_app_kit::NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)) };
     SHOWN.set(Some(shown));
+    tracing::debug!("app_icon {name}: shown in {:?}", start.elapsed());
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -577,18 +595,40 @@ mod tests {
         let mut icons = ThemeIcons::default();
         assert_eq!(icons.ask(colors[0]), Next::Draw);
         assert_eq!(icons.ask(colors[0]), Next::Wait);
-        icons.drawn(colors[0], icns(0));
+        icons.drawn(colors[0], Some(icns(0)));
         assert_eq!(icons.ask(colors[0]), Next::Show(icns(0)));
         assert_eq!(icons.ask(colors[1]), Next::Draw);
-        icons.drawn(colors[1], icns(1));
+        icons.drawn(colors[1], None);
+        assert_eq!(icons.ask(colors[1]), Next::Draw, "a failed draw is tried again");
+        icons.drawn(colors[1], Some(icns(1)));
         assert_eq!(icons.ask(colors[0]), Next::Show(icns(0)));
         assert_eq!(icons.ask(colors[1]), Next::Show(icns(1)));
         for (i, c) in colors[2..6].iter().enumerate() {
             assert_eq!(icons.ask(*c), Next::Draw);
-            icons.drawn(*c, icns(i as u8 + 2));
+            icons.drawn(*c, Some(icns(i as u8 + 2)));
         }
         assert_eq!(icons.drawn.len(), THEME_ICONS_KEPT);
         assert_eq!(icons.ask(colors[0]), Next::Draw, "the least recently shown went first");
+    }
+
+    /// A drawn icon reaches the Dock only if the settings still want it: not
+    /// after they moved to another palette or icon, and not twice.
+    #[test]
+    fn a_drawn_icon_shows_only_while_still_wanted() {
+        let [a, b] = [ThemeColors::new(0x17191d, 0xd2d4d9, 0x96b2d7), ThemeColors::new(0xffffff, 0x25272c, 0x1f62d0)];
+        let (theme_a, theme_b, mirage) = (Shown::Theme(a), Shown::Theme(b), Shown::Icon(AppIcon::Mirage));
+        assert!(shows_when_drawn(Some(&theme_a), None, a));
+        assert!(shows_when_drawn(Some(&theme_a), Some(&mirage), a));
+        assert!(!shows_when_drawn(Some(&theme_b), Some(&mirage), a), "the theme moved on while it drew");
+        assert!(!shows_when_drawn(Some(&mirage), Some(&mirage), a), "the icon setting moved on");
+        assert!(!shows_when_drawn(Some(&theme_a), Some(&theme_a), a), "already showing");
+    }
+
+    /// An override settings.json can't read falls back to the theme's own colour.
+    #[test]
+    fn unreadable_overrides_fall_back_to_the_theme() {
+        let theme: crate::settings::Theme = [("background", "#abc"), ("surface", "#faf4ed"), ("terminal_foreground", "#575279"), ("accent", "nope"), ("ansi4", "#56949f")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        assert_eq!(ThemeColors::of(&theme), ThemeColors::new(0xfaf4ed, 0x575279, 0x56949f));
     }
 
     /// The templates have every field the colours fill, and nothing left unfilled.
