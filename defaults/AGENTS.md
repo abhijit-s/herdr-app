@@ -305,7 +305,7 @@ Create `mods/my-menu/main.js` and `mod.json` (e.g.
 `{"place":"none","overlay":{"width":280,"height":100}}`), then set the layout root's
 `"terminal_menu": "my-menu"`. It opens as a pointer popup, default 220 px wide and at most 420 px tall (it fits its items);
 its `mod.json` overlay width/height override those defaults. It gets
-`props()` = `{tab: "pane", target: {pane, terminal, selected, cwd}, overlay}`: `selected` is whether the terminal had a text selection when right-clicked (the right-click leaves it in place), `cwd` its folder or null. Always use
+`props()` = `{tab: "pane", target: {pane, terminal, selected, cwd, last_output}, overlay}`: `selected` is whether the terminal had a text selection when right-clicked (the right-click leaves it in place), `cwd` its folder or null, `last_output` whether `terminal.copy_last_output` has a finished command's output to copy. Always use
 `target.terminal` or `target.pane` in actions, not the focused terminal:
 right-clicking a different terminal must act on the one clicked. A terminal
 shown outside a tab (a layout terminal block, a window) has no pane:
@@ -653,7 +653,7 @@ The main ones:
   running until the next popup, which ends the program the last popup started,
   open or hidden; `herdr-app popup` wraps it),
   `terminal.show {terminal?, pane?}`, `terminal.search` (screen and scrollback;
-  find bar state stays with that terminal), `terminal.copy {terminal?}` (the selection), `terminal.copy_all {terminal?}` (the screen and all the history the core keeps, as plain text: what `hc read` prints, without the blank lines below the last text; a toast says how many lines), `terminal.copy_path {terminal?}` (the folder the terminal is in), `terminal.paste {terminal?}` (copied
+  find bar state stays with that terminal), `terminal.copy {terminal?}` (the selection), `terminal.copy_all {terminal?}` (the screen and all the history the core keeps, as plain text: what `hc read` prints, without the blank lines below the last text; a toast says how many lines), `terminal.copy_path {terminal?}` (the folder the terminal is in), `terminal.copy_last_output {terminal?}` (the output of the last command that finished, wrapped lines joined, without trailing blank lines; see "Copy last output" below), `terminal.paste {terminal?}` (copied
   files, such as Finder's or a clipboard manager's image, as if dropped; an image
   alone as `terminal.paste_image` pastes it), `terminal.paste_image` (Ctrl+V: an
   image, into a terminal on another machine: copied there, its path pasted; on
@@ -678,6 +678,21 @@ The main ones:
   started, including its release outside the pane; other panes don't receive it.
   Terminals display Kitty graphics, including Unicode placeholder images used by
   programs such as yazi; partial images and scrolling follow the placeholder cells.
+- Copy last output: `terminal.copy_last_output` and the pane menu's "Copy last output" copy what the last finished command printed, read from the marks a shell writes around its prompts (OSC 133: `A` prompt start, `B` input start, `C` output start, `D` command end). The menu shows the item only when there is such output. It covers output in the scrollback (as far as Herdr's view of the terminal keeps), joins lines the terminal wrapped, and drops trailing blank lines. A command still running doesn't count: the one before it does. Enter on an empty prompt is skipped; a command that printed nothing, or a half-typed line left with Ctrl+C, leaves nothing to copy. There's nothing on a full-screen program (the alternate screen), in a terminal whose shell writes no marks (most agents and TUIs), or for a command typed at a prompt drawn before Herdr attached to the terminal (the core's first paint carries no marks: after Herdr restarts, the first command in a terminal doesn't count, the ones after it do). Shells write the marks through shell integration: fish does by itself, oh-my-posh does with `shell_integration = true` in its config. A terminal app's integration (Ghostty's, kitty's) reaches only shells that app starts, not Herdr's. Plain zsh needs two hooks in `~/.zshrc`:
+
+  ```zsh
+  autoload -Uz add-zsh-hook
+  _osc133_precmd() {
+    print -n "\e]133;D;$?\a"
+    [[ $PROMPT == *$'\e]133;A\a'* ]] || PROMPT=$'%{\e]133;A\a%}'"$PROMPT"$'%{\e]133;B\a%}'
+    [[ -z $RPROMPT || $RPROMPT == *$'\e]133;P'* ]] || RPROMPT=$'%{\e]133;P;k=r\a%}'"$RPROMPT"$'%{\e]133;B\a%}'
+  }
+  _osc133_preexec() { print -n "\e]133;C\a"; }
+  add-zsh-hook precmd _osc133_precmd
+  add-zsh-hook preexec _osc133_preexec
+  ```
+
+  Bash: `PS0=$'\e]133;C\a'`, `PROMPT_COMMAND='printf "\e]133;D;%s\a" $?'` and `PS1=$'\[\e]133;A\a\]'"$PS1"$'\[\e]133;B\a\]'`. The marks go inside `PROMPT` and `RPROMPT`, not printed once from precmd, so a prompt zsh redraws (a resize, `reset-prompt`, a transient prompt) and a right prompt stay marked as prompt rather than as typed input. Register the zsh hooks after any prompt tool that rebuilds `PROMPT` each time (oh-my-posh, starship), so the marks are added to its prompt.
 - Agents: `agent.next`, `agent.prev`, `agent.focus {terminal}`.
 - Notifications: `system.notify {title, body?, subtitle?, sound?, agent?, id?, urgent?, icon?}` posts a notification as Herdr for any program: `herdr-app do system.notify '{"title": "Build", "body": "passed", "sound": "Glass", "id": "build"}'`. `sound` as one `notification_sounds` value (default `"default"`); `agent` (a terminal address, or an agent's name when only one has it) makes a click show that terminal and attaches its program's icon (unless `icon` is given or `notification_icons` is `false`); a newer one with the same `id` (1 to 64 of `A-Z a-z 0-9 . _ : -`) replaces the older; `icon` is an absolute path to a PNG, JPEG, GIF or HEIC up to 10 MB (Herdr attaches a copy). It follows `system_notifications`: `off` fails; `background` while Herdr is the app in front shows the window's toast instead (answer `{"shown": "toast"}`) unless `urgent: true`; otherwise it posts (answer `{"shown": "notification", "tag": ...}`). Title and subtitle are cut at 200 characters and the body at 2000; control characters (the body keeps its line breaks) and direction overrides are left out. It fails, exiting 1, where macOS won't show it: notifications for Herdr turned off in System Settings, or a build not run from Herdr.app.
 - Sessions: `session.saved` lists the recorded agents (programs with a `resume` rule in `programs.json`) with `terminal`, `where`, `program`, `name`, `cwd`, the resuming `argv`, `session`, `saved_ms`, and `ready` (its terminal is live and back to a bare shell) or `why` not. `session.resume {terminal?, confirmed?}` types `cd <cwd> && <argv>` (each word shell-quoted; PowerShell: `Set-Location`) into every ready one (or just `terminal`) and answers `{resumed, skipped: [{terminal, why}]}`; it asks the person first unless `confirmed`, and scripts must pass `confirmed: true` (`herdr-app do session.resume --confirmed true`). It never types into a terminal whose foreground isn't a shell, and skips a session two terminals share.
