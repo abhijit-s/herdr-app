@@ -54,10 +54,10 @@ export function playSound(sound: string): null;
  * Tabs: tab.new {name?, space?, folder?, argv?, task?} (argv: an agent, task: its first message)
  *   or {name?, space?, mod, props?} (a tab whose only pane is a mod),
  *   tab.close {id?}, tab.rename {id?, name}, tab.move {id, index}, tab.select {index | id},
- *   tab.next, tab.prev.
+ *   tab.move_left {id?}, tab.move_right {id?} (one place; nothing at the end), tab.next, tab.prev.
  * Panes: pane.split {direction: "right" | "down", pane?}, pane.close {pane?}, pane.zoom {pane?},
  *   pane.zoom_text_in|zoom_text_out|zoom_text_reset {pane?} (a terminal pane's own text size, on top of the app's zoom),
- *   pane.focus {pane | terminal}, pane.go {direction}, pane.swap {direction}, focus.toggle_follows_mouse. Pane menus get target { pane, terminal }.
+ *   pane.focus {pane | terminal}, pane.refocus (the keyboard back to the focused pane after a mod took it), pane.go {direction}, pane.swap {direction}, focus.toggle_follows_mouse. Pane menus get target { pane, terminal }.
  *   pane.arrange {mode: "tiled" | "bsp" | "master" | "columns" | "rows" | "next" | "off", tab?} rebuilds a tab's panes evenly in that shape
  *   (next: the one after the tab's last, from tiled); terminals, mod panes and focus stay, a zoomed pane unzooms. The tab keeps
  *   the mode: each split or close in it arranges it again (the new pane right after the one split); off clears it.

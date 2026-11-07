@@ -98,6 +98,22 @@ Move a tab to a position in its space (1 = first).
 | `id` | yes |
 | `index` | yes |
 
+## `tab.move_left`
+
+Move a tab (default: the shown one) one place left in its space; at the first place, nothing happens.
+
+| Argument | Required |
+|---|---|
+| `id` | no |
+
+## `tab.move_right`
+
+Move a tab (default: the shown one) one place right in its space; at the last place, nothing happens.
+
+| Argument | Required |
+|---|---|
+| `id` | no |
+
 ## `tab.set_icon`
 
 Choose a tab's icon (default: the selected tab): icon {"kind": "glyph" | "emoji", "value": one glyph or emoji} or {"kind": "letter"} (the first letter of its name); null or none: its focused pane's again. Kept with the tab.
@@ -325,6 +341,12 @@ Focus a pane (or the pane showing a terminal).
 |---|---|
 | `pane` | no |
 | `terminal` | no |
+
+## `pane.refocus`
+
+Give the keyboard back to the focused pane (or the agent shown) without changing what it shows: for a mod that took the keyboard for a moment, as the tab bar does while dragging a tab (Esc cancels).
+
+No arguments.
 
 ## `pane.go`
 

@@ -3588,7 +3588,7 @@ impl AppWindow {
             if !args.is_object() { args = json!({}); }
             args["machine"] = json!(machine);
         }
-        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "tab.set_icon" | "pane.split" | "pane.close" | "pane.rename" | "pane.set_icon" | "pane.swap" | "pane.arrange" | "terminal.keep" | "terminal.park") {
+        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "tab.move_left" | "tab.move_right" | "tab.set_icon" | "pane.split" | "pane.close" | "pane.rename" | "pane.set_icon" | "pane.swap" | "pane.arrange" | "terminal.keep" | "terminal.park") {
             let node = ["id", "space", "pane"].into_iter().find_map(|k| Self::arg(&args, k))
                 .or_else(|| if name == "pane.arrange" { Self::arg(&args, "tab") } else { None });
             let target = node.and_then(|id| self.model.space(id).or_else(|| self.model.space_of(id))).or_else(|| self.model.active_space());
@@ -3731,12 +3731,12 @@ impl AppWindow {
             }
             "tab.move" => {
                 let (Some(id), Some(i)) = (Self::arg(a, "id"), a.get("index").and_then(Value::as_u64)) else { return self.fail("tab.move needs id and index") };
-                let Some(pid) = self.model.space_of(id).map(|p| p.id.clone()) else { return self.fail(format!("no tab {id:?}")) };
-                let p = self.model.space_mut(&pid).unwrap();
-                let from = p.tabs.iter().position(|c| c.id == id).unwrap();
-                let c = p.tabs.remove(from);
-                let to = (i as usize).saturating_sub(1).min(p.tabs.len());
-                p.tabs.insert(to, c);
+                if !self.model.move_tab(id, i as usize) { return self.fail(format!("no tab {id:?}")); }
+            }
+            "tab.move_left" | "tab.move_right" => {
+                let Some(id) = Self::owned(a, "id").or(active_ctx) else { return self.fail("no tab to move") };
+                let step = if name == "tab.move_left" { -1 } else { 1 };
+                if self.model.step_tab(&id, step).is_none() { return self.fail(format!("no tab {id:?}")); }
             }
             "tab.settle" | "tab.unsettle" => {
                 let Some(id) = Self::owned(a, "id").or(active_ctx) else { return self.fail("no tab") };
@@ -3843,6 +3843,15 @@ impl AppWindow {
                 self.focused_pane = None;
                 self.agent = self.model.address_of(&p);
                 self.swapped.remove(&p);
+            }
+            "pane.refocus" => {
+                // The keyboard back to what has the focus, without changing it (pane.focus
+                // would end a swapped-in sub-agent and reset the agent shown).
+                if self.overlays.iter().any(|o| o.kind.modal_keys()) { return; }
+                let agent = self.agent_block().and_then(|b| self.shown_agent().and_then(|a| self.agent_view(&b, &a)).map(|t| t.focus.clone()));
+                let pane = self.focused_pane.as_deref().filter(|_| self.focused_block.is_none()).and_then(|p| self.pane_focus(p, cx));
+                pane.or(agent).unwrap_or_else(|| self.focus.clone()).focus(window, cx);
+                return;
             }
             "pane.go" | "pane.swap" => {
                 let dir = Self::arg(a, "direction").unwrap_or_default();
@@ -7557,7 +7566,14 @@ export default class Recent extends View {
             this.live.insert("tx".into(), json!({ "address": "tx" }));
             this.run_as("terminal.show", json!({ "pane": "a", "terminal": "tx" }), false, window, cx);
             this.sync(window, cx);
-            let reply = this.run_as("pane.zoom_text_in", json!({ "pane": "a" }), false, window, cx);
+            // A mod that took the keyboard (a tab drag) gives it back to the
+            // swapped-in view without ending the swap, as pane.focus would.
+            let other = cx.focus_handle();
+            window.focus(&other, cx);
+            this.run_as("pane.refocus", json!({}), false, window, cx);
+            assert_eq!(this.swapped.get("a").map(String::as_str), Some("tx"), "pane.refocus keeps what the pane shows");
+            assert!(!other.is_focused(window), "pane.refocus takes the keyboard back");
+            let reply =this.run_as("pane.zoom_text_in", json!({ "pane": "a" }), false, window, cx);
             assert!(reply.get("error").is_none(), "{reply}");
             // Made this frame, it isn't drawn yet (off screen), so the zoom
             // refits it there: to a's area at its new cell, not the hint it
