@@ -9,6 +9,8 @@
 
 use std::path::Path;
 
+include!("fork_build.rs");
+
 fn walk(dir: &Path, base: &Path, root: &Path, out: &mut Vec<String>) {
     let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.path()).collect();
     entries.sort();
@@ -35,6 +37,15 @@ fn embed(base: &Path, folder: &str, name: &str, file: &str) {
 
 fn main() {
     let base = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    if let Some(build) = fork_build(&base) {
+        println!("cargo:rustc-env=HERDR_FORK_BUILD={build}");
+    }
+    for file in git_watch(&base) {
+        println!("cargo:rerun-if-changed={}", file.display());
+    }
+    // Edits under src make the tree dirty without touching the index.
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=fork_build.rs");
     embed(&base, "defaults/mods", "DEFAULT_MODS", "default_mods.rs");
     embed(&base, "defaults/icons", "DEFAULT_ICONS", "default_icons.rs");
     embed(&base, "defaults/frame", "FRAME_MODS", "frame_mods.rs");

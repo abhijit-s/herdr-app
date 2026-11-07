@@ -94,8 +94,8 @@ const body = source
   .replace(/^import .*;\n/gm, "")
   .replace(/^export function /gm, "function ")
   .replace("export default class Settings", "const Settings = class Settings")
-  + "\nreturn { Settings, scaleStep, spacingOf, spacingFieldsOf, sameSpacing, settlePending, searchWords, wordSpan, matchSetting, markRuns, pageFor, over, contrast, tonal };";
-const { Settings, scaleStep, spacingOf, spacingFieldsOf, sameSpacing, settlePending, searchWords, wordSpan, matchSetting, markRuns, pageFor, over, contrast, tonal } = new Function(...names, body)(...args);
+  + "\nreturn { Settings, scaleStep, spacingOf, spacingFieldsOf, sameSpacing, settlePending, searchWords, wordSpan, matchSetting, markRuns, pageFor, over, contrast, tonal, forkTag };";
+const { Settings, scaleStep, spacingOf, spacingFieldsOf, sameSpacing, settlePending, searchWords, wordSpan, matchSetting, markRuns, pageFor, over, contrast, tonal, forkTag } = new Function(...names, body)(...args);
 fieldsOf = spacingFieldsOf;
 const spacingOfTree = (tree: any) => spacingOf(spacingFieldsOf(tree));
 
@@ -1157,4 +1157,11 @@ test("a long theme name is cut inside its card, with the whole name on hover and
   expect(row.nodes[1].calls.flex_none).toBeDefined();
   // A Rex theme drops its prefix.
   expect(texts(view.themeCard(t, card("rex-basalt-shore"), "x", sel))).toContain("basalt shore");
+});
+
+test("a fork build shows its commit beside the version", () => {
+  expect(forkTag("fork.0990622")).toBe(" (fork 0990622)");
+  expect(forkTag("fork.0990622.dirty")).toBe(" (fork 0990622.dirty)");
+  expect(forkTag(null)).toBe("");
+  expect(forkTag(undefined)).toBe("");
 });

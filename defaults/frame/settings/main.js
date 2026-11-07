@@ -123,6 +123,8 @@ export function pageFor(section) {
 }
 
 const groupOf = (page) => PAGES.find((p) => p.id === page).group;
+// A fork build reports `fork.<sha>` beside its version: shown as ` (fork <sha>)`.
+const forkTag = (build) => (build ? ` (fork ${build.slice("fork.".length)})` : "");
 
 // Themes made by `herdr-app rex-themes` are named rex-<name>; the rest are Standard.
 const REX_PREFIX = "rex-";
@@ -1957,7 +1959,7 @@ export default class Settings extends View {
     return v_flex().w_full()
       .child(this.heading(t, "Machines"))
       .child(this.plain(div().pb(8).text_size(12.5).line_height("18px").text_color(t.dim).child("Your computers, reached over ssh. Their terminals keep running when you disconnect.")))
-      .child(this.row(t, "This computer", `Connected · ${version ? `hc ${version}` : "hc version unknown"}`, div().w(7).h(7).rounded(4).bg(t.ansi2)))
+      .child(this.row(t, "This computer", `Connected · ${version ? `hc ${version}${forkTag(updates().core.build)}` : "hc version unknown"}`, div().w(7).h(7).rounded(4).bg(t.ansi2)))
       .children((this.machineList ?? []).map((m) => this.block(m.name, `${m.target ?? ""} machine ssh`, null, this.machineRow(t, m, version))))
       .when(this.machineList === null && !this.machineError && !this.filtering(), (el) => el.child(h_flex().py(14).gap(8).items_center().child(svg("mods/workspace-chrome/spinner.svg").size(12).text_color(t.working).spin(900)).child(div().text_size(12.5).text_color(t.dim).child("Reading machines…"))))
       .when(this.machineList?.length === 0 && !this.filtering(), (el) => el.child(div().py(14).text_size(12.5).text_color(t.dim).child("No other machines yet.")))
@@ -2126,12 +2128,12 @@ export default class Settings extends View {
     return v_flex()
       .w_full()
       .child(this.heading(t, "Herdr"))
-      .child(this.row(t, `Herdr ${u.app.version}`, app[0], h_flex().gap(8).flex_none()
+      .child(this.row(t, `Herdr ${u.app.version}${forkTag(u.app.build)}`, app[0], h_flex().gap(8).flex_none()
         .child(this.button(t, "st-whats-new", "What's new", () => { closeOverlay(props()?.overlay); run("app.whats_new"); }))
         .when(Boolean(app[1]), (el) => el.child(app[1])), "update"))
       .child(this.plain(div().h(18)))
       .child(this.heading(t, "herdr-core"))
-      .child(this.row(t, `herdr-core ${c.version ?? ""}`, core[0], core[1] ?? div(), "update"))
+      .child(this.row(t, `herdr-core ${c.version ?? ""}${forkTag(c.build)}`, core[0], core[1] ?? div(), "update"))
       .child(this.plain(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("Herdr looks for both every hour and tells you in the corner. herdr-core runs your terminals, so they keep running through its updates.")));
   }
 
