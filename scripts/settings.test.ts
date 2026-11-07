@@ -133,6 +133,21 @@ test("dock badge: on unless false, and a click toggles the key in settings.json"
   expect(toggle({ dock_badge: false, dock_bounce: true })).toEqual({ dock_bounce: true });
 });
 
+test("notification sound, marks and icons write settings.json's keys", () => {
+  const pick = (person: Record<string, any>, label: string) => click(person, {}, `st-ns-${label}`, ["choicePicker"], "alerts");
+  expect(pick({}, "System")).toEqual({ notification_sounds: "default" });
+  expect(pick({ notification_sounds: "default" }, "Silent")).toEqual({});
+  expect(pick({}, "By state")).toEqual({ notification_sounds: { done: "Glass", blocked: "Purr", error: "Basso" } });
+  // A per-state choice of the person's own stays as it is.
+  expect(pick({ notification_sounds: { done: "Hero" } }, "By state")).toEqual({ notification_sounds: { done: "Hero" } });
+  expect(pick({ notification_sounds: "Ping" }, "Silent")).toEqual({});
+  const toggle = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "alerts");
+  expect(toggle({}, "st-notification_marks")).toEqual({ notification_marks: true });
+  expect(toggle({ notification_marks: true }, "st-notification_marks")).toEqual({});
+  expect(toggle({}, "st-notification_icons")).toEqual({ notification_icons: false });
+  expect(toggle({ notification_icons: false }, "st-notification_icons")).toEqual({});
+});
+
 test("interface scale steppers step 5% from the value in use", () => {
   expect(click({}, { ui_zoom: 1, ui_text_scale: 1 }, "st-ui_zoom-plus")).toEqual({ ui_zoom: 1.05 });
   expect(click({ ui_text_scale: 1.1 }, { ui_zoom: 1, ui_text_scale: 1.1 }, "st-ui_text_scale-minus")).toEqual({ ui_text_scale: 1.05 });

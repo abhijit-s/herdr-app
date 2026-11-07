@@ -495,6 +495,14 @@ pub trait Platform: 'static {
         _ = tag;
     }
 
+    /// Whether a posted notification can be shown: `Some(false)` when the
+    /// platform knows it can't (authorization denied, or no app identity),
+    /// `None` when it can't tell. The answer may lag a change in the system's
+    /// settings by one call.
+    fn system_notifications_allowed(&self) -> Option<bool> {
+        None
+    }
+
     /// Registers the callback invoked when the user activates a system
     /// notification, either by clicking its body or one of its action
     /// buttons.
@@ -595,7 +603,7 @@ pub trait PlatformDisplay: Debug {
 
 /// A notification posted to the operating system's notification center,
 /// rather than rendered as in-app UI.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SystemNotification {
     /// Stable identity for the notification. Posting a new notification with
     /// the same tag replaces the previous one where the platform supports it,
@@ -608,6 +616,29 @@ pub struct SystemNotification {
     /// Buttons offered on the notification. Platforms that cannot display
     /// action buttons show the notification without them.
     pub actions: Vec<SystemNotificationAction>,
+    /// A line between the title and the body; empty for none. Platforms
+    /// without one start the body with it.
+    pub subtitle: SharedString,
+    /// The sound played when it is delivered (macOS; elsewhere the
+    /// platform's own choice).
+    pub sound: SystemNotificationSound,
+    /// An image file shown with it, such as a thumbnail (macOS). The platform
+    /// may move the file into its own store when the notification is posted,
+    /// so pass a copy the application doesn't need afterwards.
+    pub image: Option<std::path::PathBuf>,
+}
+
+/// The sound a [`SystemNotification`] plays.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum SystemNotificationSound {
+    /// No sound.
+    #[default]
+    Silent,
+    /// The system's default notification sound.
+    Default,
+    /// A sound by name, as the platform finds one (on macOS a file in a
+    /// `Library/Sounds` folder or the app bundle, such as `Glass`).
+    Named(SharedString),
 }
 
 /// A button offered on a [`SystemNotification`].

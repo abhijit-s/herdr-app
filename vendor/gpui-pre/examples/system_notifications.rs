@@ -56,6 +56,7 @@ impl Render for SystemNotificationExample {
                                         label: "Snooze".into(),
                                     },
                                 ],
+                                ..Default::default()
                             });
                             this.status = format!("Posted notification revision {revision}").into();
                             cx.notify();

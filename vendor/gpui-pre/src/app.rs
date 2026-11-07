@@ -1728,6 +1728,14 @@ impl App {
         self.platform.dismiss_system_notification(tag);
     }
 
+    /// Whether a posted notification can be shown: `Some(false)` when the
+    /// platform knows it can't (authorization denied, or no app identity),
+    /// `None` when it can't tell. The answer may lag a change in the system's
+    /// settings by one call.
+    pub fn system_notifications_allowed(&self) -> Option<bool> {
+        self.platform.system_notifications_allowed()
+    }
+
     /// Registers the handler invoked when the user activates a system
     /// notification, either by clicking its body or one of its action
     /// buttons. Subsequent registrations replace the handler.

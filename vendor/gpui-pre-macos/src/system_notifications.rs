@@ -8,23 +8,28 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use block2::RcBlock;
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use gpui::{
     ForegroundExecutor, SharedString, SystemNotification, SystemNotificationAction,
-    SystemNotificationResponse, Task,
+    SystemNotificationResponse, SystemNotificationSound, Task,
 };
 use objc2::rc::Retained;
 use objc2::runtime::{Bool, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, define_class, msg_send};
-use objc2_foundation::{NSArray, NSBundle, NSError, NSObject, NSObjectProtocol, NSSet, NSString};
+use objc2_foundation::{
+    NSArray, NSBundle, NSError, NSObject, NSObjectProtocol, NSSet, NSString, NSURL,
+};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotification, UNNotificationAction,
-    UNNotificationActionOptions, UNNotificationCategory, UNNotificationCategoryOptions,
+    UNNotificationActionOptions, UNNotificationAttachment, UNNotificationCategory, UNNotificationCategoryOptions,
     UNNotificationDefaultActionIdentifier, UNNotificationPresentationOptions,
-    UNNotificationRequest, UNNotificationResponse, UNUserNotificationCenter,
+    UNAuthorizationStatus, UNNotificationRequest, UNNotificationResponse, UNNotificationSettings,
+    UNNotificationSound, UNUserNotificationCenter,
     UNUserNotificationCenterDelegate,
 };
 
@@ -58,6 +63,15 @@ impl SystemNotificationState {
         self.initialize(executor);
         if let Some(center) = &self.center {
             center.dismiss(tag);
+        }
+    }
+
+    /// `Some(false)` without an app bundle or once authorization is denied.
+    pub(crate) fn allowed(&mut self, executor: &ForegroundExecutor) -> Option<bool> {
+        self.initialize(executor);
+        match &self.center {
+            Some(center) => center.allowed(),
+            None => Some(false),
         }
     }
 
@@ -112,7 +126,13 @@ struct NotificationCenter {
         HashMap<Vec<SystemNotificationAction>, (SharedString, Retained<UNNotificationCategory>)>,
     >,
     authorization_requested: Cell<bool>,
+    /// The last authorization status read: `ALLOWED_*`.
+    allowed: Arc<AtomicU8>,
 }
+
+const ALLOWED_UNKNOWN: u8 = 0;
+const ALLOWED_YES: u8 = 1;
+const ALLOWED_NO: u8 = 2;
 
 impl NotificationCenter {
     fn new(sender: mpsc::UnboundedSender<SystemNotificationResponse>) -> Option<Self> {
@@ -130,19 +150,48 @@ impl NotificationCenter {
         let delegate = NotificationResponseDelegate::new(sender);
         center.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 
-        Some(Self {
+        let this = Self {
             center,
             _delegate: delegate,
             categories: RefCell::new(HashMap::new()),
             authorization_requested: Cell::new(false),
-        })
+            allowed: Arc::new(AtomicU8::new(ALLOWED_UNKNOWN)),
+        };
+        this.refresh_allowed();
+        Some(this)
+    }
+
+    /// The status last read (not determined counts as allowed: posting asks),
+    /// and a fresh read for next time, as the person may change it any time.
+    fn allowed(&self) -> Option<bool> {
+        let known = match self.allowed.load(Ordering::Relaxed) {
+            ALLOWED_YES => Some(true),
+            ALLOWED_NO => Some(false),
+            _ => None,
+        };
+        self.refresh_allowed();
+        known
+    }
+
+    fn refresh_allowed(&self) {
+        let allowed = self.allowed.clone();
+        let completion = RcBlock::new(move |settings: std::ptr::NonNull<UNNotificationSettings>| {
+            // SAFETY: the center passes a valid settings object for the
+            // duration of the callback.
+            let status = unsafe { settings.as_ref() }.authorizationStatus();
+            let value = if status == UNAuthorizationStatus::Denied { ALLOWED_NO } else { ALLOWED_YES };
+            allowed.store(value, Ordering::Relaxed);
+        });
+        self.center.getNotificationSettingsWithCompletionHandler(&completion);
     }
 
     fn request_authorization(&self) {
         if self.authorization_requested.replace(true) {
             return;
         }
-        let completion = RcBlock::new(|granted: Bool, error: *mut NSError| {
+        let allowed = self.allowed.clone();
+        let completion = RcBlock::new(move |granted: Bool, error: *mut NSError| {
+            allowed.store(if granted.as_bool() { ALLOWED_YES } else { ALLOWED_NO }, Ordering::Relaxed);
             // SAFETY: when non-null, `error` is a valid `NSError` for the
             // duration of the callback.
             if let Some(error) = unsafe { error.as_ref() } {
@@ -167,6 +216,22 @@ impl NotificationCenter {
         let content = UNMutableNotificationContent::new();
         content.setTitle(&NSString::from_str(&notification.title));
         content.setBody(&NSString::from_str(&notification.body));
+        if !notification.subtitle.is_empty() {
+            content.setSubtitle(&NSString::from_str(&notification.subtitle));
+        }
+        // Without a sound the notification is silent.
+        match &notification.sound {
+            SystemNotificationSound::Silent => {}
+            SystemNotificationSound::Default => {
+                content.setSound(Some(&UNNotificationSound::defaultSound()));
+            }
+            SystemNotificationSound::Named(name) => {
+                content.setSound(Some(&UNNotificationSound::soundNamed(&NSString::from_str(name))));
+            }
+        }
+        if let Some(image) = notification.image.as_deref().and_then(attachment) {
+            content.setAttachments(&NSArray::from_retained_slice(&[image]));
+        }
         if !notification.actions.is_empty() {
             let category_identifier = self.register_category(&notification.actions);
             content.setCategoryIdentifier(&NSString::from_str(&category_identifier));
@@ -239,6 +304,30 @@ impl NotificationCenter {
     }
 }
 
+/// An image file as an attachment. The notification center moves the file
+/// into its own store once the request is added.
+fn attachment(path: &std::path::Path) -> Option<Retained<UNNotificationAttachment>> {
+    let url = NSURL::fileURLWithPath(&NSString::from_str(path.to_str()?));
+    // SAFETY: no options dictionary is passed.
+    match unsafe {
+        UNNotificationAttachment::attachmentWithIdentifier_URL_options_error(
+            &NSString::from_str("image"),
+            &url,
+            None,
+        )
+    } {
+        Ok(attachment) => Some(attachment),
+        Err(error) => {
+            log::warn!(
+                "system notification image {} not attached: {}",
+                path.display(),
+                error.localizedDescription()
+            );
+            None
+        }
+    }
+}
+
 struct DelegateIvars {
     sender: mpsc::UnboundedSender<SystemNotificationResponse>,
 }
@@ -295,7 +384,8 @@ define_class!(
         ) {
             completion_handler
                 .call((UNNotificationPresentationOptions::Banner
-                    | UNNotificationPresentationOptions::List,));
+                    | UNNotificationPresentationOptions::List
+                    | UNNotificationPresentationOptions::Sound,));
         }
     }
 );
