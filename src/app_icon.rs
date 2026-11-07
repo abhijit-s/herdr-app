@@ -183,8 +183,10 @@ mod tests {
         for rep in NSBitmapImageRep::imageRepsWithData(&data) {
             let Ok(rep) = rep.downcast::<NSBitmapImageRep>() else { continue };
             let (px, row, step) = (rep.pixelsWide(), rep.bytesPerRow() as usize, rep.bitsPerPixel() as usize / 8);
-            assert!(!rep.isPlanar() && rep.bitsPerSample() == 8 && rep.hasAlpha(), "{px} px: an 8-bit RGBA bitmap");
-            let alpha_at = if rep.bitmapFormat().contains(NSBitmapFormat::AlphaFirst) { 0 } else { step - 1 };
+            let format = rep.bitmapFormat();
+            assert!(rep.pixelsHigh() == px && !rep.isPlanar() && rep.bitsPerSample() == 8 && rep.hasAlpha(), "{px} px: a square 8-bit bitmap with alpha");
+            assert!((format & !(NSBitmapFormat::AlphaFirst | NSBitmapFormat::AlphaNonpremultiplied)).is_empty(), "{px} px: bytes in RGBA or ARGB order");
+            let alpha_at = if format.contains(NSBitmapFormat::AlphaFirst) { 0 } else { step - 1 };
             // SAFETY: the rep owns `row` bytes for each of its `px` rows while it lives.
             let bytes = unsafe { std::slice::from_raw_parts(rep.bitmapData(), row * px as usize) };
             let alpha = (0..px as usize).flat_map(|y| (0..px as usize).map(move |x| bytes[y * row + x * step + alpha_at])).collect();
@@ -207,7 +209,8 @@ mod tests {
     /// Each drawn variant (scripts/app-icons.py) sits on macOS's icon grid, as
     /// the system draws other apps' icons beside it in the Dock and the app
     /// switcher: an opaque tile 824 of 1024 px across with 100 px margins, at
-    /// every size, and nothing in the margins more than a soft shadow. Classic
+    /// every size, with the system's corners and shadow, and nothing in the
+    /// margins more than that soft shadow. Classic
     /// is upstream's own .icns and isn't drawn here.
     #[cfg(target_os = "macos")]
     #[test]
@@ -224,9 +227,21 @@ mod tests {
                 for margin in margins {
                     assert!((margin as f64 - want).abs() <= slack, "{name} at {px} px: margins {margins:?}, want {want:.1}");
                 }
-                let outside = (0..n).flat_map(|y| (0..n).map(move |x| (x, y))).filter(|&(x, y)| x < x0 || x > x1 || y < y0 || y > y1);
+                // Past the edge's one antialiased pixel, so a re-render shifting it by a count doesn't fail.
+                let outside = (0..n).flat_map(|y| (0..n).map(move |x| (x, y))).filter(|&(x, y)| x + 1 < x0 || x > x1 + 1 || y + 1 < y0 || y > y1 + 1);
                 let densest = outside.map(|(x, y)| alpha[y * n + x]).max().unwrap_or(0);
                 assert!(densest < 80, "{name} at {px} px: a margin pixel is {densest}/255 opaque");
+                if px == 1024 {
+                    // The corners are the system's superellipse, not circular arcs (row 110
+                    // starts at x 254 and row 200 at x 133 in macOS's own icons), and the
+                    // shadow below the tile is there (44/255 just under it).
+                    let first = |y: usize| (0..n).find(|&x| solid(x, y)).unwrap();
+                    for (y, want) in [(110, 254), (200, 133)] {
+                        assert!(first(y).abs_diff(want) <= 2, "{name}: row {y} starts at x {}, want {want}", first(y));
+                    }
+                    let under = alpha[(y1 + 2) * n + n / 2];
+                    assert!((30..60).contains(&under), "{name}: {under}/255 under the tile, want the system's shadow");
+                }
             }
         }
     }

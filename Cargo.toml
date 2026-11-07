@@ -72,7 +72,6 @@ gpui-shell = { path = "vendor/gpui-kit/crates/shell", features = ["render-test-s
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 swash = "=0.2.10"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSBitmapImageRep", "NSImageRep"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 gpui_wgpu = { package = "gpui-pre-wgpu", path = "vendor/gpui-pre-wgpu", features = ["test-support"] }
