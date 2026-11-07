@@ -412,6 +412,15 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 - Files: `src/main.rs` (`open_main`), `scripts/bench.py`
 
+### Bench draws covered windows
+
+`perf/bench-draw-occluded` (branched from `master`, fork only): `HERDR_BENCH_DRAW_OCCLUDED=1`, read once at launch, makes macOS treat every window as presented. The display link keeps running and the window reports `Visible` while covered, so a benchmark instance that opens behind the person's windows (Background launch for tests) still draws and steps its spinners. Without it, a fully covered window draws nothing: an earlier burst A/B measured 0 window renders a second and so compared terminal processing, not drawing. `scripts/bench.py` sets it. Any other value, or none, leaves occlusion in charge as upstream, and the shipped app never sets it. A minimised window or one on another Space also keeps drawing under the switch, so it is for benchmarks only.
+
+- GPUI: `presented` in `vendor/gpui-pre-macos/src/window.rs` is the one occlusion check, used by `start_display_link`, `visibility` and `window_did_change_occlusion_state`.
+- Tests: `gpui-pre-macos` `window::tests::occluded_windows_stop_drawing_unless_the_bench_switch_is_exactly_1` (the crate sits outside the workspace, so run it with `cargo test --manifest-path vendor/gpui-pre-macos/Cargo.toml`, not `just check`). Checked on screen: a covered burst instance draws with the switch and doesn't without it.
+- Files: `vendor/gpui-pre-macos/src/window.rs`, `scripts/bench.py`
+- Upstream: none (benchmark-only)
+
 ### Pane arrangements
 
 `feat/pane-arrange` and `feat/auto-arrange` (branched from `master`, fork only for now): `pane.arrange {mode, tab?}` rebuilds a tab's existing panes (default: the shown tab) into a preset shape with even sizes, as tmux's `select-layout` and tuios's tiling modes do. Modes: `tiled` (grid, `ceil(sqrt(n))` across, row by row, a short last row's panes widen: tmux's tiled), `bsp` (dwindle: each pane takes half of what's left, splitting right, down, right…), `master` (the focused pane on the left half, the rest stacked on the right), `columns`, `rows`, `next` (the mode after the tab's last one, from `tiled`) and `off` (below). Panes keep their block whole (id, terminal or mod, name), so nothing restarts; only the row/column containers are new, and the tree is saved and synced like a manual split. Order is reading order (by top edge, then left edge, from the current sizes), which every mode's output preserves, so cycling never shuffles panes except that `master` moves the focused pane first. Focus stays; a zoomed pane unzooms. The tab's mode is this screen's choice (`TabView.arrange` in the saved view, not the shared document) and shows to mods as the tab's `arrange`. Keys: `cmd-shift-space` (macOS) and `ctrl-shift-space` (Linux, Windows) run `pane.arrange:next`; existing untouched key files get it through upstream's shipped-originals upgrade (f524898), edited ones need the line added. The palette lists "Next pane arrangement" and each mode.
