@@ -1515,7 +1515,8 @@ pub struct ToastOffset {
 }
 
 /// How far `toast_offset` moves a stack, px at zoom 1: out to the window's
-/// edge at most, and in no further than a typo can't take it off screen.
+/// edge at most, and in at most 400, so a typo (`5000`) can't send the stack
+/// away; a window smaller than that can still lose it past its far edge.
 pub const TOAST_OFFSET: std::ops::RangeInclusive<f32> = -16.0..=400.0;
 
 impl ToastOffset {
@@ -2086,7 +2087,7 @@ impl Settings {
             toast_offset: ToastOffset::within(person.toast_offset.unwrap_or_default()),
             toast_offset_problem: person.toast_offset.filter(|o| ToastOffset::within(*o) != *o).map(|o| {
                 let w = ToastOffset::within(o);
-                format!("toast_offset {{x: {}, y: {}}} is outside {}..{}: using {{x: {}, y: {}}}", o.x, o.y, TOAST_OFFSET.start(), TOAST_OFFSET.end(), w.x, w.y)
+                format!("toast_offset {{x: {}, y: {}}} is outside {} to {}: using {{x: {}, y: {}}}", o.x, o.y, TOAST_OFFSET.start(), TOAST_OFFSET.end(), w.x, w.y)
             }),
             focus_border_width: person.focus_border_width,
             terminal_padding: look.terminal_padding.unwrap_or(d.terminal_padding),
@@ -3568,7 +3569,7 @@ mod tests {
         let person: Person = serde_json::from_value(serde_json::json!({"toast_offset": {"x": 5000, "y": -90}})).unwrap();
         let s = Settings::compose(&person, &crate::layout::Look::default(), true);
         assert_eq!(s.toast_offset, ToastOffset { x: 400.0, y: -16.0 });
-        assert_eq!(s.problems(), vec!["toast_offset {x: 5000, y: -90} is outside -16..400: using {x: 400, y: -16}".to_string()]);
+        assert_eq!(s.problems(), vec!["toast_offset {x: 5000, y: -90} is outside -16 to 400: using {x: 400, y: -16}".to_string()]);
         for bad in [serde_json::json!({"toast_position": "middle"}), serde_json::json!({"toast_position": "bottom_right"}), serde_json::json!({"toast_offset": {"z": 1}}), serde_json::json!({"toast_offset": 4})] {
             assert!(serde_json::from_value::<Person>(bad.clone()).is_err(), "{bad}");
         }

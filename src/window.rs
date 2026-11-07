@@ -521,6 +521,9 @@ pub struct AppWindow {
     /// Where the window's top chrome starts and ends, as last painted
     /// (`top_chrome`): a top toast stack starts below it.
     top_chrome: Rc<std::cell::Cell<(f32, f32)>>,
+    /// Whether `render_node` is drawing the main layout (`chrome`), whose bars
+    /// `top_chrome` measures, rather than an overlay's.
+    painting_main: std::cell::Cell<bool>,
     hidden_fit: pane_size::HiddenFit,
     drag: Option<Drag>,
     written_layout: String,
@@ -666,6 +669,7 @@ impl AppWindow {
             seen,
             bounds: Default::default(),
             top_chrome: Default::default(),
+            painting_main: Default::default(),
             hidden_fit: Default::default(),
             drag: None,
             written_layout: String::new(),
@@ -5206,7 +5210,9 @@ impl AppWindow {
         let mut el = div().relative().overflow_hidden().size_full().flex();
         let bounds_map = self.bounds.clone();
         let id = n.id.clone();
-        let (chrome, root, drag) = (self.top_chrome.clone(), n.id == self.chrome.id, n.window_drag);
+        // Only the main layout's bars are the window's chrome, not an overlay's.
+        let main = self.painting_main.get();
+        let (chrome, root, drag) = (self.top_chrome.clone(), main && n.id == self.chrome.id, main && n.window_drag);
         el = el.child(canvas(move |b, window, _| {
             bounds_map.borrow_mut().insert(id, b);
             if root || drag {
@@ -5497,17 +5503,17 @@ impl AppWindow {
         let pill = self.render_update_pill(cx);
         let chrome_px = self.top_chrome.get().1;
         let chrome = if top { chrome_px / settings::ui_scale() } else { 0.0 };
-        let shown = self.overlays.iter().any(|o| o.kind == OverlayKind::Toast) || crate::update::core().error.is_some();
-        if top && shown {
-            // `top_chrome` is the last frame's: once this frame has painted the
-            // bars, a change (zoom, a bar shown or hidden) draws once more.
+        // `top_chrome` is the last frame's: once this frame has painted the
+        // bars, a change (zoom, a bar shown or hidden) draws once more. Last of
+        // all, so every bar has painted; `refresh` is ignored while painting.
+        let probe = (top && (self.overlays.iter().any(|o| o.kind == OverlayKind::Toast) || crate::update::core().error.is_some())).then(|| {
             let painted = self.top_chrome.clone();
-            out.push(canvas(move |_, window, _| {
+            canvas(move |_, window, _| {
                 if painted.get().1 != chrome_px {
-                    window.refresh();
+                    window.on_next_frame(|window, _| window.refresh());
                 }
-            }, |_, _, _, _| {}).absolute().size_0().into_any_element());
-        }
+            }, |_, _, _, _| {}).absolute().size_0().into_any_element()
+        });
         let start = toast_start(chrome, s.toast_offset.y, pill.is_some() && !top && s.toast_position.side() != settings::ToastSide::Left);
         let heights: Vec<f32> = self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).map(|o| o.size.height).collect();
         let (spots, past) = toast_stack(&heights, start, top);
@@ -5590,6 +5596,7 @@ impl AppWindow {
             out.push(at_toast_spot(notice.into_any_element(), &s, past));
         }
         out.extend(pill);
+        out.extend(probe);
         out
     }
 }
@@ -5616,17 +5623,18 @@ fn toast_frame<E: Styled>(e: E) -> E {
 /// The window's top chrome as painted so far this frame, `(top, bottom)` in
 /// window px, with one more node's painted bounds: the root starts it where
 /// the layout begins (below a system title strip the window draws), and a
-/// `window_drag` node starting there (a title, tab or brand bar) takes its
+/// `window_drag` node starting within it (a title, tab or brand bar, or a tab
+/// bar under a title bar: nodes paint parents first, in order) takes its
 /// bottom past its own. A drag node a third of the window or taller is a
 /// panel, not a bar. Hidden nodes aren't painted, so they never count.
 fn top_chrome(chrome: (f32, f32), b: Bounds<Pixels>, root: bool, drag: bool, viewport: Size<Pixels>) -> (f32, f32) {
-    let (top, bottom) = chrome;
+    let bottom = chrome.1;
     if root {
         let t = f32::from(b.top());
         return (t, t);
     }
-    if drag && f32::from(b.top()) <= top + 1.0 && b.size.height < viewport.height / 3.0 {
-        return (top, bottom.max(f32::from(b.bottom())));
+    if drag && f32::from(b.top()) <= bottom + 1.0 && b.size.height < viewport.height / 3.0 {
+        return (chrome.0, bottom.max(f32::from(b.bottom())));
     }
     chrome
 }
@@ -6184,7 +6192,9 @@ impl Render for AppWindow {
             self.refresh_snapshot_mods(cx);
         }
         let focused = self.focused_path(window, cx);
+        self.painting_main.set(true);
         let tree = self.render_node(&self.chrome, &focused, None, cx);
+        self.painting_main.set(false);
         let tree = self.window_frame(tree, window, cx);
         let overlays = self.render_overlays(window.viewport_size(), cx);
         let tracker = self.float_tracker(cx);
@@ -6797,6 +6807,36 @@ mod tests {
                 ids.iter().for_each(|id| this.close_overlay(id, window, cx));
             });
         }
+        // The bar grows with nothing else to redraw: the frame that paints it
+        // still places the toast by the last one's chrome, and asks for one
+        // more frame, which moves the toast below the new bar.
+        view.update_in(cx, |this, window, cx| {
+            this.person.toast_position = ToastPosition::TopRight;
+            this.person.ui_zoom = 1.0;
+            this.apply_look(window, cx);
+            this.open_overlay("grow".into(), json!({"kind": "toast", "notification": {"title": "Done"}}), window, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.simulate_next_frame(cx));
+        cx.run_until_parked();
+        let toast_top = |cx: &mut gpui::VisualTestContext| cx.debug_bounds("overlay-grow").unwrap().top();
+        let before = view.update(cx, |this, _| this.bounds.borrow()["bar"]);
+        assert!(near(toast_top(cx), before.bottom() + px(16.0)), "settled below the 40 px bar");
+        view.update(cx, |this, cx| {
+            if let Some(bar) = this.chrome.find_mut("bar") {
+                bar.size = Some(crate::layout::Size::Px { px: 80.0 });
+            }
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let grown = view.update(cx, |this, _| this.bounds.borrow()["bar"]);
+        assert!(near(grown.size.height, px(80.0)), "{grown:?}");
+        assert!(near(toast_top(cx), before.bottom() + px(16.0)), "the frame that grew the bar placed the toast by the last chrome");
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 1, "it asked for one more frame");
+        cx.run_until_parked();
+        assert!(near(toast_top(cx), grown.bottom() + px(16.0)), "the next frame moved it below the grown bar");
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0, "and then settles");
+        view.update_in(cx, |this, window, cx| this.close_overlay("grow", window, cx));
         // The bottom of the window keeps its margin, whatever the top draws.
         view.update_in(cx, |this, window, cx| {
             this.person.toast_position = ToastPosition::BottomRight;
@@ -6823,6 +6863,9 @@ mod tests {
         let painted = [(at(28.0, 42.0), true), (at(28.0, 46.0), true), (at(560.0, 40.0), true), (at(28.0, 572.0), true), (at(28.0, 300.0), false)];
         let chrome = painted.iter().fold(root, |c, (b, drag)| top_chrome(c, *b, false, *drag, viewport));
         assert_eq!(chrome, (28.0, 74.0), "the brand bar, the lowest at the top");
+        // Bars stacked: a tab bar under a title bar counts; one below a gap doesn't.
+        let stacked = [at(28.0, 30.0), at(58.0, 40.0), at(120.0, 30.0)].iter().fold(root, |c, b| top_chrome(c, *b, false, true, viewport));
+        assert_eq!(stacked, (28.0, 98.0));
         assert_eq!(top_chrome((5.0, 90.0), at(0.0, 1000.0), true, false, viewport), (0.0, 0.0), "a new frame starts again");
     }
 
