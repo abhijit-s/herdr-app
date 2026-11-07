@@ -246,3 +246,22 @@ test("keywords.json: each word once, every icon one the name files hold", () => 
     expect(emojiTexts.has(i.emoji)).toBe(true);
   }
 });
+
+test("keywords.json: the matching settings name real sets and groups, and nothing curated is denied", () => {
+  const k = JSON.parse(readFileSync(new URL("names/keywords.json", dir), "utf8"));
+  const prefixes = new Set(glyphs.map((g) => g.name.slice(0, g.name.indexOf("-"))));
+  for (const p of k.glyph_sets) expect(prefixes.has(p)).toBe(true);
+  for (const g of k.no_emoji_groups) expect(emoji.groups).toContain(g);
+  const groupOf = new Map(emoji.entries.map((e) => [e.text, e.set]));
+  const denied = new Set(k.deny.words);
+  for (const w of k.deny.words) expect(w).toMatch(/^[a-z0-9]+$/);
+  for (const e of k.deny.emoji) expect(groupOf.has(e)).toBe(true);
+  for (const i of k.icons) {
+    // Curated icons are chosen by hand: none reads as a status, a person or a flag
+    // (from Smileys only the robot and the speech balloon, which show no feeling).
+    for (const w of i.words) expect(denied.has(w)).toBe(false);
+    expect(k.deny.emoji).not.toContain(i.emoji);
+    expect(["People", "Flags"]).not.toContain(groupOf.get(i.emoji));
+    if (groupOf.get(i.emoji) === "Smileys") expect(["🤖", "💬"].map((x) => x.replace(/\uFE0F/g, ""))).toContain(i.emoji.replace(/\uFE0F/g, ""));
+  }
+});

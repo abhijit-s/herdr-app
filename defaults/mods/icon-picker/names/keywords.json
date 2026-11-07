@@ -1,4 +1,9 @@
-{"about":"Curated icons for words in names (a space called docs: a book). Each entry: the words (lower case, letters and digits), a glyph by its Nerd Font name in glyphs.json, an emoji in emoji.json. A word is in one entry at most. Words not here match glyph and emoji names directly.","icons":[
+{"about":"Curated icons for words in names (a space called docs: a book). Each entry: the words (lower case, letters and digits), a glyph by its Nerd Font name in glyphs.json, an emoji in emoji.json. A word is in one entry at most. Words not here match glyph and emoji names directly: glyph_sets says which glyph sets, best first; no_emoji_groups keeps faces, people and flags off (curated icons are chosen by hand: the robot and the speech balloon sit in Smileys but show no feeling); deny keeps words and emoji that read as an agent's state (check, alert, done, a warning sign) from matching at all.",
+"glyph_sets":["md", "fa", "cod", "oct", "fae", "dev", "seti", "weather", "custom", "linux"],
+"no_emoji_groups":["Smileys", "People", "Flags"],
+"deny":{"words":["check", "checked", "checkmark", "tick", "alert", "warning", "warn", "error", "errors", "fail", "failed", "failure", "success", "ok", "done", "fixed", "complete", "completed", "finished", "stop", "stopped", "cancel", "cancelled", "close", "closed", "loading", "load", "sync", "pending", "waiting", "wait", "busy", "spinner", "hourglass", "progress", "blocked", "block"],
+ "emoji":["⚠️", "✅️", "✔️", "❌️", "❎️", "🛑", "⏳️", "⌛️", "🔄", "🔃", "⛔️", "🚫", "❗️", "❓️", "‼️", "⁉️", "🆗", "⭕️", "✖️", "🟢", "🔴", "🟡", "🟠"]},
+"icons":[
 {"words":["docs","doc","documentation","wiki","manual","guide","handbook","book","books","readme"],"glyph":"md-book_open_variant","emoji":"📚️"},
 {"words":["notes","note","notebook","journal","vault","obsidian","memo","diary"],"glyph":"md-notebook","emoji":"📓"},
 {"words":["blog","writing","write","draft","drafts","essay","essays","post","posts"],"glyph":"md-pencil","emoji":"📝"},
@@ -22,7 +27,7 @@
 {"words":["scripts","script","automation","automations","cron"],"glyph":"md-script_text","emoji":"📜"},
 {"words":["tools","tool","tooling","util","utils","utility","utilities","kit","toolkit"],"glyph":"md-tools","emoji":"🧰"},
 {"words":["lib","libs","library","libraries","sdk","pkg","package","packages","core","crate","crates","module","modules"],"glyph":"md-package_variant","emoji":"📦️"},
-{"words":["code","src","source","dev","develop","development","repo","repos","monorepo"],"glyph":"md-code_braces","emoji":"🧑‍💻"},
+{"words":["code","src","source","dev","develop","development","repo","repos","monorepo"],"glyph":"md-code_braces","emoji":"🧩"},
 {"words":["git","branch","branches","worktree","worktrees"],"glyph":"md-git","emoji":"🌿"},
 {"words":["github","gh"],"glyph":"md-github","emoji":"🐙"},
 {"words":["auth","login","security","sec","secrets","secret","iam","sso","oauth","vpn"],"glyph":"md-shield_lock","emoji":"🔒️"},
@@ -61,13 +66,13 @@
 {"words":["archive","archives","old","backup","backups","attic","legacy"],"glyph":"md-archive","emoji":"🗃️"},
 {"words":["slides","deck","decks","presentation","presentations","talks","pitch"],"glyph":"md-presentation","emoji":"📊"},
 {"words":["support","help","helpdesk","customer","customers"],"glyph":"md-lifebuoy","emoji":"🛟"},
-{"words":["people","team","teams","hiring","hr","recruiting","crm","contacts"],"glyph":"md-account_group","emoji":"👥"},
+{"words":["people","team","teams","hiring","hr","recruiting","crm","contacts"],"glyph":"md-account_group","emoji":"🏢"},
 {"words":["legal","contract","contracts","compliance","policy","policies","audit","audits"],"glyph":"md-scale_balance","emoji":"⚖️"},
 {"words":["marketing","ads","growth","sales","campaign","campaigns","social"],"glyph":"md-bullhorn","emoji":"📣"},
 {"words":["desktop","mac","macos","linux","windows","laptop"],"glyph":"md-monitor","emoji":"💻️"},
-{"words":["fitness","gym","workout","sport","sports","running","run"],"glyph":"md-dumbbell","emoji":"💪"},
+{"words":["fitness","gym","workout","sport","sports","running","run"],"glyph":"md-dumbbell","emoji":"🏅"},
 {"words":["ideas","idea","brainstorm","thinking","inspiration"],"glyph":"md-lightbulb","emoji":"💡"},
 {"words":["files","file","folder","folders","drive","storage","uploads","downloads"],"glyph":"md-folder","emoji":"📁"},
 {"words":["herd","herdr","flock","sheep"],"glyph":"md-sheep","emoji":"🐑"},
-{"words":["memory","brain","knowledge","kb","mind","wisdom"],"glyph":"md-brain","emoji":"🧠"}
+{"words":["memory","brain","knowledge","kb","mind","wisdom"],"glyph":"md-brain","emoji":"🦉"}
 ]}
