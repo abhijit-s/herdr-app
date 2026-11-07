@@ -697,13 +697,17 @@ The main ones:
   A transient prompt (the short prompt left in the history once a command is entered) is a redraw precmd never sees: the prompt tool sets `PS1` inside the line editor and redraws. Unmarked, it reads as typed input, so after Enter on an empty prompt there is nothing to copy. Mark its `PS1` too. For oh-my-posh's `[transient_prompt]`, after `oh-my-posh init` and the hooks above, with `_osc133_mark_prompt` holding the two `PROMPT`/`RPROMPT` lines of `_osc133_precmd`:
 
   ```zsh
-  functions[_osc133_omp_get_prompt]=$functions[_omp_get_prompt]
-  _omp_get_prompt() {
-    _osc133_omp_get_prompt "$@"; local ret=$?
-    [[ $1 == transient ]] && print -r -- $'\n_osc133_mark_prompt'
-    return ret
-  }
+  if [[ $functions[_omp_get_prompt] != *_osc133_omp_get_prompt* ]]; then
+    functions[_osc133_omp_get_prompt]=$functions[_omp_get_prompt]
+    _omp_get_prompt() {
+      _osc133_omp_get_prompt "$@"; local ret=$?
+      [[ $1 == transient ]] && print -r -- $'\n_osc133_mark_prompt'
+      return ret
+    }
+  fi
   ```
+
+  The guard reads the current body, so sourcing `.zshrc` again (which re-runs `oh-my-posh init` and redefines `_omp_get_prompt`) wraps the fresh one, and a second wrap can never make the wrapper call itself.
 
   Starship's transient prompt (a zsh plugin or your own `zle-line-init` widget) needs the same: wrap the `PS1` it sets in `%{\e]133;A\a%}`…`%{\e]133;B\a%}` before it redraws.
 - Agents: `agent.next`, `agent.prev`, `agent.focus {terminal}`.
