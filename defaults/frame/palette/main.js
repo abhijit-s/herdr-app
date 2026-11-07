@@ -73,7 +73,7 @@ const NAMED = [
 
 // Commands that act on something you point at (ids, terminals): not for a list.
 const HIDDEN = new Set([
-  "space.move", "tab.move", "space.select", "tab.select", "pane.focus", "terminal.keep",
+  "space.move", "tab.move", "space.select", "tab.select", "pane.focus", "pane.refocus", "terminal.keep",
   "terminal.park", "terminal.kill", "terminal.show", "agent.focus", "layout.set", "layout.toggle",
   "layout.show", "layout.hide", "layout.resize", "layout.select", "mod.open", "overlay.close",
   "tab.settle", "tab.unsettle", "session.saved",
