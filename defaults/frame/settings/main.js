@@ -230,6 +230,16 @@ const SYSTEM_NOTIFICATIONS = [
   ["off", "Off"],
 ];
 
+// notification_sounds: silent, the system's sound, or one per state (Glass, Purr, Basso).
+const NOTIFICATION_SOUNDS = [
+  ["none", "Silent"],
+  ["default", "System"],
+  ["state", "By state"],
+];
+const SOUNDS_BY_STATE = { done: "Glass", blocked: "Purr", error: "Basso" };
+const soundsKind = (v) =>
+  v === undefined || v === null || v === false || v === "none" ? "none" : v === "default" || v === true ? "default" : typeof v === "object" ? "state" : "named";
+
 // What the app uses when settings.json names no font (settings.rs).
 const DEFAULT_FONT = "JetBrains Mono";
 const DEFAULT_UI_FONT = "Geist";
@@ -985,9 +995,10 @@ export default class Settings extends View {
   }
 
   // One of a few values; picking the first (the default) leaves it out of settings.json.
-  choicePicker(t, id, key, choices) {
+  // `now` and `write` read and write a value that isn't one of the choices as written.
+  choicePicker(t, id, key, choices, { now: shown, write } = {}) {
     const def = choices[0][0];
-    const now = this.person[key] ?? def;
+    const now = shown ?? this.person[key] ?? def;
     return h_flex()
       .p(2)
       .gap(2)
@@ -1008,7 +1019,8 @@ export default class Settings extends View {
             .when(now !== value, (el) => el.text_color(t.muted).hover((s) => s.text_color(t.foreground)))
             .on_click((_e, cx) =>
               this.change((p) => {
-                if (value === def) delete p[key];
+                if (write) write(p, value);
+                else if (value === def) delete p[key];
                 else p[key] = value;
               }, cx),
             )
@@ -1985,6 +1997,54 @@ export default class Settings extends View {
             : "When away: only while Herdr isn't the app in front. Never for the agent you're looking at.",
           this.choicePicker(t, "st-sn", "system_notifications", SYSTEM_NOTIFICATIONS),
           ["system_notifications", "alert_command"],
+        ),
+      )
+      .child(
+        this.row(
+          t,
+          "Notification sound",
+          soundsKind(this.person.notification_sounds) === "state" && typeof this.person.notification_sounds === "object"
+            ? `By state: ${["done", "blocked", "error"].map((k) => `${k} ${this.person.notification_sounds[k] ?? "none"}`).join(", ")}.`
+            : soundsKind(this.person.notification_sounds) === "named"
+              ? `${this.person.notification_sounds} for every notification.`
+              : "Played by the system notification. By state: Glass when done, Purr when blocked, Basso on an error.",
+          this.choicePicker(t, "st-ns", "notification_sounds", NOTIFICATION_SOUNDS, {
+            now: soundsKind(this.person.notification_sounds),
+            write: (p, value) => {
+              if (value === "none") delete p.notification_sounds;
+              else if (value === "default") p.notification_sounds = "default";
+              else if (soundsKind(p.notification_sounds) !== "state") p.notification_sounds = { ...SOUNDS_BY_STATE };
+            },
+          }),
+          "notification_sounds",
+        ),
+      )
+      .child(
+        this.row(
+          t,
+          "Marks",
+          "The agent's glyph before the title (🤖 Claude) and the state's before the text (✋ ✅ 🔴).",
+          this.toggle(t, "st-notification_marks", this.person.notification_marks === true, (_e, cx) =>
+            this.change((p) => {
+              if (p.notification_marks) delete p.notification_marks;
+              else p.notification_marks = true;
+            }, cx),
+          ),
+          "notification_marks",
+        ),
+      )
+      .child(
+        this.row(
+          t,
+          "Agent icons",
+          "The agent's program icon on its notification.",
+          this.toggle(t, "st-notification_icons", this.person.notification_icons !== false, (_e, cx) =>
+            this.change((p) => {
+              if (p.notification_icons === false) delete p.notification_icons;
+              else p.notification_icons = false;
+            }, cx),
+          ),
+          "notification_icons",
         ),
       )
       .child(

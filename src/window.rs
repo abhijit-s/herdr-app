@@ -601,6 +601,8 @@ pub struct AppWindow {
     dock_badge: crate::dock_badge::Badge,
     /// Agents with a system notification up (alert.rs), taken down once seen.
     notified: HashSet<String>,
+    /// Which agent each `system.notify` notification focuses when clicked.
+    notify_clicks: crate::alert::NotifyClicks,
     /// Agents that don't report (OSC 7501), read off their screens (harness.rs).
     unreported: crate::harness::Watcher,
     /// Why `alert_command` didn't start, each said once in a toast.
@@ -713,6 +715,7 @@ impl AppWindow {
             pane_history: Vec::new(),
             window_active: true,
             notified: HashSet::new(),
+            notify_clicks: crate::alert::NotifyClicks::default(),
             unreported: Default::default(),
             alert_command_errors: HashSet::new(),
             system_dark: is_dark(window.appearance()),
@@ -773,13 +776,22 @@ impl AppWindow {
 
         // Clicking a system notification goes there, as clicking the toast does.
         let (handle, this) = (window.window_handle(), cx.entity().downgrade());
+        // A `system.notify` one goes to its agent, when it named one.
         cx.on_system_notification_response(move |response, cx| {
-            let Some(addr) = crate::alert::address_of(&response.tag).map(str::to_owned) else { return };
-            cx.activate(true);
             let _ = handle.update(cx, |_, window, cx| {
-                window.activate_window();
                 let _ = this.update(cx, |this, cx| {
-                    this.notified.remove(&addr);
+                    let addr = match crate::alert::address_of(&response.tag) {
+                        Some(addr) => {
+                            this.notified.remove(addr);
+                            addr.to_owned()
+                        }
+                        None => match this.notify_clicks.clicked(&response.tag) {
+                            Some(addr) => addr,
+                            None => return,
+                        },
+                    };
+                    cx.activate(true);
+                    window.activate_window();
                     this.run("agent.focus", json!({ "terminal": addr }), window, cx);
                 });
             });
@@ -2643,6 +2655,61 @@ impl AppWindow {
         })
     }
 
+    /// `system.notify`: a notification any program posts as Herdr (alert.rs).
+    fn system_notify(&mut self, args: &Value, window: &mut Window, cx: &mut Context<Self>) {
+        let notify = match crate::alert::parse_notify(args) {
+            Ok(notify) => notify,
+            Err(error) => return self.fail(error),
+        };
+        let agent = match notify.agent.as_deref().map(|who| self.agent_called(who)).transpose() {
+            Ok(agent) => agent,
+            Err(error) => return self.fail(error),
+        };
+        let settings = settings::get();
+        match crate::alert::notify_to(settings.system_notifications, self.window_active, notify.urgent) {
+            crate::alert::NotifyTo::Nowhere => self.fail("system.notify: system_notifications is off"),
+            crate::alert::NotifyTo::Toast => {
+                let body = [notify.subtitle.as_str(), notify.body.as_str()].into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
+                let mut note = json!({ "title": notify.title, "body": body, "level": "info" });
+                if let Some(addr) = &agent {
+                    note["action"] = json!({ "name": "agent.focus", "args": { "terminal": addr } });
+                }
+                self.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": note }), window, cx);
+                self.answer(Ok(json!({ "ok": true, "shown": "toast" })));
+            }
+            crate::alert::NotifyTo::System if !crate::alert::can_post(cx) => {
+                self.fail("system.notify: Herdr can't show system notifications here: allow them in System Settings > Notifications, and run Herdr from its app")
+            }
+            crate::alert::NotifyTo::System => {
+                // The notification center takes (moves) the file it's given: a copy.
+                let image = match &notify.icon {
+                    Some(icon) => crate::notification_icon::copy_for_posting(icon),
+                    None if settings.notification_icons => {
+                        agent.as_ref().and_then(|addr| self.model.agents.get(addr)?.app.clone()).and_then(|app| crate::alert::program_icon(&app))
+                    }
+                    None => None,
+                };
+                let tag = crate::alert::notify_tag(notify.id.as_deref());
+                cx.show_system_notification(crate::alert::notify_notification(&notify, &tag, image));
+                self.notify_clicks.posted(&tag, agent.as_deref());
+                self.answer(Ok(json!({ "ok": true, "shown": "notification", "tag": tag })));
+            }
+        }
+    }
+
+    /// A running terminal by its address, else the one agent with that name.
+    fn agent_called(&self, who: &str) -> Result<String, String> {
+        if self.live.contains_key(who) {
+            return Ok(who.to_owned());
+        }
+        let named: Vec<&String> = self.live.iter().filter(|(_, rec)| rec.get("name").and_then(Value::as_str) == Some(who)).map(|(addr, _)| addr).collect();
+        match named.as_slice() {
+            [addr] => Ok((*addr).clone()),
+            [] => Err(format!("system.notify: no running terminal or agent called {who:?}")),
+            _ => Err(format!("system.notify: {} agents are called {who:?}: give its terminal address", named.len())),
+        }
+    }
+
     /// Tells the person an agent needs them or finished: Herdr's sounds, and a
     /// toast (drawn by the `toast` mod; click it to go there) unless they're
     /// looking at that agent. Outside the window too, as `system_notifications`
@@ -2677,7 +2744,7 @@ impl AppWindow {
         let said = crate::alert::Said::of(rec.and_then(|r| r.get("report")));
         let note = crate::alert::Note { address: addr.to_owned(), alert, prev, app, name, place, said };
         if crate::alert::should_notify(settings.system_notifications, self.window_active, looking) {
-            match crate::alert::send(&note, settings.alert_command.as_ref(), cx) {
+            match crate::alert::send(&note, &settings, cx) {
                 crate::alert::Sent::Posted => {
                     self.notified.insert(addr.to_owned());
                 }
@@ -2692,7 +2759,7 @@ impl AppWindow {
                     cx.spawn_in(window, async move |this, cx| {
                         let Ok(why) = failed.recv().await else { return };
                         let _ = this.update_in(cx, |this, window, cx| {
-                            cx.show_system_notification(crate::alert::system_notification(&note));
+                            crate::alert::post(&note, &settings::get(), cx);
                             this.notified.insert(note.address.clone());
                             this.alert_command_failed(why, window, cx);
                         });
@@ -3808,6 +3875,7 @@ impl AppWindow {
                     self.fail(error);
                 }
             }
+            "system.notify" => self.system_notify(a, window, cx),
             // ---- agents
             "agent.focus" => {
                 let t = Self::arg(a, "terminal").unwrap_or_default().to_owned();
