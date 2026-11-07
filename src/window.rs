@@ -6694,7 +6694,7 @@ export default class Recent extends View {
     }
 
     /// Only a copied mouse selection says "Copied": not a click in the
-    /// terminal, and not presses on a Settings stepper drawn over it.
+    /// terminal, and not presses in the Settings window drawn over it.
     #[gpui::test]
     fn copied_toast(cx: &mut gpui::TestAppContext) {
         use serde_json::json;
@@ -6739,15 +6739,66 @@ export default class Recent extends View {
         assert_ne!(first, second, "the second copy didn't replace the first toast");
 
         cx.update(|window, cx| view.update(cx, |this, cx| {
-            this.run_as("app.settings", json!({ "section": "text" }), false, window, cx);
+            this.run_as("app.settings", json!({ "section": "themes" }), false, window, cx);
         }));
         cx.run_until_parked();
-        let plus = cx.debug_bounds("st-text_contrast-plus").expect("no contrast stepper").center();
-        for _ in 0..3 {
-            cx.simulate_click(plus, none);
+        // The slot tabs: presses that write no file, whose watcher would wake
+        // the test from another thread.
+        for tab in ["st-tt-light", "st-tt-dark", "st-tt-light"] {
+            let at = cx.debug_bounds(tab).expect("no theme tab").center();
+            cx.simulate_click(at, none);
             cx.run_until_parked();
         }
-        assert_eq!(copied(cx), 1, "presses on a Settings stepper said Copied");
+        assert_eq!(copied(cx), 1, "presses in the Settings window said Copied");
+    }
+
+    #[test]
+    fn the_theme_grid_lays_out_only_the_cards_on_screen() {
+        in_own_process("theme_grid");
+    }
+
+    /// 120 dark themes on the Settings window's Themes page: it opens on the
+    /// picked one, lays out only the rows on screen, and a scroll lays out
+    /// the rows it reaches without rendering the page again.
+    #[gpui::test]
+    fn theme_grid(cx: &mut gpui::TestAppContext) {
+        use gpui::{ScrollDelta, ScrollWheelEvent};
+        use serde_json::json;
+        if !running_alone("theme_grid") {
+            return;
+        }
+        let home = crate::mods::app_dir();
+        std::fs::create_dir_all(home.join("themes")).unwrap();
+        let names: Vec<String> = (0..120).map(|i| format!("grid-{i:03}")).collect();
+        let ansi: Vec<String> = (0..16).map(|i| format!("#{:02x}4080", i * 16)).collect();
+        for name in &names {
+            std::fs::write(home.join(format!("themes/{name}.json")), json!({ "background": "#101418", "foreground": "#d0d0d0", "selection": "#304050", "ansi": ansi }).to_string()).unwrap();
+        }
+        std::fs::write(home.join("settings.json"), json!({ "appearance": "dark", "theme": { "dark": "grid-100", "light": "github-light" } }).to_string()).unwrap();
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
+        cx.run_until_parked();
+        let renders = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.runtime.as_ref().unwrap().read_metrics().script_renders());
+        let script_time = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.runtime.as_ref().unwrap().read_metrics().script_render_time());
+        // debug_bounds takes a static id: one per card, kept for the test's life.
+        let ids: Vec<(&String, &'static str)> = names.iter().map(|n| (n, &*Box::leak(format!("st-t-{n}").into_boxed_str()))).collect();
+        let laid_out = |cx: &mut gpui::VisualTestContext| ids.iter().filter(|(_, id)| cx.debug_bounds(id).is_some()).map(|(n, _)| (*n).clone()).collect::<Vec<_>>();
+        let (before, took) = (renders(cx), script_time(cx));
+        cx.update(|window, cx| view.update(cx, |this, cx| this.run_as("app.settings", json!({ "section": "themes" }), false, window, cx)));
+        cx.run_until_parked();
+        let (opened, open_renders) = (laid_out(cx), renders(cx) - before);
+        eprintln!("theme grid: {} cards laid out and {open_renders} script renders ({:?} in script) opening", opened.len(), script_time(cx) - took);
+        assert!(opened.iter().any(|n| n == "grid-100"), "opened away from the picked theme: {opened:?}");
+        assert!(!opened.is_empty() && opened.len() <= 30, "{} of 120 cards laid out on opening", opened.len());
+        let at = cx.debug_bounds("st-t-grid-100").unwrap().center();
+        let before = renders(cx);
+        for _ in 0..4 {
+            cx.simulate_event(ScrollWheelEvent { position: at, delta: ScrollDelta::Pixels(point(px(0.), px(250.))), ..Default::default() });
+            cx.run_until_parked();
+        }
+        let (scrolled, scroll_renders) = (laid_out(cx), renders(cx) - before);
+        eprintln!("theme grid: {} cards laid out and {scroll_renders} script renders after 4 scrolls", scrolled.len());
+        assert_eq!(scroll_renders, 0, "a scroll rendered the page");
+        assert!(scrolled.len() <= 30 && scrolled.iter().all(|n| n.as_str() < "grid-100"), "after scrolling up: {scrolled:?}");
     }
 
     /// Runs `window::tests::<name>` alone in a test process of its own, on a

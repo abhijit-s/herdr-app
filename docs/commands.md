@@ -560,7 +560,7 @@ No arguments.
 
 ## `app.settings`
 
-Open the settings (section: look, text, alerts, updates).
+Open the settings at a page (section: themes, layout, window, panes, zoom, fonts, grid, rendering, keyboard on macOS, mouse, activity, alerts, machines, updates, privacy; look opens themes and text zoom).
 
 | Argument | Required |
 |---|---|

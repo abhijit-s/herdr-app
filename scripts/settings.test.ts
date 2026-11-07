@@ -20,6 +20,13 @@ class Element {
   }
 }
 const element = () => new Element();
+// The window's props: app.settings' section.
+let propsNow: Record<string, any> = {};
+// The window: its platform, and whether it's the active one.
+let windowNow: Record<string, any> = { platform: "linux" };
+// What themes() lists, and shared.json apart from the layout's name.
+let themeList: any[] = [];
+const sharedDisk: Record<string, any> = {};
 // What `hc machine ls` lists.
 let machineDisk: any[] = [];
 // An input field: its text, whether it was focused, and the range last selected.
@@ -33,13 +40,17 @@ const source = await readFile(new URL("../defaults/frame/settings/main.js", impo
 let composed: Record<string, any> = {};
 const values: Record<string, any> = {
   View: class {}, div: element, svg: element, image: element, v_flex: element, h_flex: element,
-  Scrollbar: element, Input: { new: element }, InputState: { new: () => fakeInput() },
-  settings: () => composed, window: () => ({ platform: "linux" }), props: () => ({}),
+  Scrollbar: { vertical: element }, Input: { new: element }, InputState: { new: () => fakeInput() },
+  // The theme grid's list: what it was given, and where its handle was asked to scroll.
+  v_virtual_list: (...args: any[]) => { const list = element(); list.calls.v_virtual_list = args; return list; },
+  VirtualListScrollHandle: { new: () => { const handle = { scrolls: [] as any[], scroll_to_item(i: number, how: string) { handle.scrolls.push([i, how]); } }; return handle; } },
+  themes: () => themeList, layouts: () => ["win98"], setShared: (key: string, value: any) => { sharedDisk[key] = value; },
+  settings: () => ({ theme_dark: "ayu-mirage", theme_light: "ayu-light", ...composed }), window: () => windowNow, props: () => propsNow,
   // Pages search reads besides Text and Look: a build from source that checks nothing.
   updates: () => ({ app: { version: "0.1.0", updates: false }, core: { version: "0.1.17" }, checks: false }), telemetry: () => null,
   hc: async (args: string[]) => (args.join(" ") === "machine ls --json" ? { code: 0, stdout: JSON.stringify({ machines: machineDisk }) } : { code: 1, stderr: "no" }),
   appHome: () => "/home", notify: (n: any) => { disk.toasts.push(n); },
-  shared: (key: string) => (key === "layout" ? layoutDisk.name : undefined), run: (name: string, args: any) => { layoutDisk.runs.push([name, args]); },
+  shared: (key: string) => (key === "layout" ? layoutDisk.name : sharedDisk[key]), run: (name: string, args: any) => { layoutDisk.runs.push([name, args]); },
   layout: () => { layoutDisk.layoutReads++; return layoutDisk.shown; },
   layoutSpacing: () => fieldsOf(layoutDisk.shown),
   readTextFile: async (path: string) => {
@@ -83,8 +94,8 @@ const body = source
   .replace(/^import .*;\n/gm, "")
   .replace(/^export function /gm, "function ")
   .replace("export default class Settings", "const Settings = class Settings")
-  + "\nreturn { Settings, scaleStep, spacingOf, spacingFieldsOf, sameSpacing, settlePending, searchWords, wordSpan, matchSetting, markRuns };";
-const { Settings, scaleStep, spacingOf, spacingFieldsOf, sameSpacing, settlePending, searchWords, wordSpan, matchSetting, markRuns } = new Function(...names, body)(...args);
+  + "\nreturn { Settings, scaleStep, spacingOf, spacingFieldsOf, sameSpacing, settlePending, searchWords, wordSpan, matchSetting, markRuns, pageFor, over, contrast, tonal };";
+const { Settings, scaleStep, spacingOf, spacingFieldsOf, sameSpacing, settlePending, searchWords, wordSpan, matchSetting, markRuns, pageFor, over, contrast, tonal } = new Function(...names, body)(...args);
 fieldsOf = spacingFieldsOf;
 const spacingOfTree = (tree: any) => spacingOf(spacingFieldsOf(tree));
 
@@ -97,18 +108,19 @@ function find(root: Element, id: string): Element {
   return undefined as any;
 }
 
-/** Clicks `id` on the Text page (or `page`) with `person` in settings.json; what gets written. */
-function click(person: Record<string, any>, shown: Record<string, any>, id: string, real: string[] = [], page = "text") {
+/** Clicks `id` on the Text group's pages (or `page`) with `person` in settings.json; what gets written. */
+function click(person: Record<string, any>, shown: Record<string, any>, id: string, real: string[] = [], page: string | string[] = ["zoom", "fonts", "grid", "rendering"]) {
   composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, letter_spacing: 0, ui_scale_ranges: { ui_zoom: [0.75, 1.5], ui_text_scale: [0.8, 1.3] }, ...shown };
   const view = new Settings();
   view.person = person;
-  for (const part of ["layoutPicker", "spacing", "themePicker", "choicePicker", "fontButton", "fontList"]) if (!real.includes(part)) view[part] = element;
+  for (const part of ["layoutPicker", "spacing", "choicePicker", "fontButton", "fontList"]) if (!real.includes(part)) view[part] = element;
   let written: Record<string, any> | undefined;
   view.change = (edit: (q: Record<string, any>) => void) => {
     written = structuredClone(person);
     edit(written);
   };
-  const button = find(view[page](new Proxy({}, { get: () => "#000000" }), {}), id);
+  const theme = new Proxy({}, { get: () => "#000000" });
+  const button = [page].flat().map((p) => find(view.page(p, theme, {}), id)).find(Boolean);
   if (real.includes("shown?")) return button;
   expect(button).toBeDefined();
   button.calls.on_click[0](null, {});
@@ -304,14 +316,14 @@ test("text smoothing pickers write subpixel and leave grayscale out, terminal an
 });
 
 test("the new tabs arrangement writes its mode and leaves off out", () => {
-  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "look");
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "panes");
   expect(pick({}, "st-da-BSP")).toEqual({ default_arrange: "bsp" });
   expect(pick({ default_arrange: "bsp" }, "st-da-Tiled")).toEqual({ default_arrange: "tiled" });
   expect(pick({ default_arrange: "rows", zoom: 1.1 }, "st-da-Off")).toEqual({ zoom: 1.1 });
 });
 
 test("focus border width writes 1 to 3 px and leaves the layout's width out", () => {
-  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "look");
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "panes");
   expect(pick({}, "st-fw-2 px")).toEqual({ focus_border_width: 2 });
   expect(pick({ focus_border_width: 2 }, "st-fw-3 px")).toEqual({ focus_border_width: 3 });
   expect(pick({ focus_border_width: 3, zoom: 1.1 }, "st-fw-Layout")).toEqual({ zoom: 1.1 });
@@ -323,10 +335,10 @@ test("focus border picks a theme color into colors.focus and from theme takes it
     composed = {};
     const view = new Settings();
     view.person = person;
-    for (const part of ["layoutPicker", "spacing", "themePicker", "choicePicker", "fontButton", "fontList", "iconPicker"]) view[part] = element;
+    for (const part of ["layoutPicker", "spacing", "choicePicker", "fontButton", "fontList", "iconPicker"]) view[part] = element;
     let written: Record<string, any> | undefined;
     view.change = (edit: (q: Record<string, any>) => void) => { written = structuredClone(person); edit(written); };
-    const button = find(view.look(theme, {}), id);
+    const button = find(view.page("panes", theme, {}), id);
     if (!button) return undefined;
     button.calls.on_click[0](null, {});
     return written;
@@ -340,26 +352,26 @@ test("focus border picks a theme color into colors.focus and from theme takes it
   expect(swatch({}, "st-fc-#ff8800")).toBeUndefined();
 });
 
-test("name panes automatically sits under the look page's panes, writes true and leaves off out", () => {
-  expect(click({}, {}, "st-pane_auto_names", [], "look")).toEqual({ pane_auto_names: true });
-  expect(click({ pane_auto_names: true, zoom: 1.1 }, {}, "st-pane_auto_names", [], "look")).toEqual({ zoom: 1.1 });
-  const on = (person: Record<string, any>) => click(person, {}, "st-pane_auto_names", ["shown?"], "look").calls.justify_end !== undefined;
+test("name panes automatically sits on the Panes page, writes true and leaves off out", () => {
+  expect(click({}, {}, "st-pane_auto_names", [], "panes")).toEqual({ pane_auto_names: true });
+  expect(click({ pane_auto_names: true, zoom: 1.1 }, {}, "st-pane_auto_names", [], "panes")).toEqual({ zoom: 1.1 });
+  const on = (person: Record<string, any>) => click(person, {}, "st-pane_auto_names", ["shown?"], "panes").calls.justify_end !== undefined;
   expect(on({ pane_auto_names: true })).toBe(true);
   expect(on({})).toBe(false);
   expect(on({ pane_auto_names: false })).toBe(false);
   const shown = texts(search("pane_auto_names").root).join("|");
-  expect(shown).toContain("Look|PANES|Name");
+  expect(shown).toContain("Appearance › Panes|PANES|Name");
   expect(shown).toContain("pane|_|auto|_|names");
 });
 
 test("the working spinner picker previews each choice, writes its name and leaves the ring out", () => {
   const presets = { working_spinner_presets: [{ name: "braille", frames: ["⠋", "⠙"], interval_ms: 80 }, { name: "line", frames: ["|", "/"], interval_ms: 100 }] };
-  expect(click({}, presets, "st-ws-braille", [], "look")).toEqual({ working_spinner: "braille" });
-  expect(click({ working_spinner: "braille", zoom: 1.1 }, presets, "st-ws-line", [], "look")).toEqual({ working_spinner: "line", zoom: 1.1 });
-  expect(click({ working_spinner: "line", zoom: 1.1 }, presets, "st-ws-ring", [], "look")).toEqual({ zoom: 1.1 });
+  expect(click({}, presets, "st-ws-braille", [], "activity")).toEqual({ working_spinner: "braille" });
+  expect(click({ working_spinner: "braille", zoom: 1.1 }, presets, "st-ws-line", [], "activity")).toEqual({ working_spinner: "line", zoom: 1.1 });
+  expect(click({ working_spinner: "line", zoom: 1.1 }, presets, "st-ws-ring", [], "activity")).toEqual({ zoom: 1.1 });
   // What Herdr resolved: frames for a name it knows (or your own), null for the ring or a name it doesn't.
   const drawn = (v: any) => (v && v !== "ring" && v !== "spiral" ? { frames: ["x"], interval_ms: 80 } : null);
-  const chip = (person: Record<string, any>, name: string) => click(person, { ...presets, working_spinner: drawn(person.working_spinner) }, `st-ws-${name}`, ["shown?"], "look");
+  const chip = (person: Record<string, any>, name: string) => click(person, { ...presets, working_spinner: drawn(person.working_spinner) }, `st-ws-${name}`, ["shown?"], "activity");
   const preview = (name: string) => chip({}, name).nodes[0].calls;
   expect(preview("braille").frames).toEqual([["⠋", "⠙"], 80]);
   expect(preview("ring").spin).toEqual([900]);
@@ -371,10 +383,10 @@ test("the working spinner picker previews each choice, writes its name and leave
   expect(["ring", "braille", "line"].some((n) => chosen({ working_spinner: { frames: ["a"], interval_ms: 80 } }, n))).toBe(false);
 });
 
-test("dim when inactive sits on the look page, its scope writes text and leaves window out", () => {
-  expect(click({}, {}, "st-unfocused_dim-plus", [], "look")).toEqual({ unfocused_dim: 0.1 });
-  expect(click({ unfocused_dim: 0.3 }, {}, "st-unfocused_dim-minus", [], "look")).toEqual({ unfocused_dim: 0.2 });
-  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "look");
+test("dim when inactive sits on the Window page, its scope writes text and leaves window out", () => {
+  expect(click({}, {}, "st-unfocused_dim-plus", [], "window")).toEqual({ unfocused_dim: 0.1 });
+  expect(click({ unfocused_dim: 0.3 }, {}, "st-unfocused_dim-minus", [], "window")).toEqual({ unfocused_dim: 0.2 });
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "window");
   expect(pick({ unfocused_dim: 0.3 }, "st-ds-Text")).toEqual({ unfocused_dim: 0.3, unfocused_dim_scope: "text" });
   expect(pick({ unfocused_dim: 0.3, unfocused_dim_scope: "text" }, "st-ds-Window")).toEqual({ unfocused_dim: 0.3 });
   expect(pick({}, "st-ss-Darker when active")).toEqual({ sidebar_shade: "active" });
@@ -382,10 +394,10 @@ test("dim when inactive sits on the look page, its scope writes text and leaves 
   expect(pick({ sidebar_shade: "active" }, "st-ss-Flat")).toEqual({});
   expect(pick({}, "st-pc-Classic")).toEqual({ panel_colors: "classic" });
   expect(pick({ panel_colors: "classic" }, "st-pc-Tinted")).toEqual({});
-  const shadeShown = (person: Record<string, any>) => click(person, {}, "st-ss-Flat", ["choicePicker", "shown?"], "look") !== undefined;
+  const shadeShown = (person: Record<string, any>) => click(person, {}, "st-ss-Flat", ["choicePicker", "shown?"], "window") !== undefined;
   expect(shadeShown({})).toBe(true);
   expect(shadeShown({ panel_colors: "classic" })).toBe(false);
-  const shadeShownOver = (inUse: string) => click({}, { panels_in_use: inUse }, "st-ss-Flat", ["choicePicker", "shown?"], "look") !== undefined;
+  const shadeShownOver = (inUse: string) => click({}, { panels_in_use: inUse }, "st-ss-Flat", ["choicePicker", "shown?"], "window") !== undefined;
   expect(shadeShownOver("tinted")).toBe(true);
   expect(shadeShownOver("classic")).toBe(false);
 });
@@ -400,8 +412,8 @@ test("subpixel order shows only while either text is subpixel, and leaves rgb ou
   expect(pick({ text_rendering: "subpixel", subpixel_order: "bgr" }, "st-so-RGB")).toEqual({ text_rendering: "subpixel" });
 });
 
-test("resume agents after restart sits on the alerts page, writes auto or off and leaves ask out", () => {
-  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "alerts");
+test("resume agents after restart sits on the Activity page, writes auto or off and leaves ask out", () => {
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "activity");
   expect(pick({}, "st-ra-Auto")).toEqual({ resume_agents: "auto" });
   expect(pick({ resume_agents: "auto" }, "st-ra-Off")).toEqual({ resume_agents: "off" });
   expect(pick({ resume_agents: "off", zoom: 1.1 }, "st-ra-Ask")).toEqual({ zoom: 1.1 });
@@ -663,7 +675,7 @@ function search(query: string, person: Record<string, any> = {}) {
   const view = new Settings();
   view.init({}, { ...searchCx, focus_handle: () => ({ focus() {} }), timer: { every() {}, after() {} } });
   view.person = person;
-  for (const part of ["layoutPicker", "spacing", "themePicker", "fontButton", "fontList", "iconPicker"]) view[part] = element;
+  for (const part of ["layoutPicker", "spacing", "fontButton", "fontList", "iconPicker"]) view[part] = element;
   view.setQuery(query);
   return { view, root: view.results(t, searchCx) };
 }
@@ -707,10 +719,11 @@ test("marked text is cut into runs, overlaps merged", () => {
 test("search shows only matching settings, under their page and heading", () => {
   const { root } = search("rounding");
   const shown = texts(root).join("|");
-  expect(find(root, "st-found-text")).toBeDefined();
-  expect(find(root, "st-found-look")).toBeUndefined();
+  expect(find(root, "st-found-grid")).toBeDefined();
+  expect(find(root, "st-found-window")).toBeUndefined();
+  expect(shown).toContain("Text › Terminal grid");
   expect(shown).toContain("rounding");
-  expect(shown).toContain("TERMINAL TEXT");
+  expect(shown).toContain("TERMINAL GRID");
   expect(shown).not.toContain("Ligatures");
   expect(shown).not.toContain("SIZE");
   // The row's settings.json key shows, marked where it matched.
@@ -724,8 +737,8 @@ test("search finds a setting by its settings.json key, and forgives a typo", () 
     expect(shown).not.toContain("Cell width");
   }
   const icon = search("icon").root;
-  expect(find(icon, "st-found-look")).toBeDefined();
-  expect(texts(icon).join("|")).not.toContain("Appearance");
+  expect(find(icon, "st-found-window")).toBeDefined();
+  expect(texts(icon).join("|")).not.toContain("Light or dark");
   // Notes between settings aren't results.
   expect(texts(icon).join("|")).not.toContain("For the layout you're in");
 });
@@ -762,7 +775,7 @@ test("with nothing typed, pages draw as before and nothing is indexed or matched
   view.person = {};
   for (const part of ["fontButton", "fontList"]) view[part] = element;
   view.match = () => { throw new Error("matched with nothing typed"); };
-  const shown = texts(view.text(t)).join("|");
+  const shown = ["fonts", "grid"].map((p) => texts(view.page(p, t, searchCx)).join("|")).join("|");
   expect(shown).toContain("Ligatures");
   expect(shown).toContain("Cell rounding");
   expect(view.index).toBeNull();
@@ -810,7 +823,7 @@ function searchFrom(section: string) {
   view.init({}, cx);
   view.section = section;
   view.person = {};
-  for (const part of ["layoutPicker", "themePicker", "fontButton", "fontList", "iconPicker"]) view[part] = element;
+  for (const part of ["layoutPicker", "fontButton", "fontList", "iconPicker"]) view[part] = element;
   const shown = (query: string) => { view.setQuery(query); return texts(view.results(t, cx)).join("|"); };
   const settle = async () => { while (pending.length) await pending.shift(); };
   return { view, shown, settle };
@@ -838,7 +851,7 @@ test("the spacing rows are found once the layout file is read, with nothing else
 });
 
 test("a description that changed since indexing is matched as it is now", () => {
-  const { view, shown } = searchFrom("look");
+  const { view, shown } = searchFrom("window");
   expect(shown("keeps classic")).not.toContain("Panel colours");
   composed.panels_in_use = "classic";
   // Its page has no other match, so only a new index can show it.
@@ -877,4 +890,256 @@ test("alt starts no search off macOS, and marks keep their place after a letter 
   view.onKey({ key: "x", key_char: "x", modifiers: { alt: true } }, searchCx);
   expect(view.query).toBe("");
   expect(wordSpan("box", "İbox", false)).toEqual([1, 4]);
+});
+
+// Groups, pages and the Themes page ------------------------------------------
+
+/** A Settings window opened at `section` (as app.settings names it), on a dark theme. */
+function opened(section?: string, palette: Record<string, string> = dark) {
+  composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, letter_spacing: 0 };
+  propsNow = { section };
+  const view = new Settings();
+  view.init({}, { ...searchCx, focus_handle: () => ({ focus() {} }), timer: { every() {}, after() {} } });
+  propsNow = {};
+  view.person = {};
+  return { view, t: palette, nav: () => view.sidebar(palette, false) };
+}
+const dark: Record<string, string> = { popover: "#2a2f3a", background: "#1f2430", foreground: "#cccac2", accent: "#6dcbfa", border: "#393d46", muted: "#aeb1b7", dim: "#9ca0a6" };
+const light: Record<string, string> = { popover: "#fafafa", background: "#ffffff", foreground: "#24292f", accent: "#f2a33a", border: "#e1e4e8", muted: "#57606a", dim: "#6e7781" };
+const card = (name: string, isLight = false) => ({ name, light: isLight, colors: { background: isLight ? "#ffffff" : "#000000" } });
+
+test("app.settings' section opens a page, its older names still work, and anything else opens Themes", () => {
+  expect(pageFor("look")).toBe("themes");
+  expect(pageFor("text")).toBe("zoom");
+  expect(pageFor("updates")).toBe("updates");
+  expect(pageFor("rendering")).toBe("rendering");
+  expect(pageFor("nope")).toBe("themes");
+  expect(pageFor(undefined)).toBe("themes");
+  // Keyboard is macOS only: elsewhere it isn't a page.
+  expect(pageFor("keyboard")).toBe("themes");
+  expect(opened("text").view.section).toBe("zoom");
+});
+
+test("the sidebar opens the groups left open and the shown page's, and remembers each open and close", () => {
+  for (const k of Object.keys(sharedDisk)) delete sharedDisk[k];
+  sharedDisk["settings.groups.open"] = ["system"];
+  const { view, nav } = opened("look");
+  expect(find(nav(), "st-s-themes")).toBeDefined();
+  expect(find(nav(), "st-s-updates")).toBeDefined();
+  expect(find(nav(), "st-s-zoom")).toBeUndefined();
+  find(nav(), "st-g-text").calls.on_click[0](null, searchCx);
+  expect(sharedDisk["settings.groups.open"]).toEqual(["appearance", "text", "system"]);
+  expect(find(nav(), "st-s-zoom")).toBeDefined();
+  find(nav(), "st-g-appearance").calls.on_click[0](null, searchCx);
+  expect(sharedDisk["settings.groups.open"]).toEqual(["text", "system"]);
+  expect(find(nav(), "st-s-themes")).toBeUndefined();
+  // Going to a page opens its group.
+  view.go("alerts", searchCx);
+  expect(sharedDisk["settings.groups.open"]).toEqual(["text", "agents", "system"]);
+  expect(opened("updates").view.open).toEqual(new Set(["text", "agents", "system"]));
+});
+
+test("a search opens every group with a match and counts each page's, leaving what's remembered", () => {
+  for (const k of Object.keys(sharedDisk)) delete sharedDisk[k];
+  const { view, t, nav } = opened("look");
+  view.setQuery("rounding");
+  view.results(t, searchCx);
+  const text = find(nav(), "st-g-text");
+  expect(texts(text)).toContain("1");
+  expect(texts(find(nav(), "st-s-grid"))).toEqual(["Terminal grid", "1"]);
+  expect(texts(find(nav(), "st-s-zoom"))).toEqual(["Zoom"]);
+  expect(find(nav(), "st-s-machines")).toBeUndefined();
+  // Two matches on one page: a page's count is its matches.
+  view.setQuery("focus border");
+  view.results(t, searchCx);
+  expect(texts(find(nav(), "st-s-panes"))).toEqual(["Panes", "2"]);
+  expect(sharedDisk["settings.groups.open"]).toBeUndefined();
+  // A click on a group a search opened leaves what's kept alone.
+  find(nav(), "st-g-text").calls.on_click[0](null, searchCx);
+  expect(sharedDisk["settings.groups.open"]).toBeUndefined();
+  view.setQuery("");
+  expect(find(nav(), "st-s-grid")).toBeUndefined();
+});
+
+test("arrows walk the pages in order, opening their group, and close and open the shown page's group", () => {
+  for (const k of Object.keys(sharedDisk)) delete sharedDisk[k];
+  const { view } = opened("panes");
+  const key = (k: string, modifiers = {}) => view.onKey({ key: k, modifiers }, searchCx);
+  key("down");
+  expect(view.section).toBe("zoom");
+  expect(view.open.has("text")).toBe(true);
+  key("up");
+  key("up");
+  expect(view.section).toBe("window");
+  key("left");
+  expect(view.open.has("appearance")).toBe(false);
+  key("right");
+  expect(view.open.has("appearance")).toBe(true);
+  // The ends stay put, a modifier leaves the key alone, and so does a field with the keyboard.
+  view.go("themes", searchCx);
+  key("up");
+  expect(view.section).toBe("themes");
+  key("down", { shift: true });
+  expect(view.section).toBe("themes");
+  view.themeInputFocused = true;
+  key("down");
+  expect(view.section).toBe("themes");
+});
+
+test("the Themes page lists the shown slot's themes, by source, filtered by chip and name", () => {
+  themeList = [card("ayu-mirage"), card("rex-basalt-shore"), card("rex-cinder-peak"), card("dracula"), card("ayu-light", true), card("rex-alpine-milk", true), card("win98", true)];
+  const { view, t } = opened("look");
+  const rows = () => view.themeRows(view.themeGroups(themeList)).map((r: any) => r.head ?? r.cards.map((x: any) => x.name).join(","));
+  expect(rows()).toEqual(["standard", "ayu-mirage,dracula", "rex", "rex-basalt-shore,rex-cinder-peak"]);
+  const page = view.themesPage(t);
+  expect(texts(find(page, "st-tc-all"))).toEqual(["All 4"]);
+  expect(texts(find(page, "st-tc-rex"))).toEqual(["Rex 2"]);
+  find(page, "st-tc-rex").calls.on_click[0](null, searchCx);
+  expect(rows()).toEqual(["rex-basalt-shore,rex-cinder-peak"]);
+  find(page, "st-tt-light").calls.on_click[0](null, searchCx);
+  expect(rows()).toEqual(["rex-alpine-milk"]);
+  view.themeSource = null;
+  expect(rows()).toEqual(["standard", "ayu-light", "rex", "rex-alpine-milk"]);
+  view.themeSlot = "dark";
+  view.themeFilter = "Cinder";
+  expect(rows()).toEqual(["rex-cinder-peak"]);
+  view.themeFilter = "nothing";
+  expect(find(view.themesPage(t), "st-themes-none")).toBeDefined();
+  // A closed source keeps its heading only.
+  view.themeFilter = "";
+  view.themesClosed.add("standard");
+  expect(rows()).toEqual(["standard", "rex", "rex-basalt-shore,rex-cinder-peak"]);
+  // A theme named like a layout belongs to that layout.
+  view.themeSlot = "light";
+  expect(rows()).not.toContain("win98");
+});
+
+test("the theme grid scrolls to the picked theme when it opens and when what it lists changes, not on every draw", () => {
+  themeList = Array.from({ length: 23 }, (_, i) => card(`theme-${String(i).padStart(2, "0")}`)).concat([card("rex-a"), card("rex-b")]);
+  composed = { theme_dark: "theme-17" };
+  const { view, t } = opened("themes");
+  composed = { theme_dark: "theme-17" };
+  view.themesPage(t);
+  // Row 0 is Standard's heading; theme-17 is in its fourth row of five.
+  expect(view.themeScroll.scrolls).toEqual([[4, "center"]]);
+  view.themesPage(t);
+  expect(view.themeScroll.scrolls.length).toBe(1);
+  view.themeSource = "standard";
+  view.themesPage(t);
+  expect(view.themeScroll.scrolls.at(-1)).toEqual([3, "center"]);
+  // The page builds no card: the list draws the rows on screen, from their heights.
+  const args = (function walk(e: any): any { if (e?.calls?.v_virtual_list) return e.calls.v_virtual_list; for (const n of e?.nodes ?? []) { const a = walk(n); if (a) return a; } })(view.themesPage(t));
+  expect(find(view.themesPage(t), "st-t-theme-17")).toBeUndefined();
+  expect(args[1]).toBe(5);
+  expect(args[2]).toEqual([84, 84, 84, 84, 84]);
+  expect(args[3](2)).toBe("row:theme-10");
+  expect(args[3](0)).toBe("row:theme-00");
+  const drawn = args[4]({ start: 3, end: 4 }, searchCx);
+  expect(drawn.length).toBe(1);
+  expect(find(drawn[0], "st-t-theme-17")).toBeDefined();
+  // Coming back to the page shows it again.
+  // A listing without the picked theme starts at the top.
+  view.themeFilter = "theme-0";
+  view.themesPage(t);
+  expect(view.themeScroll.scrolls.at(-1)).toEqual([0, "top"]);
+  view.themeFilter = "";
+  view.themesPage(t);
+  const scrolls = view.themeScroll.scrolls.length;
+  view.go("zoom", searchCx);
+  view.go("themes", searchCx);
+  view.themesPage(t);
+  expect(view.themeScroll.scrolls.length).toBe(scrolls + 1);
+  expect(view.themeScroll.scrolls.at(-1)).toEqual([3, "center"]);
+});
+
+test("the selected page, tab, chip and card are a tonal pill; hover is a neutral one", () => {
+  themeList = [card("ayu-mirage"), card("dracula")];
+  composed = { theme_dark: "ayu-mirage" };
+  const { view, t, nav } = opened("themes");
+  composed = { theme_dark: "ayu-mirage" };
+  const sel = tonal(t, true);
+  const hover = (el: any) => { const st = element(); el.calls.hover[0](st); return st.calls.bg?.[0]; };
+  const row = find(nav(), "st-s-themes");
+  expect(row.calls.bg).toEqual([sel.fill]);
+  expect(row.calls.rounded).toEqual([8]);
+  expect(row.calls.hover).toBeUndefined();
+  const label = row.nodes[0];
+  expect(label.calls.text_color).toEqual([sel.text]);
+  expect(label.calls.font_semibold).toBeDefined();
+  const other = find(nav(), "st-s-layout");
+  expect(other.calls.bg).toBeUndefined();
+  expect(hover(other)).toBe(over(t.foreground, t.popover, 0.04));
+  expect(hover(other)).not.toBe(sel.fill);
+  const page = view.themesPage(t);
+  expect(find(page, "st-tt-dark").calls.bg).toEqual([sel.fill]);
+  expect(find(page, "st-tt-dark").calls.border_color).toEqual([sel.ring]);
+  expect(find(page, "st-tt-light").calls.bg).toEqual([t.background]);
+  expect(find(page, "st-tc-all").calls.bg).toEqual([sel.fill]);
+  expect(find(page, "st-tc-standard").calls.bg).toBeUndefined();
+  const picked = view.themeCard(t, themeList[0], "ayu-mirage", sel);
+  expect(picked.calls.bg).toEqual([sel.fill]);
+  expect(picked.calls.border_color).toEqual([sel.ring]);
+  expect(texts(picked)).toContain("ayu mirage");
+  const plain = view.themeCard(t, themeList[1], "ayu-mirage", sel);
+  expect(plain.calls.border_color).toEqual(["#00000000"]);
+  expect(hover(plain)).not.toBe(sel.fill);
+});
+
+test("selected text reads at 4.5:1 on its tonal fill on light and dark themes, and an inactive window draws it grey", () => {
+  const dim = { ...dark, accent: "#2a3f8f" };
+  for (const palette of [dark, light, dim, { ...light, accent: "#ffd400" }]) {
+    const { fill, text } = tonal(palette, true);
+    expect(fill).toBe(over(palette.accent, palette.popover, 0.16));
+    expect(contrast(text, fill)).toBeGreaterThanOrEqual(4.5);
+  }
+  // An accent that already reads keeps its color.
+  expect(tonal(dark, true).text).toBe("#6dcbfa");
+  // Without an accent, the ring.
+  const ringed = { ...dark, accent: undefined as any, ring: "#ff8800" };
+  expect(tonal(ringed, true).fill).toBe(over("#ff8800", dark.popover, 0.16));
+  const away = tonal(dark, false);
+  expect(away.text).toBe(dark.foreground);
+  expect(away.fill).toBe(over(dark.foreground, dark.popover, 0.1));
+  expect(contrast("#000000", "#ffffff")).toBeCloseTo(21, 5);
+  // Drawn so while the window isn't the active one: page, tab, chip and card.
+  themeList = [card("ayu-mirage")];
+  windowNow = { platform: "linux", active: false };
+  try {
+    composed = { theme_dark: "ayu-mirage" };
+    const { view, t, nav } = opened("themes");
+    composed = { theme_dark: "ayu-mirage" };
+    const page = view.themesPage(t);
+    const grid = (function walk(e: any): any { if (e?.calls?.v_virtual_list) return e.calls.v_virtual_list; for (const n of e?.nodes ?? []) { const a = walk(n); if (a) return a; } })(page);
+    const picked = find(grid[4]({ start: 0, end: 1 }, searchCx)[0], "st-t-ayu-mirage");
+    for (const el of [find(nav(), "st-s-themes"), find(page, "st-tt-dark"), find(page, "st-tc-all"), picked]) expect(el.calls.bg).toEqual([tonal(t, false).fill]);
+  } finally {
+    windowNow = { platform: "linux" };
+  }
+});
+
+test("keys typed into the theme filter stay there, and esc leaves the filter, not the window", () => {
+  const { view } = opened("themes");
+  let focused = 0, closed = 0;
+  view.handle = { focus: () => focused++ };
+  view.close = () => closed++;
+  view.themeInputFocused = true;
+  view.onKey({ key: "a", key_char: "a", modifiers: {} }, searchCx);
+  view.onKey({ key: "down", modifiers: {} }, searchCx);
+  expect([view.query, view.section]).toEqual(["", "themes"]);
+  view.onKey({ key: "escape", modifiers: {} }, searchCx);
+  expect([focused, closed]).toEqual([1, 0]);
+});
+
+test("a long theme name is cut inside its card, with the whole name on hover and the ✓ kept", () => {
+  const { view, t } = opened("themes");
+  const sel = tonal(t, true);
+  const picked = view.themeCard(t, card("catppuccin-macchiato"), "catppuccin-macchiato", sel);
+  const row = picked.nodes[1];
+  expect([row.calls.w_full, row.calls.min_w]).toEqual([[], [0]]);
+  const name = row.nodes[0];
+  expect(name.calls.truncate).toBeDefined();
+  expect(name.calls.tooltip).toEqual(["catppuccin macchiato"]);
+  expect(row.nodes[1].calls.flex_none).toBeDefined();
+  // A Rex theme drops its prefix.
+  expect(texts(view.themeCard(t, card("rex-basalt-shore"), "x", sel))).toContain("basalt shore");
 });
