@@ -52,6 +52,7 @@ function items(p, git) {
           : []),
         ...(inTab
           ? [
+              ["Rename", "pane.rename", { pane: tg.pane }],
               ["Split right", "pane.split", { direction: "right", pane: tg.pane }],
               ["Split down", "pane.split", { direction: "down", pane: tg.pane }],
               ["Zoom", "pane.zoom", { pane: tg.pane }],

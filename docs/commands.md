@@ -309,6 +309,14 @@ Show only this pane of its tab, or all again.
 |---|---|
 | `pane` | no |
 
+## `pane.menu`
+
+Open a pane's menu (default: the focused one) at the pointer, as a right-click on its terminal does but with no selection: the layout's terminal_menu mod, else menu. For a pane header's right-click.
+
+| Argument | Required |
+|---|---|
+| `pane` | no |
+
 ## `pane.zoom_text_in`
 
 Make a terminal pane's text bigger (default: the focused terminal) by one zoom step, on top of the app's zoom; its program gets the new rows and columns. Kept for the life of the pane's terminal view.
