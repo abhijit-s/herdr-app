@@ -1690,6 +1690,7 @@ impl AppWindow {
                     let target = json!({
                         "pane": block.trim_end_matches(SWAP), "terminal": addr,
                         "selected": view.read(cx).has_selection(), "cwd": this.terminal_cwd(&addr),
+                        "last_output": view.read(cx).has_last_output(),
                     });
                     this.open_menu("pane", target, Some(*at), window, cx)
                 }
@@ -2082,7 +2083,7 @@ impl AppWindow {
                     if let Some(Content::Mod { name, .. }) = p.content() {
                         let label = crate::pane_label::given(p.title.as_deref()).unwrap_or(name);
                         let own = m.icons.get(&p.id);
-                        let icon = crate::pane_icons::pane(own, None, &p.id, label, icon_style);
+                        let icon = crate::pane_icons::pane(own, None, label, icon_style);
                         icons.insert(&p.id, icon.clone());
                         shown_labels.insert(&p.id, label.to_owned());
                         panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "tab": ctx.id, "title": name, "name": p.title, "auto_name": null, "label": label, "session": null, "icon": icon, "own_icon": own, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
@@ -2107,7 +2108,7 @@ impl AppWindow {
                         session, program: &program, address: addr,
                     });
                     let own = m.icons.get(&p.id);
-                    let icon = crate::pane_icons::pane(own, auto_name.map(String::as_str), &p.id, &label, icon_style);
+                    let icon = crate::pane_icons::pane(own, auto_name.map(String::as_str), &label, icon_style);
                     icons.insert(&p.id, icon.clone());
                     shown_labels.insert(&p.id, label.clone());
                     labels.insert(p.id.clone(), label.clone());
@@ -3882,7 +3883,8 @@ impl AppWindow {
                 // What the pane shows: a terminal swapped in (`terminal.show`), else its own.
                 let terminal = self.pane_term(&pane).map(|t| t.address.clone()).or_else(|| self.model.address_of(&pane));
                 let cwd = terminal.as_deref().and_then(|t| self.terminal_cwd(t));
-                self.open_menu("pane", json!({ "pane": pane, "terminal": terminal, "cwd": cwd }), None, window, cx);
+                let last_output = self.pane_term(&pane).is_some_and(|t| t.view.read(cx).has_last_output());
+                self.open_menu("pane", json!({ "pane": pane, "terminal": terminal, "cwd": cwd, "last_output": last_output }), None, window, cx);
             }
             "pane.zoom" => {
                 let pane = Self::owned(a, "pane").or_else(|| self.model.focused_pane());
@@ -4087,6 +4089,24 @@ impl AppWindow {
                 let Some(cwd) = self.terminal_cwd(&t) else { return self.fail(format!("terminal {t:?}'s folder isn't known")) };
                 cx.write_to_clipboard(ClipboardItem::new_string(cwd));
                 self.show_copied_as(json!({ "title": "Copied path" }), window, cx);
+            }
+            "terminal.copy_last_output" => {
+                let t = Self::owned(a, "terminal").or_else(|| self.focused_terminal(window, cx).map(|t| t.address.clone()));
+                let Some(t) = t else { return self.fail("no such running terminal") };
+                let shown = match self.shown_terminal_view(&t, window, cx) {
+                    Ok(view) => view,
+                    Err(error) => return self.fail(error),
+                };
+                // Each view of a terminal (its pane, a peek) has its own copy of the
+                // screen, and one attached later lacks the marks before it: the one
+                // seen first, else any other, as the menu read the clicked one.
+                let others = self.terms.values().filter(|v| v.address == t).map(|v| &v.view);
+                let Some(text) = std::iter::once(&shown).chain(others).find_map(|v| v.read(cx).last_output()) else {
+                    return self.fail(format!("terminal {t:?} has no finished command's output: its shell marks no prompts (OSC 133), a full-screen program is running, or the command printed nothing"));
+                };
+                let lines = text.lines().count();
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                self.show_copied_as(json!({ "title": format!("Copied {} {}", thousands(lines), if lines == 1 { "line" } else { "lines" }) }), window, cx);
             }
             "terminal.scroll" => {
                 if let Err(error) = self.scroll_terminal(a, window, cx) {
@@ -7369,7 +7389,12 @@ export default class Recent extends View {
             { "id": "left", "type": "block", "content": { "terminal": "t1" } },
             { "id": "right", "type": "block", "content": { "terminal": "t2" } }
         ] }));
-        let text = |t: &str| format!("{t} says hello world\r\n").into_bytes();
+        // t2's shell marks its prompts (OSC 133): a finished `make`, a prompt after it.
+        let prompt = "\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07";
+        let text = |t: &str| match t {
+            "t2" => format!("t2 says hello world\r\n{prompt}make\r\n\x1b]133;C\x07built t2\r\nok\r\n{prompt}").into_bytes(),
+            _ => format!("{t} says hello world\r\n").into_bytes(),
+        };
         view.update_in(cx, |this, window, cx| {
             window.activate_window();
             for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
@@ -7407,7 +7432,7 @@ export default class Recent extends View {
         let target = view.update(cx, |this, _| {
             this.copies.values().find(|c| c.inst.name == "menu").map(|c| c.inst.props["target"].clone()).expect("the menu opened")
         });
-        assert_eq!(target, json!({ "pane": "right", "terminal": "t2", "selected": true, "cwd": "/work/right" }));
+        assert_eq!(target, json!({ "pane": "right", "terminal": "t2", "selected": true, "cwd": "/work/right", "last_output": true }));
         assert_eq!(clipboard(cx), "before", "opening the menu copied");
 
         let run = |name: &str, args: serde_json::Value, cx: &mut gpui::VisualTestContext| {
@@ -7457,6 +7482,23 @@ export default class Recent extends View {
         let missing = run("terminal.copy_all", json!({ "terminal": "t9" }), cx);
         assert!(missing.get("error").is_some(), "{missing}");
 
+        // The last finished command's output, from the shell's marks; t1 has
+        // none. t2 still shows the full-screen program: none until it's left.
+        let on_program = run("terminal.copy_last_output", json!({ "terminal": "t2" }), cx);
+        assert!(on_program.get("error").is_some(), "{on_program}");
+        view.update(cx, |this, cx| {
+            this.terms["right"].view.update(cx, |v, cx| v.ingest(vec![crate::hc::Stream::Data(b"\x1b[?1049l".to_vec())], cx));
+        });
+        cx.run_until_parked();
+        run("terminal.copy_last_output", json!({ "terminal": "t2" }), cx);
+        assert_eq!(clipboard(cx), "built t2\nok");
+        assert_eq!(toast(cx), "Copied 2 lines");
+        let unmarked = run("terminal.copy_last_output", json!(null), cx);
+        assert!(unmarked["error"].as_str().is_some_and(|e| e.contains("OSC 133")), "{unmarked}");
+        assert_eq!(clipboard(cx), "built t2\nok", "a failed copy left the clipboard alone");
+        let missing = run("terminal.copy_last_output", json!({ "terminal": "t9" }), cx);
+        assert!(missing.get("error").is_some(), "{missing}");
+
         // A pane header's right-click (pane.menu): the same menu for the pane,
         // its terminal and folder, nothing selected.
         view.update_in(cx, |this, window, cx| {
@@ -7468,7 +7510,7 @@ export default class Recent extends View {
         let target = view.update(cx, |this, _| {
             this.copies.values().find(|c| c.inst.name == "menu").map(|c| c.inst.props["target"].clone()).expect("pane.menu opened the menu")
         });
-        assert_eq!(target, json!({ "pane": "left", "terminal": "t1", "cwd": "/work/left" }));
+        assert_eq!(target, json!({ "pane": "left", "terminal": "t1", "cwd": "/work/left", "last_output": false }));
     }
 
     #[test]
@@ -8738,6 +8780,7 @@ export default class Keeper extends View {
             this.live.insert("tb".into(), json!({ "address": "tb", "title": "~/src", "foreground": { "argv": ["cargo", "build"] }, "labels": {} }));
             this.sync(window, cx);
             this.person.pane_auto_names = true;
+            this.person.space_avatar = Some("letter".into());
             this.apply_look(window, cx);
             let name = crate::pane_names::for_tab(["a", "b"])["a"].clone();
             assert_eq!(published("a", "auto_name"), json!(name));
@@ -8747,7 +8790,7 @@ export default class Keeper extends View {
             for (mode, kind) in [("emoji", crate::pane_icons::Kind::Emoji), ("glyph", crate::pane_icons::Kind::Glyph), ("repo", crate::pane_icons::Kind::Glyph)] {
                 this.person.space_avatar = Some(mode.into());
                 this.apply_look(window, cx);
-                let expected = crate::pane_icons::pane(None, Some(&name), "a", &name, Some(kind));
+                let expected = crate::pane_icons::pane(None, Some(&name), &name, Some(kind));
                 assert!(!expected.is_null());
                 assert_eq!(published("a", "icon"), expected, "{mode}: the automatic name's icon, at once");
                 assert_eq!(published("b", "icon"), Value::Null, "{mode}: a running command shows its program's");
@@ -8763,7 +8806,7 @@ export default class Keeper extends View {
             assert_eq!(published("b", "own_icon"), rocket);
             assert_eq!(published("a", "own_icon"), Value::Null);
             assert_eq!(tab_icon(this, "icon"), published("b", "icon"));
-            this.person.space_avatar = None;
+            this.person.space_avatar = Some("letter".into());
             this.apply_look(window, cx);
             assert_eq!(published("b", "icon"), json!({ "kind": "glyph", "text": "\u{f135}" }), "in letter mode too");
 
@@ -8872,7 +8915,7 @@ export default class Keeper extends View {
             assert_eq!(this.overlays.len(), 1, "and opens nothing");
             this.copies.values().find(|c| c.inst.name == "menu").map(|c| c.inst.props["target"].clone())
         });
-        assert_eq!(target, Some(json!({ "pane": "a", "terminal": "tx", "cwd": "/swapped" })), "the swapped-in terminal, not the pane's own");
+        assert_eq!(target, Some(json!({ "pane": "a", "terminal": "tx", "cwd": "/swapped", "last_output": false })), "the swapped-in terminal, not the pane's own");
     }
 
     #[test]

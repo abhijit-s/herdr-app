@@ -612,6 +612,20 @@ fn is_wide(r: &GhosttyGridRef) -> bool {
     read && wide == GHOSTTY_CELL_WIDE_WIDE
 }
 
+/// What the shell marked a cell with text as (OSC 133): prompt, input or
+/// output. `None` for a blank cell, which reads as output when unmarked.
+fn cell_content(r: &GhosttyGridRef) -> Option<GhosttyCellSemanticContent> {
+    let mut cell: GhosttyCell = Default::default();
+    let mut text = false;
+    let mut content: GhosttyCellSemanticContent = GHOSTTY_CELL_SEMANTIC_OUTPUT;
+    let read = unsafe {
+        ghostty_grid_ref_cell(r, &mut cell) == GHOSTTY_SUCCESS
+            && ghostty_cell_get(cell, GHOSTTY_CELL_DATA_HAS_TEXT, &mut text as *mut _ as *mut c_void) == GHOSTTY_SUCCESS
+            && ghostty_cell_get(cell, GHOSTTY_CELL_DATA_SEMANTIC_CONTENT, &mut content as *mut _ as *mut c_void) == GHOSTTY_SUCCESS
+    };
+    (read && text).then_some(content)
+}
+
 #[derive(Clone, Copy)]
 pub enum Select {
     Press,
@@ -1053,6 +1067,86 @@ impl Vt {
             let text = String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned();
             ghostty_free(std::ptr::null(), ptr, len);
             (!text.is_empty()).then_some(text)
+        }
+    }
+
+    /// The output of the last command that finished, as the shell marked it
+    /// (OSC 133), soft-wrapped lines joined and trailing blanks dropped.
+    pub fn last_output(&self) -> Option<String> {
+        let selection = self.last_output_selection()?;
+        let text = unsafe {
+            let opts = GhosttyTerminalSelectionFormatOptions {
+                size: std::mem::size_of::<GhosttyTerminalSelectionFormatOptions>(),
+                emit: GHOSTTY_FORMATTER_FORMAT_PLAIN,
+                unwrap: true,
+                trim: true,
+                selection: &selection,
+            };
+            let mut ptr: *mut u8 = std::ptr::null_mut();
+            let mut len = 0usize;
+            if ghostty_terminal_selection_format_alloc(self.term, std::ptr::null(), opts, &mut ptr, &mut len) != GHOSTTY_SUCCESS || ptr.is_null() {
+                return None;
+            }
+            let text = String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned();
+            ghostty_free(std::ptr::null(), ptr, len);
+            text
+        };
+        let text = text.trim_end();
+        (!text.is_empty()).then(|| text.to_owned())
+    }
+
+    /// Whether `last_output` has something to copy. Reads no text.
+    pub fn has_last_output(&self) -> bool {
+        self.last_output_selection().is_some()
+    }
+
+    /// Where the last finished command's output is. A command's output sits
+    /// between the prompt it was typed at and the next prompt, so the newest
+    /// prompt (where a command may still run) ends the search. Going up, a
+    /// prompt where only Enter was pressed is skipped; the first command
+    /// found decides: its output, or `None` when it printed nothing. Also
+    /// `None` on the alternate screen, without prompt marks, and for output
+    /// with no marked prompt above it (scrolled out of the history, or
+    /// written before this view attached: the core's first paint carries no
+    /// marks), which would otherwise run to the top of the history.
+    fn last_output_selection(&self) -> Option<GhosttySelection> {
+        if self.alt_screen() {
+            return None;
+        }
+        let total = u32::try_from(self.scrollbar().total).unwrap_or(u32::MAX);
+        let prompt_above = |below: u32| (0..below).rev().find(|&y| self.row_is_prompt(y));
+        let mut end = prompt_above(total)?;
+        loop {
+            let start = prompt_above(end)?;
+            for y in (start..end).rev() {
+                let Some(mut r) = self.grid_ref(GHOSTTY_POINT_TAG_SCREEN, 0, y) else { continue };
+                for x in (0..self.cols).rev() {
+                    r.x = x;
+                    match cell_content(&r) {
+                        Some(GHOSTTY_CELL_SEMANTIC_OUTPUT) => {
+                            let mut selection = GhosttySelection { size: std::mem::size_of::<GhosttySelection>(), ..Default::default() };
+                            let found = unsafe { ghostty_terminal_select_output(self.term, r, &mut selection) } == GHOSTTY_SUCCESS;
+                            return found.then_some(selection);
+                        }
+                        Some(GHOSTTY_CELL_SEMANTIC_INPUT) => return None,
+                        _ => {}
+                    }
+                }
+            }
+            end = start;
+        }
+    }
+
+    /// Whether screen row `y` starts a prompt (OSC 133 A), not a prompt's
+    /// continuation line.
+    fn row_is_prompt(&self, y: u32) -> bool {
+        let Some(r) = self.grid_ref(GHOSTTY_POINT_TAG_SCREEN, 0, y) else { return false };
+        let mut row: GhosttyRow = Default::default();
+        let mut prompt: GhosttyRowSemanticPrompt = GHOSTTY_ROW_SEMANTIC_NONE;
+        unsafe {
+            ghostty_grid_ref_row(&r, &mut row) == GHOSTTY_SUCCESS
+                && ghostty_row_get(row, GHOSTTY_ROW_DATA_SEMANTIC_PROMPT, &mut prompt as *mut _ as *mut c_void) == GHOSTTY_SUCCESS
+                && prompt == GHOSTTY_ROW_SEMANTIC_PROMPT
         }
     }
 
@@ -1974,6 +2068,85 @@ mod tests {
         assert!(!first.search_spans.is_empty(), "selecting a history result scrolls it into view");
         assert!(first.search_spans.iter().all(|span| span.selected));
         assert_eq!(second.search_spans, second_spans, "searching one terminal doesn't draw in another");
+    }
+
+    /// What zsh with the OSC 133 hooks in defaults/AGENTS.md writes: precmd
+    /// ends the last command, the prompt is marked from its start to the
+    /// input, preexec starts output.
+    fn prompt() -> &'static str {
+        "\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07"
+    }
+
+    fn command(typed: &str, output: &str) -> String {
+        format!("{}{typed}\r\n\x1b]133;C\x07{output}", prompt())
+    }
+
+    fn last_output(cols: u16, rows: u16, bytes: &str) -> Option<String> {
+        let mut vt = Vt::new(cols, rows);
+        vt.write(bytes.as_bytes());
+        assert_eq!(vt.has_last_output(), vt.last_output().is_some(), "has_last_output disagrees for {bytes:?}");
+        vt.last_output()
+    }
+
+    #[test]
+    fn last_output_is_the_last_finished_command_between_its_prompts() {
+        let two = command("echo one", "one\r\n") + &command("printf 'a\\nb\\n'", "a\r\nb\r\n");
+        assert_eq!(last_output(40, 10, &(two.clone() + prompt())).as_deref(), Some("a\nb"));
+        // A command still running: the one before it.
+        assert_eq!(last_output(40, 10, &(two.clone() + &command("sleep 9; echo late", "partial"))).as_deref(), Some("a\nb"));
+        // Enter on an empty prompt runs nothing: the command before counts.
+        let empty = format!("{}\r\n", prompt());
+        assert_eq!(last_output(40, 10, &(two.clone() + &empty + &empty + prompt())).as_deref(), Some("a\nb"));
+        // A right prompt and a redrawn prompt are prompt, not typed input:
+        // Enter on them is still an empty prompt.
+        let right = format!("{}\x1b[30G\x1b]133;P;k=r\x07main\x1b]133;B\x07\x1b[3G\r\n", prompt());
+        assert_eq!(last_output(40, 10, &(two.clone() + &right + prompt())).as_deref(), Some("a\nb"));
+        let redrawn = format!("{}\r\x1b[K\x1b]133;A\x07$ \x1b]133;B\x07\r\n", prompt());
+        assert_eq!(last_output(40, 10, &(two.clone() + &redrawn + prompt())).as_deref(), Some("a\nb"));
+        // The last command printed nothing: nothing to copy, not an older output.
+        assert_eq!(last_output(40, 10, &(two.clone() + &command("cd /tmp", "") + prompt())), None);
+        // Blank lines it printed last are dropped, blank lines inside kept.
+        assert_eq!(last_output(40, 10, &(command("x", "1\r\n\r\n2\r\n\r\n\r\n") + prompt())).as_deref(), Some("1\n\n2"));
+        // Before any command finished.
+        assert_eq!(last_output(40, 10, prompt()), None);
+        assert_eq!(last_output(40, 10, &command("sleep 9", "partial")), None);
+    }
+
+    #[test]
+    fn last_output_reaches_into_scrollback_and_joins_wrapped_lines() {
+        let long: String = (0..60).map(|i| format!("line {i}\r\n")).collect();
+        let text = last_output(20, 5, &(command("seq", &long) + prompt())).unwrap();
+        assert_eq!(text.lines().count(), 60, "{text}");
+        assert!(text.starts_with("line 0\nline 1\n") && text.ends_with("line 59"), "{text}");
+        // A line wider than the terminal comes back as the one line it was.
+        let wide = "0123456789".repeat(3);
+        assert_eq!(last_output(12, 6, &(command("w", &format!("{wide}\r\nnext\r\n")) + prompt())).as_deref(), Some(format!("{wide}\nnext").as_str()));
+        // Wide characters wrapped at an odd width leave a spacer at the edge, not a space.
+        let cjk = "日本語のテキストと😀絵文字";
+        assert_eq!(last_output(11, 6, &(command("w", &format!("{cjk}\r\n")) + prompt())).as_deref(), Some(cjk));
+    }
+
+    #[test]
+    fn last_output_needs_marks_on_the_primary_screen() {
+        // No shell integration: a shell or an agent without marks.
+        assert_eq!(last_output(40, 10, "$ ls\r\na b\r\n$ "), None);
+        // Output whose own prompt went unmarked (written before the view
+        // attached) would run to the top of the history: not offered.
+        assert_eq!(last_output(40, 10, &format!("old\r\n$ ls\r\n\x1b]133;C\x07a b\r\n{}", prompt())), None);
+        // A prompt redrawn without its marks (oh-my-posh's transient prompt
+        // unless its PS1 is wrapped too) is tagged as typed input: Enter on it
+        // reads as a command that printed nothing. The screen can't tell it
+        // from `cd` typed at that prompt, so the fix is the shell's marks.
+        let shell = command("ls", "a b\r\n");
+        let unmarked = format!("{}\r\x1b[K 15:04 > \r\n", prompt());
+        assert_eq!(last_output(40, 10, &(shell.clone() + &unmarked + prompt())), None);
+        let marked = format!("{}\r\x1b[K\x1b]133;A\x07 15:04 > \x1b]133;B\x07\r\n", prompt());
+        assert_eq!(last_output(40, 10, &(shell + &marked + prompt())).as_deref(), Some("a b"));
+        // A full-screen program over a marked shell.
+        let shell = command("ls", "a b\r\n") + prompt();
+        assert_eq!(last_output(40, 10, &shell).as_deref(), Some("a b"));
+        assert_eq!(last_output(40, 10, &(shell.clone() + "vim\r\n\x1b]133;C\x07\x1b[?1049hediting")), None);
+        assert_eq!(last_output(40, 10, &(shell + "vim\r\n\x1b]133;C\x07\x1b[?1049hediting\x1b[?1049l")).as_deref(), Some("a b"), "back on the primary screen");
     }
 
     #[test]

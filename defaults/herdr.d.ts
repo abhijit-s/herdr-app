@@ -255,7 +255,7 @@ export interface PaneInfo {
   /** What to draw for it in place of the program's icon, or null: draw `program`'s
    *  icon. Set for an icon chosen with pane.set_icon (any `space_avatar`), and with
    *  `space_avatar` glyph, emoji or repo (glyph) for a bare shell showing its `auto_name`:
-   *  an icon matching one of its words (meadow: wheat), else one from the pane id's hash. */
+   *  its noun's icon (meadow: wheat). */
   icon: Icon | null;
   /** The icon chosen for it with pane.set_icon, or null. */
   own_icon: IconChoice | null;
@@ -469,8 +469,8 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  else `{ frames: string[], interval_ms: number }` for `.frames(frames, interval_ms)`, the
  *  frames padded to one length (see `working_spinner` in AGENTS.md). `working_spinner_presets`
  *  lists `{ name, frames, interval_ms }` for each preset besides the ring. `space_avatar` is
- *  how to draw space avatars: `"letter" | "glyph" | "emoji" | "repo"`, or `null` (unset or
- *  unknown: draw letters). `pane_header_info` is the agent pane header's template, or `null`
+ *  how to draw space avatars: `"letter" | "glyph" | "emoji" | "repo"`, `"glyph"` when unset or
+ *  unknown (null only from builds before that default: draw letters). `pane_header_info` is the agent pane header's template, or `null`
  *  (unset or blank); panes carry it resolved as `header_info`. */
 export function settings(): Record<string, unknown>;
 

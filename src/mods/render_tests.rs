@@ -1246,8 +1246,9 @@ fn mods_name_panes_by_their_label(cx: &mut TestAppContext) {
     assert_eq!(editor(nvim, cx), "\"Neovim\"");
 }
 
-/// The pane menu's copy group: Copy only over a selection, Copy path only
-/// with a known folder, Copy all and Paste always, all above Split.
+/// The pane menu's copy group: Copy only over a selection, Copy last output
+/// only with a finished command's marked output, Copy path only with a known
+/// folder, Copy all and Paste always, all above Split.
 #[gpui::test]
 fn pane_menu_copy_items(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
@@ -1260,10 +1261,15 @@ fn pane_menu_copy_items(cx: &mut TestAppContext) {
     };
     let all = labels(json!({"pane":"p1","terminal":"t1","selected":true,"cwd":"/fixture/project"}), cx);
     assert_eq!(all[..6], ["\"Copy\"", "\"Copy all\"", "\"Paste\"", "\"Copy path\"", "\"Rename\"", "\"Split right\""], "{all:?}");
-    let bare = labels(json!({"pane":"p1","terminal":"t1","selected":false,"cwd":null}), cx);
+    let bare = labels(json!({"pane":"p1","terminal":"t1","selected":false,"cwd":null,"last_output":false}), cx);
     assert_eq!(bare[..4], ["\"Copy all\"", "\"Paste\"", "\"Rename\"", "\"Split right\""], "{bare:?}");
+    // A finished command's output the shell marked (OSC 133): next to Copy.
+    let output = labels(json!({"pane":"p1","terminal":"t1","selected":true,"cwd":"/fixture/project","last_output":true}), cx);
+    assert_eq!(output[..6], ["\"Copy\"", "\"Copy last output\"", "\"Copy all\"", "\"Paste\"", "\"Copy path\"", "\"Rename\""], "{output:?}");
+    let alone = labels(json!({"pane":"p1","terminal":"t1","selected":false,"cwd":null,"last_output":true}), cx);
+    assert_eq!(alone[..3], ["\"Copy last output\"", "\"Copy all\"", "\"Paste\""], "{alone:?}");
     // No such terminal: nothing to copy from.
-    let gone = labels(json!({"pane":"p1","terminal":"t9","selected":true,"cwd":"/x"}), cx);
+    let gone = labels(json!({"pane":"p1","terminal":"t9","selected":true,"cwd":"/x","last_output":true}), cx);
     assert!(!gone.iter().any(|t| t.contains("Copy") || t.contains("Paste")), "{gone:?}");
 }
 

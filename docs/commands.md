@@ -428,6 +428,14 @@ Copy the folder a terminal is in (default: the focused terminal).
 |---|---|
 | `terminal` | no |
 
+## `terminal.copy_last_output`
+
+Copy the output of the last command that finished in a terminal (default: the focused terminal), wrapped lines joined, without trailing blank lines. Needs a shell that marks its prompts (OSC 133); fails without marks, on a full-screen program, or when that command printed nothing.
+
+| Argument | Required |
+|---|---|
+| `terminal` | no |
+
 ## `terminal.scroll`
 
 Scroll a terminal's view of its history (default: the focused one). Give exactly one of: lines (a whole number; negative goes up, toward history), pages (a number, fractions allowed; one page is the terminal's rows), to: "top" (oldest history) or "bottom" (the live screen). This scrolls Herdr's view, not the program.
