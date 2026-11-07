@@ -357,11 +357,14 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 - **Level stripe and dot:** at least 3:1 on the surface (`TOAST_MARK`), from `accent`, `done`, `working` and `blocked`.
 - **Shadow:** two layers, deeper on dark themes.
 - **Overrides:** a theme's or settings.json's own `toast*` colors win, and the rest are held to the `toast` actually drawn. A theme that paints its own panels (Win98) keeps its `popover` and `border` where they hold the floors.
+- **Translucent values:** a `#rrggbbaa` value counts as drawn, composited over the background (the toast) or over the toast (everything else), in `toast_colors` and in the `toast_problems` check (`drawn_over`).
 - **Results:** ayu-mirage goes to 1.32:1 (surface) and 1.75:1 (border); ayu-light to 1.05:1 and 1.74:1. Every preset, shipped file, public extreme and installed Rex theme holds every floor.
 
 `toast_position` in settings.json (`bottom-right` default, `bottom-left`, `bottom-center`, `top-right`, `top-left`, `top-center`) places the stack, and the core-update notice follows it.
 
 - **Stacking:** bottom stacks grow up with the oldest nearest the edge, as before. Top stacks grow down with the newest nearest the edge.
+- **Top chrome:** a top stack starts 16 px below the window's top chrome: the system title strip (where the layout's root starts) plus the lowest `window_drag` bar along the top, as painted. The bounds canvases every layout node already has record it (`top_chrome`, `AppWindow::top_chrome`), so no tree walk runs per render. While a top toast shows, an O(1) probe redraws once if this frame painted a different chrome (zoom, a bar shown or hidden).
+- **Offset range:** each of `toast_offset`'s values is kept within -16..400 px (`TOAST_OFFSET`), and a value outside is reported as a settings problem.
 - **Offset:** `toast_offset {x, y}` moves the stack in from the side and from its edge. The whole stack moves together (`toast_start` clamps once, at the edge), and never under the update pill. The pill is reserved for right and centre stacks only.
 - **Settings window:** "Notification position" (Rex's label) on Appearance > Window, a small window of six places in its top row and bottom row, the chosen one the tonal pill.
 
@@ -369,7 +372,7 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
   - `settings::derivation_tests::toasts_stand_off_every_theme` checks every floor over the presets, shipped files and 7 public extremes, under tinted, shaded and classic panels, plus own-toast and Win98 cases. `theme_file_problems` includes `toast_problems`, so `rex_themes::tests::the_installed_rex_themes_all_load` holds Rex's themes to them.
   - `settings::tests::toast_position_and_offset_parse`.
   - `window::tests::toast_sizes`, extended: every position, with and without an offset, its edge, side and stacking direction.
-  - `window::tests::{toasts_stack_away_from_their_edge, a_toast_offset_moves_the_stack_and_keeps_clear_of_the_pill}`.
+  - `window::tests::{toasts_stack_away_from_their_edge, a_toast_offset_moves_the_stack_and_keeps_clear_of_the_pill, the_top_chrome_is_the_lowest_bar_along_the_top, top_toasts_sit_below_the_title_and_tab_bars}` (the last: below a 40 px drag bar and the system strip, at zoom 1 and 1.25).
   - `scripts/settings.test.ts` covers the picker.
 - Files: `src/settings.rs` (`toast_colors`, `step_until`, `toast_problems`, `ToastPosition`, `ToastSide`, `ToastOffset`), `src/window.rs` (`toast_frame`, `toast_start`, `toast_stack`, `at_toast_spot`, `render_overlays`), `defaults/mods/toast/main.js`, `defaults/frame/settings/main.js`, `scripts/settings.test.ts`, `defaults/AGENTS.md`, `defaults/herdr.d.ts`
 - Upstream: none yet
