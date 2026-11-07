@@ -122,9 +122,11 @@ const ZOOM_STEPS = [
   ["tenth", "10%"],
   ["point", "Whole points"],
 ];
-// app_icon: the built-in icons, previewed from frame/settings/app-icons (scripts/app-icons.py).
+// app_icon: the built-in icons, previewed from frame/settings/app-icons (scripts/app-icons.py; theme's,
+// in Graphite, from src/app_icon.rs's tests).
 const APP_ICONS = [
   ["classic", "Classic"],
+  ["theme", "Theme"],
   ["midnight", "Midnight"],
   ["mirage", "Mirage"],
   ["glass", "Glass"],

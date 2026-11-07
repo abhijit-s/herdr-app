@@ -6,6 +6,11 @@ artwork (assets/icons/herdr-ui-icon-clean.svg, whose attribution they keep).
   python3 scripts/app-icons.py --check  fails if the checked-in SVGs differ
                                         from what this script draws
 
+"theme" is drawn by Herdr itself, from assets/icons/variants/theme.svg and
+theme-small.svg: templates whose {tile_top}-style fields Herdr fills with
+colours from the active theme (src/app_icon.rs), on the same grid. Its
+Settings preview is written by Herdr's tests (src/app_icon.rs).
+
 Writing needs rsvg-convert (librsvg) and macOS's iconutil and sips; checking
 needs none of them. "classic" is assets/icons/Herdr.icns itself. Sizes up to
 32 px are drawn without the artwork's glows, shadows, sheens and scan lines,
@@ -126,6 +131,22 @@ def variants(src, small=False):
     }
 
 
+THEME_FIELDS = ("tile_top", "tile_bottom", "edge", "edge_opacity", "glyph_from", "glyph_to")
+
+
+def theme_template(src, small=False):
+    """The "theme" icon with its colours left as {field}s (THEME_FIELDS): the
+    tile a vertical gradient, an inset edge, and the artwork a diagonal
+    gradient lifted by a soft shadow, which `small` leaves out."""
+    soft = "" if small else '<filter id="lift" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="14"/></filter>'
+    lift = "" if small else use("#000", 'fill-opacity=".28" filter="url(#lift)"').replace(f'transform="{RAM_T}"', f'transform="translate(0 12) {RAM_T}"')
+    return svg(src, "Theme",
+        '<linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{tile_top}"/><stop offset="1" stop-color="{tile_bottom}"/></linearGradient>'
+        '<linearGradient id="r" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="{glyph_from}"/><stop offset="1" stop-color="{glyph_to}"/></linearGradient>' + soft,
+        "url(#g)", inset("{edge}", "{edge_opacity}", 3),
+        lift + use("url(#r)"))
+
+
 def render(svg_path, px, out):
     subprocess.run(["rsvg-convert", "-w", str(px), "-h", str(px), str(svg_path), "-o", str(out)], check=True)
 
@@ -145,8 +166,9 @@ def icns(full_svg, small_svg, out):
 def main():
     src = SOURCE.read_text()
     full, small = variants(src), variants(src, small=True)
+    templates = {"theme": theme_template(src), "theme-small": theme_template(src, small=True)}
     if sys.argv[1:] == ["--check"]:
-        stale = [n for n, text in full.items() if (VARIANTS / f"{n}.svg").read_text() != text]
+        stale = [n for n, text in (full | templates).items() if (VARIANTS / f"{n}.svg").read_text() != text]
         if stale:
             sys.exit(f"stale: {', '.join(stale)}; run python3 scripts/app-icons.py")
         return
@@ -155,6 +177,8 @@ def main():
             sys.exit(f"{tool} is needed to write the icons")
     VARIANTS.mkdir(parents=True, exist_ok=True)
     PREVIEWS.mkdir(parents=True, exist_ok=True)
+    for name, text in templates.items():
+        (VARIANTS / f"{name}.svg").write_text(text)
     # Classic's preview is its .icns, which is on the grid, rather than its SVG.
     subprocess.run(["sips", "-s", "format", "png", "-z", str(PREVIEW_PX), str(PREVIEW_PX), str(CLASSIC), "--out", str(PREVIEWS / "classic.png")], check=True, stdout=subprocess.DEVNULL)
     with tempfile.TemporaryDirectory() as tmp:

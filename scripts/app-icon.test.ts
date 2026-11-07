@@ -31,10 +31,11 @@ test("macOS: the chosen built-in lands in the bundle", () => {
   }
 });
 
-test("macOS: classic, no setting, a broken settings.json and no settings.json all install Herdr.icns", () => {
-  for (const settings of [{ app_icon: "classic" }, {}, "{ not json", null]) {
+test("macOS: classic, theme, no setting, a broken settings.json and no settings.json all install Herdr.icns", () => {
+  for (const settings of [{ app_icon: "classic" }, { app_icon: "theme" }, {}, "{ not json", null]) {
     const r = install("macos", settings);
     expect(r.code).toBe(0);
+    expect(r.err).toBe("");
     expect(bundleIcon(r.dest).equals(read("assets/icons/Herdr.icns"))).toBe(true);
   }
 });

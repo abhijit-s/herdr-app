@@ -565,13 +565,13 @@ fn app_icon_picker_outlines_the_pick(cx: &mut TestAppContext) {
     let staged = Staged::new();
     let mut p = props();
     p["section"] = json!("look");
-    for (person, picked) in [("{}", Some("classic")), (r#"{ app_icon: "mirage" }"#, Some("mirage")), (r#"{ app_icon: "~/mine.icns" }"#, None)] {
+    for (person, picked) in [("{}", Some("classic")), (r#"{ app_icon: "mirage" }"#, Some("mirage")), (r#"{ app_icon: "theme" }"#, Some("theme")), (r#"{ app_icon: "~/mine.icns" }"#, None)] {
         let values = fixture(true, p.clone(), updates("current", "current"));
         let tree = describe_with_values(cx, &staged, "frame/settings", values, Some(&format!("this.load = async () => {{}}; this.person = {person};"))).unwrap();
         assert!(tree.contains("App icon"), "{tree}");
         let tiles: Vec<_> = tree.lines().filter(|l| l.contains("st-icon-") && !l.contains("st-icon-file")).collect();
-        assert_eq!(tiles.len(), 6, "{tiles:?}");
-        for name in ["classic", "midnight", "mirage", "glass", "phosphor", "graphite"] {
+        assert_eq!(tiles.len(), 7, "{tiles:?}");
+        for name in ["classic", "theme", "midnight", "mirage", "glass", "phosphor", "graphite"] {
             assert!(tree.contains(&format!("frame/settings/app-icons/{name}.png")), "{name} preview");
         }
         let outlined: Vec<_> = tiles.iter().filter(|l| !l.contains("#00000000")).collect();

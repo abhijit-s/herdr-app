@@ -26,6 +26,8 @@ async-channel = "2"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "tiff", "bmp"] }
 png = "0.17"
+# Already in the tree through gpui; draws the "theme" app icon.
+resvg = { version = "0.46", default-features = false }
 ttf-parser = "0.25"
 smallvec = "1"
 serde = { version = "1", features = ["derive"] }
@@ -87,6 +89,7 @@ gpui_macos = { package = "gpui-pre-macos", version = "=0.3.8", features = ["rend
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSImage", "NSResponder"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData"] }
+dispatch2 = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

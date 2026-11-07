@@ -304,7 +304,7 @@ fn hex(c: u32) -> String {
 }
 
 /// `a` moved toward `b` by `t`; a negative `t` moves away, clamped per channel.
-fn mix(a: u32, b: u32, t: f32) -> u32 {
+pub(crate) fn mix(a: u32, b: u32, t: f32) -> u32 {
     [16, 8, 0].iter().fold(0, |acc, s| {
         let (x, y) = (((a >> s) & 255) as f32, ((b >> s) & 255) as f32);
         acc | ((x * (1.0 - t) + y * t).round().clamp(0.0, 255.0) as u32) << s
@@ -345,7 +345,7 @@ const DARK_STEPS: Steps =
 const LIGHT_STEPS: Steps =
     Steps { canvas: 0.015, chrome: 0.068, chrome_active: 0.068, popover: 0.0, raised: 0.035, border: 0.096, input: 0.214, hover: 0.048, selected: 0.09, muted: 0.752, dim: 0.598 };
 
-fn contrast(a: u32, b: u32) -> f32 {
+pub(crate) fn contrast(a: u32, b: u32) -> f32 {
     let rgb = |c: u32| Rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
     crate::vt::contrast(rgb(a), rgb(b))
 }
@@ -1978,7 +1978,6 @@ pub fn reshade() -> bool {
 
 /// Installs new settings; returns whether anything changed.
 pub fn set(s: Settings) -> bool {
-    crate::app_icon::follow(&s.app_icon);
     #[cfg(target_os = "macos")]
     gpui_macos::set_option_as_alt(match s.option_as_alt {
         OptionAsAlt::Auto => None,
@@ -1992,6 +1991,7 @@ pub fn set(s: Settings) -> bool {
         // have new colors under the same name.
         let (p, own) = palette(&s.theme).unwrap_or_else(|_| (GRAPHITE.clone(), BTreeMap::new()));
         let theme = resolve_for(&s, &p, &own);
+        crate::app_icon::follow(&s.app_icon, &theme);
         FOLLOWS_FOCUS.set(shade_follows_focus(&s, &p, &own));
         PALETTE.set((p, own));
         FOR_MODS.set(std::sync::Arc::new(s.for_mods()));
