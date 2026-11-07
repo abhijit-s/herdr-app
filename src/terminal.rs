@@ -794,6 +794,15 @@ impl TerminalView {
         self.grid.borrow().vt.selection_text().is_some_and(|text| !text.is_empty())
     }
 
+    /// The last finished command's output, when the shell marks its prompts (OSC 133).
+    pub fn last_output(&self) -> Option<String> {
+        self.grid.borrow().vt.last_output()
+    }
+
+    pub fn has_last_output(&self) -> bool {
+        self.grid.borrow().vt.has_last_output()
+    }
+
     pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
         self.grid.borrow_mut().vt.clear_selection();
         cx.notify();

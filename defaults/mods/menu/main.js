@@ -21,7 +21,7 @@ async function checkout(folder, on) {
   return common.stdout.trim() === `${top.stdout.trim()}/.git` ? "main" : "linked";
 }
 
-// Copy, copy all, paste, copy path: a group of their own at the top of the pane menu.
+// Copy, copy last output, copy all, paste, copy path: a group of their own at the top of the pane menu.
 const clip = (command) => command.startsWith("terminal.copy") || command === "terminal.paste";
 
 function items(p, git) {
@@ -45,6 +45,8 @@ function items(p, git) {
         ...(term
           ? [
               ...(tg.selected ? [["Copy", "terminal.copy", on]] : []),
+              // The window says whether the shell marked a finished command's output (OSC 133).
+              ...(tg.last_output ? [["Copy last output", "terminal.copy_last_output", on]] : []),
               ["Copy all", "terminal.copy_all", on],
               ["Paste", "terminal.paste", on],
               ...(tg.cwd ? [["Copy path", "terminal.copy_path", on]] : []),
@@ -106,7 +108,7 @@ function items(p, git) {
 function menuIcon(command) {
   if (command === "icon") return "mods/icon-picker/smile.svg";
   if (command.endsWith(".set_icon")) return "mods/workspace-chrome/x.svg";
-  const name = command === "terminal.copy" ? "copy" : command === "terminal.copy_all" ? "files" : command === "terminal.copy_path" ? "folder" : command === "terminal.paste" ? "clipboard" : command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : command === "tab.move_left" ? "chevron-left" : command === "tab.move_right" ? "chevron-right" : "terminal";
+  const name = command === "terminal.copy" ? "copy" : command === "terminal.copy_all" ? "files" : command === "terminal.copy_last_output" ? "file-text" : command === "terminal.copy_path" ? "folder" : command === "terminal.paste" ? "clipboard" : command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : command === "tab.move_left" ? "chevron-left" : command === "tab.move_right" ? "chevron-right" : "terminal";
   return `mods/workspace-chrome/${name}.svg`;
 }
 
