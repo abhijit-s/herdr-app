@@ -214,7 +214,12 @@ fn convert(t: &RexTheme) -> Result<String, String> {
     if ansi.len() != 16 {
         return Err(format!("{} ANSI colors, not 16", ansi.len()));
     }
-    let background = hex("background", &s.background)?;
+    // Rex draws terminals on the pane color, a step off the window (`--super-bg`, Herdr's `canvas`),
+    // so panes read as cards; the palette's background is the window's.
+    let background = match t.css.get("--super-term-bg").and_then(|v| css(v)).filter(|c| c.len() == 7) {
+        Some(term) => term,
+        None => hex("background", &s.background)?,
+    };
     let bg = rgb(&background);
     let light = match t.appearance.as_str() {
         "light" => true,
@@ -286,12 +291,14 @@ mod tests {
     fn rex(id: &str, appearance: &str, bg: &str, fg: &str, accent: &str) -> serde_json::Value {
         let ansi: Vec<String> = (0..16).map(|i| format!("#{:02x}{:02x}{:02x}", 16 * i, 255 - 16 * i, 128)).collect();
         let channels = |h: &str| { let c = rgb(h); format!("{} {} {}", c >> 16, (c >> 8) & 255, c & 255) };
+        // Rex's terminals sit on the pane color, a step from the window toward mid grey.
+        let pane = |h: &str| { let c = rgb(h); let step = |v: u32| if v < 128 { v + 2 } else { v - 2 }; format!("{} {} {}", step(c >> 16), step((c >> 8) & 255), step(c & 255)) };
         json!({
             "id": id, "name": format!("Theme {id}"), "appearance": appearance,
             "source": { "background": bg, "foreground": fg, "cursor": "#FF00AA", "cursorText": bg, "selectionBackground": "#334455", "selectionForeground": fg, "ansi": ansi, "displayP3": {} },
             "palette": [], "semantic": {},
             "cssVariables": {
-                "--super-bg": channels(bg), "--super-sidebar": "11 12 13", "--super-pane": "12 13 14", "--super-raised": "20 21 22",
+                "--super-bg": channels(bg), "--super-term-bg": pane(bg), "--super-sidebar": "11 12 13", "--super-pane": "12 13 14", "--super-raised": "20 21 22",
                 "--super-control-on-overlay": "25 26 27", "--super-border": "30 31 32", "--super-border-strong": "40 41 42",
                 "--super-hover": format!("rgb({} / 0.05)", channels(fg)), "--super-selected": format!("rgb({} / 0.1)", channels(fg)),
                 "--super-text": channels(fg), "--super-text-secondary": "150 150 150", "--super-text-tertiary": "110 110 110",
@@ -346,7 +353,7 @@ mod tests {
         import(&dirs.rex(&[dark()]), &dirs.themes(), false).unwrap();
         let text = std::fs::read_to_string(dirs.themes().join("rex-night-sea.json")).unwrap();
         let file: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!((&file["background"], &file["foreground"], &file["selection"], &file["cursor"]), (&json!("#0a0b0c"), &json!("#d0d0d0"), &json!("#334455"), &json!("#ff00aa")));
+        assert_eq!((&file["background"], &file["foreground"], &file["selection"], &file["cursor"]), (&json!("#0c0d0e"), &json!("#d0d0d0"), &json!("#334455"), &json!("#ff00aa")));
         assert_eq!(file["ansi"], dark()["source"]["ansi"]);
         assert_eq!(file["colors"], json!({
             "canvas": "#0a0b0c", "chrome": "#0b0c0d", "surface": "#0c0d0e", "popover": "#141516", "border": "#1e1f20", "input": "#28292a",
@@ -357,6 +364,23 @@ mod tests {
     }
 
     #[test]
+    fn terminals_sit_on_the_pane_shade_and_fall_back_to_the_palette_background() {
+        let dirs = Dirs::new("term-bg");
+        let mut bare = dark();
+        bare["id"] = json!("bare");
+        bare["cssVariables"].as_object_mut().unwrap().remove("--super-term-bg");
+        let mut translucent = dark();
+        translucent["id"] = json!("glass");
+        translucent["cssVariables"]["--super-term-bg"] = json!("rgb(12 13 14 / 0.5)");
+        import(&dirs.rex(&[dark(), bare, translucent]), &dirs.themes(), false).unwrap();
+        let file = |name: &str| serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(dirs.themes().join(format!("rex-{name}.json"))).unwrap()).unwrap();
+        let sea = file("night-sea");
+        assert_eq!((&sea["background"], &sea["colors"]["canvas"]), (&json!("#0c0d0e"), &json!("#0a0b0c")), "the terminal a step off the window");
+        assert_eq!(file("bare")["background"], json!("#0a0b0c"), "no terminal color: the palette's background");
+        assert_eq!(file("glass")["background"], json!("#0a0b0c"), "a translucent terminal color: the palette's background");
+    }
+
+    #[test]
     fn light_themes_load_as_light_and_a_mismatch_is_skipped() {
         let dirs = Dirs::new("light");
         let mut wrong = dark();
@@ -364,7 +388,7 @@ mod tests {
         wrong["appearance"] = json!("light");
         let imported = import(&dirs.rex(&[light(), dark(), wrong]), &dirs.themes(), false).unwrap();
         assert_eq!(imported.iter().map(|i| (i.file.as_str(), i.light)).collect::<Vec<_>>(), [("rex-paper-day", true), ("rex-night-sea", false), ("rex-dusk", true)]);
-        assert!(matches!(&imported[2].outcome, Outcome::Skipped(why) if why.contains("background #0a0b0c reads dark")), "{:?}", imported[2].outcome);
+        assert!(matches!(&imported[2].outcome, Outcome::Skipped(why) if why.contains("background #0c0d0e reads dark")), "{:?}", imported[2].outcome);
         assert!(!dirs.themes().join("rex-dusk.json").exists());
         let text = std::fs::read_to_string(dirs.themes().join("rex-paper-day.json")).unwrap();
         assert!(crate::settings::is_light(rgb(&serde_json::from_str::<serde_json::Value>(&text).unwrap()["background"].as_str().unwrap().to_owned())));
@@ -408,6 +432,7 @@ mod tests {
         let mut short = dark();
         short["id"] = json!("short");
         short["source"]["background"] = json!("#0a0b0");
+        short["cssVariables"].as_object_mut().unwrap().remove("--super-term-bg");
         let mut over = dark();
         over["id"] = json!("over");
         over["cssVariables"]["--super-border"] = json!("300 0 0");
