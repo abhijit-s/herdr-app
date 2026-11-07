@@ -6,7 +6,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 struct Staged(PathBuf);
@@ -164,6 +164,10 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
             let first = a.get(0).map(from_host).unwrap_or(Value::Null);
             let reply = match name {
                 "readTextFile" if first == "/fixture/app/settings.json" || first == "/fixture/.ssh/config" => Some(Value::Null),
+                "readTextFile" if first.as_str().is_some_and(|p| p.starts_with("/fixture/app/mods/")) => {
+                    let rel = first.as_str().unwrap().strip_prefix("/fixture/app/mods/").unwrap();
+                    DEFAULT_MODS.iter().find(|(p, _)| *p == rel).map(|(_, bytes)| json!(std::str::from_utf8(bytes).unwrap()))
+                }
                 "readTextFile" => first
                     .as_str()
                     .and_then(|p| p.strip_prefix("/fixture/app/layouts/"))
@@ -1332,8 +1336,8 @@ fn pane_and_tab_menus_offer_change_and_clear_icon(cx: &mut TestAppContext) {
     assert!(!space.iter().any(|t| t.contains("icon")), "spaces have their own: {space:?}");
 }
 
-/// The picker: the space avatar sets as tiles, the chosen one ringed, Clear
-/// icon only while one is chosen; a pane's or a tab's.
+/// The picker: Suggested first, its tiles a virtual grid's rows; the chosen
+/// one shown and Clear icon only while one is chosen; a pane's or a tab's.
 #[gpui::test]
 fn icon_picker_shows_the_sets_and_the_choice(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
@@ -1347,24 +1351,115 @@ fn icon_picker_shows_the_sets_and_the_choice(cx: &mut TestAppContext) {
     let rocket = json!({"kind":"glyph","value":"\u{f135}"});
     let tree = picker(json!({"pane":"p1","overlay":"o1"}), Value::Null, cx);
     assert!(tree.contains("\"Icon for Build\"") && tree.contains("\"Automatic\"") && !tree.contains("Clear icon"), "{tree}");
-    assert_eq!(tree.matches(":id[Str(\"icon-glyph-").count(), 60, "the glyphs tab first: {tree}");
+    assert!(tree.contains("v_virtual_list \"icon-grid\" ×14"), "Suggested first: 60 glyphs and 60 emoji in rows of ten, two headings: {tree}");
+    assert!(!tree.contains("icon-glyph-") && !tree.contains("icon-emoji-"), "the page built a tile: {tree}");
     assert!(tree.contains("\"its program's\""), "{tree}");
     let tree = picker(json!({"pane":"p1","overlay":"o1"}), rocket.clone(), cx);
     assert!(tree.contains("\"Chosen\"") && tree.contains("\"Clear icon\""), "{tree}");
-    let ringed: Vec<&str> = tree.lines().filter(|l| l.contains(":id[Str(\"icon-glyph-") && l.contains(".border[Number(2.0)]")).collect();
-    assert_eq!(ringed.len(), 1, "the chosen one ringed: {ringed:?}");
-    assert!(ringed[0].contains("icon-glyph-0"), "the rocket is the first: {ringed:?}");
     let emoji = json!({"kind":"emoji","value":"🐙"});
     let tree = picker(json!({"tab_id":"tab1","overlay":"o1"}), emoji, cx);
-    assert!(tree.contains("\"Icon for Build\"") && tree.contains("icon-emoji-0") && !tree.contains("icon-glyph-0"), "a tab, on its emoji tab: {tree}");
+    assert!(tree.contains("\"Icon for Build\"") && tree.contains("v_virtual_list \"icon-grid\" ×14"), "a tab, on Suggested too: {tree}");
     // A tab's letter is the one Herdr works out (its focused pane's label when unnamed).
     let mut values = fixture(true, json!({"tab_id":"tab1","overlay":"o1"}), updates("current", "current"));
     let letter = json!({"kind":"letter"});
     with_icons(&mut values, (Value::Null, Value::Null), (json!({"kind":"letter","text":"Z"}), letter));
     values.get_mut("spaces").unwrap()[0]["tabs"][0]["letter"] = json!("Z");
     let tree = describe_with_values(cx, &staged, "mods/icon-picker", values, None).unwrap();
-    let tile = tree.lines().skip_while(|l| !l.contains("icon-letter")).nth(2).unwrap_or_default();
+    let tile = tree.lines().skip_while(|l| !l.contains("\"icon-letter\"")).nth(2).unwrap_or_default();
     assert_eq!(tile.trim(), "text \"Z\"", "{tree}");
     let tree = picker(json!({"tab_id":"gone","overlay":"o1"}), Value::Null, cx);
     assert!(tree.contains("That pane or tab is gone."), "{tree}");
+}
+
+/// Describes a shipped mod, lets its async work (reading files) finish, and
+/// describes it again: the first description and its time, the time to settle,
+/// and the settled description and its time.
+fn describe_settled(cx: &mut TestAppContext, staged: &Staged, entry: &str, values: BTreeMap<String, Value>, setup: Option<&str>) -> (String, Duration, Duration, String, Duration) {
+    let calls = Rc::new(RefCell::new(Calls::default()));
+    let policy = Policy::new()
+        .with_storage_path(staged.0.join("store-settled.json"))
+        .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
+        .with_host_module(module(values, calls.clone()))
+        .unwrap();
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let root = setup.map(|s| staged.wrapper(entry, s)).unwrap_or_else(|| staged.0.join(entry));
+    let window = cx.add_window(|_, _| Empty);
+    let start = Instant::now();
+    let (mut session, first) = window.update(cx, |_, window, cx| {
+        let mut session = DescriptionSession::load(runtime, root, policy, window, cx).unwrap();
+        let first = session.describe(window, cx).unwrap();
+        (session, first)
+    }).unwrap();
+    let open = start.elapsed();
+    let start = Instant::now();
+    cx.run_until_parked();
+    let settle = start.elapsed();
+    let start = Instant::now();
+    let settled = window.update(cx, |_, window, cx| session.describe(window, cx).unwrap()).unwrap();
+    let redraw = start.elapsed();
+    window.update(cx, |_, window, _| window.remove_window()).unwrap();
+    cx.run_until_parked();
+    assert!(calls.borrow().unexpected.is_empty(), "{entry}: {:?}", calls.borrow().unexpected);
+    (first, open, settle, settled, redraw)
+}
+
+/// The names are read when the picker opens and every glyph and emoji is a
+/// virtual grid's row: the page builds none of them. Opening and a keystroke's
+/// search stay inside a frame or so, timed as the Settings themes are.
+#[gpui::test]
+fn icon_picker_reads_every_name_and_searches_them_quickly(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let values = || fixture(true, json!({"pane":"p1","overlay":"o1"}), updates("current", "current"));
+    // Before the names are read: Suggested, with nothing else waiting on them.
+    let (first, open, settle, glyphs, _) = describe_settled(cx, &staged, "mods/icon-picker", values(), Some("this.tab = 'glyph';"));
+    assert!(first.contains("\"Reading names…\""), "{first}");
+    let count = glyphs.lines().find_map(|l| l.trim().strip_prefix("v_virtual_list \"icon-grid\" ×")).and_then(|n| n.split_whitespace().next()?.parse::<usize>().ok()).unwrap_or_else(|| panic!("{glyphs}"));
+    assert!(count > 1000, "every glyph, in rows of ten with a heading per set: {count}");
+    assert!(!glyphs.contains("icon-glyph-"), "the page built a tile");
+    assert!(glyphs.contains("\"Font Awesome\"") && glyphs.contains("\"Powerline\""), "a chip per set: {glyphs}");
+    let mut keystrokes = Vec::new();
+    for query in ["r", "ro", "roc", "rock", "rocket", "arrow", "partly cloudy", "zzzz"] {
+        let (_, _, _, found, redraw) = describe_settled(cx, &staged, "mods/icon-picker", values(), Some(&format!("this.query = {query:?};")));
+        keystrokes.push(redraw);
+        if query == "rocket" {
+            assert!(found.contains("v_virtual_list \"icon-grid\" ×"), "{found}");
+            assert!(found.contains("\"fa-rocket\"") || found.contains("\"md-rocket\"") || found.contains("\"rocket\""), "the best match is selected and named: {found}");
+        }
+        if query == "zzzz" {
+            assert!(found.contains("\"Nothing by that name.\""), "{found}");
+        }
+    }
+    let worst = keystrokes.iter().max().unwrap();
+    eprintln!("icon picker: open {open:?}, names read and parsed {settle:?}, search + describe per keystroke worst {worst:?} (all {keystrokes:?})");
+    assert!(open < Duration::from_millis(500), "open {open:?}");
+    assert!(*worst < Duration::from_millis(250), "a keystroke {worst:?}");
+}
+
+/// The picker's name files are the bundled font's: every glyph is in its cmap,
+/// and every glyph and emoji is a value pane.set_icon and tab.set_icon take.
+#[test]
+fn icon_picker_names_match_the_font_and_the_commands() {
+    let file = |name: &str| -> Value {
+        let bytes = DEFAULT_MODS.iter().find(|(p, _)| *p == format!("icon-picker/names/{name}")).unwrap().1;
+        serde_json::from_slice(bytes).unwrap()
+    };
+    let face = ttf_parser::Face::parse(crate::settings::SYMBOLS_FONT_FILE, 0).unwrap();
+    let glyphs = file("glyphs.json");
+    let rows = glyphs["glyphs"].as_array().unwrap();
+    assert!(rows.len() > 10_000, "{}", rows.len());
+    let mut seen = BTreeSet::new();
+    for row in rows {
+        let code = u32::from_str_radix(row[1].as_str().unwrap(), 16).unwrap();
+        let ch = char::from_u32(code).unwrap();
+        assert!(face.glyph_index(ch).is_some(), "{row}: U+{code:X} isn't in the Symbols Nerd Font");
+        assert!(seen.insert(code), "{row}: one row per code point");
+        let choice = json!({"kind": "glyph", "value": ch.to_string()});
+        assert!(crate::pane_icons::Choice::parse(&choice).is_ok(), "{row}");
+    }
+    let emoji = file("emoji.json");
+    for row in emoji["emoji"].as_array().unwrap() {
+        let choice = json!({"kind": "emoji", "value": row[0]});
+        assert!(crate::pane_icons::Choice::parse(&choice).is_ok(), "{row}");
+    }
 }
