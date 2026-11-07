@@ -1,6 +1,7 @@
 #!/bin/bash
 # Installs the app icon settings.json's `app_icon` asks for: a built-in variant
 # (classic, midnight, mirage, glass, phosphor, graphite) or an image file.
+# "theme" changes with the theme while Herdr runs, so bundles get classic.
 #   scripts/app-icon macos <Herdr.app>   writes Contents/Resources/Herdr.icns
 #   scripts/app-icon linux <data dir>    writes the launcher icon and prints
 #                                        the .desktop file's Icon= value
@@ -26,7 +27,7 @@ else
 fi
 
 case $choice in
-  classic) icns=$classic_icns svg=$classic_svg ;;
+  classic | theme) icns=$classic_icns svg=$classic_svg ;;
   midnight | mirage | glass | phosphor | graphite) icns=assets/icons/variants/$choice.icns svg=assets/icons/variants/$choice.svg ;;
   *)
     # As Herdr reads it: an absolute path, or one from ~/.
