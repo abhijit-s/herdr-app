@@ -100,6 +100,59 @@ pub fn address_of(tag: &str) -> Option<&str> {
     tag.strip_prefix(TAG_PREFIX).filter(|a| !a.is_empty())
 }
 
+/// Whether an agent that now says `word` is still as `alert` found it: an
+/// alert posted late (`alert_command` failed after it started) is otherwise
+/// old news, or would replace a newer one.
+pub fn still_says(alert: Alert, word: Option<&str>) -> bool {
+    match alert {
+        Alert::Blocked => word == Some("blocked"),
+        Alert::Error => word == Some("error"),
+        Alert::Done => !matches!(word, Some("working" | "blocked" | "error")),
+    }
+}
+
+/// The agents with a system notification up, and the alert each one is for.
+#[derive(Debug, Default)]
+pub struct Notified(std::collections::HashMap<String, Alert>);
+
+impl Notified {
+    pub fn posted(&mut self, address: &str, alert: Alert) {
+        self.0.insert(address.to_owned(), alert);
+    }
+
+    /// Clicked: the notification center took it down itself.
+    pub fn forget(&mut self, address: &str) {
+        self.0.remove(address);
+    }
+
+    pub fn contains(&self, address: &str) -> bool {
+        self.0.contains_key(address)
+    }
+
+    /// Whether `address`'s notification is old news now that its agent says
+    /// `word`, and is forgotten so the caller takes it down. With `sticky`, a
+    /// "needs you" one stays until the agent no longer needs the person (it
+    /// works, idles, finishes or stops reporting), however often it is seen;
+    /// any other goes once the person looks at the agent or it is back at work.
+    pub fn withdraw(&mut self, address: &str, word: Option<&str>, looking: bool, sticky: bool) -> bool {
+        let Some(&alert) = self.0.get(address) else { return false };
+        let stale = if sticky && alert == Alert::Blocked {
+            !matches!(word, Some("blocked" | "error"))
+        } else {
+            looking || word == Some("working")
+        };
+        if stale {
+            self.0.remove(address);
+        }
+        stale
+    }
+
+    /// Forgets the agents whose terminals are gone, and returns them.
+    pub fn gone(&mut self, live: impl Fn(&str) -> bool) -> Vec<String> {
+        self.0.extract_if(|address, _| !live(address)).map(|(address, _)| address).collect()
+    }
+}
+
 /// How an agent's system notification sounds and looks, from the settings.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Look {
@@ -191,6 +244,7 @@ thread_local! {
 pub fn show(mut notification: SystemNotification, icon: Option<Source>, cx: &App) {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let tag = notification.tag.to_string();
+    tracing::debug!(tag, title = %notification.title, "system notification posted");
     let Some(icon) = icon else {
         WAITING.with(|w| w.borrow_mut().remove(&tag));
         return cx.show_system_notification(notification);
@@ -219,6 +273,7 @@ pub fn show(mut notification: SystemNotification, icon: Option<Source>, cx: &App
 
 /// Takes back the notification under `tag`, and one still waiting for its image.
 pub fn dismiss(tag: &str, cx: &App) {
+    tracing::debug!(tag, "system notification withdrawn");
     WAITING.with(|w| w.borrow_mut().remove(tag));
     cx.dismiss_system_notification(tag);
 }
@@ -870,6 +925,82 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(cx.shown_system_notifications().len(), 2);
         let _ = std::fs::remove_file(&png);
+    }
+
+    /// One agent's listings as the window takes them (`tend_terminals`): an
+    /// old notification comes down, then a new alert posts unless the person
+    /// is looking. Each step: the agent's word, whether the person looks.
+    fn notifications_after(steps: &[(&str, bool)], sticky: bool, cx: &mut gpui::TestAppContext) -> Vec<String> {
+        let address = "local:t7";
+        let (mut notified, mut prev) = (Notified::default(), None::<&str>);
+        for &(word, looking) in steps {
+            if notified.withdraw(address, Some(word), looking, sticky) {
+                cx.update(|cx| dismiss(&tag(address), cx));
+            }
+            if let Some(alert) = crate::model::Model::alert(prev, Some(word), looking)
+                && should_notify(SystemNotifications::Background, looking, looking)
+            {
+                cx.update(|cx| post(&note(alert), &plain(), cx));
+                notified.posted(address, alert);
+            }
+            prev = Some(word);
+        }
+        assert_eq!(notified.contains(address), !cx.delivered_system_notifications().is_empty(), "the window's record matches what is up");
+        let up = cx.delivered_system_notifications().iter().map(|n| n.title.to_string()).collect();
+        cx.update(|cx| dismiss(&tag(address), cx));
+        up
+    }
+
+    #[gpui::test]
+    fn a_needs_you_notification_stays_until_the_agent_is_no_longer_blocked(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_app_identity("dev.herdr.test", "Herdr"));
+        let needs_you = ["Claude needs you"];
+        let none: [&str; 0] = [];
+        assert_eq!(notifications_after(&[("working", false), ("blocked", false), ("blocked", true), ("blocked", false)], true, cx), needs_you, "seen: it stays");
+        assert_eq!(notifications_after(&[("working", false), ("blocked", false), ("blocked", true), ("error", true)], true, cx), needs_you, "still needs the person");
+        for after in ["working", "idle", "done"] {
+            assert_eq!(notifications_after(&[("working", false), ("blocked", false), (after, true)], true, cx), none, "unblocked to {after}: withdrawn");
+        }
+        assert_eq!(notifications_after(&[("working", false), ("blocked", false), ("idle", false)], true, cx), ["Claude finished"], "unblocked unseen: the finish replaces it");
+        assert_eq!(notifications_after(&[("working", true), ("blocked", true), ("blocked", false)], true, cx), none, "blocked while looking: nothing posted");
+        assert_eq!(notifications_after(&[("working", false), ("blocked", false), ("done", false), ("done", true)], true, cx), none, "done, then seen: withdrawn");
+        assert_eq!(notifications_after(&[("working", false), ("error", false), ("error", true)], true, cx), none, "an error goes once seen");
+        assert_eq!(notifications_after(&[("working", false), ("blocked", false), ("blocked", true)], false, cx), none, "not sticky: seen takes it down");
+
+        // Unblocked then blocked again: the second replaces the first under
+        // the same tag, never two at once.
+        let before = cx.shown_system_notifications().len();
+        assert_eq!(notifications_after(&[("working", false), ("blocked", false), ("working", false), ("blocked", false)], true, cx), needs_you);
+        let shown = &cx.shown_system_notifications()[before..];
+        assert_eq!(shown.len(), 2);
+        assert!(shown.iter().all(|n| n.tag.as_ref() == "herdr-agent:local:t7"));
+    }
+
+    #[test]
+    fn notified_agents_whose_terminals_are_gone_are_forgotten() {
+        let mut notified = Notified::default();
+        notified.posted("local:t1", Alert::Blocked);
+        notified.posted("local:t2", Alert::Done);
+        assert_eq!(notified.gone(|a| a == "local:t2"), ["local:t1"]);
+        assert!(!notified.contains("local:t1") && notified.contains("local:t2"));
+        notified.forget("local:t2");
+        assert!(!notified.withdraw("local:t2", None, true, true), "nothing up: nothing to take down");
+    }
+
+    #[test]
+    fn a_late_alert_posts_only_while_the_agent_still_says_so() {
+        assert!(still_says(Alert::Blocked, Some("blocked")) && !still_says(Alert::Blocked, Some("working")) && !still_says(Alert::Blocked, Some("error")));
+        assert!(still_says(Alert::Error, Some("error")) && !still_says(Alert::Error, Some("idle")));
+        assert!(still_says(Alert::Done, Some("idle")) && still_says(Alert::Done, None) && !still_says(Alert::Done, Some("blocked")), "a finish never replaces a newer needs-you");
+    }
+
+    #[test]
+    fn notification_sticky_is_on_unless_set_off() {
+        let person: Person = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(person.notification_sticky && Settings::default().notification_sticky);
+        assert!(serde_json::to_value(&person).unwrap().get("notification_sticky").is_none(), "written at its default");
+        let off: Person = serde_json::from_value(serde_json::json!({ "notification_sticky": false })).unwrap();
+        assert!(!Settings::compose(&off, &crate::layout::Look::default(), false).notification_sticky);
     }
 
     #[test]
