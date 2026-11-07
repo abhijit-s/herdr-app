@@ -1041,6 +1041,10 @@ pub struct Person {
     /// name or `{frames, interval_ms}` (read through `working_spinner`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub working_spinner: Option<serde_json::Value>,
+    /// The extra words an agent pane's header shows, as a template
+    /// (header_info.rs); unset or empty: none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pane_header_info: Option<String>,
     /// What happens to recorded agents whose terminals are back to a shell
     /// after Herdr starts or the core comes back (resume.rs).
     #[serde(skip_serializing_if = "ResumeAgents::is_ask")]
@@ -1762,6 +1766,7 @@ impl Default for Person {
             pane_auto_names: false,
             space_avatar: None,
             working_spinner: None,
+            pane_header_info: None,
             resume_agents: ResumeAgents::Ask,
             alert_command: None,
             focus_follows_mouse: false,
@@ -1921,6 +1926,8 @@ pub struct Settings {
     pub alert_command: Option<AlertCommand>,
     /// The frames mods animate while an agent works; None: the ring.
     pub working_spinner: Option<SpinnerFrames>,
+    /// `pane_header_info` when it says something; None: headers as without it.
+    pub pane_header_info: Option<String>,
     /// Why settings.json's `working_spinner` fell back to the ring.
     #[serde(skip)]
     pub working_spinner_problem: Option<String>,
@@ -2015,6 +2022,7 @@ impl Default for Settings {
             space_avatar: None,
             alert_command: None,
             working_spinner: None,
+            pane_header_info: None,
             working_spinner_problem: None,
             space_avatar_problem: None,
         }
@@ -2105,6 +2113,7 @@ impl Settings {
             space_avatar: person.space_avatar.clone().filter(|v| SPACE_AVATARS.contains(&v.as_str())),
             alert_command: person.alert_command.clone(),
             working_spinner,
+            pane_header_info: person.pane_header_info.clone().filter(|t| !t.trim().is_empty()),
             working_spinner_problem,
             space_avatar_problem: person.space_avatar.as_ref().filter(|v| !SPACE_AVATARS.contains(&v.as_str())).map(|v| format!("space_avatar {v:?} is not one of letter, glyph, emoji, repo: using \"letter\"")),
             clipboard_write: person.clipboard_write,

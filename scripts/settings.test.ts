@@ -49,6 +49,8 @@ const values: Record<string, any> = {
   // Pages search reads besides Text and Look: a build from source that checks nothing.
   updates: () => ({ app: { version: "0.1.0", updates: false }, core: { version: "0.1.17" }, checks: false }), telemetry: () => null,
   hc: async (args: string[]) => (args.join(" ") === "machine ls --json" ? { code: 0, stdout: JSON.stringify({ machines: machineDisk }) } : { code: 1, stderr: "no" }),
+  // Herdr's preview of a pane_header_info template: here, the template as one segment.
+  headerInfoPreview: (template: string) => ({ text: template, segments: [{ sep: "", text: template, ask: false }] }),
   appHome: () => "/home", notify: (n: any) => { disk.toasts.push(n); },
   shared: (key: string) => (key === "layout" ? layoutDisk.name : sharedDisk[key]), run: (name: string, args: any) => { layoutDisk.runs.push([name, args]); },
   layout: () => { layoutDisk.layoutReads++; return layoutDisk.shown; },
@@ -1174,4 +1176,43 @@ test("a fork build shows its commit beside the version", () => {
   expect(forkTag("fork.0990622.dirty")).toBe(" (fork 0990622.dirty)");
   expect(forkTag(null)).toBe("");
   expect(forkTag(undefined)).toBe("");
+});
+
+test("header info: Use suggested writes the template, a blank field leaves it out, the preview follows the field", () => {
+  const suggested = "{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed}";
+  expect(click({ zoom: 1.1 }, {}, "st-hi-suggested", [], "activity")).toEqual({ zoom: 1.1, pane_header_info: suggested });
+  expect(click({ pane_header_info: suggested }, {}, "st-hi-suggested", ["shown?"], "activity")).toBeUndefined();
+  const field = (person: Record<string, any>) => {
+    composed = {};
+    const view = new Settings();
+    view.person = person;
+    let written: Record<string, any> | undefined;
+    view.change = (edit: (q: Record<string, any>) => void) => { written = structuredClone(person); edit(written); };
+    const preview = find(view.page("activity", new Proxy({}, { get: () => "#000000" }), {}), "st-hi-preview");
+    return { view, preview, written: () => written };
+  };
+  const on = field({ pane_header_info: "{state} {elapsed}" });
+  expect(texts(on.preview)).toEqual(["{state} {elapsed}"]);
+  on.view.setHeaderInfo("  ", clickCx());
+  expect(on.written()).toEqual({});
+  const off = field({});
+  expect(texts(off.preview).join("")).toContain("Off");
+  off.view.setHeaderInfo("", clickCx());
+  expect(off.written()).toBeUndefined();
+});
+
+test("header info: a save keeps what the field holds; opening fills it from settings.json", async () => {
+  Object.assign(disk, { raw: '{"pane_header_info": "{state}"}', writes: 0, fail: undefined, readFail: undefined, toasts: [] });
+  const view = new Settings();
+  view.person = {};
+  const input = view.headerInputState();
+  await view.load(true);
+  expect(input.value()).toBe("{state}");
+  input.set_value("{branch}");
+  let done: () => void;
+  const finished = new Promise<void>((resolve) => (done = resolve));
+  view.setHeaderInfo("{branch}", { spawn: (f: (cx: any) => Promise<void>) => f({ notify: () => done() }), notify() {} });
+  await finished;
+  expect(JSON.parse(disk.raw!)).toEqual({ pane_header_info: "{branch}" });
+  expect(input.value()).toBe("{branch}");
 });

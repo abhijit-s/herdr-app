@@ -14,6 +14,7 @@ mod focus_history;
 mod fork_build;
 mod git_status;
 mod harness;
+mod header_info;
 mod hc;
 mod keys;
 mod layout;

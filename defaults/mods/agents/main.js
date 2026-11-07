@@ -24,6 +24,14 @@ function find(node, id) {
 
 // The sidebar's rail goes by its width, not a flag: dragging its edge narrows it too.
 const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
+// Narrower than this, a parent's sub-agent count goes first.
+const SUB_COUNT_MIN = 220;
+const roomForSubCount = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) >= SUB_COUNT_MIN;
+
+// A parent's live sub-agents (the rows its tree shows), as "⧉ N".
+function subCount(n, color) {
+  return div().flex_none().whitespace_nowrap().text_size(11).text_color(color).child(`\u29c9 ${n}`);
+}
 
 // To the rail (on macOS wide enough for the traffic lights), or back to the width it had.
 function toggleSidebar() {
@@ -260,7 +268,9 @@ export default class Agents extends View {
       return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority))];
     };
 
-    // The fold chevron; folded, the count too, colored by the most urgent one.
+    // The fold chevron; folded, colored by the most urgent sub-agent, with
+    // their count when the row has no room for it.
+    const counted = roomForSubCount();
     const fold = (a, subs) => {
       const sts = subs.map((s) => kidStatus(s.t, this.listed));
       const top = sts.reduce((m, s) => ((RANK[s] ?? 0) > (RANK[m] ?? 0) ? s : m), null);
@@ -283,7 +293,7 @@ export default class Agents extends View {
           cx.notify();
         })
         .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none())
-        .when(!open, (el) => el.child(String(subs.length)));
+        .when(!open && !counted, (el) => el.child(String(subs.length)));
     };
 
     // A row reads "space \u00b7 detail": the detail is a tab someone named or the
@@ -370,6 +380,7 @@ export default class Agents extends View {
           .child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().text_color(idle ? t.muted : t.foreground).child(name))
           .when(full && Boolean(more), el => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`\u00b7 ${more}`))))
         .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
+        .when(subs.length > 0 && counted, el => el.child(subCount(subs.length, t.dim)))
         .when(subs.length > 0, el => el.child(fold(a, subs)))
         .when(this.hovered === a.address, el => el.child(pin))
         .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when))))
