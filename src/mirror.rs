@@ -12,7 +12,8 @@ pub struct Document {
     pub spaces: Vec<SharedSpace>,
     /// Icons someone chose for this machine's panes and tabs, by id: only
     /// ones still there, so an icon goes with its pane or tab. Read leniently
-    /// (`Choice::parse`): an entry this build can't read is dropped, not the layout.
+    /// (`Choice::parse`): an entry this build can't read draws the automatic
+    /// icon and is written back as it was (`Model::icons_read`), never the layout's loss.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub icons: BTreeMap<String, serde_json::Value>,
 }
@@ -69,6 +70,11 @@ pub fn qualify(id: &str, machine: Option<&str>) -> String {
     machine.map_or_else(|| id.to_owned(), |m| format!("{m}/{id}"))
 }
 
+/// The machine a qualified id belongs to: None for this one's.
+pub fn machine_of(id: &str) -> Option<&str> {
+    id.split_once('/').map(|(m, _)| m)
+}
+
 pub fn local<'a>(id: &'a str, machine: Option<&str>) -> &'a str {
     machine.and_then(|m| id.strip_prefix(m).and_then(|s| s.strip_prefix('/'))).unwrap_or(id)
 }
@@ -99,12 +105,18 @@ fn ids_on(model: &Model, machine: Option<&str>) -> std::collections::HashSet<Str
     tabs.flat_map(|t| std::iter::once(t.id.clone()).chain(t.root.panes().into_iter().map(|p| p.id.clone()))).collect()
 }
 
+/// A pane's or tab's icon entry in its document: as read while nobody changed
+/// it, else this build's choice.
+fn icon_entry(model: &Model, id: &str) -> Option<serde_json::Value> {
+    model.icons_read.get(id).cloned().or_else(|| model.icons.get(id).map(|c| serde_json::to_value(c).unwrap_or_default()))
+}
+
 impl Document {
     pub fn capture(model: &Model, machine: Option<&str>) -> Self {
         let map = |s: &str| local(s, machine).to_owned();
         let ids = ids_on(model, machine);
         Self {
-            icons: model.icons.iter().filter(|(id, _)| ids.contains(id.as_str())).map(|(id, c)| (map(id), serde_json::to_value(c).unwrap_or_default())).collect(),
+            icons: ids.iter().filter_map(|id| Some((map(id), icon_entry(model, id)?))).collect(),
             spaces: model
                 .spaces
                 .iter()
@@ -129,8 +141,9 @@ impl Document {
 
     pub fn replace(&self, model: &mut Model, machine: Option<&str>) {
         let view = View::capture(model);
-        let gone = ids_on(model, machine);
-        model.icons.retain(|id, _| !gone.contains(id.as_str()));
+        // All of the machine's, not only its spaces' now: ones kept while its spaces were away are stale.
+        model.icons.retain(|id, _| machine_of(id) != machine);
+        model.icons_read.retain(|id, _| machine_of(id) != machine);
         let at = model.spaces.iter().position(|s| s.machine.as_deref() == machine).unwrap_or(model.spaces.len());
         model.spaces.retain(|s| s.machine.as_deref() != machine);
         let map = |s: &str| qualify(s, machine);
@@ -153,10 +166,16 @@ impl Document {
         model.spaces.splice(at..at, spaces);
         // Only for panes and tabs the document holds: anything else would linger.
         let here = ids_on(model, machine);
-        model.icons.extend(self.icons.iter().filter_map(|(id, v)| {
+        for (id, v) in &self.icons {
             let id = qualify(id, machine);
-            here.contains(&id).then(|| Some((id, crate::pane_icons::Choice::parse(v).ok()??))).flatten()
-        }));
+            if !here.contains(&id) {
+                continue;
+            }
+            if let Ok(Some(choice)) = crate::pane_icons::Choice::parse(v) {
+                model.icons.insert(id.clone(), choice);
+            }
+            model.icons_read.insert(id, v.clone());
+        }
         model.order_spaces();
         view.apply(model);
     }
@@ -389,6 +408,59 @@ mod tests {
         m.remove_tab("u");
         assert_eq!(Document::capture(&m, None).icons.keys().collect::<Vec<_>>(), ["p", "t"]);
         assert_eq!(Document::capture(&m, Some("mac")).icons.keys().collect::<Vec<_>>(), ["p", "q", "t", "u"], "mac's are its own");
+    }
+
+    /// A machine's icons are its own: a document replaces all of them, even
+    /// ones kept while its spaces were away (it left the machine list), so an
+    /// icon cleared elsewhere meanwhile isn't written back when it returns.
+    #[test]
+    fn a_machine_back_in_the_list_takes_its_icons_from_its_document() {
+        use crate::pane_icons::{Choice, Kind};
+        let letter = Choice { kind: Kind::Letter, value: None };
+        let mut m = model();
+        assert!(m.set_icon("p", Some(letter.clone())));
+        let chosen = Document::capture(&m, None);
+        assert!(m.set_icon("p", None));
+        let cleared = Document::capture(&m, None);
+        let mut screen = model();
+        assert!(screen.set_icon("p", Some(letter.clone())));
+        chosen.replace(&mut screen, Some("mac"));
+        assert_eq!(screen.icons.get("mac/p"), Some(&letter));
+        // Its spaces left; the document read on its return has no icon.
+        screen.spaces.retain(|s| s.machine.is_none());
+        cleared.replace(&mut screen, Some("mac"));
+        assert_eq!(screen.icons.get("mac/p"), None, "the stale icon is gone");
+        assert_eq!(Document::capture(&screen, Some("mac")), cleared, "nothing to write back");
+        assert_eq!(screen.icons.get("p"), Some(&letter), "the local one stays");
+        // Leaving the list drops its icons with its spaces.
+        chosen.replace(&mut screen, Some("mac"));
+        screen.retain_machines(|m| m != "mac");
+        assert!(screen.space("mac/s").is_none());
+        assert_eq!(screen.icons.keys().collect::<Vec<_>>(), ["p"]);
+    }
+
+    /// Reading a document writes nothing back by itself: entries this build
+    /// can't read (a newer build's kind) or would write differently are kept
+    /// as read, until someone chooses that pane's or tab's icon again.
+    #[test]
+    fn icons_this_build_cant_read_survive_a_read() {
+        use crate::pane_icons::{Choice, Kind};
+        let read: Document = serde_json::from_value(serde_json::json!({"spaces":[{"id":"s","tabs":[{"id":"t","root":
+            {"id":"t","type":"row","children":[{"id":"p","type":"block","content":{"terminal":"t1"}},{"id":"q","type":"block","content":{"terminal":"t2"}}]}}]}],
+            "icons": {"t": {"kind": "letter", "value": "x"}, "p": {"kind": "sticker", "value": "cat.png"}, "q": {"kind": "emoji", "value": "🌾", "tone": 2}}})).unwrap();
+        for machine in [None, Some("mac")] {
+            let mut m = Model::default();
+            read.replace(&mut m, machine);
+            assert_eq!(Document::capture(&m, machine), read, "{machine:?}: read alone, nothing to write");
+            let id = |s: &str| qualify(s, machine);
+            assert_eq!(m.icons.get(&id("t")), Some(&Choice { kind: Kind::Letter, value: None }), "drawn as this build reads it");
+            assert_eq!(m.icons.get(&id("p")), None, "an unknown kind draws the automatic icon");
+            // Choosing again writes this build's form; clearing removes even an unknown one.
+            assert!(m.set_icon(&id("t"), Some(Choice { kind: Kind::Letter, value: None })));
+            assert!(m.set_icon(&id("p"), None));
+            let icons = Document::capture(&m, machine).icons;
+            assert_eq!(serde_json::to_value(&icons).unwrap(), serde_json::json!({"t": {"kind": "letter"}, "q": {"kind": "emoji", "value": "🌾", "tone": 2}}));
+        }
     }
 
     #[test]
