@@ -171,7 +171,7 @@ pub fn next_frame() {
     FRAME.with(|frame| frame.set(frame.get() + 1));
 }
 
-fn frame() -> u64 {
+pub(crate) fn frame() -> u64 {
     FRAME.with(Cell::get)
 }
 

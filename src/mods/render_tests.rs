@@ -97,9 +97,9 @@ fn fixture(populated: bool, props: Value, update: Value) -> BTreeMap<String, Val
             {"id":"s1","index":1,"name":"Local","folder":"/fixture/project","machine":null,"branch":"main","active":true,"status":"working","tabs":[{"id":"tab1","index":1,"name":"Build","active":true,"status":"working","panes":1,"zoomed":false,"settled":false,"settled_at":null,"changed_at":1700000000000i64,"working_since":1700000000000i64}]},
             {"id":"s2","index":2,"name":"Remote","folder":"/remote/project","machine":"remote","branch":null,"active":false,"status":"done","tabs":[{"id":"tab2","index":1,"name":"Done","active":true,"status":"done","panes":1,"zoomed":false,"settled":false,"settled_at":null,"changed_at":null,"working_since":null}]}
         ]));
-        values.insert("panes".into(), json!([{"pane":"p1","terminal":"t1","tab":"tab1","title":"Build","cwd":"/fixture/project","branch":"main","status":"working","app":"pi","program":program,"focused":true,"zoomed":false}, {"pane":"p2","terminal":"t2","tab":"tab2","title":"Remote task","cwd":"/remote/project","branch":null,"status":"done","app":"pi","program":program,"focused":false,"zoomed":false}]));
+        values.insert("panes".into(), json!([{"pane":"p1","terminal":"t1","tab":"tab1","title":"Build","label":"Build","session":null,"cwd":"/fixture/project","branch":"main","status":"working","app":"pi","program":program,"focused":true,"zoomed":false}, {"pane":"p2","terminal":"t2","tab":"tab2","title":"Remote task","label":"Remote task","session":null,"cwd":"/remote/project","branch":null,"status":"done","app":"pi","program":program,"focused":false,"zoomed":false}]));
         values.insert("terminals".into(), json!([{"address":"t1","name":"Build","title":"Build","argv":["pi"],"parent":null,"labels":{},"state":"running","status":"working","report":{"app":"pi"},"program":program,"cwd":"/fixture/project"}, {"address":"t2","name":"Remote task","title":"Remote task","argv":["pi"],"parent":null,"labels":{},"state":"running","status":"done","report":{"app":"pi"},"program":program,"cwd":"/remote/project"}]));
-        values.insert("agents".into(), json!([{"address":"t1","pane":"p1","space":"s1","space_name":"Local","tab":"tab1","tab_index":1,"tab_name":"Build","status":"working","app":"pi","program":program,"title":"Build","seq":1,"focused":true}, {"address":"t2","pane":"p2","space":"s2","space_name":"Remote","tab":"tab2","tab_index":1,"tab_name":"Done","status":"done","app":"pi","program":program,"title":"Remote task","seq":2,"focused":false}]));
+        values.insert("agents".into(), json!([{"address":"t1","pane":"p1","space":"s1","space_name":"Local","tab":"tab1","tab_index":1,"tab_name":"Build","status":"working","app":"pi","program":program,"title":"Build","label":"Build","session":null,"seq":1,"focused":true}, {"address":"t2","pane":"p2","space":"s2","space_name":"Remote","tab":"tab2","tab_index":1,"tab_name":"Done","status":"done","app":"pi","program":program,"title":"Remote task","label":"Remote task","session":null,"seq":2,"focused":false}]));
         values.insert(
             "focused".into(),
             json!({"space":"s1","tab":"tab1","pane":"p1","terminal":"t1","agent":"t1","shown":null,"cwd":"/fixture/project"}),
@@ -1062,13 +1062,13 @@ fn pane_headers_show_the_automatic_name_after_the_persons(cx: &mut TestAppContex
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let shell = json!({"key":"shell", "name":"zsh", "icon":null, "tint":true, "tile":null, "color":null, "shell":true, "agent":false});
-    // What each shows without one: the shell's program name, the title else "shell".
-    for (entry, fallback) in [("mods/pane", "zsh"), ("mods/terminals-pane", "shell")] {
+    // What each shows without one: the shell's program name (its label, as its title is empty).
+    for (entry, fallback) in [("mods/pane", "zsh"), ("mods/terminals-pane", "zsh")] {
         // A shell's title as Herdr gives it an automatic name: a folder, never empty.
         let header = |name: Value, auto_name: Value, cx: &mut TestAppContext| {
             let title = if auto_name.is_null() { "" } else { "~/src" };
             let mut values = fixture(true, props(), updates("current", "current"));
-            values.insert("panes".into(), json!([{"pane":"p1","terminal":"t1","tab":"tab1","title":title,"name":name,"auto_name":auto_name,"cwd":"/fixture/project","branch":null,"status":null,"app":null,"program":shell,"focused":true,"zoomed":false}]));
+            values.insert("panes".into(), labelled(json!([{"pane":"p1","terminal":"t1","tab":"tab1","title":title,"name":name,"auto_name":auto_name,"session":null,"cwd":"/fixture/project","branch":null,"status":null,"app":null,"program":shell,"focused":true,"zoomed":false}])));
             describe_with_values(cx, &staged, entry, values, None).unwrap()
         };
         let tree = header(Value::Null, json!("hazy-inlet"), cx);
@@ -1121,4 +1121,89 @@ fn agent_spinners_follow_the_working_spinner_setting(cx: &mut TestAppContext) {
         }
         assert_eq!(spinner[1].trim(), r#"text "⠋""#, "{entry} starts on the first frame");
     }
+}
+
+/// Panes as the app publishes them: `label` and `session` filled in by the
+/// app's own resolver (pane_label.rs) from the other fields.
+fn labelled(mut panes: Value) -> Value {
+    for p in panes.as_array_mut().unwrap() {
+        let label = crate::pane_label::label(&crate::pane_label::Parts {
+            name: p["name"].as_str(), auto_name: p["auto_name"].as_str(), title: p["title"].as_str().unwrap_or_default(),
+            session: p["session"].as_str(), program: &p["program"], address: p["terminal"].as_str().unwrap_or_default(),
+        });
+        p["label"] = json!(label);
+    }
+    panes
+}
+
+fn texts(tree: &str) -> Vec<&str> {
+    tree.lines().filter_map(|l| l.trim().strip_prefix("text ")).collect()
+}
+
+/// The mods that name a pane read its `label`: with telling titles they draw
+/// what they drew from the title, byte for byte (the whole populated fixture
+/// was diffed when they moved to `label`; the names are pinned here), and a
+/// title that names nothing gives way to the session's name, else the program's.
+#[gpui::test]
+fn mods_name_panes_by_their_label(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let p2 = json!({"pane":"p2","terminal":"t2"});
+    let w1 = json!({"role":"window","pane":"p1"});
+    let w2 = json!({"role":"window","pane":"p2"});
+    let shown = |entry: &str, p: &Value, values: Option<BTreeMap<String, Value>>, cx: &mut TestAppContext| {
+        let values = values.unwrap_or_else(|| fixture(true, p.clone(), updates("current", "current")));
+        let tree = describe_with_values(cx, &staged, entry, values, None).unwrap();
+        texts(&tree).into_iter().map(str::to_owned).collect::<Vec<_>>()
+    };
+    let telling: [(&str, &Value, &[&str]); 6] = [
+        ("mods/agents", &props(), &["\"Agents\"", "\"Done\"", "\"1\"", "\"Remote\"", "\"· Remote task\"", "\"<1m\"", "\"Working\"", "\"1\"", "\"Local\"", "\"· Build\"", "\"<1m\""]),
+        ("mods/pane", &p2, &["\"Pi\"", "\"/remote/project\""]),
+        ("mods/terminals-pane", &props(), &["\"Build\"", "\"~/project\""]),
+        ("mods/terminals-pane", &p2, &["\"Remote task\"", "\"/remote/project\""]),
+        ("mods/win98", &w1, &["\"Pi - Build\""]),
+        ("mods/win98", &w2, &["\"Pi - Remote task\""]),
+    ];
+    for (entry, p, want) in telling {
+        assert_eq!(shown(entry, p, None, cx), want, "{entry} {p}");
+    }
+
+    // Claude Code's prompt left in Neovim's title: the session names the agent.
+    let nvim = "claude-prompt-9acc2eb1-37f2-4d7e-9c1a-5b6f0e2d8a11.md + (/private/tmp/claude-501) - Nvim";
+    let throwaway = |p: &Value, session: Value| {
+        let mut values = fixture(true, p.clone(), updates("current", "current"));
+        let mut panes = values["panes"].clone();
+        panes[1]["title"] = json!(nvim);
+        panes[1]["session"] = session;
+        let panes = labelled(panes);
+        let mut agents = values["agents"].clone();
+        agents[1]["title"] = json!(nvim);
+        agents[1]["label"] = panes[1]["label"].clone();
+        values.insert("panes".into(), panes);
+        values.insert("agents".into(), agents);
+        values
+    };
+    let named = |p: &Value| Some(throwaway(p, json!("vendor-insights")));
+    assert!(shown("mods/agents", &props(), named(&props()), cx).contains(&"\"· vendor-insights\"".to_owned()));
+    assert_eq!(shown("mods/terminals-pane", &p2, named(&p2), cx)[0], "\"vendor-insights\"");
+    assert_eq!(shown("mods/win98", &w2, named(&w2), cx), ["\"Pi - vendor-insights\""]);
+    assert_eq!(shown("mods/pane", &p2, named(&p2), cx)[0], "\"Pi\"", "an unnamed agent's header shows its program");
+    // No session: the program's name, which the agents panel never shows as the tab.
+    let unnamed = |p: &Value| Some(throwaway(p, Value::Null));
+    assert!(shown("mods/agents", &props(), unnamed(&props()), cx).contains(&"\"· Done\"".to_owned()));
+    assert_eq!(shown("mods/terminals-pane", &p2, unnamed(&p2), cx)[0], "\"Pi\"");
+    assert_eq!(shown("mods/win98", &w2, unnamed(&w2), cx), [r#""Pi - C:\\remote\\project""#]);
+
+    // A program that is neither an agent nor a shell: the header shows its label.
+    let neovim = json!({"key":"nvim", "name":"Neovim", "icon":null, "tint":true, "tile":null, "color":null, "shell":false, "agent":false});
+    let editor = |title: &str, cx: &mut TestAppContext| {
+        let mut values = fixture(true, p2.clone(), updates("current", "current"));
+        let mut panes = values["panes"].clone();
+        panes[1]["title"] = json!(title);
+        panes[1]["program"] = neovim.clone();
+        values.insert("panes".into(), labelled(panes));
+        shown("mods/pane", &p2, Some(values), cx)[0].clone()
+    };
+    assert_eq!(editor("Fix nvim config", cx), "\"Fix nvim config\"");
+    assert_eq!(editor(nvim, cx), "\"Neovim\"");
 }

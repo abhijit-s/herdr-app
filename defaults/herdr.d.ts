@@ -180,8 +180,12 @@ export interface AgentInfo {
   /** What the agent reported (OSC 7501 `app`), e.g. "claude-code", "pi", "codex". */
   app: string | null;
   program: Program;
-  /** The terminal's title. */
+  /** The terminal's title, as the program set it. */
   title: string;
+  /** What to call it: as `PaneInfo.label`. */
+  label: string;
+  /** Its agent session's own name: as `PaneInfo.session`. */
+  session: string | null;
   /** Higher = changed more recently. */
   seq: number;
   /** Pinned with `terminal.pin`, on any Herdr client. */
@@ -195,7 +199,7 @@ export function agents(): AgentInfo[];
 export interface PaneInfo {
   pane: string;
   /** null for a mod pane (`pane.split {mod}`): then `mod` names it, and only
-   *  pane, mod, tab, title, name, auto_name (null), focused and zoomed are set. */
+   *  pane, mod, tab, title, name, auto_name (null), label, session (null), focused and zoomed are set. */
   terminal: string | null;
   mod?: string;
   tab: string;
@@ -210,6 +214,15 @@ export interface PaneInfo {
    *  Show it in place of the shell's name: `p.name || p.auto_name || ...`.
    *  Display only; null otherwise, and always for a mod pane. */
   auto_name: string | null;
+  /** What to call the pane, never empty: its name (one with a letter or digit), else
+   *  auto_name, else its title when it says something (not a path, user@host, only
+   *  digits, the program's name or command line, or a throwaway such as an editor's
+   *  `claude-prompt-<uuid>.md - Nvim`; leading spinners cut), else `session`, else the
+   *  program's name, else the terminal's address. A mod pane: its name, else the mod. */
+  label: string;
+  /** The agent session's own name (Claude Code's `/rename`), from the program's
+   *  session file (`session_name` in programs.json), on this computer; else null. */
+  session: string | null;
   /** Its live folder, and the git branch there. */
   cwd: string | null;
   branch: string | null;

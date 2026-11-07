@@ -34,8 +34,6 @@ function toggleSidebar() {
   run("layout.resize", { id: "sidebar", px: narrow() ? (shared("sidebar.width") ?? 268) : window()?.platform === "macos" ? 76 : 44 });
 }
 
-const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
-
 function leadPanes(all) {
   const leads = new Map();
   for (const p of all) {
@@ -47,11 +45,12 @@ function leadPanes(all) {
   return leads;
 }
 
+// A tab nobody named (or named after its program) reads as its lead pane's
+// label, unless that is only the program's name or the terminal's address.
 function title(tab, l) {
   const prog = l?.program?.name;
-  const live = clean(l?.title);
-  const telling = live && live !== prog && !/^[~/]|^[A-Za-z]:\\/.test(live) && !live.includes("@") && live.toLowerCase() !== l?.program?.key;
-  return (tab.name === prog || !tab.named) && telling ? live : tab.name;
+  const own = l?.label;
+  return (tab.name === prog || !tab.named) && own && own !== prog && own !== l.terminal ? own : tab.name;
 }
 const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
 // A sub-agent without a pane isn't in agents(): its raw word, error counting as
@@ -293,7 +292,7 @@ export default class Agents extends View {
     // Read the pane snapshot once: every host read copies the whole list into JS.
     const leads = leadPanes(panes());
     const tabLabels = new Map(spaces().flatMap(s => s.tabs).map(tab => [tab.id, title(tab, leads.get(tab.id))]));
-    const labels = new Map(list.map(a => [a.address, tabLabels.get(a.tab) ?? (a.title || a.program?.name || "")]));
+    const labels = new Map(list.map(a => [a.address, tabLabels.get(a.tab) ?? a.label]));
     const label = (a) => labels.get(a.address);
     const detail = new Map(list.map(a => [a.address, /^\d+$/.test(label(a)) ? null : label(a)]));
     const seen = {};
