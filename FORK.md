@@ -48,6 +48,17 @@ Each merge of `upstream/master` into `master`, with the conflict choices worth r
 
 ## Changes
 
+### Build identifier
+
+`feat/build-tag` (branched from `master`, fork only): a fork build says which commit it is, beside an unchanged version. `build.rs` runs git (`fork_build.rs`) and sets `HERDR_FORK_BUILD` to `fork.<short sha>`, with `.dirty` when tracked files differ from HEAD; without git (a tarball) it is unset. No `Cargo.toml` edit, so upstream syncs stay clean.
+
+- Shown: `herdr-app --version` prints `herdr-app 0.1.13 (fork 0990622)`; Settings shows `Herdr 0.1.13 (fork 0990622)` and `herdr-core 0.1.18 (fork 8cc5ec1)`, and This computer `hc 0.1.18 (fork 8cc5ec1)` under Machines. The core's build is read from the `build` field of its `server.status` (the herdr-core fork adds it), kept in `update::CoreInfo.build`.
+- The version stays upstream's everywhere it is compared or sent: the core compatibility check (`hc::check` on `hello`), app and core update checks (`update::newer`, `core_bin::update_to`, `after_update`), telemetry, feedback, layout `cloned_from` and update notes all read `CARGO_PKG_VERSION` or the core's `version` alone. `herdr-app status` and `ls` report no version. Readers of a `--version` line cut a fork build's ` (fork …)`: `core_bin::version` (finding and checking a core) and `update::version_of` (a staged app update).
+- Rebuilds: build.rs reruns when HEAD, its reflog, its branch or `packed-refs` change (paths from `git rev-parse`, so worktrees work), and on edits under `src` and `defaults`. Not on index changes: editors and `git status` rewrite the index, and each rerun recompiles the app. So an edit elsewhere, or a staged-only change, does not mark the build `.dirty` until something else reruns it. Worktrees need their own target dir (the default): Cargo hashes a package by its path within the workspace, so a shared `CARGO_TARGET_DIR` could keep another worktree's build. After an in-app core update the core's build is cleared until its status arrives on reconnect.
+- Tests: `fork_build::tests` (the `--version` line, a well-formed build, git in a temporary repository: no git gives none, a commit gives its sha, an edit adds `.dirty`, untracked files do not; the core's version and build reach Settings apart), `core_bin::tests::only_a_binary_that_says_hc_counts` (a fork core's line still reads as `hc 0.1.1`), `scripts/settings.test.ts` (`forkTag`).
+- Files: `build.rs`, `fork_build.rs`, `src/fork_build.rs`, `src/main.rs`, `src/update.rs`, `src/core_bin.rs`, `src/window.rs`, `defaults/frame/settings/main.js`, `scripts/settings.test.ts`, `tests/fixtures/core-bin/herdr-core-fork`
+- Upstream: none (fork only)
+
 ### Pane and agent labels
 
 `feat/agent-label` (branched from `master`, fork only): what a pane or agent is called is one app-level value, `label`, with `session` beside it, on `panes()`, `agents()` and `herdr-app ls`, so mods stop carrying their own copies of the "telling title" rule. `src/pane_label.rs` holds the resolver and the rule.

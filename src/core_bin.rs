@@ -73,10 +73,11 @@ fn merged_path(login: Option<&std::ffi::OsStr>, usual: &[PathBuf], current: &std
     std::env::join_paths(dirs).ok()
 }
 
-/// `hc X.Y.Z` if this binary is herdr-core and runs.
+/// `hc X.Y.Z` if this binary is herdr-core and runs. A fork build's
+/// `(fork <sha>)` after the version is left out.
 pub fn version(bin: &Path) -> Option<String> {
     let out = crate::spawn::command(bin).arg("--version").stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    let text = String::from_utf8_lossy(&out.stdout).trim().split(" (fork ").next().unwrap_or_default().to_owned();
     (out.status.success() && text.starts_with("hc ")).then_some(text)
 }
 
@@ -362,6 +363,7 @@ mod tests {
         assert_eq!(version(&dir.join("hc")), None);
         let real = dir.join("herdr-core");
         assert_eq!(version(&real).as_deref(), Some("hc 0.1.1"));
+        assert_eq!(version(&dir.join("herdr-core-fork")).as_deref(), Some("hc 0.1.1"), "a fork build's commit is not part of its version");
         assert_eq!(find(Some(real.to_str().unwrap())), Some(real));
     }
 }

@@ -84,6 +84,8 @@ pub fn ready() -> Option<String> {
 #[derive(Clone, Default, serde::Serialize)]
 pub struct CoreInfo {
     pub version: Option<String>,
+    /// Which fork commit the core was built from (`fork.<sha>`), from its status.
+    pub build: Option<String>,
     /// A package manager that owns it (homebrew, nix, mise): never updated by the app.
     pub managed: Option<String>,
     pub ready: Option<String>,
@@ -91,7 +93,7 @@ pub struct CoreInfo {
     pub error: Option<String>,
 }
 
-static CORE: Mutex<CoreInfo> = Mutex::new(CoreInfo { version: None, managed: None, ready: None, updating: false, error: None });
+static CORE: Mutex<CoreInfo> = Mutex::new(CoreInfo { version: None, build: None, managed: None, ready: None, updating: false, error: None });
 /// When the last check succeeded (unix seconds); a failed check clears it.
 static CHECKED: Mutex<Option<u64>> = Mutex::new(None);
 /// "Check now" wakes the checker early.
@@ -105,7 +107,7 @@ pub fn core() -> CoreInfo {
 }
 
 /// What the connected core says about itself (on connect and every reconnect).
-pub fn set_core(version: Option<String>, managed: Option<String>) {
+pub fn set_core(version: Option<String>, build: Option<String>, managed: Option<String>) {
     let mut c = CORE.lock().unwrap();
     if let (Some(have), Some(ready)) = (&version, &c.ready)
         && !newer(ready, have)
@@ -113,6 +115,7 @@ pub fn set_core(version: Option<String>, managed: Option<String>) {
         c.ready = None;
     }
     c.version = version;
+    c.build = build;
     c.managed = managed;
 }
 
@@ -128,7 +131,7 @@ fn checks_core() -> bool {
 /// For the settings screen: both programs, what's waiting, when we last looked.
 pub fn status() -> serde_json::Value {
     serde_json::json!({
-        "app": { "version": env!("CARGO_PKG_VERSION"), "ready": ready(), "updates": checks_app().is_some() },
+        "app": { "version": env!("CARGO_PKG_VERSION"), "build": crate::fork_build::BUILD, "ready": ready(), "updates": checks_app().is_some() },
         "notes": crate::update_notes::notes(ready().as_deref()),
         "core": core(),
         "checked": *CHECKED.lock().unwrap(),
@@ -253,6 +256,8 @@ pub fn update_core() {
         match result {
             Ok(now) => {
                 c.version = Some(now.trim_start_matches("hc ").to_owned());
+                // The new core's build arrives with its status on reconnect.
+                c.build = None;
                 c.ready = None;
                 crate::telemetry::count("core_update_ok");
             }
@@ -399,7 +404,7 @@ fn version_of(app: &Path) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    text.trim().strip_prefix("herdr-app ").map(str::to_owned)
+    text.trim().strip_prefix("herdr-app ").map(|v| v.split(" (fork ").next().unwrap_or_default().to_owned())
 }
 
 /// `a` is a later version than `b` (semver; `0.2.0-rc.1` comes before `0.2.0`).
@@ -594,6 +599,7 @@ pub fn after_update() {
                 }
                 tracing::info!("herdr-core is {now}");
                 core.version = Some(now.trim_start_matches("hc ").to_owned());
+                core.build = None;
                 core.error = None;
             }
             Err(e) => {

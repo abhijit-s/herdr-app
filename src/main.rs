@@ -11,6 +11,7 @@ mod core_bin;
 mod dock_badge;
 mod files;
 mod focus_history;
+mod fork_build;
 mod git_status;
 mod harness;
 mod hc;
@@ -122,7 +123,7 @@ fn main() {
         None => {}
         Some("-h" | "--help" | "help") => return print!("{HELP}"),
         Some("--skill") => return print!("{}", include_str!("SKILL.md")),
-        Some("-V" | "--version" | "version") => return println!("herdr-app {}", env!("CARGO_PKG_VERSION")),
+        Some("-V" | "--version" | "version") => return println!("herdr-app {}", fork_build::version_line(env!("CARGO_PKG_VERSION"), fork_build::BUILD)),
         Some(other) => {
             eprint!("herdr-app: unknown argument {other:?}\n\n{HELP}");
             std::process::exit(2);

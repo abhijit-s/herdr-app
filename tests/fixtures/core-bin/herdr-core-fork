@@ -1,0 +1,2 @@
+#!/bin/sh
+echo 'hc 0.1.1 (fork abc1234)'
