@@ -358,9 +358,27 @@ Show a terminal in a pane for now, in place of its own (no terminal: back).
 
 ## `terminal.copy`
 
-Copy the focused terminal's selection. With nothing selected, that key goes to the program.
+Copy a terminal's selection (default: the focused terminal's). With nothing selected, that key goes to the program.
 
-No arguments.
+| Argument | Required |
+|---|---|
+| `terminal` | no |
+
+## `terminal.copy_all`
+
+Copy a terminal's screen and all the history the core keeps (default: the focused terminal), as plain text without the blank lines below the last text: what `hc read` prints. A full-screen program's history is read by scrolling it (typed keys wait meanwhile; up to 1000 lines). It answers at once; a toast says how it went.
+
+| Argument | Required |
+|---|---|
+| `terminal` | no |
+
+## `terminal.copy_path`
+
+Copy the folder a terminal is in (default: the focused terminal).
+
+| Argument | Required |
+|---|---|
+| `terminal` | no |
 
 ## `terminal.scroll`
 
@@ -375,9 +393,11 @@ Scroll a terminal's view of its history (default: the focused one). Give exactly
 
 ## `terminal.paste`
 
-Paste into the focused terminal (copied files as if dropped; an image alone as terminal.paste_image pastes it).
+Paste into a terminal (default: the focused one; copied files as if dropped; an image alone as terminal.paste_image pastes it).
 
-No arguments.
+| Argument | Required |
+|---|---|
+| `terminal` | no |
 
 ## `terminal.paste_image`
 

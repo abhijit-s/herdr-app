@@ -302,9 +302,9 @@ Properties any node can have:
 A personal terminal menu replaces the whole menu; it doesn't merge items.
 Create `mods/my-menu/main.js` and `mod.json` (e.g.
 `{"place":"none","overlay":{"width":280,"height":100}}`), then set the layout root's
-`"terminal_menu": "my-menu"`. It opens as a pointer popup, default 220×260 px;
+`"terminal_menu": "my-menu"`. It opens as a pointer popup, default 220 px wide and at most 420 px tall (it fits its items);
 its `mod.json` overlay width/height override those defaults. It gets
-`props()` = `{tab: "pane", target: {pane, terminal}, overlay}`. Always use
+`props()` = `{tab: "pane", target: {pane, terminal, selected, cwd}, overlay}`: `selected` is whether the terminal had a text selection when right-clicked (the right-click leaves it in place), `cwd` its folder or null. Always use
 `target.terminal` or `target.pane` in actions, not the focused terminal:
 right-clicking a different terminal must act on the one clicked. A terminal
 shown outside a tab (a layout terminal block, a window) has no pane:
@@ -650,7 +650,7 @@ The main ones:
   running until the next popup, which ends the program the last popup started,
   open or hidden; `herdr-app popup` wraps it),
   `terminal.show {terminal?, pane?}`, `terminal.search` (screen and scrollback;
-  find bar state stays with that terminal), `terminal.copy`, `terminal.paste` (copied
+  find bar state stays with that terminal), `terminal.copy {terminal?}` (the selection), `terminal.copy_all {terminal?}` (the screen and all the history the core keeps, as plain text: what `hc read` prints, without the blank lines below the last text; a toast says how many lines), `terminal.copy_path {terminal?}` (the folder the terminal is in), `terminal.paste {terminal?}` (copied
   files, such as Finder's or a clipboard manager's image, as if dropped; an image
   alone as `terminal.paste_image` pastes it), `terminal.paste_image` (Ctrl+V: an
   image, into a terminal on another machine: copied there, its path pasted; on
@@ -666,7 +666,7 @@ The main ones:
   there is no history, so nothing moves),
   `terminal.pin {terminal, pinned}` (pins an agent to the top of the agent lists;
   kept on the terminal as `herdr.pinned`, so every Herdr client shows it, and
-  gone when the terminal ends; read it as `agents()` `pinned`). Copy, paste, paste-image and implicit
+  gone when the terminal ends; read it as `agents()` `pinned`). Without `terminal`, copy, paste, paste-image and implicit
   right-click targeting follow keyboard focus, including peek and floating terminals;
   with no terminal holding keyboard focus, they use the focused pane or block.
   Dragging a text selection past the terminal's top or bottom scrolls while held;

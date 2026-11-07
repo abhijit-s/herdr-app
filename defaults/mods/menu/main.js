@@ -21,6 +21,9 @@ async function checkout(folder, on) {
   return common.stdout.trim() === `${top.stdout.trim()}/.git` ? "main" : "linked";
 }
 
+// Copy, copy all, paste, copy path: a group of their own at the top of the pane menu.
+const clip = (command) => command.startsWith("terminal.copy") || command === "terminal.paste";
+
 function items(p, git) {
   p = p ?? {};
   const tg = p.target ?? {};
@@ -35,7 +38,17 @@ function items(p, git) {
       // A terminal shown outside a tab (a layout terminal block, a window) has
       // no pane to split, zoom or close: its pane is the block's id.
       const inTab = panes().some((pane) => pane.pane === tg.pane);
+      // The window says whether the clicked terminal had a selection and where it is.
+      const on = term && { terminal: term.address };
       return [
+        ...(term
+          ? [
+              ...(tg.selected ? [["Copy", "terminal.copy", on]] : []),
+              ["Copy all", "terminal.copy_all", on],
+              ["Paste", "terminal.paste", on],
+              ...(tg.cwd ? [["Copy path", "terminal.copy_path", on]] : []),
+            ]
+          : []),
         ...(inTab
           ? [
               ["Split right", "pane.split", { direction: "right", pane: tg.pane }],
@@ -80,7 +93,7 @@ function items(p, git) {
 }
 
 function menuIcon(command) {
-  const name = command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : "terminal";
+  const name = command === "terminal.copy" ? "copy" : command === "terminal.copy_all" ? "files" : command === "terminal.copy_path" ? "folder" : command === "terminal.paste" ? "clipboard" : command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : "terminal";
   return `mods/workspace-chrome/${name}.svg`;
 }
 
@@ -138,7 +151,7 @@ export default class Menu extends View {
       .children(
         list.map((it, i) =>
           v_flex()
-            .when(i > 0 && (it[1].endsWith(".close") || it[1] === "app.help" || (it[1] === "app.theme" && list[i - 1][1] !== "app.theme")), el => el.child(div().mx(7).my(4).h(1).bg(t.border)))
+            .when(i > 0 && ((clip(list[i - 1][1]) && !clip(it[1])) || it[1].endsWith(".close") || it[1] === "app.help" || (it[1] === "app.theme" && list[i - 1][1] !== "app.theme")), el => el.child(div().mx(7).my(4).h(1).bg(t.border)))
             .child(h_flex()
             .id(`mi-${i}`)
             .h(31)
