@@ -432,11 +432,17 @@ mod tests {
         assert_eq!(screen.icons.get("mac/p"), None, "the stale icon is gone");
         assert_eq!(Document::capture(&screen, Some("mac")), cleared, "nothing to write back");
         assert_eq!(screen.icons.get("p"), Some(&letter), "the local one stays");
-        // Leaving the list drops its icons with its spaces.
+        // Leaving the list drops its icons with its spaces; mac2, a name mac
+        // prefixes, keeps its own through both.
+        chosen.replace(&mut screen, Some("mac2"));
+        chosen.replace(&mut screen, Some("mac"));
+        cleared.replace(&mut screen, Some("mac"));
+        assert_eq!(screen.icons.get("mac2/p"), Some(&letter), "replacing mac leaves mac2's");
         chosen.replace(&mut screen, Some("mac"));
         screen.retain_machines(|m| m != "mac");
         assert!(screen.space("mac/s").is_none());
-        assert_eq!(screen.icons.keys().collect::<Vec<_>>(), ["p"]);
+        assert!(screen.space("mac2/s").is_some());
+        assert_eq!(screen.icons.keys().collect::<Vec<_>>(), ["mac2/p", "p"]);
     }
 
     /// Reading a document writes nothing back by itself: entries this build

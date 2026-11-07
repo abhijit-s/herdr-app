@@ -293,7 +293,7 @@ impl Model {
     /// Keeps only the spaces, and their icons, of machines `keep` names (and this machine's).
     pub fn retain_machines(&mut self, keep: impl Fn(&str) -> bool) {
         self.spaces.retain(|s| s.machine.as_deref().is_none_or(&keep));
-        let kept = |id: &String| id.split_once('/').is_none_or(|(m, _)| keep(m));
+        let kept = |id: &String| crate::mirror::machine_of(id).is_none_or(&keep);
         self.icons.retain(|id, _| kept(id));
         self.icons_read.retain(|id, _| kept(id));
     }
