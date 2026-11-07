@@ -408,7 +408,9 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  agent works: `null` for the ring icon (`svg("mods/workspace-chrome/spinner.svg").spin(900)`),
  *  else `{ frames: string[], interval_ms: number }` for `.frames(frames, interval_ms)`, the
  *  frames padded to one length (see `working_spinner` in AGENTS.md). `working_spinner_presets`
- *  lists `{ name, frames, interval_ms }` for each preset besides the ring. */
+ *  lists `{ name, frames, interval_ms }` for each preset besides the ring. `space_avatar` is
+ *  how to draw space avatars: `"letter" | "glyph" | "emoji" | "repo"`, or `null` (unset or
+ *  unknown: draw letters). */
 export function settings(): Record<string, unknown>;
 
 /** Every key binding: { section, keys, action }. */
