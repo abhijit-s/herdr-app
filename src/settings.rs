@@ -286,8 +286,10 @@ pub fn theme_file_problems(name: &str, text: &str) -> Vec<String> {
 /// each ratio `toast_colors` holds, as `name: what, ratio under floor`.
 #[cfg(test)]
 pub fn toast_problems(name: &str, t: &Theme) -> Vec<String> {
-    let rgb = |k: &str| u32::from_str_radix(&t[k][1..7], 16).unwrap();
-    let (bg, surface) = (rgb("background"), rgb("toast"));
+    // As drawn: the toast over the background, the rest over the toast.
+    let bg = drawn_over(&t["background"], 0).unwrap();
+    let surface = drawn_over(&t["toast"], bg).unwrap();
+    let rgb = |k: &str| drawn_over(&t[k], surface).unwrap();
     let mut checks = vec![
         ("border on background", contrast(rgb("toast_border"), bg), TOAST_EDGE),
         ("border on surface", contrast(rgb("toast_border"), surface), TOAST_SEAM),
@@ -518,6 +520,17 @@ pub const TOAST_MARK: f32 = 3.0;
 /// The level colors a toast's stripe takes: (its key, the theme color it starts from).
 pub const TOAST_LEVELS: [(&str, &str); 4] = [("toast_info", "accent"), ("toast_success", "done"), ("toast_warning", "working"), ("toast_error", "blocked")];
 
+/// `#rrggbb`, or `#rrggbbaa` as it shows over `under`.
+fn drawn_over(v: &str, under: u32) -> Option<u32> {
+    let h = v.trim().trim_start_matches('#');
+    let rgb = u32::from_str_radix(h.get(..6)?, 16).ok()?;
+    match h.len() {
+        6 => Some(rgb),
+        8 => Some(mix(under, rgb, u32::from_str_radix(&h[6..], 16).ok()? as f32 / 255.0)),
+        _ => None,
+    }
+}
+
 /// The first of 101 even steps from `from` toward `to` (`from` itself first) that `ok` takes.
 fn step_until(from: u32, to: u32, ok: impl Fn(u32) -> bool) -> Option<u32> {
     (0..=100).map(|i| mix(from, to, i as f32 / 100.0)).find(|c| ok(*c))
@@ -531,16 +544,18 @@ fn step_until(from: u32, to: u32, ok: impl Fn(u32) -> bool) -> Option<u32> {
 /// theme that paints its own panels (Win98) starts from its `popover` and
 /// `border` and keeps them where they already hold.
 fn toast_colors(t: &Theme, own_panels: bool) -> Vec<(&'static str, String)> {
-    let get = |k: &str| t.get(k).and_then(|v| u32::from_str_radix(v.trim_start_matches('#').get(..6)?, 16).ok());
-    let bg = get("background").unwrap_or(0);
+    // Translucent values count as they show: over the background, or over the toast.
+    let over = |k: &str, under: u32| t.get(k).and_then(|v| drawn_over(v, under));
+    let bg = over("background", 0).unwrap_or(0);
+    let get = |k: &str| over(k, bg);
     let light = is_light(bg);
     let lum = |c: u32| contrast(c, 0);
     let far = if light { 0 } else { 0xffffff };
     // A color on the far side of the background from where it is, else black or white.
     let beyond = |c: Option<u32>| c.filter(|c| (lum(*c) > lum(bg)) != light).unwrap_or(far);
     let lifted = |c: u32| contrast(c, bg) >= TOAST_LIFT;
-    let own = |k: &str| get(k).filter(|_| own_panels);
-    let surface = get("toast").or_else(|| own("popover").filter(|c| light || lifted(*c))).unwrap_or_else(|| {
+    let own = |k: &str, under: u32| over(k, under).filter(|_| own_panels);
+    let surface = get("toast").or_else(|| own("popover", bg).filter(|c| light || lifted(*c))).unwrap_or_else(|| {
         if light {
             0xffffff
         } else {
@@ -548,13 +563,14 @@ fn toast_colors(t: &Theme, own_panels: bool) -> Vec<(&'static str, String)> {
         }
     });
     let edged = |c: u32| contrast(c, bg) >= TOAST_EDGE && contrast(c, surface) >= TOAST_SEAM;
-    let border = own("border")
+    let on_surface = |k: &str| over(k, surface);
+    let border = own("border", surface)
         .filter(|c| edged(*c))
         .or_else(|| step_until(bg, beyond(get("foreground")), edged))
         .or_else(|| step_until(bg, far, edged))
         .unwrap_or(far);
     let best = if contrast(0, surface) > contrast(0xffffff, surface) { 0 } else { 0xffffff };
-    let text = get("foreground").filter(|c| contrast(*c, surface) >= TOAST_TEXT).unwrap_or(best);
+    let text = on_surface("foreground").filter(|c| contrast(*c, surface) >= TOAST_TEXT).unwrap_or(best);
     let toward_text = |c: Option<u32>, floor: f32| c.and_then(|c| step_until(c, text, |c| contrast(c, surface) >= floor)).unwrap_or(text);
     let shadow = if light { "#0000002e" } else { "#00000099" };
     let mut out = vec![
@@ -562,9 +578,9 @@ fn toast_colors(t: &Theme, own_panels: bool) -> Vec<(&'static str, String)> {
         ("toast_border", hex(border)),
         ("toast_shadow", shadow.to_owned()),
         ("toast_foreground", hex(text)),
-        ("toast_muted", hex(toward_text(get("muted"), TOAST_TEXT))),
+        ("toast_muted", hex(toward_text(on_surface("muted"), TOAST_TEXT))),
     ];
-    out.extend(TOAST_LEVELS.map(|(key, from)| (key, hex(toward_text(get(from), TOAST_MARK)))));
+    out.extend(TOAST_LEVELS.map(|(key, from)| (key, hex(toward_text(on_surface(from), TOAST_MARK)))));
     out
 }
 
@@ -796,6 +812,18 @@ mod derivation_tests {
         assert_eq!(toast_problems("own toast", &t), Vec::<String>::new(), "the rest are held to the toast that's drawn");
         let light: BTreeMap<String, String> = [("toast".to_owned(), "#ffffff".to_owned())].into();
         assert_eq!(toast_problems("white toast on graphite", &drawn(&p, &light, PanelColors::Tinted, false)), Vec::<String>::new());
+        // Translucent colors count as drawn: classic's `#ffffff18` border under
+        // a theme's own popover isn't a solid white line, and a see-through
+        // toast of your own is held to the floors as it shows.
+        let own: BTreeMap<String, String> = [("popover".to_owned(), "#3a3f4a".to_owned())].into();
+        let t = drawn(&p, &own, PanelColors::Classic, false);
+        assert_eq!(t["border"], "#ffffff18");
+        assert_ne!(t["toast_border"], "#ffffff", "classic's translucent border read as solid");
+        assert_eq!(toast_problems("own popover, classic", &t), Vec::<String>::new());
+        let see_through: BTreeMap<String, String> = [("toast".to_owned(), "#ffffff80".to_owned())].into();
+        let t = drawn(&p, &see_through, PanelColors::Tinted, false);
+        assert_eq!(toast_problems("see-through toast", &t), Vec::<String>::new());
+        assert_eq!(drawn_over("#ffffff80", 0), Some(0x808080));
         // A theme that paints its panels keeps its own toast where it holds: Win98's grey.
         let (p, own) = parse_theme_file("win98", THEMES.iter().find(|(n, _)| *n == "win98").unwrap().1).unwrap();
         let t = drawn(&p, &own, PanelColors::Tinted, false);
@@ -1486,6 +1514,17 @@ pub struct ToastOffset {
     pub y: f32,
 }
 
+/// How far `toast_offset` moves a stack, px at zoom 1: out to the window's
+/// edge at most, and in no further than a typo can't take it off screen.
+pub const TOAST_OFFSET: std::ops::RangeInclusive<f32> = -16.0..=400.0;
+
+impl ToastOffset {
+    fn within(o: ToastOffset) -> ToastOffset {
+        let clamp = |v: f32| if v.is_finite() { v.clamp(*TOAST_OFFSET.start(), *TOAST_OFFSET.end()) } else { 0.0 };
+        ToastOffset { x: clamp(o.x), y: clamp(o.y) }
+    }
+}
+
 /// How panels derive the colors a theme leaves unset: tinted toward the
 /// theme's own foreground, or classic white, black and warm grey.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1844,9 +1883,13 @@ pub struct Settings {
     pub colors: BTreeMap<String, String>,
     /// A draggable scroll position thumb at a terminal pane's right edge.
     pub pane_scrollbars: bool,
-    /// Where toasts show, and how far in from the edges (`ToastOffset`).
+    /// Where toasts show, and how far in from the edges (`ToastOffset`,
+    /// each within `TOAST_OFFSET`).
     pub toast_position: ToastPosition,
     pub toast_offset: ToastOffset,
+    /// Why `toast_offset` as written was brought within `TOAST_OFFSET`.
+    #[serde(skip)]
+    pub toast_offset_problem: Option<String>,
     /// `focus_border_width` as written (`focus_width` reads it).
     pub focus_border_width: Option<f32>,
     /// Space between a terminal's edge and its text, in px: [x, y].
@@ -1947,6 +1990,7 @@ impl Default for Settings {
             pane_scrollbars: true,
             toast_position: ToastPosition::BottomRight,
             toast_offset: ToastOffset::default(),
+            toast_offset_problem: None,
             focus_border_width: None,
             terminal_padding: [10.0, 6.0],
             terminal_opacity: 1.0,
@@ -2039,7 +2083,11 @@ impl Settings {
             colors,
             pane_scrollbars: person.pane_scrollbars,
             toast_position: person.toast_position,
-            toast_offset: person.toast_offset.unwrap_or_default(),
+            toast_offset: ToastOffset::within(person.toast_offset.unwrap_or_default()),
+            toast_offset_problem: person.toast_offset.filter(|o| ToastOffset::within(*o) != *o).map(|o| {
+                let w = ToastOffset::within(o);
+                format!("toast_offset {{x: {}, y: {}}} is outside {}..{}: using {{x: {}, y: {}}}", o.x, o.y, TOAST_OFFSET.start(), TOAST_OFFSET.end(), w.x, w.y)
+            }),
             focus_border_width: person.focus_border_width,
             terminal_padding: look.terminal_padding.unwrap_or(d.terminal_padding),
             terminal_opacity: look.terminal_opacity.unwrap_or(1.0).clamp(0.0, 1.0),
@@ -2158,6 +2206,7 @@ impl Settings {
         }
         out.extend(self.working_spinner_problem.clone());
         out.extend(self.notification_sounds_problem.clone());
+        out.extend(self.toast_offset_problem.clone());
         out.extend(self.space_avatar_problem.clone());
         if !(-2.0..=10.0).contains(&self.letter_spacing) {
             out.push(format!("letter_spacing {} is outside -2..10", self.letter_spacing));
@@ -3513,7 +3562,13 @@ mod tests {
             assert_eq!(serde_json::to_value(position).unwrap(), name);
         }
         let person: Person = serde_json::from_value(serde_json::json!({"toast_offset": {"y": 24}})).unwrap();
-        assert_eq!(Settings::compose(&person, &crate::layout::Look::default(), true).toast_offset, ToastOffset { x: 0.0, y: 24.0 });
+        let s = Settings::compose(&person, &crate::layout::Look::default(), true);
+        assert_eq!((s.toast_offset, s.problems()), (ToastOffset { x: 0.0, y: 24.0 }, vec![]));
+        // A typo can't take the stack off screen: it's brought within range, and said.
+        let person: Person = serde_json::from_value(serde_json::json!({"toast_offset": {"x": 5000, "y": -90}})).unwrap();
+        let s = Settings::compose(&person, &crate::layout::Look::default(), true);
+        assert_eq!(s.toast_offset, ToastOffset { x: 400.0, y: -16.0 });
+        assert_eq!(s.problems(), vec!["toast_offset {x: 5000, y: -90} is outside -16..400: using {x: 400, y: -16}".to_string()]);
         for bad in [serde_json::json!({"toast_position": "middle"}), serde_json::json!({"toast_position": "bottom_right"}), serde_json::json!({"toast_offset": {"z": 1}}), serde_json::json!({"toast_offset": 4})] {
             assert!(serde_json::from_value::<Person>(bad.clone()).is_err(), "{bad}");
         }
