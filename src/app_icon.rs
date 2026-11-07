@@ -173,6 +173,79 @@ mod tests {
         }
     }
 
+    /// The sizes in a built-in's .icns as AppKit decodes them: pixels across ->
+    /// the alpha of every pixel, row by row.
+    #[cfg(target_os = "macos")]
+    fn icns_alpha(icon: &AppIcon) -> std::collections::BTreeMap<isize, Vec<u8>> {
+        use objc2_app_kit::{NSBitmapFormat, NSBitmapImageRep};
+        let data = objc2_foundation::NSData::with_bytes(&icon.bytes().unwrap());
+        let mut sizes = std::collections::BTreeMap::new();
+        for rep in NSBitmapImageRep::imageRepsWithData(&data) {
+            let Ok(rep) = rep.downcast::<NSBitmapImageRep>() else { continue };
+            let (px, row, step) = (rep.pixelsWide(), rep.bytesPerRow() as usize, rep.bitsPerPixel() as usize / 8);
+            let format = rep.bitmapFormat();
+            assert!(rep.pixelsHigh() == px && !rep.isPlanar() && rep.bitsPerSample() == 8 && rep.hasAlpha(), "{px} px: a square 8-bit bitmap with alpha");
+            assert!((format & !(NSBitmapFormat::AlphaFirst | NSBitmapFormat::AlphaNonpremultiplied)).is_empty(), "{px} px: bytes in RGBA or ARGB order");
+            let alpha_at = if format.contains(NSBitmapFormat::AlphaFirst) { 0 } else { step - 1 };
+            // SAFETY: the rep owns `row` bytes for each of its `px` rows while it lives.
+            let bytes = unsafe { std::slice::from_raw_parts(rep.bitmapData(), row * px as usize) };
+            let alpha = (0..px as usize).flat_map(|y| (0..px as usize).map(move |x| bytes[y * row + x * step + alpha_at])).collect();
+            sizes.insert(px, alpha);
+        }
+        sizes
+    }
+
+    /// macOS draws an app icon at 16 to 1024 px; each built-in's .icns holds
+    /// every one of those sizes, so none is scaled from another.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn every_built_in_has_every_icon_size() {
+        for (name, icon) in BUILT_IN {
+            let sizes: Vec<_> = icns_alpha(&icon).into_keys().collect();
+            assert_eq!(sizes, [16, 32, 64, 128, 256, 512, 1024], "{name}");
+        }
+    }
+
+    /// Each drawn variant (scripts/app-icons.py) sits on macOS's icon grid, as
+    /// the system draws other apps' icons beside it in the Dock and the app
+    /// switcher: an opaque tile 824 of 1024 px across with 100 px margins, at
+    /// every size, with the system's corners and shadow, and nothing in the
+    /// margins more than that soft shadow. Classic
+    /// is upstream's own .icns and isn't drawn here.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn drawn_variants_sit_on_the_macos_icon_grid() {
+        for (name, icon) in BUILT_IN.into_iter().filter(|(_, icon)| !icon.is_classic()) {
+            for (px, alpha) in icns_alpha(&icon) {
+                let n = px as usize;
+                let solid = |x: usize, y: usize| alpha[y * n + x] > 127;
+                let rows: Vec<_> = (0..n).filter(|&y| (0..n).any(|x| solid(x, y))).collect();
+                let cols: Vec<_> = (0..n).filter(|&x| (0..n).any(|y| solid(x, y))).collect();
+                let (x0, y0, x1, y1) = (cols[0], rows[0], cols[cols.len() - 1], rows[rows.len() - 1]);
+                let margins = [x0, y0, n - 1 - x1, n - 1 - y1];
+                let (want, slack) = (100.0 * px as f64 / 1024.0, 1.0 + 3.0 * px as f64 / 1024.0);
+                for margin in margins {
+                    assert!((margin as f64 - want).abs() <= slack, "{name} at {px} px: margins {margins:?}, want {want:.1}");
+                }
+                // Past the edge's one antialiased pixel, so a re-render shifting it by a count doesn't fail.
+                let outside = (0..n).flat_map(|y| (0..n).map(move |x| (x, y))).filter(|&(x, y)| x + 1 < x0 || x > x1 + 1 || y + 1 < y0 || y > y1 + 1);
+                let densest = outside.map(|(x, y)| alpha[y * n + x]).max().unwrap_or(0);
+                assert!(densest < 80, "{name} at {px} px: a margin pixel is {densest}/255 opaque");
+                if px == 1024 {
+                    // The corners are the system's superellipse, not circular arcs (row 110
+                    // starts at x 254 and row 200 at x 133 in macOS's own icons), and the
+                    // shadow below the tile is there (44/255 just under it).
+                    let first = |y: usize| (0..n).find(|&x| solid(x, y)).unwrap();
+                    for (y, want) in [(110, 254), (200, 133)] {
+                        assert!(first(y).abs_diff(want) <= 2, "{name}: row {y} starts at x {}, want {want}", first(y));
+                    }
+                    let under = alpha[(y1 + 2) * n + n / 2];
+                    assert!((30..60).contains(&under), "{name}: {under}/255 under the tile, want the system's shadow");
+                }
+            }
+        }
+    }
+
     /// SVG files decode too (AppKit's own SVG support), as the docs promise.
     #[cfg(target_os = "macos")]
     #[test]
