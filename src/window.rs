@@ -2604,6 +2604,8 @@ impl AppWindow {
         // title, stripped above) is an ordinary tick, not news for the mods.
         let terminals_changed = mods::publish_terminals(list);
         self.tend_terminals(terminals_changed, window, cx);
+        // Only a listing from the core counts: a tick before it has no terminals.
+        self.listed_once = true;
         if terminals_changed {
             self.refresh_snapshot_mods(cx);
         }
@@ -2639,19 +2641,7 @@ impl AppWindow {
             if let Some(alert) = self.model.alert_for(addr, child, prev.as_deref(), word.as_deref(), looking) {
                 alerts.push((addr.clone(), alert, prev.clone(), looking));
             }
-            // A notification from before Herdr started (a quit, a crash, an
-            // update) can still be up: the core outlived it. Adopt a blocked
-            // agent's as a "needs you", and take any other down.
-            if !self.listed_once {
-                if matches!(word.as_deref(), Some("blocked" | "error")) {
-                    self.notified.posted(addr, model::Alert::Blocked);
-                } else {
-                    crate::alert::dismiss(&crate::alert::tag(addr), cx);
-                }
-            }
-            if self.notified.withdraw(addr, word.as_deref(), looking, sticky) {
-                crate::alert::dismiss(&crate::alert::tag(addr), cx);
-            }
+            let said = word.clone();
             changed |= self.model.set_word(addr, word, app, looking);
             let turn = rec.get("turn").and_then(Value::as_u64).unwrap_or(0);
             let label = rec.pointer("/labels/herdr.seen").and_then(Value::as_str).and_then(|s| s.parse::<u64>().ok());
@@ -2660,6 +2650,20 @@ impl AppWindow {
             // seen flag does (`Model::status`).
             let seen_turn = if unreported.contains_key(addr) { None } else { label.max(self.written_seen.get(addr).copied()) };
             changed |= self.model.set_turn(addr, turn, seen_turn);
+            // A notification from before Herdr started (a quit, a crash, an
+            // update) can still be up: the core outlived it. Adopt the one the
+            // agent's state would have posted, and take any other down.
+            if !self.listed_once && !child {
+                match (said.as_deref(), self.model.status(addr)) {
+                    (Some("blocked"), _) => self.notified.posted(addr, model::Alert::Blocked),
+                    (Some("error"), _) => self.notified.posted(addr, model::Alert::Error),
+                    (_, Some("done")) => self.notified.posted(addr, model::Alert::Done),
+                    _ => crate::alert::dismiss(&crate::alert::tag(addr), cx),
+                }
+            }
+            if self.notified.withdraw(addr, said.as_deref(), looking, sticky) {
+                crate::alert::dismiss(&crate::alert::tag(addr), cx);
+            }
         }
         self.written_seen.retain(|a, _| self.live.contains_key(a));
         for gone in self.notified.gone(|a| self.live.contains_key(a)) {
@@ -2681,7 +2685,6 @@ impl AppWindow {
             }
             self.tell_term(&t.view, &t.address, cx);
         }
-        self.listed_once = true;
         if changed {
             self.sync(window, cx);
         } else if listed {
@@ -8501,6 +8504,22 @@ export default class Recent extends View {
         assert_eq!(list(Some("blocked"), false, cx), ["An agent needs you"]);
         restart(cx);
         assert_eq!(list(Some("working"), false, cx), none, "unblocked while Herdr was down: taken down on the first listing");
+        assert_eq!(list(Some("error"), false, cx), ["An agent hit an error"]);
+        restart(cx);
+        assert_eq!(list(Some("error"), false, cx), ["An agent hit an error"], "an error's adopted");
+        assert_eq!(list(Some("error"), true, cx), none, "adopted as an error: seen, it goes");
+        list(Some("working"), false, cx);
+        assert_eq!(list(Some("idle"), false, cx), ["An agent finished"]);
+        restart(cx);
+        assert_eq!(list(Some("idle"), false, cx), ["An agent finished"], "an unseen finish is adopted");
+        assert_eq!(list(Some("idle"), true, cx), none, "adopted as a finish: seen, it goes");
+        // A tick before the core's first listing has no terminals: it
+        // mustn't count as the first listing.
+        list(Some("working"), false, cx);
+        assert_eq!(list(Some("blocked"), false, cx), ["An agent needs you"]);
+        restart(cx);
+        cx.update(|window, cx| view.update(cx, |this, cx| this.tend_terminals(false, window, cx)));
+        assert_eq!(list(Some("working"), false, cx), none, "adoption waited for the real listing");
 
         set(false, cx);
         list(Some("working"), false, cx);
