@@ -9086,7 +9086,7 @@ export default class Probe extends View {
         let target = json!({ "pane": "p2", "terminal": "t8" });
         let stock = super::terminal_menu_spec("menu", &json!({}), "pane", target.clone());
         assert_eq!(stock["width"], 220.0);
-        assert_eq!(stock["height"], 260.0);
+        assert_eq!(stock["height"], 420.0);
         let custom = super::terminal_menu_spec("personal-menu", &json!({"kind": "dialog", "width": 310, "height": 120}), "pane", target.clone());
         assert_eq!(custom["mod"], "personal-menu");
         assert_eq!(custom["kind"], "popup");
@@ -9095,7 +9095,7 @@ export default class Probe extends View {
         assert_eq!(custom["props"], json!({"tab": "pane", "target": target}));
         let partial = super::terminal_menu_spec("personal-menu", &json!({"width": 0.4}), "pane", json!({}));
         assert_eq!(partial["width"], 0.4);
-        assert_eq!(partial["height"], 260.0);
+        assert_eq!(partial["height"], 420.0);
     }
 
     #[test]
