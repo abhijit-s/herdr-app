@@ -704,6 +704,11 @@ pub struct FolderInfo {
     /// The checkout's top folder (a worktree's own), else the folder itself.
     pub top: String,
     pub branch: Option<String>,
+    /// Commits ahead of and behind its upstream, and uncommitted changes, for
+    /// `pane_header_info`.
+    pub ahead: u64,
+    pub behind: u64,
+    pub dirty: bool,
 }
 
 /// A space as mods see it. `name` is what to call it; `named`: someone gave it
@@ -779,7 +784,7 @@ mod tests {
         assert_eq!(m.space_name(&p, "/home/me"), "~");
         m.pane_folders.insert("x1".into(), "/src/notes".into());
         assert_eq!(m.space_name(&p, "/home/me"), "notes");
-        m.folder_info.insert("t1".into(), FolderInfo { top: "/src/herdr".into(), branch: Some("main".into()) });
+        m.folder_info.insert("t1".into(), FolderInfo { top: "/src/herdr".into(), branch: Some("main".into()), ..Default::default() });
         assert_eq!(m.space_name(&p, "/home/me"), "herdr");
         let names: Vec<String> = p.tabs.iter().map(|c| Model::tab_name(&p, c)).collect();
         assert_eq!(names.iter().map(String::as_str).collect::<Vec<_>>(), ["1", "review", "3"]);

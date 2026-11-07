@@ -2,7 +2,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { hc, run, theme, themes, fonts, updates, telemetry, settings, layoutSpacing, layouts, shared, setShared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window } from "herdr";
+import { hc, run, theme, themes, fonts, updates, telemetry, settings, layoutSpacing, layouts, shared, setShared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window, headerInfoPreview } from "herdr";
 
 const I = (name) => `frame/settings/${name}.svg`;
 
@@ -221,6 +221,9 @@ const FOCUS_WIDTHS = [
 ];
 // Theme colors offered for the active pane's border (colors.focus).
 const FOCUS_SWATCHES = ["ansi1", "ansi2", "ansi3", "ansi4", "ansi5", "ansi6", "terminal_foreground"];
+// pane_header_info's suggestion: what the agent asks, the branch, the state and for how long.
+const SUGGESTED_HEADER_INFO = "{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed}";
+
 const RESUME_AGENTS = [
   ["ask", "Ask"],
   ["auto", "Auto"],
@@ -416,6 +419,7 @@ export default class Settings extends View {
     this.place = { page: this.section, heading: "" };
     this.index = null;
     this.matched = null;
+    this.headerInputState();
     this.searchInput = InputState.new({ placeholder: "Search settings" });
     this.searchInput.on("change", (_e, cx) => { this.setQuery(this.searchInput.value(), false); cx.notify(); });
     this.searchInput.on("focus", (_e, cx) => { this.searchFocused = true; cx.notify(); });
@@ -423,7 +427,7 @@ export default class Settings extends View {
     this.handle = cx.focus_handle();
     this.handle.focus();
     cx.spawn(async (cx) => {
-      await this.load();
+      await this.load(true);
       if (this.section === "machines") await this.loadMachines();
       cx.notify();
     });
@@ -473,7 +477,9 @@ export default class Settings extends View {
 
   // `broken`: settings.json doesn't parse (mid-edit), or isn't an object, so
   // nothing may be written over it.
-  async load() {
+  // `syncHeader`: put settings.json's pane_header_info in its field (on opening;
+  // not on a save's re-read, which would undo what the field is writing).
+  async load(syncHeader = false) {
     this.raw = await readTextFile(this.file());
     try {
       const person = this.raw ? JSON.parse(this.raw) : {};
@@ -483,6 +489,30 @@ export default class Settings extends View {
       this.person = {};
       this.broken = true;
     }
+    const typed = this.person.pane_header_info ?? "";
+    if (syncHeader && !this.headerFocused && this.headerInput && this.headerInput.value() !== typed) this.headerInput.set_value(typed);
+  }
+
+  // pane_header_info as typed: previewed live, written on Enter or leaving the field.
+  // Made in init (input state can't be made while rendering).
+  headerInputState() {
+    if (this.headerInput) return this.headerInput;
+    const input = (this.headerInput = InputState.new({ placeholder: "Off" }));
+    input.set_value(this.person.pane_header_info ?? "");
+    input.on("change", (_e, cx) => cx.notify());
+    input.on("focus", (_e, cx) => { this.headerFocused = true; cx.notify(); });
+    input.on("blur", (_e, cx) => { this.headerFocused = false; this.setHeaderInfo(input.value(), cx); });
+    input.on("submit", (_e, cx) => this.setHeaderInfo(input.value(), cx));
+    return input;
+  }
+
+  // pane_header_info: blank leaves it out of settings.json (headers as without it).
+  setHeaderInfo(text, cx) {
+    if (text === (this.person.pane_header_info ?? "")) return cx.notify();
+    this.change((p) => {
+      if (text.trim()) p.pane_header_info = text;
+      else delete p.pane_header_info;
+    }, cx);
   }
 
   // Changes settings.json the way an agent would: read, change, write back
@@ -1362,6 +1392,15 @@ export default class Settings extends View {
       .w_full()
       .child(this.heading(t, "Agents"))
       .child(this.row(t, "Working spinner", "What spins while an agent works: in pane headers, tabs, the agents list, the picker and peeks.", this.spinnerPicker(t), "working_spinner"))
+      .child(
+        this.row(
+          t,
+          "Header info",
+          "Extra words in an agent pane's header, as fit: {ask} what it needs from you, {state} {elapsed}, {branch}{ahead}{behind}{dirty}. · or | separates segments; empty ones and those that don't fit are left out. Empty: off.",
+          this.headerInfoField(t),
+          "pane_header_info",
+        ),
+      )
       .child(this.plain(div().h(18)))
       .child(this.heading(t, "After a restart"))
       .child(
@@ -1372,6 +1411,59 @@ export default class Settings extends View {
           this.choicePicker(t, "st-ra", "resume_agents", RESUME_AGENTS),
           "resume_agents",
         ),
+      );
+  }
+
+  // pane_header_info: the template, the suggestion, and the template as a
+  // blocked agent's header would show it.
+  headerInfoField(t) {
+    const input = this.headerInputState();
+    const typed = input.value();
+    const preview = typed.trim() ? headerInfoPreview(typed) : null;
+    return v_flex()
+      .w(340)
+      .gap(6)
+      .child(
+        h_flex()
+          .gap(6)
+          .items_center()
+          .child(Input.new(input).flex_1().min_w(0).h(28).px(8).rounded(7).border_1().border_color(this.headerFocused ? t.accent : t.input).bg(t.background).text_size(12).font_family(DEFAULT_FONT).text_color(t.foreground))
+          .when(typed !== SUGGESTED_HEADER_INFO, (el) =>
+            el.child(
+              div()
+                .id("st-hi-suggested")
+                .flex_none()
+                .px(8)
+                .py(4)
+                .rounded(6)
+                .text_size(12)
+                .text_color(t.muted)
+                .cursor_pointer()
+                .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                .on_click((_e, cx) => {
+                  input.set_value(SUGGESTED_HEADER_INFO);
+                  this.setHeaderInfo(SUGGESTED_HEADER_INFO, cx);
+                })
+                .child("Use suggested"),
+            ),
+          ),
+      )
+      .child(
+        h_flex()
+          .id("st-hi-preview")
+          .h(18)
+          .min_w(0)
+          .items_center()
+          .text_size(12)
+          .when(!preview, (el) => el.text_color(t.dim).child(typed.trim() ? "Nothing to show" : "Off: headers show no extra info"))
+          .when(Boolean(preview), (el) =>
+            el.tooltip(preview.text).overflow_hidden().children(
+              preview.segments.flatMap((s, i) => [
+                ...(s.sep ? [div().flex_none().whitespace_nowrap().text_color(t.dim).child(s.sep)] : []),
+                div().when(i === preview.segments.length - 1, (d) => d.min_w(0).truncate()).when(i < preview.segments.length - 1, (d) => d.flex_none().whitespace_nowrap()).text_color(s.ask ? t.blocked : t.dim).child(s.text),
+              ]),
+            ),
+          ),
       );
   }
 

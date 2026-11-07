@@ -265,6 +265,25 @@ export interface PaneInfo {
   text_size?: number | null;
   /** The app's top-center grip can rearrange this pane. False when zoomed or alone. */
   movable: boolean;
+  /** An agent pane's `pane_header_info`, resolved when what it shows changes (and on the
+   *  minute for `{elapsed}`); null when unset, for shells, and when every segment is empty.
+   *  Draw what `fitHeaderInfo` keeps for your width; `text` is the whole line, for a tooltip. */
+  header_info?: HeaderInfo | null;
+}
+
+/** `PaneInfo.header_info`. */
+export interface HeaderInfo {
+  text: string;
+  segments: HeaderSegment[];
+}
+
+/** One segment: its text, the separator before it as written ("" for the first one shown),
+ *  and whether it holds the request of an agent that needs the person (draw it in
+ *  `theme().blocked`; it is the last to go). */
+export interface HeaderSegment {
+  sep: string;
+  text: string;
+  ask: boolean;
 }
 
 /** Every pane in every tab. A pane header mod finds its own with
@@ -438,7 +457,8 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  frames padded to one length (see `working_spinner` in AGENTS.md). `working_spinner_presets`
  *  lists `{ name, frames, interval_ms }` for each preset besides the ring. `space_avatar` is
  *  how to draw space avatars: `"letter" | "glyph" | "emoji" | "repo"`, or `null` (unset or
- *  unknown: draw letters). */
+ *  unknown: draw letters). `pane_header_info` is the agent pane header's template, or `null`
+ *  (unset or blank); panes carry it resolved as `header_info`. */
 export function settings(): Record<string, unknown>;
 
 /** Every key binding: { section, keys, action }. */
@@ -573,6 +593,17 @@ export interface GitStatus {
  * Missing on older herdr-app builds: `import * as herdr from "herdr"` and check
  * `typeof herdr.gitStatus === "function"` to keep a fallback.
  */
+/** The segments of `header_info` that fit in `width` px of `fontPx` text, as Herdr
+ *  estimates them: whole segments go from the right, a blocked `ask` last; a lone one that
+ *  still doesn't fit stays (draw it with `.truncate()`), and none when fewer than about four
+ *  characters would show. The first kept segment's `sep` is "". */
+export function fitHeaderInfo(segments: HeaderSegment[], width: number, fontPx: number): HeaderSegment[];
+
+/** A `pane_header_info` template resolved with sample values (an agent blocked on
+ *  "approve Bash: make" for 45s, on main, 2 ahead, with changes), as `header_info`; null
+ *  when nothing would show. For a settings preview. */
+export function headerInfoPreview(template: string): HeaderInfo | null;
+
 export function gitStatus(folder: string, options?: { on?: string | null; files?: boolean }): GitStatus | false | null;
 
 /**

@@ -4,13 +4,50 @@
 // else the program's from the app's program table), the pane's label (its
 // name, automatic name, telling title, session, else program: see `label`
 // in AGENTS.md), where an agent or a bare shell unnamed shows its program's name, the folder,
-// the pane's own text size while pane.zoom_text_* sets it, and the agent's
-// status; buttons split, zoom and close this pane.
-// Props from the app: { pane, terminal }. Click: focus the pane.
+// the pane's own text size while pane.zoom_text_* sets it, the agent's
+// `pane_header_info` (Herdr's `header_info`: as many segments as fit, the
+// whole line in its tooltip) and its status; buttons split, zoom and close this pane.
+// Props from the app: { pane, terminal }. Click: focus the pane; right-click: its menu.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { panes, props, run, theme, home, settings } from "herdr";
+import { panes, props, run, theme, home, settings, fitHeaderInfo, openOverlay } from "herdr";
+
+const TEXT = 12;
+const GAP = 8;
+// What the header's other items take, in px, for what's left to the info.
+const BUTTONS = 4 * (14 + 6 + GAP);
+const STATUS = { working: 12, blocked: 70, done: 7 };
+
+// About the width `text` takes at the header's text size (fitHeaderInfo's estimate).
+const estimate = (text) => [...text].length * TEXT * 0.6;
+
+// The width left to the info: the header less its padding and every other item but the
+// folder (which gives way first), the buttons too while hovered.
+function infoRoom(width, items, hovered) {
+  if (width == null) return 0;
+  const taken = items.filter((w) => w != null);
+  return width - 20 - taken.reduce((a, w) => a + w + GAP, GAP) - (hovered ? BUTTONS : 0);
+}
+
+// The info that fits beside everything else: the name keeps its width, the
+// buttons theirs while hovered; segments go from the right (Herdr's
+// fitHeaderInfo), the last one left ends in an ellipsis.
+function info(t, p, room) {
+  const shown = fitHeaderInfo(p.header_info.segments, room, TEXT);
+  if (!shown.length) return null;
+  const last = shown.length - 1;
+  return h_flex()
+    .id(`pane-info-${p.pane}`)
+    .flex_shrink_1()
+    .min_w(0)
+    .overflow_hidden()
+    .tooltip(p.header_info.text)
+    .children(shown.flatMap((s, i) => [
+      ...(s.sep ? [div().flex_none().whitespace_nowrap().text_color(t.dim).child(s.sep)] : []),
+      div().when(i === last, (el) => el.min_w(0).truncate()).when(i !== last, (el) => el.flex_none().whitespace_nowrap()).text_color(s.ask ? t.blocked : t.dim).child(s.text),
+    ]));
+}
 
 // The person's working_spinner: the ring, or frames in the terminal font,
 // centred in a fixed width so nothing beside it moves as they change.
@@ -40,7 +77,7 @@ function folder(cwd) {
 }
 
 export default class Pane extends View {
-  init() { this.hovered = false; }
+  init() { this.hovered = false; this.width = null; }
 
   me() {
     return panes().find((p) => p.pane === props()?.pane);
@@ -68,6 +105,9 @@ export default class Pane extends View {
     const pic = p.icon ? own(p.icon, 13, t.dim) : icon(p.program, 14, t.dim);
     const st = p.status;
     const pane = p.pane;
+    const textSize = p.text_size != null ? `${Math.round(p.text_size * 10) / 10}pt` : null;
+    const room = infoRoom(this.width, [pic ? 14 : null, Math.min(260, estimate(name)), textSize ? estimate(textSize) : null, STATUS[st] ?? null], this.hovered);
+    const extra = p.header_info ? info(t, p, room) : null;
     return h_flex()
       .id(`pane-head-${pane}`)
       .size_full()
@@ -79,11 +119,15 @@ export default class Pane extends View {
       .border_color(t.border)
       .text_size(12)
       .on_hover((hovered, cx) => { this.hovered = hovered; cx.notify(); })
+      .when(Boolean(p.header_info), (el) => el.on_size_change((size, cx) => { this.width = size.width; cx.notify(); }))
       .on_click(() => run("pane.focus", { pane }))
+      // The pane's menu, as a right-click on its terminal opens it (no selection to copy).
+      .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "pane", target: { pane, terminal: p.terminal, cwd: p.cwd ?? null } } }); })
       .when(Boolean(pic), (el) => el.child(pic))
       .child(div().flex_none().truncate().max_w(260).font_medium().text_color(t.foreground).child(name))
       .child(div().flex_1().truncate().text_color(t.dim).child(folder(p.cwd)))
-      .when(p.text_size != null, el => el.child(div().id(`pane-text-size-${pane}`).flex_none().text_size(10.5).text_color(t.dim).child(`${Math.round(p.text_size * 10) / 10}pt`)))
+      .when(Boolean(extra), el => el.child(extra))
+      .when(p.text_size != null, el => el.child(div().id(`pane-text-size-${pane}`).flex_none().text_size(10.5).text_color(t.dim).child(textSize)))
       .when(st === "working", el => el.child(working(t)))
       .when(st === "blocked", el => el.child(div().flex_none().px(6).h(18).flex().items_center().rounded(5).bg(t.blocked + "26").text_size(10.5).font_semibold().text_color(t.blocked).child("Needs you")))
       .when(st === "done", el => el.child(div().size(7).flex_none().rounded(4).bg(t.done)))

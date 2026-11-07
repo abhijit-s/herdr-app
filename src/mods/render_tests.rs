@@ -154,6 +154,10 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
     module = module.async_function("knownAgents", |_| Ok(async { Ok(HostValue::Array(vec![])) }));
     module = module.async_function("pickFolder", |_| Ok(async { Ok(HostValue::Null) }));
     module = module.function("gitStatus", |_| Ok(HostValue::Null));
+    module = module.function("fitHeaderInfo", |a| {
+        crate::header_info::fit_for_mods(from_host(a.value(0)?), a.number(1)? as f32, a.number(2)? as f32).map(|v| to_host(&v)).map_err(HostError::new)
+    });
+    module = module.function("headerInfoPreview", |a| Ok(to_host(&crate::header_info::preview_for_mods(a.string(0)?))));
     module = module.function("refreshGitStatus", |_| Ok(HostValue::Null));
     for name in ["nextCommand", "watchFolder", "nextGitStatus"] {
         module = module.async_function(name, |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
@@ -1095,14 +1099,15 @@ fn pane_headers_show_the_automatic_name_after_the_persons(cx: &mut TestAppContex
     }
 }
 
-/// The pane header of a working agent, at the default `working_spinner`, is
-/// the header drawn before the setting existed, line for line: the ring.
+/// The pane header of a working agent, at the default `working_spinner` and
+/// without `pane_header_info`, is the header drawn before those settings
+/// existed, line for line (the ring), plus its right-click menu.
 #[gpui::test]
 fn pane_header_draws_the_ring_by_default_as_it_always_has(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let tree = describe(cx, &staged, "mods/pane", true, json!({"pane":"p1","terminal":"t1"}), updates("current", "current"), None).unwrap();
-    assert_eq!(tree.trim_end(), r##"h_flex :id[Str("pane-head-p1")] .size_full .px[Number(10.0)] .gap[Number(8.0)] .items_center .bg[Str("#17191d")] .border_b[Number(1.0)] .border_color[Str("#34363a")] .text_size[Number(12.0)] :on_hover(fn) :on_click(fn)
+    assert_eq!(tree.trim_end(), r##"h_flex :id[Str("pane-head-p1")] .size_full .px[Number(10.0)] .gap[Number(8.0)] .items_center .bg[Str("#17191d")] .border_b[Number(1.0)] .border_color[Str("#34363a")] .text_size[Number(12.0)] :on_hover(fn) :on_click(fn) :on_mouse_down_right(fn)
   div .flex_none .truncate .max_w[Number(260.0)] .font_medium .text_color[Str("#eeeeef")]
     text "Pi"
   div .flex_1 .truncate .text_color[Str("#7a7b7d")]
@@ -1249,9 +1254,9 @@ fn pane_menu_copy_items(cx: &mut TestAppContext) {
         texts(&tree).into_iter().filter(|t| !t.is_empty() && *t != "\"\"").map(str::to_owned).collect::<Vec<_>>()
     };
     let all = labels(json!({"pane":"p1","terminal":"t1","selected":true,"cwd":"/fixture/project"}), cx);
-    assert_eq!(all[..5], ["\"Copy\"", "\"Copy all\"", "\"Paste\"", "\"Copy path\"", "\"Split right\""], "{all:?}");
+    assert_eq!(all[..6], ["\"Copy\"", "\"Copy all\"", "\"Paste\"", "\"Copy path\"", "\"Rename\"", "\"Split right\""], "{all:?}");
     let bare = labels(json!({"pane":"p1","terminal":"t1","selected":false,"cwd":null}), cx);
-    assert_eq!(bare[..3], ["\"Copy all\"", "\"Paste\"", "\"Split right\""], "{bare:?}");
+    assert_eq!(bare[..4], ["\"Copy all\"", "\"Paste\"", "\"Rename\"", "\"Split right\""], "{bare:?}");
     // No such terminal: nothing to copy from.
     let gone = labels(json!({"pane":"p1","terminal":"t9","selected":true,"cwd":"/x"}), cx);
     assert!(!gone.iter().any(|t| t.contains("Copy") || t.contains("Paste")), "{gone:?}");
@@ -1391,4 +1396,116 @@ fn icon_picker_shows_the_sets_and_the_choice(cx: &mut TestAppContext) {
     assert_eq!(tile.trim(), "text \"Z\"", "{tree}");
     let tree = picker(json!({"tab_id":"gone","overlay":"o1"}), Value::Null, cx);
     assert!(tree.contains("That pane or tab is gone."), "{tree}");
+}
+
+/// The agent pane's info as `publish` gives it, on the populated fixture's working pane.
+fn with_header_info(values: &mut BTreeMap<String, Value>, info: Value) {
+    for p in values.get_mut("panes").unwrap().as_array_mut().unwrap() {
+        p["header_info"] = info.clone();
+    }
+}
+
+/// `pane_header_info` unset: panes carry `header_info: null`, and every
+/// shipped mod draws what it drew without the field, byte for byte.
+#[gpui::test]
+fn null_header_info_draws_every_shipped_mod_as_before(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let handles = regex::Regex::new(r"(:track_(?:focus|scroll)\[Number\(| #)[0-9]+").unwrap();
+    let same = |tree: &str| handles.replace_all(tree, "${1}N").into_owned();
+    for entry in staged.entries() {
+        let before = describe(cx, &staged, &entry, true, props(), updates("current", "current"), None).unwrap();
+        let mut values = fixture(true, props(), updates("current", "current"));
+        with_header_info(&mut values, Value::Null);
+        let after = describe_with_values(cx, &staged, &entry, values, None).unwrap();
+        assert_eq!(same(&before), same(&after), "{entry}");
+    }
+}
+
+/// The shipped pane header with info, at a width (`this.width`, from
+/// `on_size_change`) and hovered or not: the name keeps its width, segments go
+/// from the right with a waiting ask last, the last one left truncates, the
+/// whole line is the tooltip, and the hover buttons keep their room.
+#[gpui::test]
+fn pane_header_fits_its_info_beside_the_name_and_buttons(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let info = crate::header_info::Template::parse("{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed}").resolve(&crate::header_info::Values::sample()).unwrap();
+    let header = |width: f64, hovered: bool, cx: &mut TestAppContext| {
+        let mut values = fixture(true, json!({"pane":"p1","terminal":"t1"}), updates("current", "current"));
+        with_header_info(&mut values, json!(info));
+        describe_with_values(cx, &staged, "mods/pane", values, Some(&format!("this.width = {width}; this.hovered = {hovered};"))).unwrap()
+    };
+    let shown = |tree: &str| -> Vec<String> {
+        let mut lines = tree.lines().skip_while(|l| !l.contains("pane-info-p1"));
+        let Some(head) = lines.next() else { return vec![] };
+        let depth = head.len() - head.trim_start().len();
+        lines.take_while(|l| l.len() - l.trim_start().len() > depth).filter_map(|l| l.trim().strip_prefix("text ")).map(|t| t.trim_matches('"').to_owned()).collect()
+    };
+    let title = r#"div .flex_none .truncate .max_w[Number(260.0)] .font_medium"#;
+    // The name ("Pi", 14 px), the ring (12), padding and gaps take 66 px; the
+    // segments 130, 202 or 302; the four buttons 112.
+    let all = header(400.0, false, cx);
+    assert_eq!(shown(&all), ["approve Bash: make", " · ", "main↑2●", " · ", "blocked 45s"], "room for all: {all}");
+    assert!(all.contains(":tooltip[Str(\"approve Bash: make · main↑2● · blocked 45s\")]"), "the whole line in the tooltip: {all}");
+    assert!(all.contains(&format!(".text_color[Str({:?})]", crate::settings::theme()["blocked"].clone())), "the ask in the blocked colour: {all}");
+    assert!(all.contains(title) && all.contains("text \"Pi\""), "the name as without info: {all}");
+    assert!(all.contains(":on_size_change(fn)"), "it watches its width only with info: {all}");
+
+    let hovered = header(400.0, true, cx);
+    assert_eq!(hovered.matches("svg \"mods/pane/").count(), 4, "the buttons: {hovered}");
+    assert_eq!(shown(&hovered), ["approve Bash: make", " · ", "main↑2●"], "hovered: a segment goes, from the right: {hovered}");
+    assert!(hovered.contains(title) && hovered.contains("text \"Pi\""), "the name stays: {hovered}");
+
+    let lone = header(220.0, true, cx);
+    assert_eq!(shown(&lone), ["approve Bash: make"], "the ask goes last: {lone}");
+    let last = lone.lines().skip_while(|l| !l.contains("pane-info-p1")).nth(1).unwrap();
+    assert!(last.contains(".min_w[Number(0.0)] .truncate"), "the lone segment ends in an ellipsis: {last}");
+
+    let gone = header(150.0, true, cx);
+    assert!(!gone.contains("pane-info-p1") && gone.contains("text \"Pi\"") && gone.matches("svg \"mods/pane/").count() == 4, "too narrow: no info, name and buttons stay: {gone}");
+}
+
+/// A parent agent's row counts its live sub-agents (`⧉ N`, the rows its tree
+/// shows, nested ones too), unless the sidebar is too narrow; folded, then the
+/// chevron counts instead.
+#[gpui::test]
+fn agents_rows_count_their_live_sub_agents(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let program = json!({"key":"pi", "name":"Pi", "icon":null, "tint":true, "tile":null, "color":null, "shell":false, "agent":true});
+    let row = |sidebar: Option<f64>, cx: &mut TestAppContext| {
+        let mut values = fixture(true, props(), updates("current", "current"));
+        let terminals = values.get_mut("terminals").unwrap().as_array_mut().unwrap();
+        for (address, parent, state) in [("k1", "t1", "live"), ("k2", "t1", "live"), ("k3", "k1", "live"), ("k4", "t1", "exited"), ("k5", "t9", "live")] {
+            terminals.push(json!({"address":address,"name":address,"title":"","argv":["pi"],"parent":parent,"labels":{},"state":state,"status":"working","report":{"app":"pi"},"program":program}));
+        }
+        if let Some(px) = sidebar {
+            values.insert("layout".into(), json!({"id":"root","type":"row","children":[{"id":"sidebar","type":"block","size":{"px":px},"content":{"mod":"agents"}}]}));
+        }
+        describe_with_values(cx, &staged, "mods/agents", values, None).unwrap()
+    };
+    let wide = row(None, cx);
+    assert!(wide.contains("text \"\u{29c9} 3\""), "three live under t1, one nested: {wide}");
+    assert_eq!(wide.matches('\u{29c9}').count(), 1, "only the parent counts: {wide}");
+    let narrow = row(Some(200.0), cx);
+    assert!(!narrow.contains('\u{29c9}'), "a narrow sidebar drops it: {narrow}");
+}
+
+/// The pane menu names the pane first among the pane's own items, as the tab
+/// menu does its tab; a pane header's right-click opens that menu for its pane
+/// and terminal, with no selection to copy.
+#[gpui::test]
+fn pane_header_right_click_opens_the_pane_menu_with_rename(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut p = props();
+    p["target"] = json!({"pane":"p1","terminal":"t1"});
+    let menu = describe(cx, &staged, "mods/menu", true, p, updates("current", "current"), None).unwrap();
+    let items: Vec<&str> = texts(&menu).into_iter().filter(|t| !t.is_empty() && *t != "\"\"").collect();
+    let at = items.iter().position(|t| *t == "\"Rename\"").unwrap_or_else(|| panic!("{items:?}"));
+    assert_eq!(items[at + 1], "\"Split right\"", "{items:?}");
+    let header = describe(cx, &staged, "mods/pane", true, json!({"pane":"p1","terminal":"t1"}), updates("current", "current"), None).unwrap();
+    let head = header.lines().next().unwrap();
+    assert!(head.contains("pane-head-p1") && head.contains(":on_mouse_down_right(fn)"), "the header takes right-clicks: {head}");
 }

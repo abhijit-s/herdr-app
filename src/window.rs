@@ -599,6 +599,9 @@ pub struct AppWindow {
     window_active: bool,
     /// The Dock's count of agents waiting on the person (dock_badge.rs).
     dock_badge: crate::dock_badge::Badge,
+    /// The next time a pane's `{elapsed}` reads differently, and the timer
+    /// that publishes then (header_info.rs).
+    header_tick: Option<(u64, Task<()>)>,
     /// Agents with a system notification up (alert.rs), taken down once seen.
     notified: HashSet<String>,
     /// Which agent each `system.notify` notification focuses when clicked.
@@ -679,6 +682,7 @@ impl AppWindow {
             live: HashMap::new(),
             listed_once: false,
             dock_badge: Default::default(),
+            header_tick: None,
             resume: crate::resume::Tracker::load(&resume_path()),
             resume_offer: Some(Instant::now()),
             cwds: HashMap::new(),
@@ -1082,7 +1086,7 @@ impl AppWindow {
         if !problems.is_empty() {
             self.report_layout(&problems.join("; "));
         }
-        let republish = s.pane_auto_names != settings::get().pane_auto_names || s.space_avatar != settings::get().space_avatar;
+        let republish = s.pane_auto_names != settings::get().pane_auto_names || s.space_avatar != settings::get().space_avatar || s.pane_header_info != settings::get().pane_header_info;
         if settings::set(s) {
             self.theme_changed(window, cx);
         }
@@ -2051,6 +2055,9 @@ impl AppWindow {
         let mut icons: HashMap<&str, Value> = HashMap::new();
         // Every pane's label, mod panes too: an unnamed tab's letter is its focused pane's.
         let mut shown_labels: HashMap<&str, String> = HashMap::new();
+        let header = settings::get().pane_header_info.as_deref().map(crate::header_info::Template::parse).filter(|t| !t.is_empty());
+        let now = model::now_ms();
+        let mut next_tick: Option<u64> = None;
         for pr in &m.spaces {
             for (ci, ctx) in pr.tabs.iter().enumerate() {
                 let names = if auto_names_on { crate::pane_names::for_tab(ctx.root.panes().iter().map(|p| p.id.as_str())) } else { HashMap::new() };
@@ -2090,6 +2097,26 @@ impl AppWindow {
                     icons.insert(&p.id, icon.clone());
                     shown_labels.insert(&p.id, label.clone());
                     labels.insert(p.id.clone(), label.clone());
+                    let header_info = header.as_ref().zip(m.status(addr)).and_then(|(template, status)| {
+                        let since = a.map(|a| a.since).filter(|s| *s > 0);
+                        if let Some(since) = since.filter(|_| template.uses_elapsed()) {
+                            let at = crate::header_info::next_change(since, now);
+                            next_tick = Some(next_tick.map_or(at, |t| t.min(at)));
+                        }
+                        let blocked = status == "blocked";
+                        let said = crate::alert::Said::of(self.live.get(addr).and_then(|r| r.get("report")));
+                        let folder = m.folder_info.get(addr);
+                        template.resolve(&crate::header_info::Values {
+                            ask: crate::header_info::ask(blocked, &said),
+                            blocked,
+                            state: status.to_owned(),
+                            elapsed: since.map(|s| crate::header_info::elapsed(now.saturating_sub(s))).unwrap_or_default(),
+                            branch: folder.and_then(|f| f.branch.clone()).unwrap_or_default(),
+                            ahead: folder.map_or(0, |f| f.ahead),
+                            behind: folder.map_or(0, |f| f.behind),
+                            dirty: folder.is_some_and(|f| f.dirty),
+                        })
+                    });
                     panes.push(json!({
                         "pane": p.id, "terminal": addr, "tab": ctx.id, "title": title.clone().unwrap_or_default(), "name": p.title, "auto_name": auto_name,
                         "label": label, "session": session, "icon": icon, "own_icon": own,
@@ -2097,6 +2124,7 @@ impl AppWindow {
                         "status": m.status(addr), "app": a.and_then(|a| a.app.clone()), "program": program,
                         "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id),
                         "text_size": self.pane_term(&p.id).and_then(|t| t.view.read(cx).text_size()),
+                        "header_info": header_info,
                     }));
                     let Some(status) = m.status(addr) else { continue };
                     let pinned = self.live.get(addr).and_then(|r| r.pointer("/labels/herdr.pinned")).and_then(Value::as_str).is_some_and(|v| !v.is_empty());
@@ -2171,6 +2199,28 @@ impl AppWindow {
         }
         self.write_where(cx);
         self.badge_dock(waiting);
+        self.tick_header_info(next_tick, cx);
+    }
+
+    /// Publishes again when the next `{elapsed}` changes (one timer, on the
+    /// earliest), so headers move on by the minute and never by the frame.
+    fn tick_header_info(&mut self, at: Option<u64>, cx: &mut Context<Self>) {
+        let Some(at) = at else {
+            self.header_tick = None;
+            return;
+        };
+        if self.header_tick.as_ref().is_some_and(|(t, _)| *t == at) {
+            return;
+        }
+        let wait = Duration::from_millis(at.saturating_sub(model::now_ms()) + 20);
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |this, cx| {
+                this.header_tick = None;
+                this.publish(cx);
+            });
+        });
+        self.header_tick = Some((at, task));
     }
 
     /// The Dock badge counts the agents list's waiting rows; the Dock
@@ -3039,6 +3089,7 @@ impl AppWindow {
         let home = mods::home().to_string_lossy().into_owned();
         let mut moved = false;
         let mut changed = false;
+        let counts = settings::get().pane_header_info.as_deref().is_some_and(|t| crate::header_info::Template::parse(t).uses_git_counts());
         for (addr, rec) in &self.live {
             // Core's live folder of what runs there (any machine), else the shell's (local).
             let cwd = rec
@@ -3057,10 +3108,10 @@ impl AppWindow {
             // Another machine's terminal (`vps/t7`): git runs there.
             let on = addr.split_once('/').map(|(m, _)| m.to_owned());
             let info = if on.is_none() && cwd == home {
-                Some(model::FolderInfo { top: cwd, branch: None })
+                Some(model::FolderInfo { top: cwd, ..Default::default() })
             } else {
                 let place = git_status::Place { on, folder: cwd.clone() };
-                let (info, unwatched) = git_status::read(&place, |v, _, lasting| (folder_info(v, &cwd), !lasting || v == &Value::Bool(false)));
+                let (info, unwatched) = git_status::read(&place, |v, _, lasting| (folder_info(v, &cwd, counts), !lasting || v == &Value::Bool(false)));
                 if ended && unwatched {
                     git_status::refresh(&place);
                 }
@@ -5732,14 +5783,22 @@ pub static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 
 /// A folder's checkout and branch from its git status (`None` while unknown):
 /// not a repo, or git couldn't say, is the folder itself.
-fn folder_info(status: &Value, cwd: &str) -> Option<model::FolderInfo> {
+/// `counts`: with ahead, behind and dirty (only `pane_header_info` shows them,
+/// so without it a changed file doesn't redraw).
+fn folder_info(status: &Value, cwd: &str, counts: bool) -> Option<model::FolderInfo> {
     match status {
         Value::Null => None,
-        Value::Object(o) => Some(model::FolderInfo {
-            top: o.get("root").and_then(Value::as_str).unwrap_or(cwd).to_owned(),
-            branch: o.get("branch").and_then(Value::as_str).map(str::to_owned),
-        }),
-        _ => Some(model::FolderInfo { top: cwd.into(), branch: None }),
+        Value::Object(o) => {
+            let n = |k: &str| o.get(k).and_then(Value::as_u64).filter(|_| counts).unwrap_or(0);
+            Some(model::FolderInfo {
+                top: o.get("root").and_then(Value::as_str).unwrap_or(cwd).to_owned(),
+                branch: o.get("branch").and_then(Value::as_str).map(str::to_owned),
+                ahead: n("ahead"),
+                behind: n("behind"),
+                dirty: ["staged", "unstaged", "untracked", "conflicted"].iter().any(|k| n(k) > 0),
+            })
+        }
+        _ => Some(model::FolderInfo { top: cwd.into(), ..Default::default() }),
     }
 }
 
@@ -8422,6 +8481,92 @@ export default class Recent extends View {
     }
 
     #[test]
+    fn header_info_follows_changes_and_the_minute_not_frames() {
+        in_own_process("header_info_follows_changes");
+    }
+
+    /// `pane_header_info` is resolved in publish, for the agent panes then
+    /// published: when the agent's state or request changes, and once a minute
+    /// for `{elapsed}`, never per frame. Unset, nothing is resolved or timed.
+    #[gpui::test]
+    fn header_info_follows_changes(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use serde_json::{Value, json};
+        if !running_alone("header_info_follows_changes") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.select_tab("t");
+            this.sync(window, cx);
+        });
+        let listed = |status: Value, cx: &mut gpui::VisualTestContext| {
+            let terminals = json!({ "terminals": [{ "address": "ta", "argv": ["claude"], "status": status }, { "address": "tb", "argv": ["zsh"] }] });
+            cx.update(|window, cx| view.update(cx, |this, cx| this.terminals_listed(terminals, window, cx)));
+            cx.run_until_parked();
+        };
+        let template = |t: Option<&str>, cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| {
+                this.person.pane_header_info = t.map(str::to_owned);
+                this.apply_look(window, cx);
+            });
+            cx.run_until_parked();
+        };
+        let resolved = || crate::header_info::RESOLVED.with(std::cell::Cell::get);
+        let info = |pane: &str| crate::mods::published_panes().as_array().unwrap().iter().find(|p| p["pane"] == pane).unwrap()["header_info"].clone();
+        let ticking = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.header_tick.as_ref().map(|(at, _)| *at));
+        let frames = |cx: &mut gpui::VisualTestContext| {
+            let start = crate::terminal::frame();
+            for _ in 0..30 {
+                cx.update(|window, _| window.refresh());
+                cx.run_until_parked();
+            }
+            assert!(crate::terminal::frame() >= start + 30, "30 frames drawn");
+        };
+        let minute = |cx: &mut gpui::VisualTestContext| {
+            cx.executor().advance_clock(std::time::Duration::from_secs(61));
+            cx.run_until_parked();
+        };
+
+        listed(json!({ "state": "working", "app": "claude-code" }), cx);
+        let before = resolved();
+        frames(cx);
+        minute(cx);
+        assert_eq!((resolved(), info("a"), ticking(cx)), (before, Value::Null, None), "unset: nothing resolved, nothing timed");
+
+        template(Some("{ask} · {state} {elapsed}"), cx);
+        assert_eq!(info("a")["segments"], json!([{ "sep": "", "text": "working 0s", "ask": false }]));
+        assert_eq!(info("b"), Value::Null, "shells show nothing");
+        let since = view.update(cx, |this, _| this.model.agents["ta"].since);
+        assert_eq!(ticking(cx), Some(since + 60_000), "the minute mark is timed");
+
+        let (before, drawn) = (resolved(), crate::terminal::frame());
+        frames(cx);
+        assert_eq!(resolved(), before, "no info is resolved for a frame");
+        let drawn = crate::terminal::frame() - drawn - 30;
+
+        listed(json!({ "state": "blocked", "kind": "permission", "msg": "approve Bash: make", "app": "claude-code" }), cx);
+        assert_eq!(resolved() - before, 1, "one publish: the agent pane once");
+        assert_eq!(info("a")["segments"][0], json!({ "sep": "", "text": "approve Bash: make", "ask": true }));
+        assert_eq!(info("a")["text"], json!("approve Bash: make · blocked 0s"));
+
+        let before = resolved();
+        minute(cx);
+        assert_eq!(resolved() - before, 1, "the minute publishes once");
+        minute(cx);
+        assert_eq!(resolved() - before, 2, "and again a minute on");
+        eprintln!("header info: {drawn} window renders beyond 30 refreshes with the template set");
+
+        template(None, cx);
+        assert_eq!((info("a"), ticking(cx)), (Value::Null, None), "cleared: the timer stops");
+    }
+
+    #[test]
     fn pane_labels_follow_changes_not_frames() {
         in_own_process("labels_follow_changes");
     }
@@ -9443,13 +9588,19 @@ export default class Probe extends View {
     #[test]
     fn folder_info_comes_from_the_git_status() {
         use serde_json::json;
-        assert_eq!(super::folder_info(&serde_json::Value::Null, "/src/x"), None, "not known yet");
-        let none = super::folder_info(&json!(false), "/src/x").unwrap();
+        assert_eq!(super::folder_info(&serde_json::Value::Null, "/src/x", true), None, "not known yet");
+        let none = super::folder_info(&json!(false), "/src/x", true).unwrap();
         assert_eq!((none.top.as_str(), none.branch), ("/src/x", None));
-        let repo = super::folder_info(&json!({ "root": "/src", "branch": "main" }), "/src/x").unwrap();
+        let repo = super::folder_info(&json!({ "root": "/src", "branch": "main" }), "/src/x", true).unwrap();
         assert_eq!((repo.top.as_str(), repo.branch.as_deref()), ("/src", Some("main")));
-        let detached = super::folder_info(&json!({ "root": "/src", "branch": null }), "/src/x").unwrap();
+        let detached = super::folder_info(&json!({ "root": "/src", "branch": null }), "/src/x", true).unwrap();
         assert_eq!(detached.branch, None);
+        let status = json!({ "root": "/src", "branch": "main", "ahead": 2, "behind": 1, "staged": 0, "unstaged": 0, "untracked": 1, "conflicted": 0 });
+        let counted = super::folder_info(&status, "/src/x", true).unwrap();
+        assert_eq!((counted.ahead, counted.behind, counted.dirty), (2, 1, true));
+        let clean = super::folder_info(&json!({ "root": "/src", "branch": "main", "ahead": 0, "behind": 0, "staged": 0, "unstaged": 0, "untracked": 0, "conflicted": 0 }), "/src/x", true).unwrap();
+        assert!(!clean.dirty);
+        assert_eq!(super::folder_info(&status, "/src/x", false).unwrap(), super::folder_info(&json!({ "root": "/src", "branch": "main" }), "/src/x", true).unwrap(), "without pane_header_info, as before");
     }
 
     #[test]
