@@ -23,7 +23,7 @@ Where a change belongs (app Rust core, mods or herdr-core) and the order changes
 
 1. Start a change: `git switch -c feat/<slug> upstream/master`.
 2. Make it, gated behind a setting wherever practical, and commit.
-3. Merge and check it on `master`: `git switch master && git merge --no-ff feat/<slug> && mise exec -- just check`. Upstream's code is not `cargo fmt` clean, so match the surrounding style rather than running `cargo fmt`. The same goes for `defaults/AGENTS.md`: upstream wraps it at about 75 columns, so fork text there is wrapped the same way, which keeps merges clean, and stays a map of rules with short examples, the detail going here and in `defaults/herdr.d.ts`.
+3. Merge and check it on `master`: `git switch master && git merge --no-ff feat/<slug> && mise exec -- just check`. Upstream's code is not `cargo fmt` clean, so match the surrounding style rather than running `cargo fmt`. The same goes for `defaults/AGENTS.md`: upstream hard-wraps most of it at about 75 columns, so fork text there is wrapped the same way, which keeps merges clean, and stays a map of rules with short examples, the detail going here and in `defaults/herdr.d.ts`.
 4. Try it: `mise exec -- just install`, then restart Herdr.
 5. Push the branch: `git push -u origin feat/<slug>`. Bigger changes get an upstream issue first (upstream `CONTRIBUTING.md`).
 6. Open the pull request: `gh pr create -R herdrdev/herdr-app --head abhijit-s:feat/<slug>`.

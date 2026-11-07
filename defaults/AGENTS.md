@@ -139,8 +139,9 @@ In the tab bar, drag a tab to reorder it: it follows the pointer and a line show
   session's own name (`session`), the program's name, the terminal's
   address. A title is telling when it says something of its own:
   `✓ build passed` is; a path, a `user@host`, only digits, the program's
-  name or command line, or an editor's `claude-prompt-<id>.md - Nvim` is
-  not (`herdr.d.ts` has the rule). `session` is read from the program's
+  name or command line, or a throwaway (anything holding a UUID, or
+  universally unique identifier, `tmp.…` files, an editor's
+  `claude-prompt-<id>.md - Nvim`) is not. `session` is read from the program's
   session file (`session_name` in Programs; Claude Code's `/rename`) for
   the process running in the terminal on this computer; null otherwise.
   Name things by `label` rather than re-deriving it from `title`, which
@@ -380,7 +381,8 @@ layout's look and a block can differ:
   `colors` to replace it. A `colors` value that isn't `#rrggbb` or
   `#rrggbbaa` is reported as a problem. A theme file or layout look whose
   own `colors` paint its panels (`surface`, `popover` or `raised`: Win98,
-  Terminals), or whose `foreground` sits under 3:1 on its background,
+  Terminals), or whose `foreground` sits under 3:1 on its background or
+  on the wrong side of it,
   derives what it leaves unset the classic way (`panel_colors`).
   Herdr ships
   `atom-one-dark`. The original unedited Atom One Dark and Win98 theme files
@@ -634,7 +636,7 @@ The main ones:
 - Panes: `pane.split {direction: "right" | "down", pane?, argv? | mod?, props?}` (a new
   terminal, or a mod pane), `pane.close {pane?}`, `pane.rename {pane?, name}` ("": unnamed again),
   `pane.set_icon {pane?, icon}` and `tab.set_icon {id?, icon}` (`icon`: `{kind: "glyph" | "emoji", value}` or `{kind: "letter"}`; null: the automatic icon again; kept by id in the machine's layout and gone with the pane or tab; the shipped `menu` offers them as Change icon… and Clear icon, through the shipped `icon-picker`: Suggested, every Symbols Nerd Font glyph and every emoji, searchable by name and keyword. A mod keeping icons of its own opens the same picker with `openOverlay({mod: "icon-picker", kind: "dialog", width: 452, height: 392, props: {shared: "<key>", id, name, letter?, now?, extra?}})`: the pick is written to `shared(key)[id]` as `{kind, value?}` and Clear icon deletes it; `now` (`{kind, text}`) is the icon shown today, `extra` (`[{kind, text, word}]`) adds the mod's own kinds beside the letter),
-  `pane.zoom {pane?}`, `pane.menu {pane?}` (the pane's menu at the pointer, the layout's `terminal_menu` as a terminal right-click opens it, with no selection: what a pane header's right-click runs; the shipped `menu` lists Copy with a selection, Copy all, Paste, Copy path when the folder is known, then Rename, Split right and down, Zoom and Change icon…), `pane.focus {pane | terminal}`, `pane.refocus` (the keyboard back to the focused pane after a mod took it for a moment, as a tab drag does), `pane.go {direction}`, `pane.swap {direction}`.
+  `pane.zoom {pane?}`, `pane.menu {pane?}` (the pane's menu at the pointer, the layout's `terminal_menu` as a terminal right-click opens it, with no selection: what a pane header's right-click runs; the shipped `menu` lists Copy with a selection, Copy all, Paste, Copy path when the folder is known, then Rename, Split right and down, Zoom, Change icon… and Clear icon, then where right-clicks go, Send back for a kept sub-agent, and Close pane), `pane.focus {pane | terminal}`, `pane.refocus` (the keyboard back to the focused pane after a mod took it for a moment, as a tab drag does), `pane.go {direction}`, `pane.swap {direction}`.
   `pane.zoom_text_in {pane?}`, `pane.zoom_text_out {pane?}`,
   `pane.zoom_text_reset {pane?}` zoom one terminal pane's text (default:
   the terminal with the keyboard, else the focused pane) a `zoom_step` at
@@ -646,8 +648,9 @@ The main ones:
   pane's `text_size` while it differs, and the shipped `pane` header shows
   it ("16pt"). macOS binds Ctrl+= (and Ctrl++), Ctrl+- and Ctrl+0 in
   `global`; other platforms leave them unbound, since Ctrl+= is
-  `app.zoom_in` there. With `pane_zoom_keys` off, those keys reach the
-  program.
+  `app.zoom_in` there. With `pane_zoom_keys` off, or no terminal holding
+  the keyboard, those keys reach the program; object-form bindings
+  (`{"command": "pane.zoom_text_in"}`) follow it too.
   `pane.go` prefers the most recently focused pane along the nearest edge in that
   direction; unvisited panes fall back to overlap, then top/left layout order.
   `pane.go` also reaches visible mods whose `mod.json` says `"focusable": true`, and
@@ -807,7 +810,9 @@ What's about the user, never a look:
 - `dock_bounce_on_wait`: `true` bounces the Dock icon once (macOS's short, informational bounce) when an agent starts waiting and none was, while Herdr is in the background. Off by default.
 - `pane_auto_names`: `true` gives each pane nobody named two calm words of
   its own, such as `hazy-inlet`, picked from its id so they last across
-  redraws and restarts (two panes of one tab never share them). A pane
+  redraws and restarts. Two panes of one tab never share them: the one
+  whose id sorts later takes the next pair, so a split can move an
+  existing pane's name on until it closes. A pane
   shows them only at a bare shell whose title says nothing more (empty,
   its address, the shell's name, a folder such as `~/src`); a name given
   with `pane.rename`, an agent or a running command comes first. Mods read
@@ -838,7 +843,7 @@ What's about the user, never a look:
   pointer's last move, so a pane it only crosses on the way somewhere else is
   left alone; at 0 the first move onto a pane focuses it. Off by default;
   `focus.toggle_follows_mouse` flips it, and Settings > Input > Mouse has
-  both. Only a real pointer move counts:
+  it, with the delay while it's on. Only a real pointer move counts:
   content scrolling or panes moving under a still pointer never move the focus,
   nor does a jitter under 1 px. After a key, or the focus moving some other way,
   the pointer must first go more than 4 px from where it was, so a pane focused
@@ -1068,11 +1073,14 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
   stays, then `append` is added, `{session_id}` being its session. The
   session comes from the agent's own report, the terminal label
   `herdr.session.<program key>=<id>` (or `<id>@<pid>`, honored only for
-  that process), which a hook sets with
+  that process; an empty value clears it), which a hook sets with
   `hc label "$HC_TERMINAL_ID" herdr.session.claude=<id>`, else from
-  `session.file` (`{pid}`: the program's process id), whose `field` is the
+  `session.file` (`{pid}`: the program's process id; `~/`: the home of
+  the machine it runs on), whose `field` is the
   id and whose `when` fields must all match. An id is at most 256 letters,
-  digits or `_ . / : = + -` and never starts with `-`; others are refused.
+  digits or `_ . / : = + -` and never starts with `-`, and an `append`
+  word uses only those characters; others are refused (a rule with a bad
+  word is dropped and named in `programs.error`).
   `{ "rerun": true }` runs the same command line again; `"resume": {}`
   turns a shipped rule off. Claude Code writes its session file once, at
   start, so after `/clear` or `/resume` only a hook's label is current.
@@ -1255,7 +1263,8 @@ All of it is in `herdr.d.ts`. In short:
   (sidebars, bars), surface, popover, raised, hover, selected, border,
   input (a stronger border), foreground, muted, dim, accent,
   accent_foreground, solid and solid_foreground (a primary button), ring
-  (focus rings), focus (the active pane's border), selection, working, blocked, done, idle, unknown, ansi0..15, and the
+  (focus rings), focus (the active pane's border), selection, working,
+  blocked, done, idle, unknown, ansi0..15, and the
   toast's own: toast, toast_border, toast_shadow, toast_foreground,
   toast_muted, toast_info, toast_success, toast_warning, toast_error; light
   and dark themes name the same ones), `settings()` (with `dark`: the
@@ -1350,17 +1359,20 @@ including a small herdr-core skill you can install with the user's permission.
 - Other machines: `hc machine ls`; `hc run --on <machine> ...` starts a
   terminal there (`vps/t7`), `hc exec --on <machine> git status` runs one
   command there and prints exactly its output.
-- Focus history: the core document `herdr.focus` (`doc.get`/`doc.set`, API
-  (application programming interface) only) is `{"v": 1, "places": [{pane,
-  terminal, tab, space, machine, at}, ...]}`, newest first, at most 20,
-  one place per pane; `pane` and `at` (ms since the Unix epoch) are
+- Focus history: the core document `herdr.focus`, read and written with
+  `doc.get`/`doc.set` through the API (application programming interface)
+  only, is `{"v": 1, "places": [{pane, terminal, tab, space, machine, at},
+  ...]}`, newest first, at most 20, one place per pane; `pane` (a
+  non-empty string) and `at` (an integer, ms since the Unix epoch) are
   required. Herdr app windows write it on this machine's core when the
   person settles on a pane. Any client may add a visit: read, merge (the
-  union by `pane`, the later `at` winning, newest first, cut to 20), and
-  `doc.set` with the version read; on `conflict`, read and merge again.
-  Write only when the merge adds a visit, keep fields and entries you
-  don't read, and don't write a `v` above 1. `{"v": 1, "places": []}`
-  clears it.
+  union by `pane`, the later `at` winning, sorted by `at` newest first
+  then `pane`, cut to 20), and `doc.set` with the version read; on
+  `conflict`, read and merge again. Write only when the merge adds a
+  visit, and keep fields and entries you don't read. A stored `v` above 1
+  is a newer shape: read it, never write it. A value that isn't an object
+  with an integer `v` is unreadable, and the app's next write replaces it.
+  `{"v": 1, "places": []}` clears it.
 
 ## Keep in mind
 
