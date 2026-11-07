@@ -164,7 +164,8 @@ fn toast_document(notification: &SystemNotification) -> windows::core::Result<Xm
     let binding = document.CreateElement(h!("binding"))?;
     binding.SetAttribute(h!("template"), h!("ToastGeneric"))?;
     visual.AppendChild(&binding)?;
-    for text in [&notification.title, &notification.body] {
+    let lines = [&notification.title, &notification.subtitle, &notification.body];
+    for text in lines.into_iter().filter(|text| !text.is_empty()) {
         let element = document.CreateElement(h!("text"))?;
         element.SetInnerText(&text.as_ref().into())?;
         binding.AppendChild(&element)?;
