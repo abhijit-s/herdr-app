@@ -14,6 +14,7 @@
 
 use serde::Serialize;
 
+#[cfg(test)]
 thread_local! {
     /// How many panes' info this thread resolved: they follow changes, not frames.
     pub static RESOLVED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -195,13 +196,19 @@ impl Values {
             ask: "approve Bash: make".into(),
             blocked: true,
             state: "blocked".into(),
-            elapsed: "45s".into(),
+            elapsed: "3m".into(),
             branch: "main".into(),
             ahead: 2,
             behind: 0,
             dirty: true,
         }
     }
+}
+
+/// Whether `pane_header_info` shows ahead, behind or dirty: folder info
+/// counts them only then.
+pub fn counts_git(template: Option<&str>) -> bool {
+    template.is_some_and(|t| Template::parse(t).uses_git_counts())
 }
 
 /// `{ask}`: the agent's own summary from its 7501 report, else what kind of
@@ -216,11 +223,12 @@ pub fn ask(blocked: bool, said: &crate::alert::Said) -> String {
 
 const MINUTE: u64 = 60_000;
 
-/// Time in a state, compact: `45s` under a minute, then `3m`, `1h`, `1h2m`.
+/// Time in a state, compact and changing only on the minute: `<1m`, then
+/// `3m`, `1h`, `1h2m`.
 pub fn elapsed(ms: u64) -> String {
-    let (s, m) = (ms / 1000, ms / MINUTE);
+    let m = ms / MINUTE;
     match m {
-        0 => format!("{s}s"),
+        0 => "<1m".into(),
         1..60 => format!("{m}m"),
         _ if m % 60 == 0 => format!("{}h", m / 60),
         _ => format!("{}h{}m", m / 60, m % 60),
@@ -228,8 +236,7 @@ pub fn elapsed(ms: u64) -> String {
 }
 
 /// When `elapsed` next reads differently for a state entered at `since`:
-/// the one-minute mark, then each minute after. Seconds under a minute are
-/// not redrawn on their own.
+/// the one-minute mark, then each minute after.
 pub fn next_change(since: u64, now: u64) -> u64 {
     since + ((now.saturating_sub(since) / MINUTE) + 1) * MINUTE
 }
@@ -263,7 +270,7 @@ const CHAR_EM: f32 = 0.6;
 /// about four characters would show.
 pub fn fit(segments: &[Shown], width: f32, font_px: f32) -> Vec<Shown> {
     let char_px = font_px * CHAR_EM;
-    let measure = |s: &str| s.chars().map(|c| if wide(c) { 2.0 } else { 1.0 }).sum::<f32>() * char_px;
+    let measure = |s: &str| self::width(s, font_px);
     let mut keep: Vec<Shown> = segments.to_vec();
     let total = |keep: &[Shown]| keep.iter().enumerate().map(|(i, s)| measure(&s.text) + if i == 0 { 0.0 } else { measure(&s.sep) }).sum::<f32>();
     while keep.len() > 1 && total(&keep) > width {
@@ -288,6 +295,12 @@ pub fn fit_for_mods(segments: serde_json::Value, width: f32, font_px: f32) -> Re
 /// `headerInfoPreview(template)` for mods: the template with `Values::sample()`.
 pub fn preview_for_mods(template: &str) -> serde_json::Value {
     serde_json::json!(Template::parse(template).resolve(&Values::sample()))
+}
+
+/// About how wide `text` is in `font_px` text (`headerTextWidth` for mods, so a
+/// header sizes what's beside the info as `fit` sizes the info).
+pub fn width(text: &str, font_px: f32) -> f32 {
+    text.chars().map(|c| if wide(c) { 2.0 } else { 1.0 }).sum::<f32>() * font_px * CHAR_EM
 }
 
 /// Two columns wide: East Asian wide and emoji, roughly.
@@ -320,8 +333,9 @@ mod tests {
         assert!(Template::parse("").is_empty() && Template::parse("  ·  | ").is_empty(), "nothing to show");
         assert!(Template::parse(SUGGESTED).uses_elapsed() && !Template::parse("{branch}").uses_elapsed());
         assert!(Template::parse(SUGGESTED).uses_git_counts() && !Template::parse("{branch} · {state}").uses_git_counts());
+        assert!(counts_git(Some(SUGGESTED)) && !counts_git(Some("{branch}")) && !counts_git(None));
         let info = Template::parse(SUGGESTED).resolve(&Values::sample()).unwrap();
-        assert_eq!(info.text, "approve Bash: make · main↑2● · blocked 45s", "the whole line, for the tooltip");
+        assert_eq!(info.text, "approve Bash: make · main↑2● · blocked 3m", "the whole line, for the tooltip");
     }
 
     #[test]
@@ -340,10 +354,10 @@ mod tests {
     }
 
     #[test]
-    fn elapsed_is_seconds_then_minutes_then_hours() {
-        assert_eq!(elapsed(0), "0s");
-        assert_eq!(elapsed(45_400), "45s");
-        assert_eq!(elapsed(59_999), "59s");
+    fn elapsed_is_under_a_minute_then_minutes_then_hours() {
+        assert_eq!(elapsed(0), "<1m");
+        assert_eq!(elapsed(45_400), "<1m", "no seconds: it changes only on the minute");
+        assert_eq!(elapsed(59_999), "<1m");
         assert_eq!(elapsed(60_000), "1m");
         assert_eq!(elapsed(3 * 60_000 + 59_000), "3m");
         assert_eq!(elapsed(60 * 60_000), "1h");
@@ -381,6 +395,8 @@ mod tests {
         assert_eq!(fit(&ask, w(5.0), 12.0), vec![ask[0].clone()], "four characters and the ellipsis");
         assert_eq!(fit(&ask, w(4.5), 12.0), vec![], "fewer: hidden");
         assert_eq!(fit(&[seg("", "ok", false)], w(2.0), 12.0), vec![seg("", "ok", false)], "short and fits");
+        let close = |a: f32, b: f32| (a - b).abs() < 0.01;
+        assert!(close(width("ab", 12.0), 14.4) && close(width("日本", 12.0), 28.8) && close(width("🦊", 12.0), 14.4), "an emoji's two columns, as its two-character width");
         let wide = vec![seg("", "ab", false), seg("|", "日本", false)];
         assert_eq!(fit(&wide, w(6.5), 12.0), wide[..1].to_vec(), "wide characters count twice");
     }

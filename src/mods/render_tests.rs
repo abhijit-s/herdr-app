@@ -158,6 +158,7 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
         crate::header_info::fit_for_mods(from_host(a.value(0)?), a.number(1)? as f32, a.number(2)? as f32).map(|v| to_host(&v)).map_err(HostError::new)
     });
     module = module.function("headerInfoPreview", |a| Ok(to_host(&crate::header_info::preview_for_mods(a.string(0)?))));
+    module = module.function("headerTextWidth", |a| Ok(HostValue::Number(crate::header_info::width(a.string(0)?, a.number(1)? as f32) as f64)));
     module = module.function("refreshGitStatus", |_| Ok(HostValue::Null));
     for name in ["nextCommand", "watchFolder", "nextGitStatus"] {
         module = module.async_function(name, |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
@@ -1446,10 +1447,10 @@ fn pane_header_fits_its_info_beside_the_name_and_buttons(cx: &mut TestAppContext
     };
     let title = r#"div .flex_none .truncate .max_w[Number(260.0)] .font_medium"#;
     // The name ("Pi", 14 px), the ring (12), padding and gaps take 66 px; the
-    // segments 130, 202 or 302; the four buttons 112.
+    // segments 130, 202 or 295; the four buttons 112.
     let all = header(400.0, false, cx);
-    assert_eq!(shown(&all), ["approve Bash: make", " · ", "main↑2●", " · ", "blocked 45s"], "room for all: {all}");
-    assert!(all.contains(":tooltip[Str(\"approve Bash: make · main↑2● · blocked 45s\")]"), "the whole line in the tooltip: {all}");
+    assert_eq!(shown(&all), ["approve Bash: make", " · ", "main↑2●", " · ", "blocked 3m"], "room for all: {all}");
+    assert!(all.contains(":tooltip[Str(\"approve Bash: make · main↑2● · blocked 3m\")]"), "the whole line in the tooltip: {all}");
     assert!(all.contains(&format!(".text_color[Str({:?})]", crate::settings::theme()["blocked"].clone())), "the ask in the blocked colour: {all}");
     assert!(all.contains(title) && all.contains("text \"Pi\""), "the name as without info: {all}");
     assert!(all.contains(":on_size_change(fn)"), "it watches its width only with info: {all}");

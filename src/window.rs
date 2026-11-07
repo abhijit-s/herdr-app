@@ -1087,8 +1087,14 @@ impl AppWindow {
             self.report_layout(&problems.join("; "));
         }
         let republish = s.pane_auto_names != settings::get().pane_auto_names || s.space_avatar != settings::get().space_avatar || s.pane_header_info != settings::get().pane_header_info;
+        let git_counts = crate::header_info::counts_git;
+        let recount = git_counts(s.pane_header_info.as_deref()) != git_counts(settings::get().pane_header_info.as_deref());
         if settings::set(s) {
             self.theme_changed(window, cx);
+        }
+        // Folder info counts ahead, behind and dirty only while a template shows them.
+        if recount {
+            self.track_folders(cx);
         }
         if republish {
             self.publish(cx);
@@ -3089,7 +3095,7 @@ impl AppWindow {
         let home = mods::home().to_string_lossy().into_owned();
         let mut moved = false;
         let mut changed = false;
-        let counts = settings::get().pane_header_info.as_deref().is_some_and(|t| crate::header_info::Template::parse(t).uses_git_counts());
+        let counts = crate::header_info::counts_git(settings::get().pane_header_info.as_deref());
         for (addr, rec) in &self.live {
             // Core's live folder of what runs there (any machine), else the shell's (local).
             let cwd = rec
@@ -3860,6 +3866,12 @@ impl AppWindow {
                 if !found || !self.model.set_icon(&id, icon) {
                     return self.fail(format!("no {} {id:?}", if name == "pane.set_icon" { "pane" } else { "tab" }));
                 }
+            }
+            "pane.menu" => {
+                let Some(pane) = Self::owned(a, "pane").or_else(|| self.model.focused_pane()) else { return self.fail("no pane") };
+                let terminal = self.model.address_of(&pane).or_else(|| self.terms.get(&pane).map(|t| t.address.clone()));
+                let cwd = terminal.as_deref().and_then(|t| self.terminal_cwd(t));
+                self.open_menu("pane", json!({ "pane": pane, "terminal": terminal, "cwd": cwd }), None, window, cx);
             }
             "pane.zoom" => {
                 let pane = Self::owned(a, "pane").or_else(|| self.model.focused_pane());
@@ -5815,7 +5827,7 @@ fn overlay_terminal_block<'a>(overlays: &'a [Overlay], id: Option<&str>) -> Opti
 
 fn needs_model_pane(name: &str, args: &Value) -> bool {
     match name {
-        "pane.split" | "pane.close" | "pane.rename" | "pane.set_icon" | "pane.zoom" | "terminal.show" => AppWindow::arg(args, "pane").is_none(),
+        "pane.split" | "pane.close" | "pane.rename" | "pane.set_icon" | "pane.zoom" | "pane.menu" | "terminal.show" => AppWindow::arg(args, "pane").is_none(),
         "pane.go" | "pane.swap" => true,
         "terminal.open" | "terminal.keep" => matches!(AppWindow::arg(args, "place"), Some("right" | "down")),
         _ => false,
@@ -7163,6 +7175,19 @@ export default class Recent extends View {
 
         let missing = run("terminal.copy_all", json!({ "terminal": "t9" }), cx);
         assert!(missing.get("error").is_some(), "{missing}");
+
+        // A pane header's right-click (pane.menu): the same menu for the pane,
+        // its terminal and folder, nothing selected.
+        view.update_in(cx, |this, window, cx| {
+            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                this.close_overlay(&id, window, cx);
+            }
+        });
+        run("pane.menu", json!({ "pane": "left" }), cx);
+        let target = view.update(cx, |this, _| {
+            this.copies.values().find(|c| c.inst.name == "menu").map(|c| c.inst.props["target"].clone()).expect("pane.menu opened the menu")
+        });
+        assert_eq!(target, json!({ "pane": "left", "terminal": "t1", "cwd": "/work/left" }));
     }
 
     #[test]
@@ -8540,7 +8565,7 @@ export default class Recent extends View {
         assert_eq!((resolved(), info("a"), ticking(cx)), (before, Value::Null, None), "unset: nothing resolved, nothing timed");
 
         template(Some("{ask} · {state} {elapsed}"), cx);
-        assert_eq!(info("a")["segments"], json!([{ "sep": "", "text": "working 0s", "ask": false }]));
+        assert_eq!(info("a")["segments"], json!([{ "sep": "", "text": "working <1m", "ask": false }]));
         assert_eq!(info("b"), Value::Null, "shells show nothing");
         let since = view.update(cx, |this, _| this.model.agents["ta"].since);
         assert_eq!(ticking(cx), Some(since + 60_000), "the minute mark is timed");
@@ -8553,7 +8578,7 @@ export default class Recent extends View {
         listed(json!({ "state": "blocked", "kind": "permission", "msg": "approve Bash: make", "app": "claude-code" }), cx);
         assert_eq!(resolved() - before, 1, "one publish: the agent pane once");
         assert_eq!(info("a")["segments"][0], json!({ "sep": "", "text": "approve Bash: make", "ask": true }));
-        assert_eq!(info("a")["text"], json!("approve Bash: make · blocked 0s"));
+        assert_eq!(info("a")["text"], json!("approve Bash: make · blocked <1m"));
 
         let before = resolved();
         minute(cx);

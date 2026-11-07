@@ -11,7 +11,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { panes, props, run, theme, home, settings, fitHeaderInfo, openOverlay } from "herdr";
+import { panes, props, run, theme, home, settings, fitHeaderInfo, headerTextWidth } from "herdr";
 
 const TEXT = 12;
 const GAP = 8;
@@ -19,8 +19,8 @@ const GAP = 8;
 const BUTTONS = 4 * (14 + 6 + GAP);
 const STATUS = { working: 12, blocked: 70, done: 7 };
 
-// About the width `text` takes at the header's text size (fitHeaderInfo's estimate).
-const estimate = (text) => [...text].length * TEXT * 0.6;
+// About the width `text` takes at the header's text size, as fitHeaderInfo estimates it.
+const estimate = (text) => headerTextWidth(text, TEXT);
 
 // The width left to the info: the header less its padding and every other item but the
 // folder (which gives way first), the buttons too while hovered.
@@ -106,8 +106,9 @@ export default class Pane extends View {
     const st = p.status;
     const pane = p.pane;
     const textSize = p.text_size != null ? `${Math.round(p.text_size * 10) / 10}pt` : null;
-    const room = infoRoom(this.width, [pic ? 14 : null, Math.min(260, estimate(name)), textSize ? estimate(textSize) : null, STATUS[st] ?? null], this.hovered);
-    const extra = p.header_info ? info(t, p, room) : null;
+    const extra = p.header_info
+      ? info(t, p, infoRoom(this.width, [pic ? 14 : null, Math.min(260, estimate(name)), textSize ? estimate(textSize) : null, STATUS[st] ?? null], this.hovered))
+      : null;
     return h_flex()
       .id(`pane-head-${pane}`)
       .size_full()
@@ -121,8 +122,8 @@ export default class Pane extends View {
       .on_hover((hovered, cx) => { this.hovered = hovered; cx.notify(); })
       .when(Boolean(p.header_info), (el) => el.on_size_change((size, cx) => { this.width = size.width; cx.notify(); }))
       .on_click(() => run("pane.focus", { pane }))
-      // The pane's menu, as a right-click on its terminal opens it (no selection to copy).
-      .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "pane", target: { pane, terminal: p.terminal, cwd: p.cwd ?? null } } }); })
+      // The pane's menu (the layout's terminal_menu), as a right-click on its terminal opens it, with no selection.
+      .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); run("pane.menu", { pane }); })
       .when(Boolean(pic), (el) => el.child(pic))
       .child(div().flex_none().truncate().max_w(260).font_medium().text_color(t.foreground).child(name))
       .child(div().flex_1().truncate().text_color(t.dim).child(folder(p.cwd)))

@@ -600,9 +600,13 @@ export interface GitStatus {
 export function fitHeaderInfo(segments: HeaderSegment[], width: number, fontPx: number): HeaderSegment[];
 
 /** A `pane_header_info` template resolved with sample values (an agent blocked on
- *  "approve Bash: make" for 45s, on main, 2 ahead, with changes), as `header_info`; null
+ *  "approve Bash: make" for 3m, on main, 2 ahead, with changes), as `header_info`; null
  *  when nothing would show. For a settings preview. */
 export function headerInfoPreview(template: string): HeaderInfo | null;
+
+/** About how wide `text` is in `fontPx` text, as `fitHeaderInfo` estimates it (wide
+ *  characters, CJK and emoji, twice): for sizing what sits beside the info. */
+export function headerTextWidth(text: string, fontPx: number): number;
 
 export function gitStatus(folder: string, options?: { on?: string | null; files?: boolean }): GitStatus | false | null;
 
