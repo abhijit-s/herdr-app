@@ -7055,10 +7055,14 @@ export default class Recent extends View {
             this.terms["right"].view.update(cx, |v, cx| v.ingest(vec![crate::hc::Stream::Data(b"\x1b[?1049h".to_vec())], cx));
         });
         cx.run_until_parked();
+        let titles = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| {
+            this.overlays.iter().filter_map(|o| this.copies.get(&format!("overlay:{}", o.id))).map(|c| c.inst.props["title"].clone()).collect::<Vec<_>>()
+        });
         view.update_in(cx, |this, window, cx| this.run_as("terminal.copy_all", json!({ "terminal": "t2" }), false, window, cx));
-        assert_eq!(toast(cx), "Copying…");
+        assert!(titles(cx).contains(&json!("Copying…")), "{:?}", titles(cx));
         cx.run_until_parked();
         assert_eq!(toast(cx), "Copied 2 lines");
+        assert!(!titles(cx).contains(&json!("Copying…")), "{:?}", titles(cx));
 
         let missing = run("terminal.copy_all", json!({ "terminal": "t9" }), cx);
         assert!(missing.get("error").is_some(), "{missing}");
@@ -7936,11 +7940,14 @@ export default class Recent extends View {
         };
         list(json!({ "state": "working", "app": "claude-code" }), cx);
         list(json!({ "state": "blocked", "kind": "permission", "app": "claude-code", "msg": "approve Bash: make" }), cx);
+        // Its program icon is made off the main thread first.
+        cx.run_until_parked();
         let shown = cx.shown_system_notifications();
         let last = shown.last().expect("posted");
         assert_eq!((last.title.as_ref(), last.body.lines().next()), ("Claude needs you", Some("approve Bash: make")));
         list(json!({ "state": "working", "app": "claude-code" }), cx);
         list(json!({ "state": "error", "app": "claude-code" }), cx);
+        cx.run_until_parked();
         let shown = cx.shown_system_notifications();
         assert_eq!(shown.last().map(|n| n.title.to_string()), Some("Claude hit an error".into()));
         assert!(!shown.last().unwrap().body.contains("approve"), "an old message doesn't linger");
