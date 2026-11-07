@@ -1128,6 +1128,12 @@ impl Platform for MacPlatform {
         state.system_notifications.dismiss(&executor, tag);
     }
 
+    fn system_notifications_allowed(&self) -> Option<bool> {
+        let mut state = self.0.lock();
+        let executor = state.foreground_executor.clone();
+        state.system_notifications.allowed(&executor)
+    }
+
     fn on_system_notification_response(
         &self,
         callback: Box<dyn FnMut(gpui::SystemNotificationResponse)>,

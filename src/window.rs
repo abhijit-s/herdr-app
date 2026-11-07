@@ -601,6 +601,8 @@ pub struct AppWindow {
     dock_badge: crate::dock_badge::Badge,
     /// Agents with a system notification up (alert.rs), taken down once seen.
     notified: HashSet<String>,
+    /// Which agent each `system.notify` notification focuses when clicked.
+    notify_clicks: crate::alert::NotifyClicks,
     /// Agents that don't report (OSC 7501), read off their screens (harness.rs).
     unreported: crate::harness::Watcher,
     /// Why `alert_command` didn't start, each said once in a toast.
@@ -713,6 +715,7 @@ impl AppWindow {
             pane_history: Vec::new(),
             window_active: true,
             notified: HashSet::new(),
+            notify_clicks: crate::alert::NotifyClicks::default(),
             unreported: Default::default(),
             alert_command_errors: HashSet::new(),
             system_dark: is_dark(window.appearance()),
@@ -773,13 +776,22 @@ impl AppWindow {
 
         // Clicking a system notification goes there, as clicking the toast does.
         let (handle, this) = (window.window_handle(), cx.entity().downgrade());
+        // A `system.notify` one goes to its agent, when it named one.
         cx.on_system_notification_response(move |response, cx| {
-            let Some(addr) = crate::alert::address_of(&response.tag).map(str::to_owned) else { return };
-            cx.activate(true);
             let _ = handle.update(cx, |_, window, cx| {
-                window.activate_window();
                 let _ = this.update(cx, |this, cx| {
-                    this.notified.remove(&addr);
+                    let addr = match crate::alert::address_of(&response.tag) {
+                        Some(addr) => {
+                            this.notified.remove(addr);
+                            addr.to_owned()
+                        }
+                        None => match this.notify_clicks.clicked(&response.tag) {
+                            Some(addr) => addr,
+                            None => return,
+                        },
+                    };
+                    cx.activate(true);
+                    window.activate_window();
                     this.run("agent.focus", json!({ "terminal": addr }), window, cx);
                 });
             });
@@ -1651,12 +1663,17 @@ impl AppWindow {
             let view = cx.new(|cx| TerminalView::attach(self.core.clone(), address.clone(), size_hint, cx));
             self.tell_term(&view, &address, cx);
             let (block, addr) = (id.clone(), address.clone());
-            let sub = cx.subscribe_in(&view, window, move |this, _, ev: &TerminalEvent, window, cx| match ev {
+            let sub = cx.subscribe_in(&view, window, move |this, view, ev: &TerminalEvent, window, cx| match ev {
                 TerminalEvent::Peek(address) => this.peek_terminal(address, window, cx),
                 TerminalEvent::TitleChanged => this.publish(cx),
                 TerminalEvent::Ended => this.terminal_ended(&block, window, cx),
                 TerminalEvent::ContextMenu(at) => {
-                    this.open_menu("pane", json!({ "pane": block.trim_end_matches(SWAP), "terminal": addr }), Some(*at), window, cx)
+                    // What the copy items need, read before the menu takes the keyboard.
+                    let target = json!({
+                        "pane": block.trim_end_matches(SWAP), "terminal": addr,
+                        "selected": view.read(cx).has_selection(), "cwd": this.terminal_cwd(&addr),
+                    });
+                    this.open_menu("pane", target, Some(*at), window, cx)
                 }
                 TerminalEvent::Copied => this.show_copied(window, cx),
             });
@@ -1845,6 +1862,68 @@ impl AppWindow {
             .or_else(|| self.model.focused_pane().and_then(|p| self.pane_term(&p)))
     }
 
+    /// The folder a terminal is in: its live folder, else the core's record of it.
+    fn terminal_cwd(&self, address: &str) -> Option<String> {
+        let rec = self.live.get(address);
+        self.cwds
+            .get(address)
+            .cloned()
+            .or_else(|| rec.and_then(|r| r.pointer("/foreground/cwd").or_else(|| r.get("cwd"))).and_then(Value::as_str).map(str::to_owned))
+            .filter(|cwd| !cwd.is_empty())
+    }
+
+    /// The view a command with a `terminal` argument acts on. A copy takes
+    /// the view holding a selection: the same terminal can show in a pane
+    /// and a peek, each with a selection of its own.
+    fn command_view(&self, address: &str, copying: bool, window: &Window, cx: &App) -> Result<Entity<TerminalView>, String> {
+        let selected = copying.then(|| self.terms.values().find(|t| t.address == address && t.view.read(cx).has_selection())).flatten();
+        match selected {
+            Some(t) if self.live.contains_key(address) => Ok(t.view.clone()),
+            _ => self.shown_terminal_view(address, window, cx),
+        }
+    }
+
+    /// `terminal.copy_all`: the screen and all the history the core keeps, as
+    /// `hc read` prints it, without the blank lines below the last text.
+    fn copy_all(&mut self, address: String, window: &mut Window, cx: &mut Context<Self>) {
+        // The core reads a full-screen program's history by scrolling it, holding
+        // typed keys, for up to seconds: say so, or the pane seems to move by itself.
+        if self.terms.values().any(|t| t.address == address && t.view.read(cx).full_screen()) {
+            let note = json!({ "title": "Copying…", "body": "Scrolling the program to read its history", "level": "info", "timeout": 20000 });
+            self.show_copied_as(note, window, cx);
+        }
+        let core = self.core.clone();
+        let read = cx.background_executor().spawn(async move {
+            // Past the core's own stitch deadline (15 s by default).
+            core.call_timeout("terminal.read", copy_all_params(&address), Duration::from_secs(30))
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let read = read.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                let note = match read {
+                    Ok(r) if !r["text"].is_string() => json!({ "title": "Couldn't copy the terminal", "body": format!("unexpected reply: {r}"), "level": "error" }),
+                    Ok(r) => match copied_text(r["text"].as_str().unwrap_or_default()) {
+                        Some((text, lines)) => {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                            let mut note = json!({ "title": format!("Copied {} {}", thousands(lines), if lines == 1 { "line" } else { "lines" }) });
+                            if r["complete"] == json!(false) {
+                                note["body"] = json!("Some of its history wasn't available");
+                            }
+                            return this.show_copied_as(note, window, cx);
+                        }
+                        None => json!({ "title": "Nothing to copy", "level": "info" }),
+                    },
+                    Err(e) => json!({ "title": "Couldn't copy the terminal", "body": format!("{e:#}"), "level": "error" }),
+                };
+                if let Some(copying) = this.copied_toast.take() {
+                    this.remove_overlay(&copying, window, cx);
+                }
+                this.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": note }), window, cx);
+            });
+        })
+        .detach();
+    }
+
     fn shown_terminal_view(&self, address: &str, window: &Window, cx: &App) -> Result<Entity<TerminalView>, String> {
         if !self.live.contains_key(address) {
             return Err(format!("no running terminal {address:?}"));
@@ -1856,7 +1935,7 @@ impl AppWindow {
             let view = t.view.read(cx);
             (view.owns_keyboard_focus(window, cx), view.on_screen_this_frame(), own_pane.as_deref() == Some(pane.as_str()))
         });
-        best.map(|(_, t)| t.view.clone()).ok_or_else(|| format!("terminal {address:?} is running but not shown in this window, so it has no view to scroll"))
+        best.map(|(_, t)| t.view.clone()).ok_or_else(|| format!("terminal {address:?} is running but not shown in this window"))
     }
 
     fn scroll_terminal(&self, args: &Value, window: &Window, cx: &mut Context<Self>) -> Result<(), String> {
@@ -2227,13 +2306,21 @@ impl AppWindow {
         }
     }
 
-    /// One "Copied" toast at a time: quick selections replace it instead of stacking.
     fn show_copied(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_copied_as(json!({ "title": "Copied" }), window, cx);
+    }
+
+    /// One "Copied" toast at a time: quick selections replace it instead of stacking.
+    fn show_copied_as(&mut self, mut note: Value, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(old) = self.copied_toast.take() {
             self.remove_overlay(&old, window, cx);
         }
         let id = mods::new_overlay_id();
-        let note = json!({ "title": "Copied", "level": "success", "timeout": 1500 });
+        for (k, v) in [("level", json!("success")), ("timeout", json!(1500))] {
+            if note.get(k).is_none() {
+                note[k] = v;
+            }
+        }
         self.open_overlay(id.clone(), json!({ "kind": "toast", "notification": note }), window, cx);
         self.copied_toast = Some(id);
     }
@@ -2643,6 +2730,61 @@ impl AppWindow {
         })
     }
 
+    /// `system.notify`: a notification any program posts as Herdr (alert.rs).
+    fn system_notify(&mut self, args: &Value, window: &mut Window, cx: &mut Context<Self>) {
+        let notify = match crate::alert::parse_notify(args) {
+            Ok(notify) => notify,
+            Err(error) => return self.fail(error),
+        };
+        let agent = match notify.agent.as_deref().map(|who| self.agent_called(who)).transpose() {
+            Ok(agent) => agent,
+            Err(error) => return self.fail(error),
+        };
+        let settings = settings::get();
+        match crate::alert::notify_to(settings.system_notifications, self.window_active, notify.urgent) {
+            crate::alert::NotifyTo::Nowhere => self.fail("system.notify: system_notifications is off"),
+            crate::alert::NotifyTo::Toast => {
+                let body = [notify.subtitle.as_str(), notify.body.as_str()].into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
+                let mut note = json!({ "title": notify.title, "body": body, "level": "info" });
+                if let Some(addr) = &agent {
+                    note["action"] = json!({ "name": "agent.focus", "args": { "terminal": addr } });
+                }
+                self.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": note }), window, cx);
+                self.answer(Ok(json!({ "ok": true, "shown": "toast" })));
+            }
+            crate::alert::NotifyTo::System if !crate::alert::can_post(cx) => {
+                self.fail("system.notify: Herdr can't show system notifications here: allow them in System Settings > Notifications, and run Herdr from its app")
+            }
+            crate::alert::NotifyTo::System => {
+                // The notification center takes (moves) the file it's given: a copy.
+                let image = match &notify.icon {
+                    Some(icon) => crate::notification_icon::copy_for_posting(icon),
+                    None if settings.notification_icons => {
+                        agent.as_ref().and_then(|addr| self.model.agents.get(addr)?.app.clone()).and_then(|app| crate::alert::program_icon(&app))
+                    }
+                    None => None,
+                };
+                let tag = crate::alert::notify_tag(notify.id.as_deref());
+                cx.show_system_notification(crate::alert::notify_notification(&notify, &tag, image));
+                self.notify_clicks.posted(&tag, agent.as_deref());
+                self.answer(Ok(json!({ "ok": true, "shown": "notification", "tag": tag })));
+            }
+        }
+    }
+
+    /// A running terminal by its address, else the one agent with that name.
+    fn agent_called(&self, who: &str) -> Result<String, String> {
+        if self.live.contains_key(who) {
+            return Ok(who.to_owned());
+        }
+        let named: Vec<&String> = self.live.iter().filter(|(_, rec)| rec.get("name").and_then(Value::as_str) == Some(who)).map(|(addr, _)| addr).collect();
+        match named.as_slice() {
+            [addr] => Ok((*addr).clone()),
+            [] => Err(format!("system.notify: no running terminal or agent called {who:?}")),
+            _ => Err(format!("system.notify: {} agents are called {who:?}: give its terminal address", named.len())),
+        }
+    }
+
     /// Tells the person an agent needs them or finished: Herdr's sounds, and a
     /// toast (drawn by the `toast` mod; click it to go there) unless they're
     /// looking at that agent. Outside the window too, as `system_notifications`
@@ -2677,7 +2819,7 @@ impl AppWindow {
         let said = crate::alert::Said::of(rec.and_then(|r| r.get("report")));
         let note = crate::alert::Note { address: addr.to_owned(), alert, prev, app, name, place, said };
         if crate::alert::should_notify(settings.system_notifications, self.window_active, looking) {
-            match crate::alert::send(&note, settings.alert_command.as_ref(), cx) {
+            match crate::alert::send(&note, &settings, cx) {
                 crate::alert::Sent::Posted => {
                     self.notified.insert(addr.to_owned());
                 }
@@ -2692,7 +2834,7 @@ impl AppWindow {
                     cx.spawn_in(window, async move |this, cx| {
                         let Ok(why) = failed.recv().await else { return };
                         let _ = this.update_in(cx, |this, window, cx| {
-                            cx.show_system_notification(crate::alert::system_notification(&note));
+                            crate::alert::post(&note, &settings::get(), cx);
                             this.notified.insert(note.address.clone());
                             this.alert_command_failed(why, window, cx);
                         });
@@ -3793,21 +3935,45 @@ impl AppWindow {
                 return;
             }
             "terminal.copy" | "terminal.paste" | "terminal.paste_image" => {
-                if let Some(t) = self.focused_terminal(window, cx) {
-                    t.view.update(cx, |v, cx| match name {
-                        "terminal.paste" => v.paste(cx),
-                        "terminal.paste_image" => v.paste_image(cx),
-                        // A command, not a key: copy and leave the selection.
-                        _ => { let _ = v.copy(cx); }
-                    });
+                let view = match Self::arg(a, "terminal") {
+                    Some(t) => match self.command_view(t, name == "terminal.copy", window, cx) {
+                        Ok(view) => view,
+                        Err(error) => return self.fail(error),
+                    },
+                    None => match self.focused_terminal(window, cx) {
+                        Some(t) => t.view.clone(),
+                        None => return,
+                    },
+                };
+                // A command, not a key: copy and leave the selection.
+                let copied = view.update(cx, |v, cx| match name {
+                    "terminal.paste" => { v.paste(cx); false }
+                    "terminal.paste_image" => { v.paste_image(cx); false }
+                    _ => v.copy(cx),
+                });
+                if copied {
+                    self.show_copied(window, cx);
                 }
                 return;
+            }
+            "terminal.copy_all" => {
+                let t = Self::owned(a, "terminal").or_else(|| self.focused_terminal(window, cx).map(|t| t.address.clone()));
+                let Some(t) = t.filter(|t| self.live.contains_key(t)) else { return self.fail("no such running terminal") };
+                self.copy_all(t, window, cx);
+            }
+            "terminal.copy_path" => {
+                let t = Self::owned(a, "terminal").or_else(|| self.focused_terminal(window, cx).map(|t| t.address.clone()));
+                let Some(t) = t.filter(|t| self.live.contains_key(t)) else { return self.fail("no such running terminal") };
+                let Some(cwd) = self.terminal_cwd(&t) else { return self.fail(format!("terminal {t:?}'s folder isn't known")) };
+                cx.write_to_clipboard(ClipboardItem::new_string(cwd));
+                self.show_copied_as(json!({ "title": "Copied path" }), window, cx);
             }
             "terminal.scroll" => {
                 if let Err(error) = self.scroll_terminal(a, window, cx) {
                     self.fail(error);
                 }
             }
+            "system.notify" => self.system_notify(a, window, cx),
             // ---- agents
             "agent.focus" => {
                 let t = Self::arg(a, "terminal").unwrap_or_default().to_owned();
@@ -5600,10 +5766,42 @@ fn mod_overlay(dir: &std::path::Path) -> Value {
     meta.get("overlay").cloned().filter(Value::is_object).unwrap_or_else(|| json!({}))
 }
 
+/// More lines than any terminal keeps: `terminal.read` gives what it has.
+/// Not `usize::MAX`: the core adds the screen's rows to it.
+const ALL_LINES: u64 = 1_000_000_000;
+
+fn copy_all_params(address: &str) -> Value {
+    json!({ "terminal": address, "lines": ALL_LINES })
+}
+
+/// What `terminal.copy_all` puts on the clipboard, and its line count; `None`
+/// when there's no text. The rows below the last text are blank screen, not output.
+fn copied_text(read: &str) -> Option<(String, usize)> {
+    let mut lines: Vec<&str> = read.lines().collect();
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+        lines.pop();
+    }
+    (!lines.is_empty()).then(|| (lines.join("\n"), lines.len()))
+}
+
+/// 1234 as "1,234".
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, d) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(d);
+    }
+    out
+}
+
 fn terminal_menu_spec(name: &str, defaults: &Value, tab: &str, target: Value) -> Value {
     json!({ "mod": name, "kind": "popup",
         "width": defaults.get("width").and_then(Value::as_f64).unwrap_or(220.0),
-        "height": defaults.get("height").and_then(Value::as_f64).unwrap_or(260.0),
+        // The most: a menu is as tall as its items.
+        "height": defaults.get("height").and_then(Value::as_f64).unwrap_or(420.0),
         "props": { "tab": tab, "target": target } })
 }
 
@@ -6724,6 +6922,131 @@ export default class Recent extends View {
         root.terminal_menu = Some("personal-menu".into());
         let restored: super::Node = serde_json::from_value(serde_json::to_value(&root).unwrap()).unwrap();
         assert_eq!(restored.terminal_menu.as_deref(), Some("personal-menu"));
+    }
+
+    #[test]
+    fn copy_all_text_drops_the_blank_rows_below_the_last_text() {
+        assert_eq!(super::copied_text("old\n  indented\n\nlast\n\n   \n"), Some(("old\n  indented\n\nlast".into(), 4)));
+        assert_eq!(super::copied_text("one"), Some(("one".into(), 1)));
+        assert_eq!(super::copied_text("\n \n"), None);
+        assert_eq!(super::copied_text(""), None);
+        assert_eq!((super::thousands(7), super::thousands(1234), super::thousands(1_234_567)), ("7".into(), "1,234".into(), "1,234,567".into()));
+        // All the history above the screen, not just the screen (`hc read` without --lines).
+        let params = super::copy_all_params("m/t7");
+        assert_eq!(params["terminal"], "m/t7");
+        assert!(params["lines"].as_u64().is_some_and(|n| n >= 1_000_000), "{params}");
+    }
+
+    #[test]
+    fn pane_menu_copy_items_act_on_the_clicked_terminal() {
+        in_own_process("pane_menu_copy");
+    }
+
+    /// Two terminals, t1 focused. A selection in t2 survives a right-click on
+    /// it, the menu is told it's there and where t2 is, and the copy commands
+    /// given `terminal: t2` act on t2, not on the focused t1.
+    #[gpui::test]
+    fn pane_menu_copy(cx: &mut gpui::TestAppContext) {
+        use gpui::{Modifiers, MouseButton, point, px};
+        use serde_json::json;
+        if !running_alone("pane_menu_copy") {
+            return;
+        }
+        let (core, calls) = crate::hc::answering(|method, params| match method {
+            "terminal.read" => {
+                let t = params["terminal"].as_str().unwrap_or_default();
+                Ok(json!({ "text": format!("{t} history\n{t} screen\n\n   \n"), "complete": true, "how": "history" }))
+            }
+            _ => Err(json!({ "message": "not in this test" })),
+        });
+        let menu = r#"import { View, div } from "gpui-kit"; export default class Menu extends View { render() { return div().child("menu"); } }"#;
+        let (view, cx) = open_window_on(core, cx, "menu", menu, json!({ "id": "root", "type": "row", "children": [
+            { "id": "left", "type": "block", "content": { "terminal": "t1" } },
+            { "id": "right", "type": "block", "content": { "terminal": "t2" } }
+        ] }));
+        let text = |t: &str| format!("{t} says hello world\r\n").into_bytes();
+        view.update_in(cx, |this, window, cx| {
+            window.activate_window();
+            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                this.close_overlay(&id, window, cx);
+            }
+            this.live.insert("t1".into(), json!({ "address": "t1", "foreground": { "cwd": "/work/left" } }));
+            this.live.insert("t2".into(), json!({ "address": "t2", "cwd": "/started" }));
+            this.cwds.insert("t2".into(), "/work/right".into());
+            for (pane, t) in [("left", "t1"), ("right", "t2")] {
+                let term = this.terms[pane].view.clone();
+                term.update(cx, |v, cx| v.ingest(vec![crate::hc::Stream::Data(text(t))], cx));
+            }
+            this.run_as("pane.focus", json!({ "terminal": "t1" }), false, window, cx);
+        });
+        cx.executor().advance_clock(std::time::Duration::from_millis(100));
+        cx.run_until_parked();
+        let none = Modifiers::default();
+        let origin = view.update(cx, |this, _| this.bounds.borrow()["right"].origin);
+        let (from, to) = (point(origin.x + px(4.), origin.y + px(10.)), point(origin.x + px(120.), origin.y + px(10.)));
+        cx.simulate_mouse_down(from, MouseButton::Left, none);
+        cx.simulate_mouse_move(to, Some(MouseButton::Left), none);
+        cx.simulate_mouse_up(to, MouseButton::Left, none);
+        cx.run_until_parked();
+        let selected = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, cx| this.terms["right"].view.read(cx).has_selection());
+        assert!(selected(cx), "the drag selected nothing");
+        view.update_in(cx, |this, window, cx| this.run_as("pane.focus", json!({ "terminal": "t1" }), false, window, cx));
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("before".into()));
+        let clipboard = |cx: &mut gpui::VisualTestContext| cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
+
+        // The right-click opens the menu and leaves the selection.
+        cx.simulate_mouse_down(to, MouseButton::Right, none);
+        cx.simulate_mouse_up(to, MouseButton::Right, none);
+        cx.run_until_parked();
+        assert!(selected(cx), "the right-click cleared the selection");
+        let target = view.update(cx, |this, _| {
+            this.copies.values().find(|c| c.inst.name == "menu").map(|c| c.inst.props["target"].clone()).expect("the menu opened")
+        });
+        assert_eq!(target, json!({ "pane": "right", "terminal": "t2", "selected": true, "cwd": "/work/right" }));
+        assert_eq!(clipboard(cx), "before", "opening the menu copied");
+
+        let run = |name: &str, args: serde_json::Value, cx: &mut gpui::VisualTestContext| {
+            let reply = view.update_in(cx, |this, window, cx| this.run_as(name, args, false, window, cx));
+            cx.run_until_parked();
+            reply
+        };
+        let toast = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| {
+            let id = this.copied_toast.clone().unwrap_or_default();
+            this.copies.get(&format!("overlay:{id}")).map(|c| c.inst.props["title"].clone()).unwrap_or_default()
+        });
+        // The focused t1 has no selection: copy without a terminal copies nothing.
+        run("terminal.copy", json!(null), cx);
+        assert_eq!(clipboard(cx), "before");
+        run("terminal.copy", json!({ "terminal": "t2" }), cx);
+        assert!(clipboard(cx).starts_with("t2 says"), "{}", clipboard(cx));
+        assert!(selected(cx), "a copy command keeps the selection");
+
+        run("terminal.copy_path", json!({ "terminal": "t2" }), cx);
+        assert_eq!(clipboard(cx), "/work/right");
+        run("terminal.copy_path", json!({ "terminal": "t1" }), cx);
+        assert_eq!(clipboard(cx), "/work/left", "without a live folder, the core's record of the foreground's");
+        assert_eq!(toast(cx), "Copied path");
+
+        run("terminal.copy_all", json!({ "terminal": "t2" }), cx);
+        assert_eq!(clipboard(cx), "t2 history\nt2 screen");
+        assert_eq!(toast(cx), "Copied 2 lines");
+        let reads: Vec<_> = calls.lock().unwrap().iter().filter(|(m, _)| m == "terminal.read").map(|(_, p)| p.clone()).collect();
+        assert_eq!(reads, [super::copy_all_params("t2")]);
+        run("terminal.copy_all", json!(null), cx);
+        assert_eq!(clipboard(cx), "t1 history\nt1 screen", "without a terminal, the focused one");
+
+        // A full-screen program is read by scrolling it: a toast says so until it's done.
+        view.update(cx, |this, cx| {
+            this.terms["right"].view.update(cx, |v, cx| v.ingest(vec![crate::hc::Stream::Data(b"\x1b[?1049h".to_vec())], cx));
+        });
+        cx.run_until_parked();
+        view.update_in(cx, |this, window, cx| this.run_as("terminal.copy_all", json!({ "terminal": "t2" }), false, window, cx));
+        assert_eq!(toast(cx), "Copying…");
+        cx.run_until_parked();
+        assert_eq!(toast(cx), "Copied 2 lines");
+
+        let missing = run("terminal.copy_all", json!({ "terminal": "t9" }), cx);
+        assert!(missing.get("error").is_some(), "{missing}");
     }
 
     #[test]
@@ -8831,7 +9154,7 @@ export default class Probe extends View {
         let target = json!({ "pane": "p2", "terminal": "t8" });
         let stock = super::terminal_menu_spec("menu", &json!({}), "pane", target.clone());
         assert_eq!(stock["width"], 220.0);
-        assert_eq!(stock["height"], 260.0);
+        assert_eq!(stock["height"], 420.0);
         let custom = super::terminal_menu_spec("personal-menu", &json!({"kind": "dialog", "width": 310, "height": 120}), "pane", target.clone());
         assert_eq!(custom["mod"], "personal-menu");
         assert_eq!(custom["kind"], "popup");
@@ -8840,7 +9163,7 @@ export default class Probe extends View {
         assert_eq!(custom["props"], json!({"tab": "pane", "target": target}));
         let partial = super::terminal_menu_spec("personal-menu", &json!({"width": 0.4}), "pane", json!({}));
         assert_eq!(partial["width"], 0.4);
-        assert_eq!(partial["height"], 260.0);
+        assert_eq!(partial["height"], 420.0);
     }
 
     #[test]

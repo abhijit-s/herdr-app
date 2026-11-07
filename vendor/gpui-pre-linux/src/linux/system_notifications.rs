@@ -40,9 +40,14 @@ impl SystemNotificationState {
         if let Some(app_name) = app_name {
             builder.appname(app_name);
         }
+        let body = match (notification.subtitle.is_empty(), notification.body.is_empty()) {
+            (true, _) => notification.body.to_string(),
+            (false, true) => notification.subtitle.to_string(),
+            (false, false) => format!("{}\n{}", notification.subtitle, notification.body),
+        };
         builder
             .summary(&notification.title)
-            .body(&notification.body)
+            .body(&body)
             .action(DEFAULT_ACTION, DEFAULT_ACTION);
         let mut action_ids = HashMap::new();
         for (index, action) in notification.actions.iter().enumerate() {

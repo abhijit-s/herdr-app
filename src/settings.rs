@@ -864,6 +864,17 @@ pub struct Person {
     /// When an alert also goes to the system's notification center (alert.rs).
     #[serde(skip_serializing_if = "SystemNotifications::is_background")]
     pub system_notifications: SystemNotifications,
+    /// The sound each system notification plays, as written (read through
+    /// `notification_sounds`): a sound for every state, or one per state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notification_sounds: Option<serde_json::Value>,
+    /// The agent's glyph before an agent notification's title, and the state's
+    /// mark (✋, 🔴, ✅) before its body.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub notification_marks: bool,
+    /// The agent's program icon on its system notifications. On unless set to false.
+    #[serde(skip_serializing_if = "is_true")]
+    pub notification_icons: bool,
     /// Bounce the Dock icon when an agent needs you while Herdr is in the background.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub dock_bounce: bool,
@@ -877,6 +888,10 @@ pub struct Person {
     /// their id (pane_names.rs); display only.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub pane_auto_names: bool,
+    /// How space avatars are drawn by the mods that draw them: `letter`,
+    /// `glyph`, `emoji` or `repo`, as written (read through `space_avatar`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_avatar: Option<String>,
     /// The spinner mods show while an agent works, as written: a preset's
     /// name or `{frames, interval_ms}` (read through `working_spinner`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1060,6 +1075,87 @@ impl ResumeAgents {
 pub enum AlertCommand {
     Shell(String),
     Argv(Vec<String>),
+}
+
+/// The sound each agent alert's system notification plays (alert.rs).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct NotificationSounds {
+    #[serde(serialize_with = "sound_word")]
+    pub blocked: gpui::SystemNotificationSound,
+    #[serde(serialize_with = "sound_word")]
+    pub error: gpui::SystemNotificationSound,
+    #[serde(serialize_with = "sound_word")]
+    pub done: gpui::SystemNotificationSound,
+}
+
+impl<'de> Deserialize<'de> for NotificationSounds {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(d)?;
+        Ok(notification_sounds(Some(&v)).unwrap_or_default())
+    }
+}
+
+fn sound_word<S: serde::Serializer>(sound: &gpui::SystemNotificationSound, s: S) -> Result<S::Ok, S::Error> {
+    match sound {
+        gpui::SystemNotificationSound::Silent => s.serialize_str("none"),
+        gpui::SystemNotificationSound::Default => s.serialize_str("default"),
+        gpui::SystemNotificationSound::Named(name) => s.serialize_str(name),
+    }
+}
+
+/// The longest sound name taken; macOS's own are a word.
+const SOUND_NAME_MAX_CHARS: usize = 64;
+
+/// One sound as written: `"default"` (the system's), `"none"` / `false`
+/// (silent), `true` (the system's), or a sound's name (`"Glass"`).
+pub fn sound(v: &serde_json::Value) -> Result<gpui::SystemNotificationSound, String> {
+    use gpui::SystemNotificationSound as Sound;
+    match v {
+        serde_json::Value::Bool(false) => Ok(Sound::Silent),
+        serde_json::Value::Bool(true) => Ok(Sound::Default),
+        serde_json::Value::String(word) => match word.as_str() {
+            "none" => Ok(Sound::Silent),
+            "default" => Ok(Sound::Default),
+            name if is_sound_name(name) => Ok(Sound::Named(name.to_owned().into())),
+            name => Err(format!("{name:?} is not \"default\", \"none\" or a sound's name (letters, digits, spaces, - _ ., up to {SOUND_NAME_MAX_CHARS})")),
+        },
+        other => Err(format!("{other} is not a sound: \"default\", \"none\", false or a sound's name")),
+    }
+}
+
+/// A file name in a Sounds folder, without its extension or a path.
+fn is_sound_name(name: &str) -> bool {
+    (1..=SOUND_NAME_MAX_CHARS).contains(&name.chars().count())
+        && !name.starts_with(['.', ' '])
+        && name.chars().all(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.'))
+}
+
+/// `notification_sounds` as written: one sound for every state, or
+/// `{ "done": …, "blocked": …, "error": … }` (a state left out is silent).
+/// Absent: silent.
+fn notification_sounds(v: Option<&serde_json::Value>) -> Result<NotificationSounds, String> {
+    let fail = |why: String| Err(format!("notification_sounds {why}: notifications stay silent"));
+    let Some(v) = v else { return Ok(NotificationSounds::default()) };
+    let Some(states) = v.as_object() else {
+        return match sound(v) {
+            Ok(one) => Ok(NotificationSounds { blocked: one.clone(), error: one.clone(), done: one }),
+            Err(why) => fail(why),
+        };
+    };
+    let mut sounds = NotificationSounds::default();
+    for (state, v) in states {
+        let slot = match state.as_str() {
+            "blocked" => &mut sounds.blocked,
+            "error" => &mut sounds.error,
+            "done" => &mut sounds.done,
+            other => return fail(format!("has {other:?}, not one of done, blocked, error")),
+        };
+        *slot = match sound(v) {
+            Ok(s) => s,
+            Err(why) => return fail(format!("{state}: {why}")),
+        };
+    }
+    Ok(sounds)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1321,6 +1417,9 @@ pub struct SpinnerFrames {
     pub interval_ms: u32,
 }
 
+/// settings.json's `space_avatar` values: how mods draw space avatars.
+const SPACE_AVATARS: &[&str] = &["letter", "glyph", "emoji", "repo"];
+
 /// `working_spinner`'s presets besides `"ring"` (the spinning icon), each with its speed.
 const SPINNER_PRESETS: &[(&str, &[&str], u32)] = &[
     ("braille", &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], 80),
@@ -1434,10 +1533,14 @@ impl Default for Person {
             ui_text_scale: 1.0,
             sounds: Sounds::default(),
             system_notifications: SystemNotifications::Background,
+            notification_sounds: None,
+            notification_marks: false,
+            notification_icons: true,
             dock_bounce: false,
             dock_badge: true,
             dock_bounce_on_wait: false,
             pane_auto_names: false,
+            space_avatar: None,
             working_spinner: None,
             resume_agents: ResumeAgents::Ask,
             alert_command: None,
@@ -1574,16 +1677,27 @@ pub struct Settings {
     pub option_as_alt: OptionAsAlt,
     pub sounds: Sounds,
     pub system_notifications: SystemNotifications,
+    pub notification_sounds: NotificationSounds,
+    /// Why settings.json's `notification_sounds` fell back to silence.
+    #[serde(skip)]
+    pub notification_sounds_problem: Option<String>,
+    pub notification_marks: bool,
+    pub notification_icons: bool,
     pub dock_bounce: bool,
     pub dock_badge: bool,
     pub dock_bounce_on_wait: bool,
     pub pane_auto_names: bool,
+    /// How mods draw space avatars; None: `letter` (also for a value it doesn't know).
+    pub space_avatar: Option<String>,
     pub alert_command: Option<AlertCommand>,
     /// The frames mods animate while an agent works; None: the ring.
     pub working_spinner: Option<SpinnerFrames>,
     /// Why settings.json's `working_spinner` fell back to the ring.
     #[serde(skip)]
     pub working_spinner_problem: Option<String>,
+    /// Why settings.json's `space_avatar` fell back to `letter`.
+    #[serde(skip)]
+    pub space_avatar_problem: Option<String>,
 }
 
 /// Attention sounds: when an agent needs you, and when one finished while you
@@ -1658,13 +1772,19 @@ impl Default for Settings {
             option_as_alt: OptionAsAlt::Auto,
             sounds: Sounds::default(),
             system_notifications: SystemNotifications::Background,
+            notification_sounds: NotificationSounds::default(),
+            notification_sounds_problem: None,
+            notification_marks: false,
+            notification_icons: true,
             dock_bounce: false,
             dock_badge: true,
             dock_bounce_on_wait: false,
             pane_auto_names: false,
+            space_avatar: None,
             alert_command: None,
             working_spinner: None,
             working_spinner_problem: None,
+            space_avatar_problem: None,
         }
     }
 }
@@ -1675,6 +1795,10 @@ impl Settings {
         let (working_spinner, working_spinner_problem) = match working_spinner(person.working_spinner.as_ref()) {
             Ok(spinner) => (spinner, None),
             Err(problem) => (None, Some(problem)),
+        };
+        let (notification_sounds, notification_sounds_problem) = match notification_sounds(person.notification_sounds.as_ref()) {
+            Ok(sounds) => (sounds, None),
+            Err(problem) => (NotificationSounds::default(), Some(problem)),
         };
         let mut colors = person.colors.clone();
         colors.extend(look.colors.clone().unwrap_or_default());
@@ -1732,13 +1856,19 @@ impl Settings {
             terminal_opacity: look.terminal_opacity.unwrap_or(1.0).clamp(0.0, 1.0),
             sounds: person.sounds.clone(),
             system_notifications: person.system_notifications,
+            notification_sounds,
+            notification_sounds_problem,
+            notification_marks: person.notification_marks,
+            notification_icons: person.notification_icons,
             dock_bounce: person.dock_bounce,
             dock_badge: person.dock_badge,
             dock_bounce_on_wait: person.dock_bounce_on_wait,
             pane_auto_names: person.pane_auto_names,
+            space_avatar: person.space_avatar.clone().filter(|v| SPACE_AVATARS.contains(&v.as_str())),
             alert_command: person.alert_command.clone(),
             working_spinner,
             working_spinner_problem,
+            space_avatar_problem: person.space_avatar.as_ref().filter(|v| !SPACE_AVATARS.contains(&v.as_str())).map(|v| format!("space_avatar {v:?} is not one of letter, glyph, emoji, repo: using \"letter\"")),
             clipboard_write: person.clipboard_write,
             minimum_contrast: person.minimum_contrast,
             letter_spacing: look.letter_spacing.or(person.letter_spacing).unwrap_or(d.letter_spacing),
@@ -1838,6 +1968,8 @@ impl Settings {
             out.push(format!("font_weight_bold {bold} is outside 100..900"));
         }
         out.extend(self.working_spinner_problem.clone());
+        out.extend(self.notification_sounds_problem.clone());
+        out.extend(self.space_avatar_problem.clone());
         if !(-2.0..=10.0).contains(&self.letter_spacing) {
             out.push(format!("letter_spacing {} is outside -2..10", self.letter_spacing));
         }
@@ -3157,11 +3289,29 @@ mod tests {
         assert_eq!(Settings::default().focus_width(), None);
     }
 
+    /// `space_avatar`: what mods read as how to draw space avatars; unset or
+    /// unknown is null (letter), and an unknown value is reported.
+    #[test]
+    fn space_avatar_reaches_mods_and_unknown_values_fall_back() {
+        use serde_json::json;
+        let compose = |v: serde_json::Value| Settings::compose(&serde_json::from_value(json!({"space_avatar": v})).unwrap(), &crate::layout::Look::default(), true);
+        let unset = Settings::compose(&Person::default(), &crate::layout::Look::default(), true);
+        assert_eq!((unset.for_mods()["space_avatar"].clone(), unset.problems()), (serde_json::Value::Null, vec![]));
+        assert!(serde_json::to_value(Person::default()).unwrap().get("space_avatar").is_none());
+        for mode in ["letter", "glyph", "emoji", "repo"] {
+            let s = compose(json!(mode));
+            assert_eq!((s.for_mods()["space_avatar"].clone(), s.problems()), (json!(mode), vec![]), "{mode}");
+        }
+        let odd = compose(json!("pictures"));
+        assert_eq!(odd.for_mods()["space_avatar"], serde_json::Value::Null);
+        assert_eq!(odd.problems(), vec!["space_avatar \"pictures\" is not one of letter, glyph, emoji, repo: using \"letter\"".to_string()]);
+    }
+
     /// The guide agents read (written to the home folder) explains every
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, pane_zoom_keys: false, pane_auto_names: true, focus_border_width: Some(2.0), working_spinner: Some("braille".into()), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

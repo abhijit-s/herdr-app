@@ -358,9 +358,27 @@ Show a terminal in a pane for now, in place of its own (no terminal: back).
 
 ## `terminal.copy`
 
-Copy the focused terminal's selection. With nothing selected, that key goes to the program.
+Copy a terminal's selection (default: the focused terminal's). With nothing selected, that key goes to the program.
 
-No arguments.
+| Argument | Required |
+|---|---|
+| `terminal` | no |
+
+## `terminal.copy_all`
+
+Copy a terminal's screen and all the history the core keeps (default: the focused terminal), as plain text without the blank lines below the last text: what `hc read` prints. A full-screen program's history is read by scrolling it (typed keys wait meanwhile; up to 1000 lines). It answers at once; a toast says how it went.
+
+| Argument | Required |
+|---|---|
+| `terminal` | no |
+
+## `terminal.copy_path`
+
+Copy the folder a terminal is in (default: the focused terminal).
+
+| Argument | Required |
+|---|---|
+| `terminal` | no |
 
 ## `terminal.scroll`
 
@@ -375,9 +393,11 @@ Scroll a terminal's view of its history (default: the focused one). Give exactly
 
 ## `terminal.paste`
 
-Paste into the focused terminal (copied files as if dropped; an image alone as terminal.paste_image pastes it).
+Paste into a terminal (default: the focused one; copied files as if dropped; an image alone as terminal.paste_image pastes it).
 
-No arguments.
+| Argument | Required |
+|---|---|
+| `terminal` | no |
 
 ## `terminal.paste_image`
 
@@ -530,6 +550,21 @@ Close an overlay (default: the top dialog or popup).
 Toggle the keys dialog.
 
 No arguments.
+
+## `system.notify`
+
+Post a notification as Herdr, for any program. sound: "default" (the default), "none" or a sound's name ("Glass"); agent: a terminal address or an agent's name, whose terminal a click shows (and whose program icon it carries unless icon or notification_icons: false); id: a newer one with the same id replaces the older; icon: an absolute path to a PNG, JPEG, GIF or HEIC up to 10 MB. Follows system_notifications: off fails; background, while Herdr is in front, shows the window's toast instead unless urgent: true. Text is cut at 200 characters (title, subtitle) and 2000 (body); control characters are left out. Fails where macOS won't show it (notifications denied, or a build not run from Herdr.app).
+
+| Argument | Required |
+|---|---|
+| `title` | yes |
+| `body` | no |
+| `subtitle` | no |
+| `sound` | no |
+| `agent` | no |
+| `id` | no |
+| `urgent` | no |
+| `icon` | no |
 
 ## `app.welcome`
 
