@@ -2639,6 +2639,16 @@ impl AppWindow {
             if let Some(alert) = self.model.alert_for(addr, child, prev.as_deref(), word.as_deref(), looking) {
                 alerts.push((addr.clone(), alert, prev.clone(), looking));
             }
+            // A notification from before Herdr started (a quit, a crash, an
+            // update) can still be up: the core outlived it. Adopt a blocked
+            // agent's as a "needs you", and take any other down.
+            if !self.listed_once {
+                if matches!(word.as_deref(), Some("blocked" | "error")) {
+                    self.notified.posted(addr, model::Alert::Blocked);
+                } else {
+                    crate::alert::dismiss(&crate::alert::tag(addr), cx);
+                }
+            }
             if self.notified.withdraw(addr, word.as_deref(), looking, sticky) {
                 crate::alert::dismiss(&crate::alert::tag(addr), cx);
             }
@@ -2932,7 +2942,7 @@ impl AppWindow {
                             let settings = settings::get();
                             let looking = this.window_active && this.visible_addresses().contains(&note.address);
                             let word = this.model.agents.get(&note.address).and_then(|a| a.word.clone());
-                            if crate::alert::still_says(note.alert, word.as_deref()) && crate::alert::should_notify(settings.system_notifications, this.window_active, looking) {
+                            if this.live.contains_key(&note.address) && crate::alert::still_says(note.alert, word.as_deref()) && crate::alert::should_notify(settings.system_notifications, this.window_active, looking) {
                                 crate::alert::post(&note, &settings, cx);
                                 this.notified.posted(&note.address, note.alert);
                             }
@@ -8103,6 +8113,8 @@ export default class Recent extends View {
         // The shell's exit comes back from the reaper's own thread.
         cx.executor().allow_parking();
         let (view, cx) = open_window(cx, "unused", "", json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
+        // Still running when the late notification comes: it posts only then.
+        view.update(cx, |this, _| { this.live.insert("t1".into(), json!({ "address": "t1", "state": "live" })); });
         let toasts = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.overlays.iter().filter(|o| o.kind == super::OverlayKind::Toast).count());
         let alert_with = |command: AlertCommand, cx: &mut gpui::VisualTestContext| {
             cx.update(|window, cx| view.update(cx, |this, cx| {
@@ -8470,6 +8482,25 @@ export default class Recent extends View {
         list(Some("working"), false, cx);
         assert_eq!(list(Some("blocked"), false, cx), ["An agent needs you"], "blocked again");
         assert_eq!(list(None, false, cx), none, "its terminal gone: withdrawn");
+        list(Some("working"), false, cx);
+        list(Some("blocked"), false, cx);
+        assert_eq!(list(Some("idle"), false, cx), ["An agent finished"], "unblocked unseen: one finished in its place");
+        list(Some("working"), false, cx);
+
+        // Herdr restarts while a notification is up: the core kept the agent,
+        // and the new window adopts what may be up from its first listing.
+        let restart = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| {
+            this.notified = Default::default();
+            this.listed_once = false;
+        });
+        assert_eq!(list(Some("blocked"), false, cx), ["An agent needs you"]);
+        restart(cx);
+        assert_eq!(list(Some("blocked"), false, cx), ["An agent needs you"], "adopted, still up");
+        assert_eq!(list(Some("blocked"), true, cx), ["An agent needs you"], "adopted as a needs-you: seen, it stays");
+        assert_eq!(list(Some("working"), false, cx), none, "adopted, then unblocked: withdrawn");
+        assert_eq!(list(Some("blocked"), false, cx), ["An agent needs you"]);
+        restart(cx);
+        assert_eq!(list(Some("working"), false, cx), none, "unblocked while Herdr was down: taken down on the first listing");
 
         set(false, cx);
         list(Some("working"), false, cx);
