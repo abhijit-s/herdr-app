@@ -1,7 +1,7 @@
 // Context menus (Herdr's items). Opened as a popup with
 // props { tab: "pane" | "tab" | "space" | "global", target }.
 // ↑/↓ move, Enter runs, Esc closes. An item is [label, command, args];
-// a command "worktree" opens the worktree dialog instead.
+// a command "worktree" opens the worktree dialog instead, "icon" the icon picker.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -40,6 +40,7 @@ function items(p, git) {
       const inTab = panes().some((pane) => pane.pane === tg.pane);
       // The window says whether the clicked terminal had a selection and where it is.
       const on = term && { terminal: term.address };
+      const own = inTab && panes().find((pane) => pane.pane === tg.pane)?.own_icon;
       return [
         ...(term
           ? [
@@ -54,6 +55,8 @@ function items(p, git) {
               ["Split right", "pane.split", { direction: "right", pane: tg.pane }],
               ["Split down", "pane.split", { direction: "down", pane: tg.pane }],
               ["Zoom", "pane.zoom", { pane: tg.pane }],
+              ["Change icon…", "icon", { pane: tg.pane }],
+              ...(own ? [["Clear icon", "pane.set_icon", { pane: tg.pane, icon: null }]] : []),
             ]
           : []),
         ...(term
@@ -67,12 +70,16 @@ function items(p, git) {
         ...(inTab ? [["Close pane", "pane.close", { pane: tg.pane }]] : []),
       ];
     }
-    case "tab":
+    case "tab": {
+      const tab = spaces().flatMap((s) => s.tabs ?? []).find((c) => c.id === tg.id);
       return [
         ["Rename", "tab.rename", { id: tg.id }],
+        ["Change icon…", "icon", { tab_id: tg.id }],
+        ...(tab?.own_icon ? [["Clear icon", "tab.set_icon", { id: tg.id, icon: null }]] : []),
         ["New tab", "tab.new", { space: tg.space }],
         ["Close", "tab.close", { id: tg.id }],
       ];
+    }
     case "space":
       return [
         ["Rename", "space.rename", { id: tg.id }],
@@ -93,6 +100,8 @@ function items(p, git) {
 }
 
 function menuIcon(command) {
+  if (command === "icon") return "mods/icon-picker/smile.svg";
+  if (command.endsWith(".set_icon")) return "mods/workspace-chrome/x.svg";
   const name = command === "terminal.copy" ? "copy" : command === "terminal.copy_all" ? "files" : command === "terminal.copy_path" ? "folder" : command === "terminal.paste" ? "clipboard" : command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : "terminal";
   return `mods/workspace-chrome/${name}.svg`;
 }
@@ -125,7 +134,8 @@ export default class Menu extends View {
     const it = items(props(), this.git)[i];
     if (!it) return;
     closeOverlay(props()?.overlay);
-    if (it[1] === "worktree") openOverlay({ mod: "worktree", kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 440, height: 260 }), props: it[2] });
+    if (it[1] === "icon") openOverlay({ mod: "icon-picker", kind: "dialog", width: 452, height: 392, props: it[2] });
+    else if (it[1] === "worktree") openOverlay({ mod: "worktree", kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 440, height: 260 }), props: it[2] });
     else run(it[1], it[2]);
   }
 

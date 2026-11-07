@@ -118,6 +118,25 @@ export interface TabInfo {
   changed_at: number | null;
   /** Since when an agent in it has been working, or null. */
   working_since: number | null;
+  /** What to draw for it: its own icon (tab.set_icon), else its focused pane's `PaneInfo.icon`. */
+  icon: Icon | null;
+  /** The icon chosen for it with tab.set_icon, or null. */
+  own_icon: IconChoice | null;
+  /** What a letter icon shows for it: the first letter or digit of its name (unnamed: its focused pane's label). */
+  letter: string;
+}
+
+/** A pane's or tab's icon, worked out by Herdr: a Nerd Font glyph (draw it in
+ *  "Symbols Nerd Font"), an emoji or a letter. */
+export interface Icon {
+  kind: "glyph" | "emoji" | "letter";
+  text: string;
+}
+
+/** An icon someone chose (pane.set_icon, tab.set_icon); a letter's comes from the name. */
+export interface IconChoice {
+  kind: "glyph" | "emoji" | "letter";
+  value?: string;
 }
 
 export interface SpaceInfo {
@@ -186,6 +205,8 @@ export interface AgentInfo {
   label: string;
   /** Its agent session's own name: as `PaneInfo.session`. */
   session: string | null;
+  /** Its pane's icon: as `PaneInfo.icon`. */
+  icon: Icon | null;
   /** Higher = changed more recently. */
   seq: number;
   /** Pinned with `terminal.pin`, on any Herdr client. */
@@ -199,7 +220,7 @@ export function agents(): AgentInfo[];
 export interface PaneInfo {
   pane: string;
   /** null for a mod pane (`pane.split {mod}`): then `mod` names it, and only
-   *  pane, mod, tab, title, name, auto_name (null), label, session (null), focused and zoomed are set. */
+   *  pane, mod, tab, title, name, auto_name (null), label, session (null), icon, own_icon, focused and zoomed are set. */
   terminal: string | null;
   mod?: string;
   tab: string;
@@ -223,6 +244,13 @@ export interface PaneInfo {
   /** The agent session's own name (Claude Code's `/rename`), from the program's
    *  session file (`session_name` in programs.json), on this computer; else null. */
   session: string | null;
+  /** What to draw for it in place of the program's icon, or null: draw `program`'s
+   *  as before. Set for an icon chosen with pane.set_icon (any `space_avatar`), and with
+   *  `space_avatar` glyph, emoji or repo (glyph) for a bare shell showing its `auto_name`:
+   *  an icon matching one of its words (meadow: wheat), else one from the pane id's hash. */
+  icon: Icon | null;
+  /** The icon chosen for it with pane.set_icon, or null. */
+  own_icon: IconChoice | null;
   /** Its live folder, and the git branch there. */
   cwd: string | null;
   branch: string | null;

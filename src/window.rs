@@ -1082,11 +1082,11 @@ impl AppWindow {
         if !problems.is_empty() {
             self.report_layout(&problems.join("; "));
         }
-        let auto_names = s.pane_auto_names != settings::get().pane_auto_names;
+        let republish = s.pane_auto_names != settings::get().pane_auto_names || s.space_avatar != settings::get().space_avatar;
         if settings::set(s) {
             self.theme_changed(window, cx);
         }
-        if auto_names {
+        if republish {
             self.publish(cx);
         }
         self.badge_dock(self.dock_badge.waiting());
@@ -2024,17 +2024,6 @@ impl AppWindow {
     fn publish(&mut self, cx: &mut Context<Self>) {
         let m = &self.model;
         let home = home();
-        let spaces: Vec<Value> = m
-            .spaces
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                // The branch of the terminal the space shows first.
-                let first = p.active_tab().and_then(|c| c.focused_pane()).and_then(|pane| m.address_of(&pane));
-                let branch = first.and_then(|a| m.folder_info.get(&a)).and_then(|f| f.branch.clone());
-                model::space_json(m, p, i, branch.as_deref(), &home)
-            })
-            .collect();
         // A window's terminal with the keyboard first, then a layout terminal block.
         let block = overlay_terminal_block(&self.overlays, self.window_terminal.as_deref())
             .or_else(|| terminal_block(&self.chrome, self.focused_pane.as_deref()));
@@ -2043,8 +2032,12 @@ impl AppWindow {
         let mut rows = Vec::new();
         let mut panes = Vec::new();
         let auto_names_on = settings::get().pane_auto_names;
+        let icon_style = crate::pane_icons::style(settings::get().space_avatar.as_deref());
         let mut auto_names = HashMap::new();
         let mut labels = HashMap::new();
+        let mut icons: HashMap<&str, Value> = HashMap::new();
+        // Every pane's label, mod panes too: an unnamed tab's letter is its focused pane's.
+        let mut shown_labels: HashMap<&str, String> = HashMap::new();
         for pr in &m.spaces {
             for (ci, ctx) in pr.tabs.iter().enumerate() {
                 let names = if auto_names_on { crate::pane_names::for_tab(ctx.root.panes().iter().map(|p| p.id.as_str())) } else { HashMap::new() };
@@ -2054,7 +2047,11 @@ impl AppWindow {
                     // A mod pane: what it shows, no terminal.
                     if let Some(Content::Mod { name, .. }) = p.content() {
                         let label = crate::pane_label::given(p.title.as_deref()).unwrap_or(name);
-                        panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "tab": ctx.id, "title": name, "name": p.title, "auto_name": null, "label": label, "session": null, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
+                        let own = m.icons.get(&p.id);
+                        let icon = crate::pane_icons::pane(own, None, &p.id, label, icon_style);
+                        icons.insert(&p.id, icon.clone());
+                        shown_labels.insert(&p.id, label.to_owned());
+                        panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "tab": ctx.id, "title": name, "name": p.title, "auto_name": null, "label": label, "session": null, "icon": icon, "own_icon": own, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
                         continue;
                     }
                     let Some(addr) = p.terminal() else { continue };
@@ -2075,10 +2072,14 @@ impl AppWindow {
                         name: p.title.as_deref(), auto_name: auto_name.map(String::as_str), title: title.as_deref().unwrap_or_default(),
                         session, program: &program, address: addr,
                     });
+                    let own = m.icons.get(&p.id);
+                    let icon = crate::pane_icons::pane(own, auto_name.map(String::as_str), &p.id, &label, icon_style);
+                    icons.insert(&p.id, icon.clone());
+                    shown_labels.insert(&p.id, label.clone());
                     labels.insert(p.id.clone(), label.clone());
                     panes.push(json!({
                         "pane": p.id, "terminal": addr, "tab": ctx.id, "title": title.clone().unwrap_or_default(), "name": p.title, "auto_name": auto_name,
-                        "label": label, "session": session,
+                        "label": label, "session": session, "icon": icon, "own_icon": own,
                         "cwd": cwd, "branch": m.folder_info.get(addr).and_then(|f| f.branch.clone()),
                         "status": m.status(addr), "app": a.and_then(|a| a.app.clone()), "program": program,
                         "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id),
@@ -2091,7 +2092,7 @@ impl AppWindow {
                         "address": addr, "pane": p.id, "space": pr.id, "space_name": m.space_name(pr, &home),
                         "tab": ctx.id, "tab_index": ci + 1, "tab_name": Model::tab_name(pr, ctx),
                         "status": status, "app": a.and_then(|a| a.app.clone()), "program": self.program(addr), "title": title.unwrap_or_default(),
-                        "label": label, "session": session,
+                        "label": label, "session": session, "icon": icon,
                         "seq": a.map(|a| a.seq).unwrap_or(0),
                         "pinned": pinned,
                         "focused": m.active.as_deref() == Some(pr.id.as_str()) && focused_pane.as_deref() == Some(p.id.as_str()),
@@ -2099,6 +2100,22 @@ impl AppWindow {
                 }
             }
         }
+        let spaces: Vec<Value> = m
+            .spaces
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                // The branch of the terminal the space shows first.
+                let first = p.active_tab().and_then(|c| c.focused_pane()).and_then(|pane| m.address_of(&pane));
+                let branch = first.and_then(|a| m.folder_info.get(&a)).and_then(|f| f.branch.clone());
+                let tab_icon = |c: &model::Tab| {
+                    let focused = c.focused_pane().and_then(|pane| icons.get(pane.as_str()));
+                    let name = if c.name.is_empty() { c.focused_pane().and_then(|pane| shown_labels.get(pane.as_str())).cloned().unwrap_or_else(|| Model::tab_name(p, c)) } else { c.name.clone() };
+                    (crate::pane_icons::tab(m.icons.get(&c.id), &name, focused), crate::pane_icons::letter(&name))
+                };
+                model::space_json(m, p, i, branch.as_deref(), &home, &tab_icon)
+            })
+            .collect();
         let focused = m.active_space().and_then(|p| {
             let ctx = p.active_tab()?;
             if let Some(block) = block {
@@ -3560,7 +3577,7 @@ impl AppWindow {
             if !args.is_object() { args = json!({}); }
             args["machine"] = json!(machine);
         }
-        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "pane.split" | "pane.close" | "pane.rename" | "pane.swap" | "pane.arrange" | "terminal.keep" | "terminal.park") {
+        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "tab.set_icon" | "pane.split" | "pane.close" | "pane.rename" | "pane.set_icon" | "pane.swap" | "pane.arrange" | "terminal.keep" | "terminal.park") {
             let node = ["id", "space", "pane"].into_iter().find_map(|k| Self::arg(&args, k))
                 .or_else(|| if name == "pane.arrange" { Self::arg(&args, "tab") } else { None });
             let target = node.and_then(|id| self.model.space(id).or_else(|| self.model.space_of(id))).or_else(|| self.model.active_space());
@@ -3769,6 +3786,18 @@ impl AppWindow {
                 let Some(pane) = Self::owned(a, "pane").or_else(|| self.model.focused_pane()) else { return self.fail("no pane to rename") };
                 let Some(name) = Self::arg(a, "name") else { return self.fail("pane.rename needs name (empty: its program's)") };
                 if !self.model.rename_pane(&pane, name) { return self.fail(format!("no pane {pane:?}")) }
+            }
+            "pane.set_icon" | "tab.set_icon" => {
+                let target = if name == "pane.set_icon" { Self::owned(a, "pane").or_else(|| self.model.focused_pane()) } else { Self::owned(a, "id").or(active_ctx) };
+                let Some(id) = target else { return self.fail(format!("{name}: no pane or tab")) };
+                let icon = match crate::pane_icons::Choice::parse(a.get("icon").unwrap_or(&Value::Null)) {
+                    Ok(icon) => icon,
+                    Err(e) => return self.fail(format!("{name}: {e}")),
+                };
+                let found = if name == "pane.set_icon" { self.model.tab_of(&id).and_then(|c| c.root.find(&id)).is_some_and(|n| n.is_pane()) } else { self.model.tab(&id).is_some() };
+                if !found || !self.model.set_icon(&id, icon) {
+                    return self.fail(format!("no {} {id:?}", if name == "pane.set_icon" { "pane" } else { "tab" }));
+                }
             }
             "pane.zoom" => {
                 let pane = Self::owned(a, "pane").or_else(|| self.model.focused_pane());
@@ -5707,7 +5736,7 @@ fn overlay_terminal_block<'a>(overlays: &'a [Overlay], id: Option<&str>) -> Opti
 
 fn needs_model_pane(name: &str, args: &Value) -> bool {
     match name {
-        "pane.split" | "pane.close" | "pane.rename" | "pane.zoom" | "terminal.show" => AppWindow::arg(args, "pane").is_none(),
+        "pane.split" | "pane.close" | "pane.rename" | "pane.set_icon" | "pane.zoom" | "terminal.show" => AppWindow::arg(args, "pane").is_none(),
         "pane.go" | "pane.swap" => true,
         "terminal.open" | "terminal.keep" => matches!(AppWindow::arg(args, "place"), Some("right" | "down")),
         _ => false,
@@ -8184,6 +8213,135 @@ export default class Recent extends View {
         assert_eq!(a, b, "a focused: the same grid for both");
         assert_eq!(grids(cx, "b"), (a, b, area), "b focused: nothing resized");
         view.update_in(cx, |_, window, _| assert_eq!(a, crate::terminal::grid_size(area, crate::terminal::cell_size(window)), "the grid fills the area a new terminal starts in"));
+    }
+
+    #[test]
+    fn panes_and_tabs_show_their_automatic_or_chosen_icon() {
+        in_own_process("pane_and_tab_icons");
+    }
+
+    /// `icon` on panes(), agents() and spaces()' tabs: null in letter mode
+    /// (the program's icon, as before); a bare shell's automatic name's icon in
+    /// glyph or emoji mode; a chosen one (pane.set_icon, tab.set_icon) always.
+    /// A tab shows its focused pane's unless it has its own.
+    #[gpui::test]
+    fn pane_and_tab_icons(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use serde_json::{Value, json};
+        if !running_alone("pane_and_tab_icons") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        let published = |pane: &str, key: &str| crate::mods::published_panes().as_array().unwrap().iter().find(|p| p["pane"] == pane).map(|p| p[key].clone()).unwrap();
+        let tab_icon = |_: &super::AppWindow, key: &str| crate::mods::published_spaces()[0]["tabs"][0][key].clone();
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.select_tab("t");
+            this.live.insert("ta".into(), json!({ "address": "ta", "title": "~/src", "foreground": { "argv": ["-zsh"] }, "labels": {} }));
+            this.live.insert("tb".into(), json!({ "address": "tb", "title": "~/src", "foreground": { "argv": ["cargo", "build"] }, "labels": {} }));
+            this.sync(window, cx);
+            this.person.pane_auto_names = true;
+            this.apply_look(window, cx);
+            let name = crate::pane_names::for_tab(["a", "b"])["a"].clone();
+            assert_eq!(published("a", "auto_name"), json!(name));
+            assert_eq!((published("a", "icon"), published("b", "icon")), (Value::Null, Value::Null), "letter mode: the program's icons, as before");
+            assert_eq!(tab_icon(this, "icon"), Value::Null);
+
+            for (mode, kind) in [("emoji", crate::pane_icons::Kind::Emoji), ("glyph", crate::pane_icons::Kind::Glyph), ("repo", crate::pane_icons::Kind::Glyph)] {
+                this.person.space_avatar = Some(mode.into());
+                this.apply_look(window, cx);
+                let expected = crate::pane_icons::pane(None, Some(&name), "a", &name, Some(kind));
+                assert!(!expected.is_null());
+                assert_eq!(published("a", "icon"), expected, "{mode}: the automatic name's icon, at once");
+                assert_eq!(published("b", "icon"), Value::Null, "{mode}: a running command shows its program's");
+                assert_eq!(tab_icon(this, "icon"), expected, "{mode}: the tab shows its focused pane's");
+            }
+            this.model.focus_pane("b");
+            this.publish(cx);
+            assert_eq!(tab_icon(this, "icon"), Value::Null, "focus moved: the tab follows its pane");
+
+            let rocket = json!({ "kind": "glyph", "value": "\u{f135}" });
+            assert_eq!(this.run_as("pane.set_icon", json!({ "pane": "b", "icon": rocket }), false, window, cx), json!({ "ok": true }));
+            assert_eq!(published("b", "icon"), json!({ "kind": "glyph", "text": "\u{f135}" }), "a chosen icon wins over the program's");
+            assert_eq!(published("b", "own_icon"), rocket);
+            assert_eq!(published("a", "own_icon"), Value::Null);
+            assert_eq!(tab_icon(this, "icon"), published("b", "icon"));
+            this.person.space_avatar = None;
+            this.apply_look(window, cx);
+            assert_eq!(published("b", "icon"), json!({ "kind": "glyph", "text": "\u{f135}" }), "in letter mode too");
+
+            assert_eq!(this.run_as("tab.set_icon", json!({ "id": "t", "icon": { "kind": "letter" } }), false, window, cx), json!({ "ok": true }));
+            let cargo = published("b", "label");
+            let letter = cargo.as_str().unwrap()[..1].to_uppercase();
+            assert_eq!(tab_icon(this, "icon"), json!({ "kind": "letter", "text": letter }), "its own wins: an unnamed tab's letter is its focused pane's");
+            assert_eq!(tab_icon(this, "own_icon"), json!({ "kind": "letter" }));
+            this.run_as("tab.rename", json!({ "id": "t", "name": "deploy" }), false, window, cx);
+            assert_eq!(tab_icon(this, "icon"), json!({ "kind": "letter", "text": "D" }), "a named tab's own letter");
+
+            assert_eq!(this.run_as("pane.set_icon", json!({ "pane": "b", "icon": null }), false, window, cx), json!({ "ok": true }));
+            assert_eq!((published("b", "icon"), published("b", "own_icon")), (Value::Null, Value::Null), "cleared: as before");
+            this.run_as("tab.set_icon", json!({ "id": "t" }), false, window, cx);
+            assert_eq!(tab_icon(this, "own_icon"), Value::Null);
+
+            for bad in [json!({ "pane": "nope", "icon": { "kind": "letter" } }), json!({ "pane": "a", "icon": { "kind": "glyph" } }), json!({ "pane": "a", "icon": "x" })] {
+                assert!(this.run_as("pane.set_icon", bad.clone(), false, window, cx).get("error").is_some(), "{bad}");
+            }
+            assert!(this.run_as("tab.set_icon", json!({ "id": "a", "icon": null }), false, window, cx).get("error").is_some(), "a pane is no tab");
+            assert!(this.model.icons.is_empty());
+        }));
+    }
+
+    #[test]
+    fn pane_icons_follow_changes_not_frames() {
+        in_own_process("icons_follow_changes");
+    }
+
+    /// Icons are resolved in publish, for the panes then published, never per frame.
+    #[gpui::test]
+    fn icons_follow_changes(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use serde_json::json;
+        if !running_alone("icons_follow_changes") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.select_tab("t");
+            this.sync(window, cx);
+            this.person.pane_auto_names = true;
+            this.person.space_avatar = Some("emoji".into());
+            this.apply_look(window, cx);
+        });
+        let resolved = || crate::pane_icons::RESOLVED.with(std::cell::Cell::get);
+        cx.run_until_parked();
+        let (before, frames) = (resolved(), crate::terminal::frame());
+        for _ in 0..30 {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        assert!(crate::terminal::frame() >= frames + 30, "30 frames drawn");
+        assert_eq!(resolved(), before, "no icon is resolved for a frame");
+        view.update_in(cx, |this, window, cx| {
+            this.run("pane.set_icon", json!({ "pane": "a", "icon": { "kind": "emoji", "value": "🦊" } }), window, cx);
+        });
+        cx.run_until_parked();
+        let after = resolved();
+        assert!(after > before, "a choice resolves");
+        assert_eq!((after - before) % 2, 0, "whole publishes: both panes each time");
+        for _ in 0..30 {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        assert_eq!(resolved(), after, "and frames after it none");
     }
 
     #[test]

@@ -1232,3 +1232,139 @@ fn pane_menu_copy_items(cx: &mut TestAppContext) {
     let gone = labels(json!({"pane":"p1","terminal":"t9","selected":true,"cwd":"/x"}), cx);
     assert!(!gone.iter().any(|t| t.contains("Copy") || t.contains("Paste")), "{gone:?}");
 }
+
+/// The populated fixture with what the app publishes for icons: `icon` and
+/// `own_icon` on every pane and tab, `icon` on every agent.
+fn with_icons(values: &mut BTreeMap<String, Value>, pane: (Value, Value), tab: (Value, Value)) {
+    for p in values.get_mut("panes").unwrap().as_array_mut().unwrap() {
+        p["icon"] = pane.0.clone();
+        p["own_icon"] = pane.1.clone();
+    }
+    for a in values.get_mut("agents").unwrap().as_array_mut().unwrap() {
+        a["icon"] = pane.0.clone();
+    }
+    for s in values.get_mut("spaces").unwrap().as_array_mut().unwrap() {
+        for c in s["tabs"].as_array_mut().unwrap() {
+            c["icon"] = tab.0.clone();
+            c["own_icon"] = tab.1.clone();
+        }
+    }
+}
+
+/// Letter mode with nothing chosen publishes null icons: every shipped mod
+/// draws exactly what it drew before the fields existed.
+#[gpui::test]
+fn null_icons_draw_every_shipped_mod_as_before(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut count = 0;
+    for entry in staged.entries() {
+        let before = describe(cx, &staged, &entry, true, props(), updates("current", "current"), None).unwrap();
+        let mut values = fixture(true, props(), updates("current", "current"));
+        with_icons(&mut values, (Value::Null, Value::Null), (Value::Null, Value::Null));
+        let after = describe_with_values(cx, &staged, &entry, values, None).unwrap();
+        // Focus and scroll handles and native elements are numbered per window.
+        let handles = regex::Regex::new(r"(:track_(?:focus|scroll)\[Number\(| #)[0-9]+").unwrap();
+        let same = |tree: &str| handles.replace_all(tree, "${1}N").into_owned();
+        let (before, after) = (same(&before), same(&after));
+        let differ = before.lines().zip(after.lines()).find(|(a, b)| a != b);
+        assert_eq!(before, after, "{entry}: first difference {differ:?}");
+        count += 1;
+    }
+    assert!(count > 20, "{count} entries");
+}
+
+/// A pane's and a tab's own icon: the pane header and the tab bar draw its
+/// glyph in the Nerd Font, an emoji or a letter, in place of the program's.
+#[gpui::test]
+fn pane_header_and_tabs_draw_an_icon_in_place_of_the_programs(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let font = r#".font_family[Str("Symbols Nerd Font")]"#;
+    for (entry, p) in [("mods/pane", json!({"pane":"p1","terminal":"t1"})), ("mods/tabs", props())] {
+        for (icon, text, glyph) in [(json!({"kind":"glyph","text":"\u{f0073}"}), "\u{f0073}", true), (json!({"kind":"emoji","text":"🌾"}), "🌾", false), (json!({"kind":"letter","text":"B"}), "B", false)] {
+            let mut values = fixture(true, p.clone(), updates("current", "current"));
+            with_icons(&mut values, (icon.clone(), Value::Null), (icon.clone(), Value::Null));
+            values.get_mut("panes").unwrap()[0]["program"]["icon"] = json!("icons/pi.svg");
+            let tree = describe_with_values(cx, &staged, entry, values, None).unwrap();
+            let line = tree.lines().position(|l| l.trim() == format!("text {text:?}")).unwrap_or_else(|| panic!("{entry} {icon}: {tree}"));
+            let parent = tree.lines().nth(line - 1).unwrap();
+            assert_eq!(parent.contains(font), glyph, "{entry} {icon}: {parent}");
+            assert!(parent.contains(".flex_none") && parent.contains(".text_size[Number(13.0)]"), "{entry}: {parent}");
+            assert!(!tree.contains("icons/pi.svg"), "{entry} {icon}: not the program's as well: {tree}");
+        }
+    }
+}
+
+/// Change icon… in the pane and tab menus (the pane's also where the program
+/// takes right-clicks: Shift+right-click opens it), and Clear icon only while
+/// one is chosen.
+#[gpui::test]
+fn pane_and_tab_menus_offer_change_and_clear_icon(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let items = |p: Value, own: Value, to_program: bool, cx: &mut TestAppContext| {
+        let mut values = fixture(true, p, updates("current", "current"));
+        with_icons(&mut values, (Value::Null, own.clone()), (Value::Null, own));
+        if to_program {
+            values.get_mut("terminals").unwrap()[0]["labels"] = json!({"herdr.right-click": "program"});
+        }
+        let tree = describe_with_values(cx, &staged, "mods/menu", values, None).unwrap();
+        // Items only (each in its `flex_1` label), not the key hints beside them.
+        let lines: Vec<&str> = tree.lines().collect();
+        lines.windows(2).filter(|w| w[0].trim() == "div .flex_1").filter_map(|w| w[1].trim().strip_prefix("text ")).map(str::to_owned).collect::<Vec<_>>()
+    };
+    let pane = json!({"tab":"pane","target":{"pane":"p1","terminal":"t1"}});
+    let tab = json!({"tab":"tab","target":{"id":"tab1","space":"s1"}});
+    let own = json!({"kind":"emoji","value":"🌾"});
+    for (p, after) in [(&pane, "\"Zoom\""), (&tab, "\"Rename\"")] {
+        let none = items(p.clone(), Value::Null, false, cx);
+        let at = none.iter().position(|t| t == after).unwrap();
+        assert_eq!(none[at + 1], "\"Change icon…\"", "{none:?}");
+        assert!(!none.iter().any(|t| t == "\"Clear icon\""), "{none:?}");
+        let chosen = items(p.clone(), own.clone(), false, cx);
+        assert_eq!(chosen[at + 1..at + 3], ["\"Change icon…\"", "\"Clear icon\""], "{chosen:?}");
+    }
+    assert!(items(pane.clone(), Value::Null, true, cx).iter().any(|t| t == "\"Change icon…\""), "the Shift+right-click menu has it too");
+    // A terminal block outside a tab has no pane to give an icon.
+    assert!(!items(json!({"tab":"pane","target":{"pane":"block","terminal":"t1"}}), Value::Null, false, cx).iter().any(|t| t.contains("icon")));
+    let space = items(json!({"tab":"space","target":{"id":"s1"}}), own, false, cx);
+    assert!(!space.iter().any(|t| t.contains("icon")), "spaces have their own: {space:?}");
+}
+
+/// The picker: the space avatar sets as tiles, the chosen one ringed, Clear
+/// icon only while one is chosen; a pane's or a tab's.
+#[gpui::test]
+fn icon_picker_shows_the_sets_and_the_choice(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let picker = |p: Value, own: Value, cx: &mut TestAppContext| {
+        let mut values = fixture(true, p, updates("current", "current"));
+        let icon = if own.is_null() { Value::Null } else { json!({"kind": own["kind"], "text": own["value"]}) };
+        with_icons(&mut values, (icon.clone(), own.clone()), (icon, own));
+        describe_with_values(cx, &staged, "mods/icon-picker", values, None).unwrap()
+    };
+    let rocket = json!({"kind":"glyph","value":"\u{f135}"});
+    let tree = picker(json!({"pane":"p1","overlay":"o1"}), Value::Null, cx);
+    assert!(tree.contains("\"Icon for Build\"") && tree.contains("\"Automatic\"") && !tree.contains("Clear icon"), "{tree}");
+    assert_eq!(tree.matches(":id[Str(\"icon-glyph-").count(), 60, "the glyphs tab first: {tree}");
+    assert!(tree.contains("\"its program's\""), "{tree}");
+    let tree = picker(json!({"pane":"p1","overlay":"o1"}), rocket.clone(), cx);
+    assert!(tree.contains("\"Chosen\"") && tree.contains("\"Clear icon\""), "{tree}");
+    let ringed: Vec<&str> = tree.lines().filter(|l| l.contains(":id[Str(\"icon-glyph-") && l.contains(".border[Number(2.0)]")).collect();
+    assert_eq!(ringed.len(), 1, "the chosen one ringed: {ringed:?}");
+    assert!(ringed[0].contains("icon-glyph-0"), "the rocket is the first: {ringed:?}");
+    let emoji = json!({"kind":"emoji","value":"🐙"});
+    let tree = picker(json!({"tab_id":"tab1","overlay":"o1"}), emoji, cx);
+    assert!(tree.contains("\"Icon for Build\"") && tree.contains("icon-emoji-0") && !tree.contains("icon-glyph-0"), "a tab, on its emoji tab: {tree}");
+    // A tab's letter is the one Herdr works out (its focused pane's label when unnamed).
+    let mut values = fixture(true, json!({"tab_id":"tab1","overlay":"o1"}), updates("current", "current"));
+    let letter = json!({"kind":"letter"});
+    with_icons(&mut values, (Value::Null, Value::Null), (json!({"kind":"letter","text":"Z"}), letter));
+    values.get_mut("spaces").unwrap()[0]["tabs"][0]["letter"] = json!("Z");
+    let tree = describe_with_values(cx, &staged, "mods/icon-picker", values, None).unwrap();
+    let tile = tree.lines().skip_while(|l| !l.contains("icon-letter")).nth(2).unwrap_or_default();
+    assert_eq!(tile.trim(), "text \"Z\"", "{tree}");
+    let tree = picker(json!({"tab_id":"gone","overlay":"o1"}), Value::Null, cx);
+    assert!(tree.contains("That pane or tab is gone."), "{tree}");
+}

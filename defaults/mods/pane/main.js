@@ -1,6 +1,7 @@
 // A pane's header, for layouts that frame their panes:
 //   { "tab": "active", "pane": { "header": { "content": { "mod": "pane" } } } }
-// Shows the program's icon (the app's program table), the pane's label (its
+// Shows the pane's icon (its `icon`: one chosen, or its automatic name's;
+// else the program's from the app's program table), the pane's label (its
 // name, automatic name, telling title, session, else program: see `label`
 // in AGENTS.md), where an agent or a bare shell unnamed shows its program's name, the folder,
 // the pane's own text size while pane.zoom_text_* sets it, and the agent's
@@ -22,6 +23,14 @@ function working(t) {
 function icon(p, size, color) {
   if (!p?.icon) return null;
   return p.tint ? svg(p.icon).size(size).flex_none().text_color(color) : image(p.icon).w(size).h(size).flex_none();
+}
+
+// A pane's own icon (`icon`): a Nerd Font glyph, an emoji or a letter, sized as the program's.
+function own(ic, size, color) {
+  return div().flex_none().text_size(size).text_color(color)
+    .when(ic.kind === "glyph", (el) => el.font_family("Symbols Nerd Font"))
+    .when(ic.kind === "letter", (el) => el.font_bold())
+    .child(ic.text);
 }
 
 function folder(cwd) {
@@ -56,7 +65,7 @@ export default class Pane extends View {
     const p = this.me();
     if (!p) return div();
     const name = (p.program?.agent || p.program?.shell) && !p.name && !p.auto_name ? p.program.name : p.label;
-    const pic = icon(p.program, 14, t.dim);
+    const pic = p.icon ? own(p.icon, 13, t.dim) : icon(p.program, 14, t.dim);
     const st = p.status;
     const pane = p.pane;
     return h_flex()
