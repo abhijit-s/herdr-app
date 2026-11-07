@@ -2,10 +2,11 @@
 //! (defaults/icons/*), the frame's mods (defaults/frame/**) and the agent
 //! harness manifests (defaults/harnesses/*) so Herdr can install or read them.
 //!
-//! Worktrees may share one target dir, and with it this script and its output.
-//! So nothing here names this checkout: paths are relative to the package and
-//! the generated code includes files through the compiling crate's
-//! `CARGO_MANIFEST_DIR`.
+//! The embedded files are named relative to the package, and the generated code
+//! includes them through the compiling crate's `CARGO_MANIFEST_DIR`. The fork's
+//! build tag does name this checkout: `HERDR_FORK_BUILD` is its commit, and the
+//! files that trigger a rerun are its absolute `.git` paths (`fork_build.rs`).
+//! So a worktree needs its own target dir, as Cargo's default gives it.
 
 use std::path::Path;
 
