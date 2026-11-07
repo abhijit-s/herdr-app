@@ -842,10 +842,8 @@ impl MacWindowState {
 
     fn start_display_link(&mut self) {
         self.stop_display_link();
-        unsafe {
-            if !presented(self.native_window) {
-                return;
-            }
+        if !presented(self.native_window) {
+            return;
         }
         let Some(display_id) = display_id_for_screen(unsafe { self.native_window.screen() }) else {
             // AppKit can temporarily report no screen while displays are being reconfigured.
@@ -3035,13 +3033,11 @@ fn report_visibility(window_state: &Arc<Mutex<MacWindowState>>) {
 extern "C" fn window_did_change_occlusion_state(this: &Object, _: Sel, _: id) {
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.lock();
-    unsafe {
-        if presented(lock.native_window) {
-            lock.move_traffic_light();
-            lock.start_display_link();
-        } else {
-            lock.stop_display_link();
-        }
+    if presented(lock.native_window) {
+        lock.move_traffic_light();
+        lock.start_display_link();
+    } else {
+        lock.stop_display_link();
     }
     drop(lock);
     // The only visibility source: AppKit posts this for covering, minimizing,
