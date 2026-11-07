@@ -12,7 +12,7 @@ needs none of them. "classic" is assets/icons/Herdr.icns itself. Sizes up to
 which blur a small icon into its tile.
 
 Every variant sits on macOS's icon grid, as the system draws other apps' icons
-(measured from its own renderings, macOS 26 and later): an 824 px tile with
+(measured from macOS 27's own renderings of other apps' icons): an 824 px tile with
 100 px margins on the 1024 canvas, corners that are superellipse quarters
 (radius 256, exponent 2.5) rather than circular arcs, and the system's drop
 shadow (black at 25%, blur 16, 8 down) in the margin. The Dock shows the image
@@ -41,7 +41,9 @@ GRID_TILE = 824
 CORNER_RADIUS = 256
 CORNER_EXPONENT = 2.5
 CORNER_STEPS = 24
-SHADOW = 'flood-opacity=".25" stdDeviation="16" dy="8"'
+# A blurred copy of the tile rather than feDropShadow or feMerge, which some
+# renderers (older librsvg, QtSvg, AppKit's CoreSVG) lack.
+SHADOW_OPACITY, SHADOW_BLUR, SHADOW_DY = ".25", 16, 8
 ART_TILE = 896
 ART_SCALE = GRID_TILE / ART_TILE
 RAM_T = "translate(-80 967) scale(.22 -.22)"
@@ -71,11 +73,12 @@ def svg(src, title, defs, fill, inner, ram, overlay=""):
   <defs>
     <path id="tile" d="{tile_path()}"/>
     <clipPath id="clip"><use href="#tile"/></clipPath>
-    <filter id="drop" x="-10%" y="-10%" width="120%" height="125%"><feDropShadow dx="0" {SHADOW} flood-color="#000"/></filter>
+    <filter id="drop" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="{SHADOW_BLUR}"/></filter>
     <path id="ram" d="{path}"/>
     {defs}
   </defs>
-  <use href="#tile" fill="{fill}" filter="url(#drop)"/>
+  <use href="#tile" transform="translate(0 {SHADOW_DY})" fill="#000" fill-opacity="{SHADOW_OPACITY}" filter="url(#drop)"/>
+  <use href="#tile" fill="{fill}"/>
   <g clip-path="url(#clip)">{inner}<g transform="translate({offset:g} {offset:g}) scale({round(ART_SCALE, 6):g})">{ram}</g>{overlay}</g>
 </svg>
 '''
