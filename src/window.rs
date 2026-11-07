@@ -1986,7 +1986,7 @@ impl AppWindow {
                     if let Some(n) = auto_name {
                         auto_names.insert(p.id.clone(), n.clone());
                     }
-                    let session = self.session_names.name(addr);
+                    let session = self.session_names.name(addr, self.live.get(addr).and_then(|r| r.pointer("/foreground/pid")).and_then(Value::as_u64));
                     let label = crate::pane_label::label(&crate::pane_label::Parts {
                         name: p.title.as_deref(), auto_name: auto_name.map(String::as_str), title: title.as_deref().unwrap_or_default(),
                         session, program: &program, address: addr,
@@ -4726,7 +4726,7 @@ impl AppWindow {
                 "terminal": addr, "pane": pane, "status": m.status(addr),
                 "app": m.agents.get(addr).and_then(|a| a.app.clone()),
                 "name": rec.and_then(|r| r.get("name")).cloned(),
-                "label": self.labels.get(pane), "session": self.session_names.name(addr),
+                "label": self.labels.get(pane), "session": self.session_names.name(addr, rec.and_then(|r| r.pointer("/foreground/pid")).and_then(Value::as_u64)),
                 "sub_agents": children(addr),
             })
         };

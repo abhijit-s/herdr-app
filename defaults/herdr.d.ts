@@ -180,7 +180,7 @@ export interface AgentInfo {
   /** What the agent reported (OSC 7501 `app`), e.g. "claude-code", "pi", "codex". */
   app: string | null;
   program: Program;
-  /** The terminal's title, as the program set it. */
+  /** The terminal's title as the program set it, a leading spinner cut. */
   title: string;
   /** What to call it: as `PaneInfo.label`. */
   label: string;
@@ -211,7 +211,7 @@ export interface PaneInfo {
    *  the same every time, set only while nobody named the pane, no agent or
    *  command runs in it and its title is empty, the terminal's address (its
    *  title before the shell sets one), a shell's name or a folder.
-   *  Show it in place of the shell's name: `p.name || p.auto_name || ...`.
+   *  `label` already puts it in place of the shell's name.
    *  Display only; null otherwise, and always for a mod pane. */
   auto_name: string | null;
   /** What to call the pane, never empty: its name (one with a letter or digit), else

@@ -67,24 +67,25 @@ pub fn given(name: Option<&str>) -> Option<&str> {
     name.filter(|n| n.chars().any(char::is_alphanumeric))
 }
 
-/// The title without what leads up to its first letter or digit (spinners,
-/// status glyphs) or path, when it says something the program's name doesn't: not
-/// empty or only digits, not the program's name, not its command line (a
-/// first word that is its key or name: `claude attach 1f2e`, `CLAUDE`), not a
-/// path (`~`, `/`, `C:\`), no `@` (`user@host`), and not `THROWAWAY`.
+/// The title, trimmed, when it says something the program's name doesn't. It is
+/// judged without what leads up to its first letter, digit or path (spinners
+/// are already gone, `terminal::shown_title`; a status glyph such as `✓` or a
+/// `[3/5]` stays in what is shown): not empty or only digits, not the
+/// program's name, not its command line (a first word that is its key or
+/// name: `claude attach 1f2e`, `CLAUDE`), not a path (`~`, `/`, `C:\`, `C:/`,
+/// `\\server`), no `@` (`user@host`), and not `THROWAWAY`.
 pub fn telling<'a>(title: &'a str, program: &Value) -> Option<&'a str> {
     static THROWAWAY_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(THROWAWAY).expect("THROWAWAY"));
-    // A leading `~` or `/` stays: it makes a path.
-    let t = title.trim_start_matches(|c: char| !c.is_alphanumeric() && c != '~' && c != '/').trim_end();
+    let t = title.trim_start_matches(|c: char| !c.is_alphanumeric() && !matches!(c, '~' | '/' | '\\')).trim_end();
     let name = program.get("name").and_then(Value::as_str).unwrap_or_default();
     let key = program.get("key").and_then(Value::as_str).unwrap_or_default();
     let first = t.split_whitespace().next().unwrap_or_default().rsplit(['/', '\\']).next().unwrap_or_default().to_lowercase();
     let invokes = !first.is_empty() && (first == key || first == name.to_lowercase());
     let b = t.as_bytes();
-    let path = t.starts_with(['~', '/']) || (b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\');
+    let path = t.starts_with(['~', '/', '\\']) || (b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/'));
     let empty_or_digits = t.bytes().all(|c| c.is_ascii_digit());
-    let says_nothing = empty_or_digits || t == name || invokes || path || t.contains('@');
-    (!says_nothing && !THROWAWAY_RE.is_match(t)).then_some(t)
+    let says_nothing = empty_or_digits || t.to_lowercase() == name.to_lowercase() || invokes || path || t.contains('@');
+    (!says_nothing && !THROWAWAY_RE.is_match(t)).then(|| title.trim())
 }
 
 /// One terminal's session file, to look at off the main thread.
@@ -143,8 +144,10 @@ pub struct Sessions {
 }
 
 impl Sessions {
-    pub fn name(&self, address: &str) -> Option<&str> {
-        self.known.get(address)?.name.as_deref()
+    /// The session name of the process `pid` running in a terminal: none once
+    /// another runs there, before the next look has even forgotten it.
+    pub fn name(&self, address: &str, pid: Option<u64>) -> Option<&str> {
+        self.known.get(address).filter(|k| Some(k.pid) == pid)?.name.as_deref()
     }
 
     /// The session files to look at now: right after a listing (`listed`),
@@ -217,11 +220,13 @@ mod tests {
     }
 
     #[test]
-    fn telling_titles_lose_what_leads_up_to_their_first_letter() {
+    fn telling_titles_are_shown_as_the_program_set_them() {
         let c = claude();
-        assert_eq!(telling("\u{2733} Fix the login bug", &c), Some("Fix the login bug"));
-        assert_eq!(telling("\u{280b} 42 failing tests", &c), Some("42 failing tests"));
         assert_eq!(telling("  Herdr session names  ", &c), Some("Herdr session names"));
+        // Judged without what leads up to the first letter or digit, shown with it.
+        for t in ["\u{2713} build passed", "[3/5] Building crates", "#42 Fix", "\"quoted\""] {
+            assert_eq!(telling(t, &c), Some(t), "{t}");
+        }
         // These stay telling: a word in them only looks like a reason to reject.
         for t in ["Fix nvim config", "tmpfs mount issue", "Fix bug in commit 1f2e3d4", "vim tips", "a - b", "Plan for 2027"] {
             assert_eq!(telling(t, &c), Some(t), "{t}");
@@ -240,6 +245,10 @@ mod tests {
             ("~/src/herdr", "a home path"),
             ("/tmp", "a path"),
             ("C:\\src", "a Windows path"),
+            ("C:/src", "a Windows path with forward slashes"),
+            ("\\\\server\\share", "a UNC path"),
+            ("\u{2713} ~/src", "a path after a glyph"),
+            ("\u{2713} 1234", "digits after a glyph"),
             ("me@host: ~/src", "user@host"),
             ("1234", "only digits"),
             ("claude attach 1f2e", "the program's command line"),
@@ -257,6 +266,7 @@ mod tests {
         assert_eq!(telling("neovim notes.md", &json!({ "key": "nvim", "name": "Neovim" })), None);
         let lazygit = json!({ "key": "lazygit", "name": "Git Changes" });
         assert_eq!(telling("Git Changes", &lazygit), None);
+        assert_eq!(telling("git changes", &lazygit), None, "its name in any case");
         assert_eq!(telling("lazygit", &lazygit), None);
         assert_eq!(telling("Git log", &lazygit), Some("Git log"));
     }
@@ -268,7 +278,7 @@ mod tests {
         assert_eq!(label(&Parts { name: Some("review"), auto_name: Some("hazy-inlet"), title: "Fix it", session: Some("s"), ..p() }), "review");
         assert_eq!(label(&Parts { name: Some(" . "), auto_name: Some("hazy-inlet"), ..p() }), "hazy-inlet", "a name without a letter or digit is none");
         assert_eq!(label(&Parts { auto_name: Some("hazy-inlet"), title: "Fix it", session: Some("s"), ..p() }), "hazy-inlet");
-        assert_eq!(label(&Parts { title: "\u{2733} Fix it", session: Some("vendor-insights"), ..p() }), "Fix it");
+        assert_eq!(label(&Parts { title: "\u{2713} Fix it", session: Some("vendor-insights"), ..p() }), "\u{2713} Fix it");
         assert_eq!(label(&Parts { title: "claude-prompt-9acc2eb1-37f2-4d7e-9c1a-5b6f0e2d8a11.md + (/private/tmp/x) - Nvim", session: Some("vendor-insights"), ..p() }), "vendor-insights");
         assert_eq!(label(&Parts { title: "~/src", ..p() }), "Claude Code");
         assert_eq!(label(&Parts { title: "~/src", program: &json!({ "key": "program", "name": "" }), ..p() }), "t7");
@@ -325,7 +335,7 @@ mod tests {
         assert_eq!(checks[0].path, file);
         assert!(sessions.checks(&terminals, true, t0, home_s, source_of).is_empty(), "never while a look is under way");
         assert!(sessions.found(checks.into_iter().map(look).collect()));
-        assert_eq!(sessions.name("t1"), Some("vendor-insights"));
+        assert_eq!(sessions.name("t1", Some(4242)), Some("vendor-insights"));
 
         assert_eq!(run(&mut sessions, false, t0 + Duration::from_secs(1)), (false, 0, 0), "not before SESSION_RECHECK");
         assert_eq!(run(&mut sessions, true, t0 + Duration::from_secs(1)), (false, 1, 0), "a listing looks; an unchanged file isn't read");
@@ -334,7 +344,7 @@ mod tests {
         let later = SystemTime::now() + Duration::from_secs(5);
         std::fs::File::options().write(true).open(&file).unwrap().set_modified(later).unwrap();
         assert_eq!(run(&mut sessions, false, t0 + Duration::from_secs(1) + SESSION_RECHECK), (true, 1, 1), "a moved mtime is read again");
-        assert_eq!(sessions.name("t1"), Some("renamed"));
+        assert_eq!(sessions.name("t1", Some(4242)), Some("renamed"));
 
         // Another process in the same terminal: its own file, read afresh, and not
         // again while it doesn't change.
@@ -344,7 +354,7 @@ mod tests {
         let checks = sessions.checks(&next, true, t0, home_s, source_of);
         assert_eq!(checks[0].read_at, None, "the mtime read for 4242 is not 5151's");
         assert!(sessions.found(checks.into_iter().map(look).collect()));
-        assert_eq!(sessions.name("t1"), Some("next"));
+        assert_eq!(sessions.name("t1", Some(5151)), Some("next"));
         let checks = sessions.checks(&next, true, t0, home_s, source_of);
         assert!(checks[0].read_at.is_some());
         assert!(!sessions.found(checks.into_iter().map(look).collect()), "same process, same file: unchanged");
@@ -363,26 +373,28 @@ mod tests {
         };
         rewrite("{bad json");
         assert_eq!(look_next(&mut sessions), (true, 1));
-        assert_eq!(sessions.name("t1"), None, "bad JSON names no session");
+        assert_eq!(sessions.name("t1", Some(5151)), None, "bad JSON names no session");
         rewrite(r#"{"name":"back"}"#);
         assert_eq!(look_next(&mut sessions), (true, 1));
         std::fs::remove_file(&next_file).unwrap();
         assert_eq!(look_next(&mut sessions), (true, 1), "a file that went names none");
-        assert_eq!(sessions.name("t1"), None);
+        assert_eq!(sessions.name("t1", Some(5151)), None);
         assert_eq!(look_next(&mut sessions), (false, 0), "and isn't read while it stays gone");
 
         // A process without a file: the name it had goes with the process.
         assert_eq!(run(&mut sessions, true, t0), (true, 1, 1));
-        assert_eq!(sessions.name("t1"), Some("renamed"));
+        assert_eq!(sessions.name("t1", Some(4242)), Some("renamed"));
+        assert_eq!(sessions.name("t1", Some(31)), None, "another process before any look: not its name");
+        assert_eq!(sessions.name("t1", None), None, "nothing in the foreground");
         let silent = HashMap::from([("t1".to_owned(), live(6161, &["claude"]))]);
         let checks = sessions.checks(&silent, true, t0, home_s, source_of);
         assert!(sessions.found(checks.into_iter().map(look).collect()));
-        assert_eq!(sessions.name("t1"), None);
+        assert_eq!(sessions.name("t1", Some(6161)), None);
 
         // It stopped running claude: forgotten.
         let shell = HashMap::from([("t1".to_owned(), live(77, &["zsh"]))]);
         assert!(sessions.checks(&shell, true, t0, home_s, source_of).is_empty());
-        assert_eq!(sessions.name("t1"), None);
+        assert_eq!(sessions.name("t1", Some(77)), None);
         std::fs::remove_dir_all(&home).unwrap();
     }
 }

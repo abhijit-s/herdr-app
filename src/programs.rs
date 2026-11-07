@@ -181,7 +181,7 @@ pub fn load() -> Result<(), String> {
                 for (key, entry) in mine.programs {
                     table.programs.entry(key).or_default().over(entry);
                 }
-                bad_session_files(&mut table)
+                bad_rules(&mut table)
             }
         },
     };
@@ -190,7 +190,7 @@ pub fn load() -> Result<(), String> {
 }
 
 /// Drops resume rules and session name files that don't hold up; Err names them.
-fn bad_session_files(table: &mut Table) -> Result<(), String> {
+fn bad_rules(table: &mut Table) -> Result<(), String> {
     let mut bad = Vec::new();
     for (key, e) in &mut table.programs {
         if let Some(Err(why)) = e.resume.as_ref().map(crate::resume::Rule::check) {
@@ -474,7 +474,7 @@ mod tests {
     #[test]
     fn resume_rules_are_checked_and_a_persons_empty_rule_turns_one_off() {
         let mut shipped = t();
-        assert!(bad_session_files(&mut shipped).is_ok(), "shipped rules hold up");
+        assert!(bad_rules(&mut shipped).is_ok(), "shipped rules hold up");
         let claude = shipped.programs["claude"].resume.clone().expect("Claude Code resumes");
         let argv: Vec<String> = ["claude", "-c", "--model", "opus"].map(String::from).to_vec();
         assert_eq!(crate::resume::rewrite(&argv, &claude, Some("s1")).unwrap(), ["claude", "--model", "opus", "--resume", "s1"]);
@@ -489,7 +489,7 @@ mod tests {
         for (key, entry) in mine.programs {
             table.programs.entry(key).or_default().over(entry);
         }
-        let error = bad_session_files(&mut table).unwrap_err();
+        let error = bad_rules(&mut table).unwrap_err();
         assert!(error.contains("bad.resume") && !error.contains("htop"), "{error}");
         assert!(table.programs["bad"].resume.is_none());
         assert!(table.programs["claude"].resume.as_ref().is_some_and(crate::resume::Rule::is_off));
@@ -508,7 +508,7 @@ mod tests {
         for (key, entry) in mine.programs {
             table.programs.entry(key).or_default().over(entry);
         }
-        let error = bad_session_files(&mut table).unwrap_err();
+        let error = bad_rules(&mut table).unwrap_err();
         assert!(error.contains("bad.session_name: file is empty") && !error.contains("claude"), "{error}");
         assert!(table.programs["bad"].session_name.is_none());
         assert_eq!(table.programs["claude"].session_name.as_ref().map(|s| s.field.as_str()), Some("title"));

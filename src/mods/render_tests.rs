@@ -1194,6 +1194,19 @@ fn mods_name_panes_by_their_label(cx: &mut TestAppContext) {
     assert_eq!(shown("mods/terminals-pane", &p2, unnamed(&p2), cx)[0], "\"Pi\"");
     assert_eq!(shown("mods/win98", &w2, unnamed(&w2), cx), [r#""Pi - C:\\remote\\project""#]);
 
+    // A status glyph or a bracket before a telling title is shown as before.
+    for title in ["\u{2713} build passed", "[3/5] Building crates"] {
+        let titled = |p: &Value| {
+            let mut values = fixture(true, p.clone(), updates("current", "current"));
+            let mut panes = values["panes"].clone();
+            panes[1]["title"] = json!(title);
+            values.insert("panes".into(), labelled(panes));
+            Some(values)
+        };
+        assert_eq!(shown("mods/terminals-pane", &p2, titled(&p2), cx)[0], format!("{title:?}"));
+        assert_eq!(shown("mods/win98", &w2, titled(&w2), cx), [format!("\"Pi - {title}\"")]);
+    }
+
     // A program that is neither an agent nor a shell: the header shows its label.
     let neovim = json!({"key":"nvim", "name":"Neovim", "icon":null, "tint":true, "tile":null, "color":null, "shell":false, "agent":false});
     let editor = |title: &str, cx: &mut TestAppContext| {
