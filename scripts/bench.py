@@ -6,9 +6,9 @@
 Runs the app on its own temporary home and core session, so nothing of yours
 is touched; prints the artifact folder and keeps it after cleanup. Requires hc
 on PATH and the Python running this script. Both scenario sets use only Python
-fixture programs. The window must stay
-visible while it runs (hidden windows aren't drawn, which flatters the
-numbers). Per scenario: CPU % of the app, the core and its holder
+fixture programs. It sets HERDR_BENCH_DRAW_OCCLUDED, so on macOS the
+window draws even behind other windows (unset, a covered window isn't drawn,
+which flatters the numbers); keep the screen unlocked. Per scenario: CPU % of the app, the core and its holder
 (averaged over the run, 100 = one core), and draws per second (window
 renders, terminal renders, terminal grid paints). --sample also takes a
 macOS `sample` profile per scenario into the bench folder.
@@ -88,6 +88,7 @@ def env():
         PYTHONIOENCODING="utf-8",
         HERDR_APP_NO_SOUND="1",
         HERDR_APP_BACKGROUND="1",
+        HERDR_BENCH_DRAW_OCCLUDED="1",  # draw though it opens behind other windows
         HERDR_APP_BENCH=f"{ROOT}/frames.jsonl",
         WAYLAND_DISPLAY=e.get("WAYLAND_DISPLAY", ""),
     )

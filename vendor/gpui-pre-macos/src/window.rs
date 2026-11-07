@@ -842,14 +842,8 @@ impl MacWindowState {
 
     fn start_display_link(&mut self) {
         self.stop_display_link();
-        unsafe {
-            if !self
-                .native_window
-                .occlusionState()
-                .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
-            {
-                return;
-            }
+        if !presented(self.native_window) {
+            return;
         }
         let Some(display_id) = display_id_for_screen(unsafe { self.native_window.screen() }) else {
             // AppKit can temporarily report no screen while displays are being reconfigured.
@@ -2977,14 +2971,27 @@ extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
     }
 }
 
+/// HERDR: whether AppKit presents the window: its occlusion state, unless
+/// `HERDR_BENCH_DRAW_OCCLUDED=1` was set at launch. That benchmark-only switch
+/// treats every window as presented (display link running, `Visible`), so
+/// `scripts/bench.py` measures drawing for windows that open behind others.
+fn presented(native_window: id) -> bool {
+    static DRAW_OCCLUDED: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| draws_occluded(std::env::var_os("HERDR_BENCH_DRAW_OCCLUDED").as_deref()));
+    *DRAW_OCCLUDED
+        || unsafe {
+            native_window
+                .occlusionState()
+                .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
+        }
+}
+
+fn draws_occluded(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|v| v == "1")
+}
+
 fn visibility(state: &MacWindowState) -> WindowVisibility {
-    let is_visible = unsafe {
-        state
-            .native_window
-            .occlusionState()
-            .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
-    };
-    if is_visible {
+    if presented(state.native_window) {
         WindowVisibility::Visible
     } else {
         WindowVisibility::Hidden
@@ -3026,17 +3033,11 @@ fn report_visibility(window_state: &Arc<Mutex<MacWindowState>>) {
 extern "C" fn window_did_change_occlusion_state(this: &Object, _: Sel, _: id) {
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.lock();
-    unsafe {
-        if lock
-            .native_window
-            .occlusionState()
-            .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
-        {
-            lock.move_traffic_light();
-            lock.start_display_link();
-        } else {
-            lock.stop_display_link();
-        }
+    if presented(lock.native_window) {
+        lock.move_traffic_light();
+        lock.start_display_link();
+    } else {
+        lock.stop_display_link();
     }
     drop(lock);
     // The only visibility source: AppKit posts this for covering, minimizing,
@@ -3996,6 +3997,15 @@ extern "C" fn toggle_tab_bar(this: &Object, _sel: Sel, _id: id) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn occluded_windows_stop_drawing_unless_the_bench_switch_is_exactly_1() {
+        assert!(!draws_occluded(None), "unset: occlusion decides, as upstream");
+        for off in ["", "0", "true", "yes", " 1"] {
+            assert!(!draws_occluded(Some(std::ffi::OsStr::new(off))), "{off:?} must not switch it on");
+        }
+        assert!(draws_occluded(Some(std::ffi::OsStr::new("1"))));
+    }
 
     #[test]
     fn display_id_for_screen_returns_none_for_null_screen() {
