@@ -16,6 +16,9 @@ Input-SHA256: ff521c71cdd95d36564e8c8a37d652b71be826a02475c3668bc4f670743ed7be d
 Input-SHA256: add9d7531d1b21646317a8958e38fc727506fa39d24bdecb44154d943c82753a defaults/icons/LICENSE-LobeHub.txt
 Input-SHA256: b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57 defaults/icons/LICENSE-Lucide.txt
 Input-SHA256: 7b3925ce431fc0984bdb1a47da2663c48262191259dda8c23f2fa6ed8accb841 defaults/icons/LICENSES.md
+Input-SHA256: 84a7a98c82140fb12c37fe42b93805baa16024cb3e5acc599b7ffe612c55d847 defaults/mods/icon-picker/names/LICENSE-NerdFonts.txt
+Input-SHA256: 5c4e1582dcae9429a5d00ec0a64185c3a711f9757b2308fdf275d90b120f6149 defaults/mods/icon-picker/names/LICENSE-emojibase.txt
+Input-SHA256: 3cfa61b2012e127f496143a8f01b594dc854fac570c0e261a40b1a1b16a12a52 defaults/mods/icon-picker/names/LICENSES.md
 Input-SHA256: e7bae1721866dc0152e9e8f9fb8c0033a6f8ee98f63c4d64b0f06bf6f27a13e8 defaults/mods/win98/fonts/LICENSE-MSSansSerif.txt
 Input-SHA256: 9348ddfd44da5a127c59141981954746a860ec8e03e0412cf3af7134af0f97e2 defaults/mods/win98/fonts/LICENSE-PxPlus.txt
 Input-SHA256: 3f941b3b89cf7b8370ceb83cc76d2120d471b58735d8ca60238a751a48d7f72f licenses/CC-BY-SA-3.0.txt
@@ -30,7 +33,7 @@ Input-SHA256: f8ac2c75e7f629a87565c80d61ff9fe5aa15cdea0bda997d52a4dc13fdbd19cb l
 Input-SHA256: 5c537d6853e005298a285d508cff9ac7192cea23576c840d485b2b586a7ff177 licenses/Zig.txt
 Input-SHA256: d25e82e26acd42ca3ccc9993622631163425b869b9e16284226d534cff6470f2 licenses/highway-BSD3.txt
 Input-SHA256: 43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1 licenses/highway.txt
-Input-SHA256: 4ca457c275aa999b11b537d7418b171a131277495d14730aa0942af1c17e928b licenses/inventory.json
+Input-SHA256: b29bd2d3938b83345245daffc088571cb5d3f7f29f624cfd6d67bc7d2def6f6f licenses/inventory.json
 Input-SHA256: f9bc4423732350eb0b3f7ed7e91d530298476f8fec0c6c427a1c04ade22655af licenses/musl.txt
 Input-SHA256: 204bbed08ddeeecb362b4da36d3479a0167b7356a9d6024a24f9833affbe228a licenses/simdutf-TH.txt
 Input-SHA256: fc8dbc04e03ad4efc08a647ffe7f995b811a95bc04c0e85a56d5277c6593fa5f licenses/simdutf.txt
@@ -21880,4 +21883,101 @@ Apache License
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+
+----------------------------------------------------------------------
+Nerd Fonts glyph names (the icon-picker mod's names/glyphs.json)
+https://github.com/ryanoasis/nerd-fonts/blob/v3.5.1/glyphnames.json
+
+--- defaults/mods/icon-picker/names/LICENSE-NerdFonts.txt ---
+The MIT License (MIT)
+
+Copyright (c) 2014 Ryan L McIntyre
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+----------------------------------------------------------------------
+Emojibase data, with Unicode CLDR names and keywords (the icon-picker mod's names/emoji.json)
+https://github.com/milesj/emojibase (emojibase-data 16.0.3 en/compact.json) and https://cldr.unicode.org
+
+--- defaults/mods/icon-picker/names/LICENSE-emojibase.txt ---
+MIT License
+
+Copyright (c) 2017-2019 Miles Johnson
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--- licenses/Unicode.txt ---
+UNICODE LICENSE V3
+
+COPYRIGHT AND PERMISSION NOTICE
+
+Copyright © 1991-2026 Unicode, Inc.
+
+NOTICE TO USER: Carefully read the following legal agreement. BY
+DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of data files and any associated documentation (the "Data Files") or
+software and any associated documentation (the "Software") to deal in the
+Data Files or Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, and/or sell
+copies of the Data Files or Software, and to permit persons to whom the
+Data Files or Software are furnished to do so, provided that either (a)
+this copyright and permission notice appear with all copies of the Data
+Files or Software, or (b) this copyright and permission notice appear in
+associated Documentation.
+
+THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+THIRD PARTY RIGHTS.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall
+not be used in advertising or otherwise to promote the sale, use or other
+dealings in these Data Files or Software without prior written
+authorization of the copyright holder.
 
