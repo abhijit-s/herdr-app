@@ -307,7 +307,8 @@ impl StateStyles {
 
 #[derive(Default)]
 struct Behavior {
-    /// HERDR: `frames(list, ms)` and `loop(property, policy)` (see [`apply_loops`]).
+    /// HERDR: `frames(list, ms)` (see [`FramesText`]) and `loop(property,
+    /// policy)` (see [`apply_loops`]).
     frames: Option<(f64, Vec<String>)>,
     loops: SmallVec<[Loop; 1]>,
     /// HERDR: `spin(ms)`: an svg turning once every `ms` (see [`spin_period`]).
@@ -777,7 +778,7 @@ fn materialize_node(
     let (mut refinement, behavior, states, motions, slot_specs) = resolve_ops(arena, node);
     let motion_identity = motion_element_id(id, behavior.key.clone(), &component);
     apply_motion(motion_identity, &motions, &mut refinement, window, cx);
-    let frame_text = apply_loops(&behavior, &mut refinement, window, cx);
+    apply_loops(&behavior, &mut refinement, window, cx);
     let inherited = refinement.text.color.unwrap_or(inherited);
 
     // `SmallVec` rather than `Vec`: this runs per node, per frame, and the
@@ -788,8 +789,8 @@ fn materialize_node(
     // A component that takes typed children is handed the descriptions instead:
     // flattening them here would throw away the very thing it needs. See
     // [`ChildSpecs`].
-    let children: Children = if let Some((current, list)) = frame_text {
-        smallvec::smallvec![SharedString::from(list[current].clone()).into_any_element()]
+    let children: Children = if let Some((ms, list)) = &behavior.frames {
+        smallvec::smallvec![FramesText::new(list, *ms).into_any_element()]
     } else if takes_typed_children(&component)
         || matches!(component, Component::Registered(_))
     {
@@ -2734,9 +2735,9 @@ pub(in crate::materialize) fn resolve_ops(
 }
 
 // HERDR: looping animation, run here and never in the script. A view with a
-// loop asks to be drawn again when its next value is due (the next frame of
-// `frames`, ~30 fps for `loop`), so a `frames` spinner costs one native redraw
-// of its view per step and nothing while the view isn't drawn.
+// loop asks to be drawn again when its next value is due (~30 fps), so it
+// costs one native redraw of its view per step and nothing while the view
+// isn't drawn. `frames` draws nothing per step (see [`FramesText`]).
 struct Loop {
     property: MotionProperty,
     from: f32,
@@ -2791,19 +2792,13 @@ fn wake_view_after(delay: Duration, window: &Window, cx: &mut App) {
     .detach();
 }
 
-/// Applies `loop`s to the refinement; with `frames`, returns the frames and
-/// which one shows now.
-fn apply_loops<'a>(behavior: &'a Behavior, refinement: &mut StyleRefinement, window: &Window, cx: &mut App) -> Option<(usize, &'a [String])> {
-    if behavior.frames.is_none() && behavior.loops.is_empty() {
-        return None;
+/// Applies `loop`s to the refinement.
+fn apply_loops(behavior: &Behavior, refinement: &mut StyleRefinement, window: &Window, cx: &mut App) {
+    if behavior.loops.is_empty() {
+        return;
     }
     let now = loop_clock_ms();
     let mut next = f64::INFINITY;
-    let text = behavior.frames.as_ref().map(|(ms, list)| {
-        let step = (now / ms).floor();
-        next = next.min((step + 1.0) * ms - now);
-        ((step as usize) % list.len(), list.as_slice())
-    });
     for l in &behavior.loops {
         let phase = (now % l.period) / l.period;
         let x = if phase < 0.5 { phase * 2.0 } else { 2.0 - phase * 2.0 } as f32;
@@ -2824,7 +2819,102 @@ fn apply_loops<'a>(behavior: &'a Behavior, refinement: &mut StyleRefinement, win
         next = next.min(1000.0 / 30.0);
     }
     wake_view_after(Duration::from_secs_f64(next.max(1.0) / 1000.0), window, cx);
-    text
+}
+
+/// HERDR: `frames(list, ms)`'s text: every frame shaped once, stacked and
+/// centred in the widest one's box, each painted as one frame of a GPUI
+/// frame cycle, so a present shows the one the shared clock is on and a step
+/// draws nothing, as `spin` does. At most 255 frames, `ms` 16 to 65535. Only
+/// glyphs take turns: an underline or background paints under every frame.
+struct FramesText {
+    frames: Vec<SharedString>,
+    period_ms: u16,
+}
+
+impl FramesText {
+    fn new(list: &[String], ms: f64) -> Self {
+        let frames = list.iter().take(usize::from(u8::MAX)).map(|f| SharedString::from(f.clone())).collect();
+        FramesText { frames, period_ms: ms.min(f64::from(u16::MAX)) as u16 }
+    }
+}
+
+impl IntoElement for FramesText {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui::Element for FramesText {
+    type RequestLayoutState = (Vec<gpui::ShapedLine>, Pixels);
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui::LayoutId, Self::RequestLayoutState) {
+        let text = window.text_style();
+        let font_size = text.font_size.to_pixels(window.rem_size());
+        let line_height = text.line_height_in_pixels(window.rem_size());
+        let lines: Vec<_> = self
+            .frames
+            .iter()
+            .map(|f| window.text_system().shape_line(f.clone(), font_size, &[text.to_run(f.len())], None))
+            .collect();
+        let width = lines.iter().map(|l| l.width).fold(Pixels::ZERO, Pixels::max);
+        let mut style = gpui::Style::default();
+        style.size = gpui::size(width.into(), line_height.into());
+        (window.request_layout(style, [], cx), (lines, line_height))
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        (lines, line_height): &mut Self::RequestLayoutState,
+        _prepaint: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let count = lines.len() as u8;
+        for (index, line) in lines.iter().enumerate() {
+            let origin = bounds.origin + gpui::point((bounds.size.width - line.width) / 2.0, Pixels::ZERO);
+            let mut paint = |window: &mut Window| line.paint(origin, *line_height, gpui::TextAlign::Left, None, window, cx);
+            // One frame never changes: drawn plainly, it doesn't keep the window presenting.
+            let painted = if count > 1 {
+                window.with_frame_cycle(gpui::FrameCycle { index: index as u8, count, period_ms: self.period_ms }, paint)
+            } else {
+                paint(window)
+            };
+            if let Err(error) = painted {
+                tracing::warn!("frames: {error:#}");
+            }
+        }
+    }
 }
 
 fn set_motion(motions: &mut SmallVec<[Motion; 2]>, motion: Motion) {

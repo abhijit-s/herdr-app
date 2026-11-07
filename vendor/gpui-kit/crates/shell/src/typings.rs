@@ -1868,8 +1868,9 @@ const ELEMENT_METHODS: &str = r#"    /**
     spring<Self extends Element>(this: Self, property: import("gpui-shell").MotionProperty, policy?: import("gpui-shell").SpringPolicy): Self;
     /**
      * Shows each string in turn as this element's text, `ms` apart, forever: a
-     * spinner. Runs natively (render never runs for it) and only while drawn;
-     * every view shares one clock. `ms` at least 16.
+     * spinner. Runs natively and only while drawn: each step shows the next
+     * frame with no render or draw, as `spin` does; every view shares one
+     * clock. Frames draw grayscale. `ms` 16 to 65535, at most 255 frames.
      */
     frames<Self extends Element>(this: Self, list: string[], ms: number): Self;
     /**

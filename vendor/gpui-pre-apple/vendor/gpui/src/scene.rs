@@ -719,7 +719,7 @@ pub struct MonochromeSprite {
     // HERDR: how far the shader pulls this glyph's coverage toward an
     // S-curve, 0 (as rasterised) to 1 (`Window::with_glyph_contrast`).
     pub contrast: f32,
-    pub contrast_pad: u32,
+    pub frame: u32,
 }
 
 impl From<MonochromeSprite> for Primitive {
