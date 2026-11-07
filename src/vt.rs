@@ -2121,6 +2121,9 @@ mod tests {
         // A line wider than the terminal comes back as the one line it was.
         let wide = "0123456789".repeat(3);
         assert_eq!(last_output(12, 6, &(command("w", &format!("{wide}\r\nnext\r\n")) + prompt())).as_deref(), Some(format!("{wide}\nnext").as_str()));
+        // Wide characters wrapped at an odd width leave a spacer at the edge, not a space.
+        let cjk = "日本語のテキストと😀絵文字";
+        assert_eq!(last_output(11, 6, &(command("w", &format!("{cjk}\r\n")) + prompt())).as_deref(), Some(cjk));
     }
 
     #[test]
@@ -2130,6 +2133,15 @@ mod tests {
         // Output whose own prompt went unmarked (written before the view
         // attached) would run to the top of the history: not offered.
         assert_eq!(last_output(40, 10, &format!("old\r\n$ ls\r\n\x1b]133;C\x07a b\r\n{}", prompt())), None);
+        // A prompt redrawn without its marks (oh-my-posh's transient prompt
+        // unless its PS1 is wrapped too) is tagged as typed input: Enter on it
+        // reads as a command that printed nothing. The screen can't tell it
+        // from `cd` typed at that prompt, so the fix is the shell's marks.
+        let shell = command("ls", "a b\r\n");
+        let unmarked = format!("{}\r\x1b[K 15:04 > \r\n", prompt());
+        assert_eq!(last_output(40, 10, &(shell.clone() + &unmarked + prompt())), None);
+        let marked = format!("{}\r\x1b[K\x1b]133;A\x07 15:04 > \x1b]133;B\x07\r\n", prompt());
+        assert_eq!(last_output(40, 10, &(shell + &marked + prompt())).as_deref(), Some("a b"));
         // A full-screen program over a marked shell.
         let shell = command("ls", "a b\r\n") + prompt();
         assert_eq!(last_output(40, 10, &shell).as_deref(), Some("a b"));

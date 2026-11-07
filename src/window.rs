@@ -4096,12 +4096,16 @@ impl AppWindow {
             "terminal.copy_last_output" => {
                 let t = Self::owned(a, "terminal").or_else(|| self.focused_terminal(window, cx).map(|t| t.address.clone()));
                 let Some(t) = t else { return self.fail("no such running terminal") };
-                let view = match self.shown_terminal_view(&t, window, cx) {
+                let shown = match self.shown_terminal_view(&t, window, cx) {
                     Ok(view) => view,
                     Err(error) => return self.fail(error),
                 };
-                let Some(text) = view.read(cx).last_output() else {
-                    return self.fail(format!("terminal {t:?} has no finished command's output: its shell marks no prompts (OSC 133), or the command printed nothing"));
+                // Each view of a terminal (its pane, a peek) has its own copy of the
+                // screen, and one attached later lacks the marks before it: the one
+                // seen first, else any other, as the menu read the clicked one.
+                let others = self.terms.values().filter(|v| v.address == t).map(|v| &v.view);
+                let Some(text) = std::iter::once(&shown).chain(others).find_map(|v| v.read(cx).last_output()) else {
+                    return self.fail(format!("terminal {t:?} has no finished command's output: its shell marks no prompts (OSC 133), a full-screen program is running, or the command printed nothing"));
                 };
                 let lines = text.lines().count();
                 cx.write_to_clipboard(ClipboardItem::new_string(text));

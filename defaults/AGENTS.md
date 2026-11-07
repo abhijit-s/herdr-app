@@ -692,7 +692,20 @@ The main ones:
   add-zsh-hook preexec _osc133_preexec
   ```
 
-  Bash: `PS0=$'\e]133;C\a'`, `PROMPT_COMMAND='printf "\e]133;D;%s\a" $?'` and `PS1=$'\[\e]133;A\a\]'"$PS1"$'\[\e]133;B\a\]'`. The marks go inside `PROMPT` and `RPROMPT`, not printed once from precmd, so a prompt zsh redraws (a resize, `reset-prompt`, a transient prompt) and a right prompt stay marked as prompt rather than as typed input. Register the zsh hooks after any prompt tool that rebuilds `PROMPT` each time (oh-my-posh, starship), so the marks are added to its prompt.
+  Bash: `PS0=$'\e]133;C\a'`, `PROMPT_COMMAND='printf "\e]133;D;%s\a" $?'"${PROMPT_COMMAND:+;$PROMPT_COMMAND}"` (first, so it reads the command's `$?`) and `PS1=$'\[\e]133;A\a\]'"$PS1"$'\[\e]133;B\a\]'`. The marks go inside `PROMPT` and `RPROMPT`, not printed once from precmd, so a prompt zsh redraws (a resize, `reset-prompt`) and a right prompt stay marked as prompt rather than as typed input. Register the zsh hooks after any prompt tool that rebuilds `PROMPT` each time (oh-my-posh, starship), so the marks are added to its prompt.
+
+  A transient prompt (the short prompt left in the history once a command is entered) is a redraw precmd never sees: the prompt tool sets `PS1` inside the line editor and redraws. Unmarked, it reads as typed input, so after Enter on an empty prompt there is nothing to copy. Mark its `PS1` too. For oh-my-posh's `[transient_prompt]`, after `oh-my-posh init` and the hooks above, with `_osc133_mark_prompt` holding the two `PROMPT`/`RPROMPT` lines of `_osc133_precmd`:
+
+  ```zsh
+  functions[_osc133_omp_get_prompt]=$functions[_omp_get_prompt]
+  _omp_get_prompt() {
+    _osc133_omp_get_prompt "$@"; local ret=$?
+    [[ $1 == transient ]] && print -r -- $'\n_osc133_mark_prompt'
+    return ret
+  }
+  ```
+
+  Starship's transient prompt (a zsh plugin or your own `zle-line-init` widget) needs the same: wrap the `PS1` it sets in `%{\e]133;A\a%}`…`%{\e]133;B\a%}` before it redraws.
 - Agents: `agent.next`, `agent.prev`, `agent.focus {terminal}`.
 - Notifications: `system.notify {title, body?, subtitle?, sound?, agent?, id?, urgent?, icon?}` posts a notification as Herdr for any program: `herdr-app do system.notify '{"title": "Build", "body": "passed", "sound": "Glass", "id": "build"}'`. `sound` as one `notification_sounds` value (default `"default"`); `agent` (a terminal address, or an agent's name when only one has it) makes a click show that terminal and attaches its program's icon (unless `icon` is given or `notification_icons` is `false`); a newer one with the same `id` (1 to 64 of `A-Z a-z 0-9 . _ : -`) replaces the older; `icon` is an absolute path to a PNG, JPEG, GIF or HEIC up to 10 MB (Herdr attaches a copy). It follows `system_notifications`: `off` fails; `background` while Herdr is the app in front shows the window's toast instead (answer `{"shown": "toast"}`) unless `urgent: true`; otherwise it posts (answer `{"shown": "notification", "tag": ...}`). Title and subtitle are cut at 200 characters and the body at 2000; control characters (the body keeps its line breaks) and direction overrides are left out. It fails, exiting 1, where macOS won't show it: notifications for Herdr turned off in System Settings, or a build not run from Herdr.app.
 - Sessions: `session.saved` lists the recorded agents (programs with a `resume` rule in `programs.json`) with `terminal`, `where`, `program`, `name`, `cwd`, the resuming `argv`, `session`, `saved_ms`, and `ready` (its terminal is live and back to a bare shell) or `why` not. `session.resume {terminal?, confirmed?}` types `cd <cwd> && <argv>` (each word shell-quoted; PowerShell: `Set-Location`) into every ready one (or just `terminal`) and answers `{resumed, skipped: [{terminal, why}]}`; it asks the person first unless `confirmed`, and scripts must pass `confirmed: true` (`herdr-app do session.resume --confirmed true`). It never types into a terminal whose foreground isn't a shell, and skips a session two terminals share.
