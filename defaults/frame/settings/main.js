@@ -1,8 +1,8 @@
 // App-owned settings mod. Writes changes immediately; no Save step.
 
 import { View, div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { hc, run, theme, themes, fonts, updates, telemetry, settings, layoutSpacing, layouts, shared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window } from "herdr";
+import { v_flex, h_flex, Scrollbar, InputState, Input, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
+import { hc, run, theme, themes, fonts, updates, telemetry, settings, layoutSpacing, layouts, shared, setShared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window } from "herdr";
 
 const I = (name) => `frame/settings/${name}.svg`;
 
@@ -101,15 +101,42 @@ function stepSpacing(v, d) {
   return Math.max(lo, Math.min(hi, Math.round(v + d)));
 }
 
-const SECTIONS = [
-  { id: "look", title: "Look", icon: "palette" },
-  { id: "text", title: "Text", icon: "type" },
-  ...(window()?.platform === "macos" ? [{ id: "keyboard", title: "Keyboard", icon: "keyboard" }] : []),
-  { id: "machines", title: "Machines", icon: "server" },
-  { id: "alerts", title: "Alerts", icon: "bell" },
-  { id: "updates", title: "Updates", icon: "refresh" },
-  { id: "privacy", title: "Privacy", icon: "shield" },
+// The sidebar: groups that open and close, each with its pages. A page's id is
+// what app.settings' section names.
+const GROUPS = [
+  { id: "appearance", title: "Appearance", icon: "palette", pages: [["themes", "Themes"], ["layout", "Layout"], ["window", "Window"], ["panes", "Panes"]] },
+  { id: "text", title: "Text", icon: "type", pages: [["zoom", "Zoom"], ["fonts", "Fonts"], ["grid", "Terminal grid"], ["rendering", "Rendering"]] },
+  { id: "input", title: "Input", icon: "keyboard", pages: [...(window()?.platform === "macos" ? [["keyboard", "Keyboard"]] : []), ["mouse", "Mouse"]] },
+  { id: "agents", title: "Agents", icon: "bell", pages: [["activity", "Activity"], ["alerts", "Alerts"]] },
+  { id: "system", title: "System", icon: "server", pages: [["machines", "Machines"], ["updates", "Updates"], ["privacy", "Privacy"]] },
 ];
+const PAGES = GROUPS.flatMap((g) => g.pages.map(([id, title]) => ({ id, title, group: g.id })));
+// Sections named before the pages were grouped.
+const ALIASES = { look: "themes", text: "zoom" };
+// Where the open groups are kept (shared.json), so the sidebar opens as it was left.
+const OPEN_GROUPS = "settings.groups.open";
+
+/** The page app.settings' `section` names: a page, an older name for one, else Themes. */
+export function pageFor(section) {
+  const id = ALIASES[section] ?? section;
+  return PAGES.some((p) => p.id === id) ? id : "themes";
+}
+
+const groupOf = (page) => PAGES.find((p) => p.id === page).group;
+
+// Themes made by `herdr-app rex-themes` are named rex-<name>; the rest are Standard.
+const REX_PREFIX = "rex-";
+const THEME_SOURCES = [
+  ["standard", "Standard"],
+  ["rex", "Rex"],
+];
+// The theme grid: cards to a row and their size, so the list knows each row's height.
+const THEME_COLUMNS = 5;
+const THEME_CARD_W = 112;
+const THEME_ROW_H = 84;
+const THEME_HEAD_H = 30;
+// The grid's own scroll area, under the tabs and chips, within the dialog.
+const THEME_GRID_H = 330;
 
 const LOOKS = { main: "Herdr", terminals: "Terminals", win98: "Herdr 98" };
 const APPEARANCES = [
@@ -278,10 +305,71 @@ export function markRuns(text, spans) {
   return runs;
 }
 
+// Selection ---------------------------------------------------------------
+
+const SELECTED_ALPHA = 0.16;
+const SELECTED_RING_ALPHA = 0.5;
+const INACTIVE_ALPHA = 0.1;
+const INACTIVE_RING_ALPHA = 0.25;
+const HOVER_ALPHA = 0.04;
+const MIN_CONTRAST = 4.5;
+
+const rgbOf = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+const hexOf = (rgb) => `#${rgb.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("")}`;
+
+/** `fg` laid `alpha` of the way over `bg`, opaque (#rrggbb; any alpha of their own dropped). */
+export function over(fg, bg, alpha) {
+  const [a, b] = [rgbOf(fg), rgbOf(bg)];
+  return hexOf(a.map((v, i) => b[i] + (v - b[i]) * alpha));
+}
+
+/** WCAG contrast ratio between two colors. */
+export function contrast(a, b) {
+  const lum = (hex) => {
+    const [r, g, bl] = rgbOf(hex).map((v) => (v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/**
+ * How a selected row, tab, chip or card draws: `fill` the accent (or ring) at
+ * a sixth over the dialog, `text` the accent moved toward the foreground until
+ * it reads at 4.5:1 on that fill, `ring` its border. In a window that isn't
+ * active, a neutral grey with foreground text instead.
+ */
+export function tonal(t, active) {
+  const bg = t.popover ?? t.background;
+  if (!active) return { fill: over(t.foreground, bg, INACTIVE_ALPHA), text: t.foreground, ring: over(t.foreground, bg, INACTIVE_RING_ALPHA) };
+  const accent = t.accent ?? t.ring;
+  const fill = over(accent, bg, SELECTED_ALPHA);
+  let text = hexOf(rgbOf(accent));
+  for (let k = 0.1; contrast(text, fill) < MIN_CONTRAST && k <= 1.001; k += 0.1) text = over(t.foreground, accent, k);
+  return { fill, text, ring: over(accent, bg, SELECTED_RING_ALPHA) };
+}
+
+/** A pointer over something not selected: the foreground at a whisper, never the accent. */
+const hoverFill = (t) => over(t.foreground, t.popover ?? t.background, HOVER_ALPHA);
+
 export default class Settings extends View {
   init(_props, cx) {
-    const asked = props()?.section;
-    this.section = SECTIONS.some((s) => s.id === asked) ? asked : "look";
+    this.section = pageFor(props()?.section);
+    const open = shared(OPEN_GROUPS);
+    this.open = new Set([...(Array.isArray(open) ? open : []), groupOf(this.section)]);
+    // The Themes page: the slot being picked for, the source shown, a filter
+    // on names, and what the grid last scrolled to the current theme for.
+    const s = settings();
+    this.themeSlot = s.theme === s.theme_light && s.theme !== s.theme_dark ? "light" : "dark";
+    this.themeSource = null;
+    this.themeFilter = "";
+    this.themesClosed = new Set();
+    this.themeScroll = VirtualListScrollHandle.new();
+    this.themeScrolledFor = null;
+    this.themeInput = InputState.new({ placeholder: "Filter themes" });
+    this.themeInput.on("change", (_e, cx) => { this.themeFilter = this.themeInput.value(); cx.notify(); });
+    this.themeInput.on("focus", (_e, cx) => { this.themeInputFocused = true; cx.notify(); });
+    this.themeInput.on("blur", (_e, cx) => { this.themeInputFocused = false; cx.notify(); });
     this.picking = null; // "font" | "ui_font" while its list is open
     this.filter = "";
     this.fontInput = InputState.new({ placeholder: "Type to search fonts" });
@@ -334,7 +422,7 @@ export default class Settings extends View {
       cx.notify();
     });
     cx.timer.every(3000, (cx) => {
-      if (this.section === "look") {
+      if (this.section === "layout") {
         // The layout file may change under us (an agent, an editor).
         cx.spawn(async (cx) => {
           if (await this.loadLayoutFile()) cx.notify();
@@ -483,9 +571,9 @@ export default class Settings extends View {
     this.index = new Map();
     this.indexing = true;
     try {
-      for (const s of SECTIONS) {
-        this.place = { page: s.id, heading: "" };
-        this.page(s.id, t, cx);
+      for (const p of PAGES) {
+        this.place = { page: p.id, heading: "" };
+        this.page(p.id, t, cx);
       }
     } finally {
       this.indexing = false;
@@ -496,11 +584,19 @@ export default class Settings extends View {
 
   page(id, t, cx) {
     switch (id) {
-      case "look": return this.look(t, cx);
-      case "text": return this.text(t);
+      case "themes": return this.themesPage(t);
+      case "layout": return this.layoutPage(t, cx);
+      case "window": return this.windowPage(t);
+      case "panes": return this.panes(t);
+      case "zoom":
+      case "fonts":
+      case "grid":
+      case "rendering": return this.text(t, id);
       case "keyboard": return this.keyboard(t);
-      case "machines": return this.machines(t);
+      case "mouse": return this.followsMouse(t);
+      case "activity": return this.activity(t);
       case "alerts": return this.alerts(t);
+      case "machines": return this.machines(t);
       case "privacy": return this.privacy(t);
       default: return this.updates(t);
     }
@@ -514,7 +610,7 @@ export default class Settings extends View {
     if (!this.index || this.indexStale || from !== this.indexedFrom) this.buildIndex(t, cx);
     this.indexedFrom = from;
     const m = this.match();
-    const found = SECTIONS.filter((s) => m.pages.has(s.id));
+    const found = PAGES.filter((p) => m.pages.has(p.id));
     if (!found.length) {
       return v_flex()
         .id("st-none")
@@ -528,39 +624,48 @@ export default class Settings extends View {
     return v_flex()
       .w_full()
       .children(
-        found.map((s) => {
-          this.place = { page: s.id, heading: "" };
+        found.map((p) => {
+          const g = GROUPS.find((g) => g.id === p.group);
+          this.place = { page: p.id, heading: "" };
           return v_flex()
             .w_full()
             .pb(22)
             .child(
               h_flex()
-                .id(`st-found-${s.id}`)
+                .id(`st-found-${p.id}`)
                 .gap(8)
                 .pb(10)
                 .items_center()
                 .cursor_pointer()
-                .tooltip(`Open ${s.title}`)
-                .on_click((_e, cx) => this.go(s.id, cx))
-                .child(svg(I(s.icon)).size(14).text_color(t.accent))
-                .child(div().text_size(15).font_semibold().text_color(t.foreground).child(s.title)),
+                .tooltip(`Open ${p.title}`)
+                .on_click((_e, cx) => this.go(p.id, cx))
+                .child(svg(I(g.icon)).size(14).text_color(t.accent))
+                .child(div().text_size(15).font_semibold().text_color(t.foreground).child(`${g.title} › ${p.title}`)),
             )
-            .child(this.page(s.id, t, cx));
+            .child(this.page(p.id, t, cx));
         }),
       );
   }
 
-  // Shows page `id`, leaving any search.
+  // Shows page `id`, leaving any search, with its group open.
   go(id, cx) {
     this.setQuery("");
     this.section = id;
+    if (!this.open.has(groupOf(id))) this.toggleGroup(groupOf(id));
+    this.themeScrolledFor = null;
     this.picking = null;
     this.machineEdit = null;
     this.handle.focus();
     if (id === "machines") cx.spawn(async (cx) => { await this.loadMachines(); cx.notify(); });
     // The layout file may have changed while another page showed.
-    if (id === "look") cx.spawn(async (cx) => { if (await this.loadLayoutFile()) cx.notify(); });
+    if (id === "layout") cx.spawn(async (cx) => { if (await this.loadLayoutFile()) cx.notify(); });
     cx.notify();
+  }
+
+  // Opens or closes group `id`, remembered for the next time Settings opens.
+  toggleGroup(id) {
+    if (!this.open.delete(id)) this.open.add(id);
+    setShared(OPEN_GROUPS, GROUPS.map((g) => g.id).filter((g) => this.open.has(g)));
   }
 
   // A key typed with nothing focused that takes keys (no field, no list) starts
@@ -581,13 +686,13 @@ export default class Settings extends View {
     if (this.matched?.q === q && this.matched.index === this.index) return this.matched;
     const spans = new Map();
     const headings = new Set();
-    const pages = new Set();
+    const pages = new Map();
     for (const e of this.index.values()) {
       const hit = matchSetting(this.words, e);
       spans.set(e.id, hit);
       if (hit) {
         headings.add(`${e.page}|${e.heading}`);
-        pages.add(e.page);
+        pages.set(e.page, (pages.get(e.page) ?? 0) + 1);
       }
     }
     this.matched = { q, index: this.index, spans, headings, pages };
@@ -910,58 +1015,204 @@ export default class Settings extends View {
       );
   }
 
-  themePicker(t, light) {
+  themesPage(t) {
     const s = settings();
-    const current = light ? s.theme_light : s.theme_dark;
-    return h_flex()
+    const all = themes();
+    const sel = tonal(t, window()?.active !== false);
+    const tab = (slot, title, about, name) => {
+      const on = this.themeSlot === slot;
+      const c = all.find((x) => x.name === name)?.colors ?? {};
+      return this.block(title, about, `theme.${slot}`, h_flex()
+        .id(`st-tt-${slot}`)
+        .flex_1()
+        .min_w(0)
+        .gap(10)
+        .px(10)
+        .py(8)
+        .items_center()
+        .rounded(9)
+        .border_1()
+        .border_color(on ? sel.ring : t.border)
+        .bg(on ? sel.fill : t.background)
+        .cursor_pointer()
+        .when(!on, (el) => el.hover((st) => st.bg(hoverFill(t))))
+        .on_click((_e, cx) => {
+          this.themeSlot = slot;
+          cx.notify();
+        })
+        .child(h_flex().w(34).h(22).flex_none().p(3).gap(2).items_end().rounded(5).border_1().border_color(t.border).bg(c.background ?? t.background).children(["ansi1", "ansi2", "ansi3", "ansi4"].map((k) => div().w(4).h(4).rounded(2).bg(c[k] ?? t.dim))))
+        .child(v_flex().min_w(0).child(div().text_size(11).text_color(on ? sel.text : t.dim).child(title)).child(div().truncate().text_size(13.5).text_color(on ? sel.text : t.foreground).when(on, (el) => el.font_semibold()).child(name.replace(/-/g, " ")))));
+    };
+    return v_flex()
       .w_full()
-      .flex_wrap()
+      .child(this.heading(t, "Theme"))
+      .child(this.row(t, "Appearance", "Light or dark, or as your system is now.", this.choicePicker(t, "st-ap", "appearance", APPEARANCES), "appearance"))
+      .child(this.plain(div().pt(12).pb(10).text_size(12.5).text_color(t.dim).child("For the layout you're in: each layout keeps its own light and dark theme.")))
+      .child(
+        h_flex()
+          .w_full()
+          .gap(8)
+          .child(tab("dark", "Dark theme", "Colours for the layout you're in, when dark.", s.theme_dark))
+          .child(tab("light", "Light theme", "Colours for the layout you're in, when light.", s.theme_light)),
+      )
+      // While searching, the tabs say what's picked; the grid is on the page.
+      .when(!this.words.length, (el) => el.child(this.themeGrid(t, all, sel)));
+  }
+
+  // The themes the shown slot can take that match the filter, by source:
+  // [[source, title, themes]], sources with none left out.
+  themeGroups(all) {
+    const words = searchWords(this.themeFilter);
+    const light = this.themeSlot === "light";
+    const [layout, others] = [shared("layout"), layouts()];
+    const shown = all.filter(
+      // A theme named like a layout (themes/win98.json) is that layout's own.
+      (x) => Boolean(x.light) === light && (x.name === layout || !others.includes(x.name)) && words.every((w) => fold(x.name).includes(w)),
+    );
+    const sourceOf = (x) => (x.name.startsWith(REX_PREFIX) ? "rex" : "standard");
+    return THEME_SOURCES.map(([id, title]) => [id, title, shown.filter((x) => sourceOf(x) === id)]).filter(([, , list]) => list.length);
+  }
+
+  // The grid's rows for `groups`: a heading per source while more than one
+  // shows (closed ones without their cards), then the cards THEME_COLUMNS to a row.
+  themeRows(groups) {
+    const shown = groups.filter(([id]) => !this.themeSource || id === this.themeSource);
+    const rows = [];
+    for (const [id, title, list] of shown) {
+      if (shown.length > 1) rows.push({ head: id, title, count: list.length });
+      if (shown.length > 1 && this.themesClosed.has(id)) continue;
+      for (let i = 0; i < list.length; i += THEME_COLUMNS) rows.push({ cards: list.slice(i, i + THEME_COLUMNS) });
+    }
+    return rows;
+  }
+
+  // Source chips, a filter, and the cards as a list that draws only the rows
+  // on screen. It shows the picked theme whenever what it lists changes.
+  themeGrid(t, all, sel) {
+    const s = settings();
+    const current = this.themeSlot === "light" ? s.theme_light : s.theme_dark;
+    const groups = this.themeGroups(all);
+    const rows = this.themeRows(groups);
+    const listed = `${this.themeSlot}|${this.themeSource}|${this.themeFilter}|${[...this.themesClosed]}`;
+    if (listed !== this.themeScrolledFor) {
+      this.themeScrolledFor = listed;
+      const at = rows.findIndex((r) => r.cards?.some((x) => x.name === current));
+      // Listed: the picked theme; filtered out: the top, not wherever the last listing was.
+      if (rows.length) this.themeScroll.scroll_to_item(Math.max(at, 0), at >= 0 ? "center" : "top");
+    }
+    const chip = (id, label, count) => {
+      const on = this.themeSource === id;
+      return div()
+        .id(`st-tc-${id ?? "all"}`)
+        .px(10)
+        .py(3)
+        .rounded(12)
+        .border_1()
+        .text_size(12)
+        .cursor_pointer()
+        .border_color(on ? sel.ring : t.border)
+        .when(on, (el) => el.bg(sel.fill).text_color(sel.text).font_semibold())
+        .when(!on, (el) => el.text_color(t.muted).hover((st) => st.bg(hoverFill(t))))
+        .on_click((_e, cx) => {
+          this.themeSource = id;
+          cx.notify();
+        })
+        .child(`${label} ${count}`);
+    };
+    const total = groups.reduce((n, [, , list]) => n + list.length, 0);
+    const head = (r) =>
+      h_flex()
+        .id(`st-th-${r.head}`)
+        .h(THEME_HEAD_H)
+        .gap(6)
+        .items_center()
+        .cursor_pointer()
+        .on_click((_e, cx) => {
+          if (!this.themesClosed.delete(r.head)) this.themesClosed.add(r.head);
+          cx.notify();
+        })
+        .child(svg(`mods/workspace-chrome/chevron-${this.themesClosed.has(r.head) ? "right" : "down"}.svg`).size(12).text_color(t.dim))
+        .child(div().text_size(12.5).font_medium().text_color(t.muted).child(r.title))
+        .child(div().text_size(12.5).text_color(t.dim).child(`${r.count}`));
+    return v_flex()
+      .w_full()
+      .pt(12)
       .gap(8)
-      .children(
-        // A theme named like a layout (themes/win98.json) is that layout's own.
-        themes()
-          .filter((x) => Boolean(x.light) === light && (x.name === shared("layout") || !layouts().includes(x.name)))
-          .map(({ name, colors: c }) => {
-          const on = name === current;
-          const label = name.replace(/-/g, " ");
-          const dot = (color) => div().w(8).h(8).rounded(4).bg(color);
-          return v_flex()
-            .id(`st-t-${name}`)
-            .w(124)
-            .gap(6)
-            .p(6)
-            .rounded(10)
-            .border_2()
-            .border_color(on ? t.accent : "#00000000")
-            .cursor_pointer()
-            .hover((s) => s.bg(t.raised))
-            .on_click((_e, cx) => {
-              run("app.theme", { name });
-              cx.notify();
-            })
-            .child(
-              v_flex()
-                .h(46)
-                .w_full()
-                .p(7)
-                .gap(6)
-                .rounded(6)
-                .border_1()
-                .border_color(t.border)
-                .bg(c.background)
-                .child(div().h(4).w(44).rounded(2).bg(c.terminal_foreground))
-                .child(h_flex().gap(4).child(dot(c.accent)).child(dot(c.ansi1)).child(dot(c.ansi2)).child(dot(c.ansi3)).child(dot(c.ansi5))),
-            )
-            .child(
-              h_flex()
-                .w_full()
-                .min_w(0)
-                .gap(5)
-                .items_center()
-                .child(div().min_w(0).truncate().tooltip(label).text_size(12.5).text_color(on ? t.foreground : t.muted).child(label))
-                .when(on, (el) => el.child(svg(I("check")).size(12).flex_none().text_color(t.accent))),
-            );
-        }),
+      .child(
+        h_flex()
+          .w_full()
+          .gap(6)
+          .items_center()
+          .child(chip(null, "All", total))
+          .children(groups.map(([id, title, list]) => chip(id, title, list.length)))
+          .child(div().flex_1())
+          .child(h_flex().w(160).h(26).px(8).items_center().rounded(7).border_1().border_color(this.themeInputFocused ? t.accent : t.border).bg(t.background).text_size(12).child(Input.new(this.themeInput).flex_1().h(24).text_color(t.foreground))),
+      )
+      .child(
+        rows.length
+          ? div()
+              .relative()
+              .w_full()
+              .h(THEME_GRID_H)
+              // Let the list scroll before stopping the page's wheel event.
+              .on_scroll_wheel((_e, cx) => cx.stop_propagation())
+              .child(
+                v_virtual_list(
+                  "st-themes",
+                  rows.length,
+                  rows.map((r) => (r.head ? THEME_HEAD_H : THEME_ROW_H)),
+                  (i) => (rows[i].head ? `head:${rows[i].head}` : `row:${rows[i].cards[0].name}`),
+                  (range) => rows.slice(range.start, range.end).map((r) => (r.head ? head(r) : h_flex().gap(4).children(r.cards.map((x) => this.themeCard(t, x, current, sel))))),
+                )
+                  .track_scroll(this.themeScroll)
+                  .size_full(),
+              )
+              .child(Scrollbar.vertical("st-themes").absolute().inset_0())
+          : div().id("st-themes-none").py(24).text_size(12.5).text_color(t.dim).child("No themes match."),
+      );
+  }
+
+  themeCard(t, { name, colors: c }, current, sel) {
+    const on = name === current;
+    const label = (name.startsWith(REX_PREFIX) ? name.slice(REX_PREFIX.length) : name).replace(/-/g, " ");
+    const dot = (color) => div().w(8).h(8).rounded(4).bg(color);
+    return v_flex()
+      .id(`st-t-${name}`)
+      .w(THEME_CARD_W)
+      .gap(4)
+      .p(4)
+      .rounded(10)
+      .border_2()
+      .border_color(on ? sel.ring : "#00000000")
+      .cursor_pointer()
+      .when(on, (el) => el.bg(sel.fill))
+      .when(!on, (el) => el.hover((st) => st.bg(hoverFill(t))))
+      .on_click((_e, cx) => {
+        run("app.theme", { name });
+        cx.notify();
+      })
+      .child(
+        v_flex()
+          .h(44)
+          .w_full()
+          .px(7)
+          .py(6)
+          .gap(5)
+          .rounded(6)
+          .border_1()
+          .border_color(t.border)
+          .bg(c.background)
+          .child(h_flex().gap(5).font_family(DEFAULT_FONT).text_size(10).child(div().text_color(c.accent).child("❯")).child(div().text_color(c.terminal_foreground).child("ls")))
+          .child(h_flex().gap(4).children(["ansi1", "ansi2", "ansi3", "ansi4", "ansi5", "ansi6"].map((k) => dot(c[k])))),
+      )
+      .child(
+        h_flex()
+          .w_full()
+          .min_w(0)
+          .gap(5)
+          .items_center()
+          .child(div().h(18).min_w(0).truncate().tooltip(label).text_size(12).text_color(on ? sel.text : t.muted).when(on, (el) => el.font_semibold()).child(label))
+          .when(on, (el) => el.child(svg(I("check")).size(12).flex_none().text_color(sel.text))),
       );
   }
 
@@ -1041,25 +1292,20 @@ export default class Settings extends View {
       );
   }
 
-  look(t, cx) {
+  layoutPage(t, cx) {
     return v_flex()
       .w_full()
       .child(this.heading(t, "Layout"))
       .child(this.block("Layout", "The layout Herdr draws its window with.", "layout", this.layoutPicker(t, cx)))
       .child(this.plain(div().h(18)))
-      .child(this.spacing(t, cx))
-      .child(this.plain(div().h(18)))
-      .child(this.heading(t, "Theme"))
-      .child(this.row(t, "Appearance", "Light or dark, or as your system is now.", this.choicePicker(t, "st-ap", "appearance", APPEARANCES), "appearance"))
-      .child(this.plain(div().pt(12).pb(8).text_size(12.5).text_color(t.dim).child("For the layout you're in: each layout keeps its own light and dark theme.")))
-      .child(this.block("Dark theme", "Colours for the layout you're in, when dark.", "theme.dark", v_flex().w_full().child(div().pb(6).text_size(12.5).font_medium().text_color(t.muted).child("Dark")).child(this.themePicker(t, false))))
-      .child(this.block("Light theme", "Colours for the layout you're in, when light.", "theme.light", v_flex().w_full().child(div().pt(10).pb(6).text_size(12.5).font_medium().text_color(t.muted).child("Light")).child(this.themePicker(t, true))))
-      .child(this.plain(div().h(12)))
+      .child(this.spacing(t, cx));
+  }
+
+  windowPage(t) {
+    return v_flex()
+      .w_full()
+      .child(this.heading(t, "Window"))
       .child(this.row(t, "App icon", "The Dock's icon. An install from a checkout puts it on the app too.", this.iconPicker(t), "app_icon"))
-      .child(this.plain(div().h(18)))
-      .child(this.heading(t, "Inactive window"))
-      .child(this.contrast(t, "unfocused_dim", "Dim when inactive", "Fades this far toward the background while Herdr isn't the active window."))
-      .child(this.row(t, "Dim", "The whole window, or only terminal text.", this.choicePicker(t, "st-ds", "unfocused_dim_scope", DIM_SCOPES), "unfocused_dim_scope"))
       .child(this.row(t, "Panel colours", settings().panels_in_use === "classic" && this.person.panel_colors !== "classic"
         ? "This theme or layout keeps classic panels, so it has no sidebar shade."
         : "Tinted takes each theme's own hue. Classic is plain grey with a darker sidebar, so it has no sidebar shade.", this.choicePicker(t, "st-pc", "panel_colors", PANEL_COLORS), "panel_colors"))
@@ -1067,9 +1313,14 @@ export default class Settings extends View {
         el.child(this.row(t, "Sidebar shade", "A shade darker sidebar on dark themes, while Herdr is the active window or always.", this.choicePicker(t, "st-ss", "sidebar_shade", SIDEBAR_SHADES), "sidebar_shade")),
       )
       .child(this.plain(div().h(18)))
-      .child(this.heading(t, "Mouse"))
-      .child(this.followsMouse(t, cx))
-      .child(this.plain(div().h(18)))
+      .child(this.heading(t, "Inactive window"))
+      .child(this.contrast(t, "unfocused_dim", "Dim when inactive", "Fades this far toward the background while Herdr isn't the active window."))
+      .child(this.row(t, "Dim", "The whole window, or only terminal text.", this.choicePicker(t, "st-ds", "unfocused_dim_scope", DIM_SCOPES), "unfocused_dim_scope"));
+  }
+
+  panes(t) {
+    return v_flex()
+      .w_full()
       .child(this.heading(t, "Panes"))
       .child(this.row(t, "New tabs arrange", "New tabs start in this arrangement: splits and closes arrange their panes again.", this.choicePicker(t, "st-da", "default_arrange", ARRANGES), "default_arrange"))
       .child(
@@ -1087,8 +1338,25 @@ export default class Settings extends View {
         ),
       )
       .child(this.row(t, "Focus border", "The color around the pane you're typing in, where the layout draws it. From theme is the accent, or the theme's own focus color.", this.focusColorPicker(t), "colors.focus"))
-      .child(this.row(t, "Focus border width", "Layout keeps the layout's own width. Panes keep their size as the focus moves.", this.choicePicker(t, "st-fw", "focus_border_width", FOCUS_WIDTHS), "focus_border_width"))
-      .child(this.row(t, "Working spinner", "What spins while an agent works: in pane headers, tabs, the agents list, the picker and peeks.", this.spinnerPicker(t), "working_spinner"));
+      .child(this.row(t, "Focus border width", "Layout keeps the layout's own width. Panes keep their size as the focus moves.", this.choicePicker(t, "st-fw", "focus_border_width", FOCUS_WIDTHS), "focus_border_width"));
+  }
+
+  activity(t) {
+    return v_flex()
+      .w_full()
+      .child(this.heading(t, "Agents"))
+      .child(this.row(t, "Working spinner", "What spins while an agent works: in pane headers, tabs, the agents list, the picker and peeks.", this.spinnerPicker(t), "working_spinner"))
+      .child(this.plain(div().h(18)))
+      .child(this.heading(t, "After a restart"))
+      .child(
+        this.row(
+          t,
+          "Resume agents after restart",
+          "Agents that ran in terminals now back to a plain shell, such as Claude Code: Ask shows a note to resume them, Auto resumes them, Off leaves the shells.",
+          this.choicePicker(t, "st-ra", "resume_agents", RESUME_AGENTS),
+          "resume_agents",
+        ),
+      );
   }
 
   // From theme (no colors.focus), or one of the shown theme's colors as it is
@@ -1184,7 +1452,8 @@ export default class Settings extends View {
       );
   }
 
-  text(t) {
+  // The Text group's pages: zoom, fonts, grid or rendering.
+  text(t, page) {
     const s = settings();
     const p = this.person;
     const own = (key, composed, def) => (p[key] ?? def) !== composed;
@@ -1242,106 +1511,120 @@ export default class Settings extends View {
         .when(this.picking === which, (el) => el.child(this.fontList(t, which, def)));
     // At whole-point steps, the terminals' text size in points.
     const zoomShown = s.zoom_step === "point" ? `${Math.round(s.font_size * s.zoom * 10) / 10} pt` : `${Math.round(s.zoom * 100)}%`;
-    return v_flex()
-      .w_full()
-      .child(this.heading(t, "Size"))
-      .child(
-        this.row(
-          t,
-          "Zoom",
-          "Everything: terminals, panels, text.",
-          h_flex()
-            .gap(8)
-            .items_center()
-            .child(this.stepper(t, "st-zoom", zoomShown, () => run("app.zoom_out"), () => run("app.zoom_in")))
-            .child(this.button(t, "st-zoom-reset", "Reset", () => run("app.zoom_reset"))),
-          "zoom",
-        ),
-      )
-      .child(this.row(t, "Zoom steps", "Whole points move the terminals' text a point at a time, as Ghostty does; the panels scale with it.", this.choicePicker(t, "st-zs", "zoom_step", ZOOM_STEPS), "zoom_step"))
-      .child(
-        this.row(
-          t,
-          "Pane zoom keys",
-          `${window()?.platform === "macos" ? "Ctrl = and Ctrl − (Ctrl 0 resets)" : "Keys bound to pane.zoom_text_in, _out and _reset in keys.json"} zoom only the focused terminal's text, in zoom steps, on top of Zoom. Off, those keys reach the program.`,
-          this.toggle(t, "st-pane_zoom_keys", s.pane_zoom_keys !== false, (_e, cx) =>
-            this.change((q) => {
-              if (s.pane_zoom_keys !== false) q.pane_zoom_keys = false;
-              else delete q.pane_zoom_keys;
-            }, cx),
-          ),
-          "pane_zoom_keys",
-        ),
-      )
-      .child(this.row(t, "Interface zoom", "Panels, tabs and popups, on top of zoom. Terminals keep their size.", scaleStepper("ui_zoom", s.ui_zoom), "ui_zoom"))
-      .child(this.row(t, "Interface text size", "The panels' text only: spacing and icons keep their size.", scaleStepper("ui_text_scale", s.ui_text_scale), "ui_text_scale"))
-      .child(fontRow("ui_font", null, "Interface font", s.ui_font_family, DEFAULT_UI_FONT))
-      .child(this.row(t, "Interface font weight", "Panels, tabs and popups. Bold text stays as much bolder; terminals keep theirs.", this.stepper(t, "st-ui_font_weight", `${uiWeight}`, (_e, cx) => uiWeightStep(-25, cx), (_e, cx) => uiWeightStep(25, cx)), "ui_font_weight"))
-      .child(this.thicken(t, "ui_font_thicken", "Thicken interface text", "Panels, tabs and popups as heavy whatever their color (On), or unsmoothed (Off). Terminals follow their own."))
-      .child(this.contrast(t, "ui_text_contrast", "Interface contrast", "Crisper edges on the panels' text, at the same weight. Terminals follow their own."))
-      .child(this.row(t, "Interface text smoothing", "Trial. Subpixel colors each edge by your display's stripes, on 1x displays; others stay grayscale.", this.choicePicker(t, "st-uitr", "ui_text_rendering", TEXT_RENDERINGS), "ui_text_rendering"))
-      .child(this.plain(div().h(18)))
-      .child(this.heading(t, "Terminal text"))
-      .child(fontRow("font", "font_size", "Font", s.font_family, DEFAULT_FONT, s.font_size))
-      .child(
-        this.row(
-          t,
-          "Weight",
-          own("font_weight", s.font_weight, 500) ? "This layout sets its own; yours shows in the others." : "Bold text is at least 700.",
-          this.stepper(t, "st-font_weight", `${s.font_weight}`, (_e, cx) => step("font_weight", s.font_weight, -25, 100, 900, cx), (_e, cx) => step("font_weight", s.font_weight, 25, 100, 900, cx)),
-          "font_weight",
-        ),
-      )
-      .child(
-        this.row(
-          t,
-          "Bold weight",
-          own("font_weight_bold", s.font_weight_bold, null) ? "This layout sets its own; yours shows in the others." : "Unset, 700 or the weight when that is heavier.",
-          this.stepper(t, "st-font_weight_bold", `${bold}`, (_e, cx) => boldStep(-25, cx), (_e, cx) => boldStep(25, cx)),
-          "font_weight_bold",
-        ),
-      )
-      .child(this.thicken(t, "font_thicken", "Thicken", "Terminal text as heavy whatever its color (On), as Ghostty's font-thicken does, or unsmoothed (Off)."))
-      .child(this.contrast(t, "text_contrast", "Contrast", "Crisper edges on terminal text, at the same weight."))
-      .child(this.contrast(t, "faint_opacity", "Faint text", "How opaque dim (faint) terminal text draws. 0.5, as Ghostty's faint-opacity.", 0.5))
-      .child(this.row(t, "Text smoothing", "Trial. Subpixel colors each edge by your display's stripes, on 1x displays; others stay grayscale.", this.choicePicker(t, "st-tr", "text_rendering", TEXT_RENDERINGS), "text_rendering"))
-      .when(this.person.text_rendering === "subpixel" || this.person.ui_text_rendering === "subpixel", (el) =>
-        el.child(this.row(t, "Subpixel order", "Your display's color stripes, left to right. Most are RGB.", this.choicePicker(t, "st-so", "subpixel_order", SUBPIXEL_ORDERS), "subpixel_order")),
-      )
-      .child(
-        this.row(
-          t,
-          "Line height",
-          ownFraction("line_height", s.line_height, 1.15) ? "This layout sets its own; yours shows in the others." : "Row height, as a multiple of the font's height.",
-          this.stepper(t, "st-line_height", fraction(s.line_height), (_e, cx) => step("line_height", s.line_height, -0.05, 0.8, 2, cx), (_e, cx) => step("line_height", s.line_height, 0.05, 0.8, 2, cx)),
-          "line_height",
-        ),
-      )
-      .child(
-        this.row(
-          t,
-          "Letter spacing",
-          ownFraction("letter_spacing", s.letter_spacing, 0) ? "This layout sets its own; yours shows in the others." : "Px added to each letter's width.",
-          this.stepper(t, "st-letter_spacing", fraction(s.letter_spacing), (_e, cx) => step("letter_spacing", s.letter_spacing, -0.5, -2, 10, cx), (_e, cx) => step("letter_spacing", s.letter_spacing, 0.5, -2, 10, cx)),
-          "letter_spacing",
-        ),
-      )
-      .child(this.row(t, "Cell width", "Whole pixels puts each cell on device pixels, so letters sit evenly.", this.choicePicker(t, "st-cw", "cell_width", CELL_WIDTHS), "cell_width"))
-      .child(this.row(t, "Cell rounding", "Nearest keeps rows (and whole-pixel cells) within half a pixel of the font's size; Outward rounds rows up and whole-pixel cells down.", this.choicePicker(t, "st-cr", "cell_rounding", CELL_ROUNDINGS), "cell_rounding"))
-      .child(
-        this.row(
-          t,
-          "Ligatures",
-          "Joins pairs like -> and != where the font has them.",
-          this.toggle(t, "st-font_ligatures", s.font_ligatures, (_e, cx) =>
-            this.change((q) => {
-              if (s.font_ligatures) delete q.font_ligatures;
-              else q.font_ligatures = true;
-            }, cx),
-          ),
-          "font_ligatures",
-        ),
-      );
+    const el = v_flex().w_full();
+    switch (page) {
+      case "zoom":
+        return el
+          .child(this.heading(t, "Size"))
+          .child(
+            this.row(
+              t,
+              "Zoom",
+              "Everything: terminals, panels, text.",
+              h_flex()
+                .gap(8)
+                .items_center()
+                .child(this.stepper(t, "st-zoom", zoomShown, () => run("app.zoom_out"), () => run("app.zoom_in")))
+                .child(this.button(t, "st-zoom-reset", "Reset", () => run("app.zoom_reset"))),
+              "zoom",
+            ),
+          )
+          .child(this.row(t, "Zoom steps", "Whole points move the terminals' text a point at a time, as Ghostty does; the panels scale with it.", this.choicePicker(t, "st-zs", "zoom_step", ZOOM_STEPS), "zoom_step"))
+          .child(
+            this.row(
+              t,
+              "Pane zoom keys",
+              `${window()?.platform === "macos" ? "Ctrl = and Ctrl − (Ctrl 0 resets)" : "Keys bound to pane.zoom_text_in, _out and _reset in keys.json"} zoom only the focused terminal's text, in zoom steps, on top of Zoom. Off, those keys reach the program.`,
+              this.toggle(t, "st-pane_zoom_keys", s.pane_zoom_keys !== false, (_e, cx) =>
+                this.change((q) => {
+                  if (s.pane_zoom_keys !== false) q.pane_zoom_keys = false;
+                  else delete q.pane_zoom_keys;
+                }, cx),
+              ),
+              "pane_zoom_keys",
+            ),
+          )
+          .child(this.row(t, "Interface zoom", "Panels, tabs and popups, on top of zoom. Terminals keep their size.", scaleStepper("ui_zoom", s.ui_zoom), "ui_zoom"))
+          .child(this.row(t, "Interface text size", "The panels' text only: spacing and icons keep their size.", scaleStepper("ui_text_scale", s.ui_text_scale), "ui_text_scale"));
+      case "fonts":
+        return el
+          .child(this.heading(t, "Interface text"))
+          .child(fontRow("ui_font", null, "Interface font", s.ui_font_family, DEFAULT_UI_FONT))
+          .child(this.row(t, "Interface font weight", "Panels, tabs and popups. Bold text stays as much bolder; terminals keep theirs.", this.stepper(t, "st-ui_font_weight", `${uiWeight}`, (_e, cx) => uiWeightStep(-25, cx), (_e, cx) => uiWeightStep(25, cx)), "ui_font_weight"))
+          .child(this.plain(div().h(18)))
+          .child(this.heading(t, "Terminal text"))
+          .child(fontRow("font", "font_size", "Font", s.font_family, DEFAULT_FONT, s.font_size))
+          .child(
+            this.row(
+              t,
+              "Weight",
+              own("font_weight", s.font_weight, 500) ? "This layout sets its own; yours shows in the others." : "Bold text is at least 700.",
+              this.stepper(t, "st-font_weight", `${s.font_weight}`, (_e, cx) => step("font_weight", s.font_weight, -25, 100, 900, cx), (_e, cx) => step("font_weight", s.font_weight, 25, 100, 900, cx)),
+              "font_weight",
+            ),
+          )
+          .child(
+            this.row(
+              t,
+              "Bold weight",
+              own("font_weight_bold", s.font_weight_bold, null) ? "This layout sets its own; yours shows in the others." : "Unset, 700 or the weight when that is heavier.",
+              this.stepper(t, "st-font_weight_bold", `${bold}`, (_e, cx) => boldStep(-25, cx), (_e, cx) => boldStep(25, cx)),
+              "font_weight_bold",
+            ),
+          )
+          .child(
+            this.row(
+              t,
+              "Ligatures",
+              "Joins pairs like -> and != where the font has them.",
+              this.toggle(t, "st-font_ligatures", s.font_ligatures, (_e, cx) =>
+                this.change((q) => {
+                  if (s.font_ligatures) delete q.font_ligatures;
+                  else q.font_ligatures = true;
+                }, cx),
+              ),
+              "font_ligatures",
+            ),
+          );
+      case "grid":
+        return el
+          .child(this.heading(t, "Terminal grid"))
+          .child(
+            this.row(
+              t,
+              "Line height",
+              ownFraction("line_height", s.line_height, 1.15) ? "This layout sets its own; yours shows in the others." : "Row height, as a multiple of the font's height.",
+              this.stepper(t, "st-line_height", fraction(s.line_height), (_e, cx) => step("line_height", s.line_height, -0.05, 0.8, 2, cx), (_e, cx) => step("line_height", s.line_height, 0.05, 0.8, 2, cx)),
+              "line_height",
+            ),
+          )
+          .child(
+            this.row(
+              t,
+              "Letter spacing",
+              ownFraction("letter_spacing", s.letter_spacing, 0) ? "This layout sets its own; yours shows in the others." : "Px added to each letter's width.",
+              this.stepper(t, "st-letter_spacing", fraction(s.letter_spacing), (_e, cx) => step("letter_spacing", s.letter_spacing, -0.5, -2, 10, cx), (_e, cx) => step("letter_spacing", s.letter_spacing, 0.5, -2, 10, cx)),
+              "letter_spacing",
+            ),
+          )
+          .child(this.row(t, "Cell width", "Whole pixels puts each cell on device pixels, so letters sit evenly.", this.choicePicker(t, "st-cw", "cell_width", CELL_WIDTHS), "cell_width"))
+          .child(this.row(t, "Cell rounding", "Nearest keeps rows (and whole-pixel cells) within half a pixel of the font's size; Outward rounds rows up and whole-pixel cells down.", this.choicePicker(t, "st-cr", "cell_rounding", CELL_ROUNDINGS), "cell_rounding"));
+      default:
+        return el
+          .child(this.heading(t, "Interface text"))
+          .child(this.thicken(t, "ui_font_thicken", "Thicken interface text", "Panels, tabs and popups as heavy whatever their color (On), or unsmoothed (Off). Terminals follow their own."))
+          .child(this.contrast(t, "ui_text_contrast", "Interface contrast", "Crisper edges on the panels' text, at the same weight. Terminals follow their own."))
+          .child(this.row(t, "Interface text smoothing", "Trial. Subpixel colors each edge by your display's stripes, on 1x displays; others stay grayscale.", this.choicePicker(t, "st-uitr", "ui_text_rendering", TEXT_RENDERINGS), "ui_text_rendering"))
+          .child(this.plain(div().h(18)))
+          .child(this.heading(t, "Terminal text"))
+          .child(this.thicken(t, "font_thicken", "Thicken", "Terminal text as heavy whatever its color (On), as Ghostty's font-thicken does, or unsmoothed (Off)."))
+          .child(this.contrast(t, "text_contrast", "Contrast", "Crisper edges on terminal text, at the same weight."))
+          .child(this.contrast(t, "faint_opacity", "Faint text", "How opaque dim (faint) terminal text draws. 0.5, as Ghostty's faint-opacity.", 0.5))
+          .child(this.row(t, "Text smoothing", "Trial. Subpixel colors each edge by your display's stripes, on 1x displays; others stay grayscale.", this.choicePicker(t, "st-tr", "text_rendering", TEXT_RENDERINGS), "text_rendering"))
+          .when(this.person.text_rendering === "subpixel" || this.person.ui_text_rendering === "subpixel", (el) =>
+            el.child(this.row(t, "Subpixel order", "Your display's color stripes, left to right. Most are RGB.", this.choicePicker(t, "st-so", "subpixel_order", SUBPIXEL_ORDERS), "subpixel_order")),
+          );
+    }
   }
 
   // The shown layout's spacing (layoutSpacing() has its clicks on it):
@@ -1481,7 +1764,7 @@ export default class Settings extends View {
 
   // Focus follows mouse: a toggle, then its delay (50 ms steps) while it's on.
   // Off and 150 ms are the defaults, left out of settings.json.
-  followsMouse(t, cx) {
+  followsMouse(t) {
     const on = this.person.focus_follows_mouse === true;
     const ms = Math.max(0, Math.min(2000, this.person.focus_follows_mouse_delay_ms ?? 150));
     const delay = (d, cx) =>
@@ -1492,6 +1775,7 @@ export default class Settings extends View {
       }, cx);
     return v_flex()
       .w_full()
+      .child(this.heading(t, "Mouse"))
       .child(
         this.row(
           t,
@@ -1714,16 +1998,6 @@ export default class Settings extends View {
           ),
           "dock_bounce",
         ),
-      )
-      .child(this.heading(t, "After a restart"))
-      .child(
-        this.row(
-          t,
-          "Resume agents after restart",
-          "Agents that ran in terminals now back to a plain shell, such as Claude Code: Ask shows a note to resume them, Auto resumes them, Off leaves the shells.",
-          this.choicePicker(t, "st-ra", "resume_agents", RESUME_AGENTS),
-          "resume_agents",
-        ),
       );
   }
 
@@ -1882,6 +2156,29 @@ export default class Settings extends View {
       cx.notify();
       return;
     }
+    // Keys typed into the theme filter are the filter's; esc leaves it.
+    if (this.themeInputFocused) {
+      if (k !== "escape") return;
+      this.handle.focus();
+      cx.stop_propagation();
+      cx.notify();
+      return;
+    }
+    // Arrows walk the sidebar: up and down to the page before or after (its
+    // group opens), left and right close and open the shown page's group.
+    const bare = !m.platform && !m.control && !m.alt && !m.shift && !m.function;
+    if (bare && ["up", "down", "left", "right"].includes(k) && !this.picking && !this.renameFocused && !this.machineEdit) {
+      const g = groupOf(this.section);
+      if (k === "left" || k === "right") {
+        if (this.open.has(g) !== (k === "right")) this.toggleGroup(g);
+      } else {
+        const i = PAGES.findIndex((p) => p.id === this.section) + (k === "down" ? 1 : -1);
+        this.go(PAGES[Math.max(0, Math.min(PAGES.length - 1, i))].id, cx);
+      }
+      cx.stop_propagation();
+      cx.notify();
+      return;
+    }
     if (this.typesIntoSearch(e)) {
       this.searchInput.focus();
       this.setQuery(e.key_char);
@@ -1908,13 +2205,67 @@ export default class Settings extends View {
 
   // ----------------------------------------------------------------------
 
+  // The sidebar's groups and pages. While searching, a group with a match is
+  // open (what's remembered stays as it was) and each page says how many match.
+  sidebar(t, waiting) {
+    const counts = this.words.length && this.index && !this.indexing ? this.match().pages : null;
+    const sel = tonal(t, window()?.active !== false);
+    const badge = (n) => div().px(6).rounded(8).text_size(11).text_color(sel.text).bg(sel.fill).child(`${n}`);
+    const dot = () => div().w(7).h(7).rounded(4).bg(t.accent);
+    const pill = (el, on) => el.rounded(8).cursor_pointer().when(on, (e) => e.bg(sel.fill)).when(!on, (e) => e.hover((st) => st.bg(hoverFill(t))));
+    return v_flex()
+      .id("st-nav")
+      .flex_1()
+      .min_h(0)
+      .gap(1)
+      .overflow_y_scrollbar()
+      .children(
+        GROUPS.map((g) => {
+          const found = counts ? g.pages.reduce((n, [id]) => n + (counts.get(id) ?? 0), 0) : 0;
+          const open = this.open.has(g.id) || found > 0;
+          return v_flex()
+            .gap(1)
+            .child(
+              pill(h_flex().id(`st-g-${g.id}`).gap(8).px(8).py(6).items_center(), false)
+                // While searching, groups show where the matches are; what's kept waits.
+                .on_click((_e, cx) => {
+                  if (counts) return;
+                  this.toggleGroup(g.id);
+                  cx.notify();
+                })
+                .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none().text_color(t.dim))
+                .child(svg(I(g.icon)).size(15).flex_none().text_color(t.dim))
+                .child(div().flex_1().text_size(13.5).text_color(open ? t.foreground : t.muted).child(g.title))
+                .when(found > 0, (el) => el.child(badge(found)))
+                .when(!open && waiting && g.pages.some(([id]) => id === "updates"), (el) => el.child(dot())),
+            )
+            .when(open, (el) =>
+              el.children(
+                g.pages.map(([id, title]) => {
+                  // While searching no page is the one shown.
+                  const on = id === this.section && !this.words.length;
+                  const n = counts?.get(id) ?? 0;
+                  return pill(h_flex().id(`st-s-${id}`).pl(41).pr(8).py(5).items_center(), on)
+                    .on_click((_e, cx) => this.go(id, cx))
+                    .child(div().flex_1().text_size(13).text_color(on ? sel.text : counts && !n ? t.dim : t.muted).when(on, (e) => e.font_semibold()).child(title))
+                    .when(n > 0, (e) => e.child(badge(n)))
+                    .when(id === "updates" && waiting, (e) => e.child(dot()));
+                }),
+              ),
+            );
+        }),
+      );
+  }
+
   render(cx) {
     const t = theme();
     const u = updates();
     const waiting = Boolean(u.app.ready || (u.core.ready && !u.core.managed));
+    // The page first: while searching it builds the index the sidebar counts from.
+    const page = this.words.length ? this.results(t, cx) : ((this.place = { page: this.section, heading: "" }), this.page(this.section, t, cx));
     const nav = v_flex()
       .flex_none()
-      .w(190)
+      .w(200)
       .p(10)
       .gap(2)
       .border_r(1)
@@ -1935,26 +2286,7 @@ export default class Settings extends View {
           .child(svg("mods/workspace-chrome/search.svg").size(13).flex_none().text_color(t.dim))
           .child(Input.new(this.searchInput).flex_1().min_w(0).h(28).text_size(13).text_color(t.foreground)),
       )
-      .children(
-        SECTIONS.map((s) => {
-          // While searching no page is the one shown.
-          const on = s.id === this.section && !this.words.length;
-          return h_flex()
-            .id(`st-s-${s.id}`)
-            .gap(10)
-            .px(10)
-            .py(7)
-            .items_center()
-            .rounded(7)
-            .cursor_pointer()
-            .bg(on ? t.raised : "#00000000")
-            .hover((st) => st.bg(t.raised))
-            .on_click((_e, cx) => this.go(s.id, cx))
-            .child(svg(I(s.icon)).size(15).text_color(on ? t.accent : t.dim))
-            .child(div().flex_1().text_size(13.5).text_color(on ? t.foreground : t.muted).child(s.title))
-            .when(s.id === "updates" && waiting, (el) => el.child(div().w(7).h(7).rounded(4).bg(t.accent)));
-        }),
-      );
+      .child(this.sidebar(t, waiting));
     return h_flex()
       .id("settings")
       .track_focus(this.handle)
@@ -1963,7 +2295,7 @@ export default class Settings extends View {
       .min_h(0)
       .items_start()
       .on_key_down((e, cx) => this.onKey(e, cx))
-      .child(nav.h_full().child(div().flex_1()).child(this.button(t, "st-feedback", "Send feedback", () => { closeOverlay(props()?.overlay); run("app.feedback"); })))
+      .child(nav.h_full().child(this.button(t, "st-feedback", "Send feedback", () => { closeOverlay(props()?.overlay); run("app.feedback"); })))
       .child(
         // A bar that always shows: the pages are taller than the dialog and
         // people should see that they scroll.
@@ -1983,7 +2315,7 @@ export default class Settings extends View {
                 div()
                   .px(28)
                   .py(22)
-                  .child(this.words.length ? this.results(t, cx) : ((this.place = { page: this.section, heading: "" }), this.page(this.section, t, cx))),
+                  .child(page),
               ),
           )
           .child(Scrollbar.vertical("st-body").mode("always").absolute().inset_0()),
