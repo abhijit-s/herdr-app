@@ -212,6 +212,17 @@ const SIDEBAR_SHADES = [
   ["active", "Darker when active"],
   ["always", "Always darker"],
 ];
+// Where toasts show (toast_position), a window's top row then its bottom row, as Rex
+// names them; Bottom right is the default, left out of settings.json.
+const TOAST_POSITIONS = [
+  ["top-left", "Top left"],
+  ["top-center", "Top center"],
+  ["top-right", "Top right"],
+  ["bottom-left", "Bottom left"],
+  ["bottom-center", "Bottom center"],
+  ["bottom-right", "Bottom right"],
+];
+const TOAST_POSITION_DEFAULT = "bottom-right";
 // The active pane's border width (focus_border_width); Layout, the layout's own, is left out of settings.json.
 const FOCUS_WIDTHS = [
   [null, "Layout"],
@@ -1061,6 +1072,56 @@ export default class Settings extends View {
       );
   }
 
+  // A small window: its top row and bottom row of places, the chosen one the tonal pill,
+  // each holding a toast-shaped bar on its edge and side. Its name underneath.
+  toastPositionPicker(t) {
+    const now = this.person.toast_position ?? TOAST_POSITION_DEFAULT;
+    const sel = tonal(t, window()?.active !== false);
+    const cell = ([value, label]) => {
+      const on = now === value;
+      const side = value.endsWith("left") ? "start" : value.endsWith("right") ? "end" : "center";
+      return h_flex()
+        .id(`st-tp-${value}`)
+        .w(46)
+        .h(24)
+        .px(6)
+        .py(4)
+        .rounded(6)
+        .border_1()
+        .cursor_pointer()
+        .when(value.startsWith("top"), (el) => el.items_start())
+        .when(value.startsWith("bottom"), (el) => el.items_end())
+        .when(side === "start", (el) => el.justify_start())
+        .when(side === "center", (el) => el.justify_center())
+        .when(side === "end", (el) => el.justify_end())
+        .when(on, (el) => el.bg(sel.fill).border_color(sel.ring))
+        .when(!on, (el) => el.border_color(t.background).hover((s) => s.bg(hoverFill(t))))
+        .on_click((_e, cx) =>
+          this.change((p) => {
+            if (value === TOAST_POSITION_DEFAULT) delete p.toast_position;
+            else p.toast_position = value;
+          }, cx),
+        )
+        .child(div().w(16).h(5).rounded(2).bg(on ? sel.text : t.dim));
+    };
+    const label = (TOAST_POSITIONS.find(([v]) => v === now) ?? TOAST_POSITIONS.find(([v]) => v === TOAST_POSITION_DEFAULT))[1];
+    return v_flex()
+      .gap(4)
+      .items_end()
+      .child(
+        v_flex()
+          .p(2)
+          .gap(10)
+          .rounded(8)
+          .border_1()
+          .border_color(t.border)
+          .bg(t.background)
+          .child(h_flex().gap(2).children(TOAST_POSITIONS.slice(0, 3).map(cell)))
+          .child(h_flex().gap(2).children(TOAST_POSITIONS.slice(3).map(cell))),
+      )
+      .child(div().id("st-tp-now").text_size(12).text_color(t.dim).child(label));
+  }
+
   themesPage(t) {
     const s = settings();
     const all = themes();
@@ -1358,6 +1419,7 @@ export default class Settings extends View {
       .when(this.person.panel_colors !== "classic" && settings().panels_in_use !== "classic", (el) =>
         el.child(this.row(t, "Sidebar shade", "A shade darker sidebar on dark themes, while Herdr is the active window or always.", this.choicePicker(t, "st-ss", "sidebar_shade", SIDEBAR_SHADES), "sidebar_shade")),
       )
+      .child(this.row(t, "Notification position", "Where toasts show. toast_offset in settings.json moves them in from the edges, to clear a status bar.", this.toastPositionPicker(t), ["toast_position", "toast_offset"]))
       .child(this.plain(div().h(18)))
       .child(this.heading(t, "Inactive window"))
       .child(this.contrast(t, "unfocused_dim", "Dim when inactive", "Fades this far toward the background while Herdr isn't the active window."))

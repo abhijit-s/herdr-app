@@ -419,6 +419,16 @@ test("dim when inactive sits on the Window page, its scope writes text and leave
   expect(shadeShownOver("classic")).toBe(false);
 });
 
+test("notification position sits on the Window page: six places, bottom right left out", () => {
+  const pick = (person: Record<string, any>, value: string) => click(person, {}, `st-tp-${value}`, [], "window");
+  for (const value of ["top-left", "top-center", "top-right", "bottom-left", "bottom-center"]) {
+    expect(pick({}, value)).toEqual({ toast_position: value });
+  }
+  expect(pick({ toast_position: "top-left" }, "bottom-right")).toEqual({});
+  // The offset, settings.json's own, stays as it is.
+  expect(pick({ toast_offset: { y: 24 } }, "top-center")).toEqual({ toast_offset: { y: 24 }, toast_position: "top-center" });
+});
+
 test("subpixel order shows only while either text is subpixel, and leaves rgb out", () => {
   const shown = (person: Record<string, any>) => click(person, {}, "st-so-BGR", ["choicePicker", "shown?"]) !== undefined;
   expect(shown({})).toBe(false);

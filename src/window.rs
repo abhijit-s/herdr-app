@@ -518,6 +518,12 @@ pub struct AppWindow {
     /// Mods placed once; later the layout decides where (or whether) they show.
     seen: BTreeSet<String>,
     bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
+    /// Where the window's top chrome starts and ends, as last painted
+    /// (`top_chrome`): a top toast stack starts below it.
+    top_chrome: Rc<std::cell::Cell<(f32, f32)>>,
+    /// Whether `render_node` is drawing the main layout (`chrome`), whose bars
+    /// `top_chrome` measures, rather than an overlay's.
+    painting_main: std::cell::Cell<bool>,
     hidden_fit: pane_size::HiddenFit,
     drag: Option<Drag>,
     written_layout: String,
@@ -665,6 +671,8 @@ impl AppWindow {
             folders: scan_folders().0,
             seen,
             bounds: Default::default(),
+            top_chrome: Default::default(),
+            painting_main: Default::default(),
             hidden_fit: Default::default(),
             drag: None,
             written_layout: String::new(),
@@ -5265,7 +5273,15 @@ impl AppWindow {
         let mut el = div().relative().overflow_hidden().size_full().flex();
         let bounds_map = self.bounds.clone();
         let id = n.id.clone();
-        el = el.child(canvas(move |b, _, _| { bounds_map.borrow_mut().insert(id, b); }, |_, _, _, _| {}).absolute().size_full());
+        // Only the main layout's bars are the window's chrome, not an overlay's.
+        let main = self.painting_main.get();
+        let (chrome, root, drag) = (self.top_chrome.clone(), main && n.id == self.chrome.id, main && n.window_drag);
+        el = el.child(canvas(move |b, window, _| {
+            bounds_map.borrow_mut().insert(id, b);
+            if root || drag {
+                chrome.set(top_chrome(chrome.get(), b, root, drag, window.viewport_size()));
+            }
+        }, |_, _, _, _| {}).absolute().size_full());
         el = apply_look(el, n, focused.contains(&n.id));
         if n.window_drag {
             el = self.window_drag(el, cx);
@@ -5544,12 +5560,27 @@ impl AppWindow {
 
     fn render_overlays(&self, viewport: Size<Pixels>, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut out = Vec::new();
-        let mut toast_y = 16.0;
+        let s = settings::get();
+        let top = s.toast_position.top();
         // Drawn last, so it stays clickable over an open dialog.
         let pill = self.render_update_pill(cx);
-        if pill.is_some() {
-            toast_y += UPDATE_PILL_HEIGHT + 8.0;
-        }
+        let chrome_px = self.top_chrome.get().1;
+        let chrome = if top { chrome_px / settings::ui_scale() } else { 0.0 };
+        // `top_chrome` is the last frame's: once this frame has painted the
+        // bars, a change (zoom, a bar shown or hidden) draws once more. Last of
+        // all, so every bar has painted; `refresh` is ignored while painting.
+        let probe = (top && (self.overlays.iter().any(|o| o.kind == OverlayKind::Toast) || crate::update::core().error.is_some())).then(|| {
+            let painted = self.top_chrome.clone();
+            canvas(move |_, window, _| {
+                if painted.get().1 != chrome_px {
+                    window.on_next_frame(|window, _| window.refresh());
+                }
+            }, |_, _, _, _| {}).absolute().size_0().into_any_element()
+        });
+        let start = toast_start(chrome, s.toast_offset.y, pill.is_some() && !top && s.toast_position.side() != settings::ToastSide::Left);
+        let heights: Vec<f32> = self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).map(|o| o.size.height).collect();
+        let (spots, past) = toast_stack(&heights, start, top);
+        let mut spots = spots.into_iter();
         // Windows under dialogs, popups and toasts; each kind in the order opened
         // (a window pressed last is last: on top).
         let order = self.overlays.iter().filter(|o| o.kind == OverlayKind::Window).chain(self.overlays.iter().filter(|o| o.kind != OverlayKind::Window));
@@ -5572,7 +5603,8 @@ impl AppWindow {
                 .when(o.kind == OverlayKind::Toast, |d| d.min_w(settings::z(TOAST_MIN_WIDTH)).max_w(settings::z(TOAST_MAX_WIDTH)))
                 .debug_selector(|| format!("overlay-{id}"))
                 .when(sized(o.size.height), |d| if o.fit { d.max_h(h) } else { d.h(h) })
-                .when(!o.bare, |d| d.bg(c("popover")).border_1().border_color(c("border")).rounded(settings::z(8.0)).shadow_lg())
+                .when(!o.bare && o.kind != OverlayKind::Toast, |d| d.bg(c("popover")).border_1().border_color(c("border")).rounded(settings::z(8.0)).shadow_lg())
+                .when(!o.bare && o.kind == OverlayKind::Toast, toast_frame)
                 .overflow_hidden()
                 .flex()
                 // Scroll, hover and cursor stop here, not on the pane behind.
@@ -5613,26 +5645,105 @@ impl AppWindow {
                             .into_any_element(),
                     );
                 }
-                OverlayKind::Toast => {
-                    out.push(div().absolute().right(settings::z(16.0)).bottom(settings::z(toast_y)).child(body).into_any_element());
-                    toast_y += o.size.height + 8.0;
-                }
+                OverlayKind::Toast => out.push(at_toast_spot(body.into_any_element(), &s, spots.next().unwrap_or(past))),
             }
         }
+        // Past the toasts, on their edge: it stays until an update goes through.
         if let Some(error) = crate::update::core().error {
-            out.push(div().absolute().right(settings::z(16.0)).bottom(settings::z(toast_y))
-                .max_w(settings::z(540.0)).p(settings::z(12.0)).rounded_lg().bg(c("popover"))
-                .border_1().border_color(c("border")).text_size(settings::zt(13.0)).text_color(c("foreground"))
+            let notice = toast_frame(div().max_w(settings::z(540.0)).flex().overflow_hidden())
+                .text_size(settings::zt(13.0)).text_color(c("toast_foreground"))
                 .id("core-update-error").cursor_pointer()
                 .on_click(cx.listener(|this, _, w, cx| this.run("app.settings", json!({ "section": "updates" }), w, cx)))
-                .child(format!("herdr-core update failed: {error} · Open Updates")).into_any_element());
+                .child(div().w(settings::z(TOAST_STRIPE)).flex_none().bg(c("toast_error")))
+                .child(div().p(settings::z(12.0)).child(format!("herdr-core update failed: {error} · Open Updates")));
+            out.push(at_toast_spot(notice.into_any_element(), &s, past));
         }
         out.extend(pill);
+        out.extend(probe);
         out
     }
 }
 
 const UPDATE_PILL_HEIGHT: f32 = 34.0;
+
+/// A toast stack's distance from the window's edges, and between its toasts (px at zoom 1).
+const TOAST_MARGIN: f32 = 16.0;
+const TOAST_GAP: f32 = 8.0;
+/// The level stripe down a toast's left side, as the toast mod draws it (px at zoom 1).
+const TOAST_STRIPE: f32 = 3.0;
+
+/// A toast's box: its own lifted surface, border and shadow (`toast_colors`
+/// in settings.rs), so it stands off whatever it's over on every theme.
+fn toast_frame<E: Styled>(e: E) -> E {
+    let shadow = c("toast_shadow");
+    let near = Hsla { a: shadow.a * 0.6, ..shadow };
+    e.bg(c("toast")).border_1().border_color(c("toast_border")).rounded(settings::z(8.0)).shadow(vec![
+        BoxShadow { color: shadow, offset: point(px(0.0), settings::z(8.0)), blur_radius: settings::z(24.0), spread_radius: px(0.0), inset: false },
+        BoxShadow { color: near, offset: point(px(0.0), settings::z(1.0)), blur_radius: settings::z(3.0), spread_radius: px(0.0), inset: false },
+    ])
+}
+
+/// The window's top chrome as painted so far this frame, `(top, bottom)` in
+/// window px, with one more node's painted bounds: the root starts it where
+/// the layout begins (below a system title strip the window draws), and a
+/// `window_drag` node starting within it (a title, tab or brand bar, or a tab
+/// bar under a title bar: nodes paint parents first, in order) takes its
+/// bottom past its own. A drag node a third of the window or taller is a
+/// panel, not a bar. Hidden nodes aren't painted, so they never count.
+fn top_chrome(chrome: (f32, f32), b: Bounds<Pixels>, root: bool, drag: bool, viewport: Size<Pixels>) -> (f32, f32) {
+    let bottom = chrome.1;
+    if root {
+        let t = f32::from(b.top());
+        return (t, t);
+    }
+    if drag && f32::from(b.top()) <= bottom + 1.0 && b.size.height < viewport.height / 3.0 {
+        return (chrome.0, bottom.max(f32::from(b.bottom())));
+    }
+    chrome
+}
+
+/// Where a toast stack starts (px at zoom 1 from its edge): past `chrome`
+/// (a top stack's title and tab bars, `top_chrome`), the margin moved by
+/// `toast_offset.y`, the window's edge at most, so the whole stack moves
+/// together. Under the update pill (it holds the bottom-right corner, and a
+/// centred stack can reach it), it starts above the pill whatever the offset.
+fn toast_start(chrome: f32, offset_y: f32, above_pill: bool) -> f32 {
+    let start = (chrome + TOAST_MARGIN + offset_y).max(0.0);
+    if above_pill { (start + UPDATE_PILL_HEIGHT + TOAST_GAP).max(TOAST_MARGIN + UPDATE_PILL_HEIGHT + TOAST_GAP) } else { start }
+}
+
+/// Each toast's distance (px at zoom 1) from its stack's edge, for `heights`
+/// in the order opened: the nearest `start` from the edge, then `TOAST_GAP`
+/// apart. A bottom stack keeps its oldest nearest the edge, a top stack its
+/// newest. Also where one more would go.
+fn toast_stack(heights: &[f32], start: f32, top: bool) -> (Vec<f32>, f32) {
+    let mut at = vec![0.0; heights.len()];
+    let mut along = start;
+    let mut place = |i: usize| {
+        at[i] = along;
+        along += heights[i] + TOAST_GAP;
+    };
+    if top { (0..heights.len()).rev().for_each(&mut place) } else { (0..heights.len()).for_each(&mut place) }
+    (at, along)
+}
+
+/// `el` where `toast_position` puts a toast, `along` px (at zoom 1) from its
+/// top or bottom edge (`toast_start` has applied `toast_offset.y`), its side
+/// moved in by `toast_offset.x`.
+fn at_toast_spot(el: AnyElement, s: &settings::Settings, along: f32) -> AnyElement {
+    use settings::ToastSide;
+    let position = s.toast_position;
+    let side = settings::z((TOAST_MARGIN + s.toast_offset.x).max(0.0));
+    let along = settings::z(along);
+    let spot = match position.side() {
+        ToastSide::Left => div().absolute().left(side),
+        ToastSide::Right => div().absolute().right(side),
+        // Full width, so the toast centres without knowing its own width.
+        ToastSide::Center => div().absolute().left_0().right_0().flex().justify_center(),
+    };
+    let spot = if position.top() { spot.top(along) } else { spot.bottom(along) };
+    spot.child(el).into_any_element()
+}
 
 impl AppWindow {
     /// "Herdr 0.2.0 is ready · Restart": the frame's, so no layout or mod can hide it.
@@ -6152,7 +6263,9 @@ impl Render for AppWindow {
             self.refresh_snapshot_mods(cx);
         }
         let focused = self.focused_path(window, cx);
+        self.painting_main.set(true);
         let tree = self.render_node(&self.chrome, &focused, None, cx);
+        self.painting_main.set(false);
         let tree = self.window_frame(tree, window, cx);
         let overlays = self.render_overlays(window.viewport_size(), cx);
         let tracker = self.float_tracker(cx);
@@ -6682,6 +6795,174 @@ mod tests {
             assert_eq!(content, pill.inset(px(1.0)), "{id}: the content fills the pill inside its border");
             assert!((text.center().y - pill.center().y).abs() < px(0.5), "{id}: text centred: text {text:?}, pill {pill:?}");
         }
+        // Every `toast_position`, with and without `toast_offset`: the stack
+        // sits on its edge and side, bottom stacks grow up (the oldest
+        // nearest the edge), top stacks down (the newest nearest it).
+        use crate::settings::{ToastOffset, ToastPosition, ToastSide};
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let near = |a: gpui::Pixels, b: gpui::Pixels| (a - b).abs() < px(0.5);
+        for position in ToastPosition::ALL {
+            for offset in [None, Some(ToastOffset { x: 10.0, y: 24.0 })] {
+                view.update_in(cx, |this, window, cx| {
+                    this.person.toast_position = position;
+                    this.person.toast_offset = offset;
+                    this.apply_look(window, cx);
+                });
+                cx.run_until_parked();
+                let stack = ["short", "medium", "long", "body", "tall"].map(|id| cx.debug_bounds(format!("overlay-{id}").leak()).unwrap());
+                let o = offset.unwrap_or_default();
+                let (side, edge) = (px(16.0 + o.x), px(16.0 + o.y));
+                let at = format!("{position:?} {offset:?}: {stack:?}");
+                if position.top() {
+                    // Past the window's top chrome: this layout's tab bar, `toasts_below_the_chrome`.
+                    let chrome = px(view.update(cx, |this, _| this.top_chrome.get().1));
+                    assert!(chrome > px(0.0), "{at}");
+                    assert!(near(stack[4].top(), chrome + edge), "the newest below the top chrome, {at}");
+                    for pair in stack.windows(2) {
+                        assert!(near(pair[0].top(), pair[1].bottom() + px(8.0)), "older below newer, {at}");
+                    }
+                } else {
+                    assert!(near(stack[0].bottom(), viewport.height - edge), "the oldest on the bottom edge, {at}");
+                    for pair in stack.windows(2) {
+                        assert!(near(pair[1].bottom(), pair[0].top() - px(8.0)), "newer above older, {at}");
+                    }
+                }
+                for b in stack {
+                    let lined = match position.side() {
+                        ToastSide::Left => near(b.left(), side),
+                        ToastSide::Right => near(b.right(), viewport.width - side),
+                        ToastSide::Center => near(b.center().x, viewport.width / 2.0),
+                    };
+                    assert!(lined, "on its side, {at}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn top_toasts_sit_below_the_title_and_tab_bars() {
+        in_own_process("toasts_below_the_chrome");
+    }
+
+    /// A top stack starts the margin below the bars the layout draws along
+    /// the window's top (its `window_drag` nodes, as painted), at any zoom
+    /// and as soon as they change; with no bar there, at the margin.
+    #[gpui::test]
+    fn toasts_below_the_chrome(cx: &mut gpui::TestAppContext) {
+        use crate::settings::ToastPosition;
+        use serde_json::json;
+        if !running_alone("toasts_below_the_chrome") {
+            return;
+        }
+        let layout = json!({"id": "root", "type": "column", "children": [
+            {"id": "bar", "type": "block", "size": {"px": 40}, "window_drag": true, "content": {"terminal": "t1"}},
+            {"id": "body", "type": "block", "content": {"terminal": "t2"}},
+        ]});
+        let (view, cx) = open_window(cx, "toast", include_str!("../defaults/mods/toast/main.js"), layout);
+        let near = |a: gpui::Pixels, b: gpui::Pixels| (a - b).abs() < px(0.5);
+        for (position, zoom) in [(ToastPosition::TopRight, 1.0), (ToastPosition::TopCenter, 1.25), (ToastPosition::TopLeft, 1.0)] {
+            view.update_in(cx, |this, window, cx| {
+                this.person.toast_position = position;
+                this.person.ui_zoom = zoom;
+                this.apply_look(window, cx);
+                this.open_overlay(format!("t{zoom}{position:?}"), json!({"kind": "toast", "notification": {"title": "Done"}}), window, cx);
+            });
+            cx.run_until_parked();
+            let bar = view.update(cx, |this, _| this.bounds.borrow()["bar"]);
+            let toast = cx.debug_bounds(format!("overlay-t{zoom}{position:?}").leak()).unwrap();
+            let margin = px(16.0 * zoom);
+            assert!(near(bar.size.height, px(40.0 * zoom)), "the bar is drawn at zoom {zoom}: {bar:?}");
+            assert!(near(toast.top(), bar.bottom() + margin), "{position:?} at zoom {zoom}: toast {toast:?}, bar {bar:?}");
+            view.update_in(cx, |this, window, cx| {
+                let ids: Vec<String> = this.overlays.iter().map(|o| o.id.clone()).collect();
+                ids.iter().for_each(|id| this.close_overlay(id, window, cx));
+            });
+        }
+        // The bar grows with nothing else to redraw: the frame that paints it
+        // still places the toast by the last one's chrome, and asks for one
+        // more frame, which moves the toast below the new bar.
+        view.update_in(cx, |this, window, cx| {
+            this.person.toast_position = ToastPosition::TopRight;
+            this.person.ui_zoom = 1.0;
+            this.apply_look(window, cx);
+            this.open_overlay("grow".into(), json!({"kind": "toast", "notification": {"title": "Done"}}), window, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.simulate_next_frame(cx));
+        cx.run_until_parked();
+        let toast_top = |cx: &mut gpui::VisualTestContext| cx.debug_bounds("overlay-grow").unwrap().top();
+        let before = view.update(cx, |this, _| this.bounds.borrow()["bar"]);
+        assert!(near(toast_top(cx), before.bottom() + px(16.0)), "settled below the 40 px bar");
+        view.update(cx, |this, cx| {
+            if let Some(bar) = this.chrome.find_mut("bar") {
+                bar.size = Some(crate::layout::Size::Px { px: 80.0 });
+            }
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let grown = view.update(cx, |this, _| this.bounds.borrow()["bar"]);
+        assert!(near(grown.size.height, px(80.0)), "{grown:?}");
+        assert!(near(toast_top(cx), before.bottom() + px(16.0)), "the frame that grew the bar placed the toast by the last chrome");
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 1, "it asked for one more frame");
+        cx.run_until_parked();
+        assert!(near(toast_top(cx), grown.bottom() + px(16.0)), "the next frame moved it below the grown bar");
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0, "and then settles");
+        view.update_in(cx, |this, window, cx| this.close_overlay("grow", window, cx));
+        // The bottom of the window keeps its margin, whatever the top draws.
+        view.update_in(cx, |this, window, cx| {
+            this.person.toast_position = ToastPosition::BottomRight;
+            this.person.ui_zoom = 1.0;
+            this.apply_look(window, cx);
+            this.open_overlay("low".into(), json!({"kind": "toast", "notification": {"title": "Done"}}), window, cx);
+        });
+        cx.run_until_parked();
+        let viewport = cx.update(|window, _| window.viewport_size());
+        assert!(near(cx.debug_bounds("overlay-low").unwrap().bottom(), viewport.height - px(16.0)));
+    }
+
+    /// The window's top chrome: where the root starts (below a system title
+    /// strip), then the lowest drag bar starting there; a bar further down,
+    /// or one too tall to be a bar, doesn't count, nor does a plain node.
+    #[test]
+    fn the_top_chrome_is_the_lowest_bar_along_the_top() {
+        use super::top_chrome;
+        use gpui::Bounds;
+        let at = |y: f32, h: f32| Bounds::new(point(px(0.0), px(y)), size(px(800.0), px(h)));
+        let viewport = size(px(800.0), px(600.0));
+        let root = top_chrome((0.0, 0.0), at(28.0, 572.0), true, false, viewport);
+        assert_eq!(root, (28.0, 28.0), "the root starts it below the system strip");
+        let painted = [(at(28.0, 42.0), true), (at(28.0, 46.0), true), (at(560.0, 40.0), true), (at(28.0, 572.0), true), (at(28.0, 300.0), false)];
+        let chrome = painted.iter().fold(root, |c, (b, drag)| top_chrome(c, *b, false, *drag, viewport));
+        assert_eq!(chrome, (28.0, 74.0), "the brand bar, the lowest at the top");
+        // Bars stacked: a tab bar under a title bar counts; one below a gap doesn't.
+        let stacked = [at(28.0, 30.0), at(58.0, 40.0), at(120.0, 30.0)].iter().fold(root, |c, b| top_chrome(c, *b, false, true, viewport));
+        assert_eq!(stacked, (28.0, 98.0));
+        assert_eq!(top_chrome((5.0, 90.0), at(0.0, 1000.0), true, false, viewport), (0.0, 0.0), "a new frame starts again");
+    }
+
+    /// A stack's spots: from `start`, each toast's height and the gap apart,
+    /// the oldest first at the bottom and the newest first at the top.
+    #[test]
+    fn toasts_stack_away_from_their_edge() {
+        use super::toast_stack;
+        assert_eq!(toast_stack(&[40.0, 72.0, 40.0], 16.0, false), (vec![16.0, 64.0, 144.0], 192.0));
+        assert_eq!(toast_stack(&[40.0, 72.0, 40.0], 16.0, true), (vec![144.0, 64.0, 16.0], 192.0));
+        assert_eq!(toast_stack(&[], 58.0, false), (vec![], 58.0));
+    }
+
+    /// `toast_offset.y` moves the whole stack, to the edge at most, and never
+    /// under the update pill.
+    #[test]
+    fn a_toast_offset_moves_the_stack_and_keeps_clear_of_the_pill() {
+        use super::toast_start;
+        assert_eq!(toast_start(0.0, 0.0, false), 16.0);
+        assert_eq!(toast_start(0.0, 24.0, false), 40.0);
+        assert_eq!(toast_start(0.0, -100.0, false), 0.0);
+        assert_eq!(toast_start(0.0, 0.0, true), 58.0);
+        assert_eq!(toast_start(0.0, 24.0, true), 82.0);
+        assert_eq!(toast_start(0.0, -100.0, true), 58.0);
+        assert_eq!(toast_start(42.0, 0.0, false), 58.0, "a top stack starts past the chrome");
+        assert_eq!(toast_start(42.0, 10.0, false), 68.0);
     }
 
     #[test]
