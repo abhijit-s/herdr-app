@@ -552,6 +552,10 @@ pub struct AppWindow {
     cwds: HashMap<String, String>,
     /// The automatic names panes show (`pane_auto_names`), by pane, as last published.
     auto_names: HashMap<String, String>,
+    /// What each pane is called (pane_label.rs), by pane, as last published.
+    labels: HashMap<String, String>,
+    /// Agent sessions' own names, by terminal (pane_label.rs).
+    session_names: crate::pane_label::Sessions,
     /// When each terminal's repo and branch were last read, and what it was doing.
     /// Whether each terminal was busy at the last look at its folder.
     folders_busy: HashMap<String, bool>,
@@ -677,6 +681,8 @@ impl AppWindow {
             resume_offer: Some(Instant::now()),
             cwds: HashMap::new(),
             auto_names: HashMap::new(),
+            labels: HashMap::new(),
+            session_names: Default::default(),
             folders_busy: HashMap::new(),
             born: RefCell::new(HashMap::new()),
             waits: HashMap::new(),
@@ -1959,6 +1965,7 @@ impl AppWindow {
         let mut panes = Vec::new();
         let auto_names_on = settings::get().pane_auto_names;
         let mut auto_names = HashMap::new();
+        let mut labels = HashMap::new();
         for pr in &m.spaces {
             for (ci, ctx) in pr.tabs.iter().enumerate() {
                 let names = if auto_names_on { crate::pane_names::for_tab(ctx.root.panes().iter().map(|p| p.id.as_str())) } else { HashMap::new() };
@@ -1967,7 +1974,8 @@ impl AppWindow {
                     let zoomed = ctx.zoomed.as_deref() == Some(p.id.as_str());
                     // A mod pane: what it shows, no terminal.
                     if let Some(Content::Mod { name, .. }) = p.content() {
-                        panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "tab": ctx.id, "title": name, "name": p.title, "auto_name": null, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
+                        let label = crate::pane_label::given(p.title.as_deref()).unwrap_or(name);
+                        panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "tab": ctx.id, "title": name, "name": p.title, "auto_name": null, "label": label, "session": null, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
                         continue;
                     }
                     let Some(addr) = p.terminal() else { continue };
@@ -1983,8 +1991,15 @@ impl AppWindow {
                     if let Some(n) = auto_name {
                         auto_names.insert(p.id.clone(), n.clone());
                     }
+                    let session = self.session_names.name(addr, self.live.get(addr).and_then(|r| r.pointer("/foreground/pid")).and_then(Value::as_u64));
+                    let label = crate::pane_label::label(&crate::pane_label::Parts {
+                        name: p.title.as_deref(), auto_name: auto_name.map(String::as_str), title: title.as_deref().unwrap_or_default(),
+                        session, program: &program, address: addr,
+                    });
+                    labels.insert(p.id.clone(), label.clone());
                     panes.push(json!({
                         "pane": p.id, "terminal": addr, "tab": ctx.id, "title": title.clone().unwrap_or_default(), "name": p.title, "auto_name": auto_name,
+                        "label": label, "session": session,
                         "cwd": cwd, "branch": m.folder_info.get(addr).and_then(|f| f.branch.clone()),
                         "status": m.status(addr), "app": a.and_then(|a| a.app.clone()), "program": program,
                         "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id),
@@ -1997,6 +2012,7 @@ impl AppWindow {
                         "address": addr, "pane": p.id, "space": pr.id, "space_name": m.space_name(pr, &home),
                         "tab": ctx.id, "tab_index": ci + 1, "tab_name": Model::tab_name(pr, ctx),
                         "status": status, "app": a.and_then(|a| a.app.clone()), "program": self.program(addr), "title": title.unwrap_or_default(),
+                        "label": label, "session": session,
                         "seq": a.map(|a| a.seq).unwrap_or(0),
                         "pinned": pinned,
                         "focused": m.active.as_deref() == Some(pr.id.as_str()) && focused_pane.as_deref() == Some(p.id.as_str()),
@@ -2017,6 +2033,7 @@ impl AppWindow {
                 "pane": pane, "agent": self.shown_agent(), "cwd": cwd }))
         });
         self.auto_names = auto_names;
+        self.labels = labels;
         let machines = self.documents.iter().map(|(name, slot)| json!({
             "name": (!name.is_empty()).then_some(name), "layout": slot.layout(),
         })).collect();
@@ -2465,6 +2482,7 @@ impl AppWindow {
         }
         self.track_folders(cx);
         self.track_resume(window, cx);
+        self.track_session_names(listed, cx);
         for t in self.terms.values() {
             if self.live.get(&t.address).is_some_and(|r| r["pid"].as_u64().is_some()) {
                 t.view.update(cx, |v, cx| v.reattach_if_needed(self.core.clone(), cx));
@@ -2511,6 +2529,25 @@ impl AppWindow {
             .detach();
         }
         self.offer_resume(window, cx);
+    }
+
+    /// Agent sessions' own names (`session` on panes, pane_label.rs), read off
+    /// the main thread; a name that changed is published.
+    fn track_session_names(&mut self, listed: bool, cx: &mut Context<Self>) {
+        let checks = self.session_names.checks(&self.live, listed, Instant::now(), &home(), crate::programs::session_name);
+        if checks.is_empty() {
+            return;
+        }
+        let job = cx.background_executor().spawn(async move { checks.into_iter().map(crate::pane_label::look).collect::<Vec<_>>() });
+        cx.spawn(async move |this, cx| {
+            let found = job.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.session_names.found(found) {
+                    this.publish(cx);
+                }
+            });
+        })
+        .detach();
     }
 
     fn save_resume(&self) {
@@ -4722,6 +4759,7 @@ impl AppWindow {
                 "terminal": addr, "pane": pane, "status": m.status(addr),
                 "app": m.agents.get(addr).and_then(|a| a.app.clone()),
                 "name": rec.and_then(|r| r.get("name")).cloned(),
+                "label": self.labels.get(pane), "session": self.session_names.name(addr, rec.and_then(|r| r.pointer("/foreground/pid")).and_then(Value::as_u64)),
                 "sub_agents": children(addr),
             })
         };
@@ -7823,6 +7861,77 @@ export default class Recent extends View {
         assert_eq!(a, b, "a focused: the same grid for both");
         assert_eq!(grids(cx, "b"), (a, b, area), "b focused: nothing resized");
         view.update_in(cx, |_, window, _| assert_eq!(a, crate::terminal::grid_size(area, crate::terminal::cell_size(window)), "the grid fills the area a new terminal starts in"));
+    }
+
+    #[test]
+    fn pane_labels_follow_changes_not_frames() {
+        in_own_process("labels_follow_changes");
+    }
+
+    /// A pane's label is resolved when what it's made of changes (its title,
+    /// the program running), for the panes then published, never per frame.
+    #[gpui::test]
+    fn labels_follow_changes(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use serde_json::json;
+        if !running_alone("labels_follow_changes") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.select_tab("t");
+            this.sync(window, cx);
+        });
+        let listed = |program: &str, pid: Option<u64>, cx: &mut gpui::VisualTestContext| {
+            let foreground = pid.map(|pid| json!({ "pid": pid, "argv": [program] }));
+            let terminals = json!({ "terminals": [{ "address": "ta", "argv": [program], "foreground": foreground }, { "address": "tb", "argv": ["zsh"] }] });
+            cx.update(|window, cx| view.update(cx, |this, cx| this.terminals_listed(terminals, window, cx)));
+            cx.run_until_parked();
+        };
+        let title = |text: &str, cx: &mut gpui::VisualTestContext| {
+            let term = view.update(cx, |this, _| this.terms["a"].view.clone());
+            let osc = format!("\x1b]2;{text}\x07").into_bytes();
+            term.update(cx, |t, cx| t.ingest(vec![crate::hc::Stream::Data(osc)], cx));
+            cx.executor().advance_clock(std::time::Duration::from_millis(100));
+            cx.run_until_parked();
+        };
+        let resolved = || crate::pane_label::RESOLVED.with(std::cell::Cell::get);
+        let label = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.labels["a"].clone());
+        listed("claude", None, cx);
+        title("\u{2733} Fix the login bug", cx);
+        assert_eq!(label(cx), "Fix the login bug");
+
+        let (before, frames) = (resolved(), crate::terminal::frame());
+        for _ in 0..30 {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        assert!(crate::terminal::frame() >= frames + 30, "30 frames drawn");
+        assert_eq!(resolved(), before, "no label is resolved for a frame");
+
+        title("claude-prompt-9acc2eb1-37f2-4d7e-9c1a-5b6f0e2d8a11.md + (/private/tmp/claude-501) - Nvim", cx);
+        assert_eq!(label(cx), "Claude Code");
+        let after_title = resolved();
+        assert_eq!(after_title - before, 2, "one publish: both panes once");
+
+        // Its session file names it: read off the main thread, then published.
+        let home = crate::mods::app_dir();
+        std::fs::create_dir_all(home.join(".claude/sessions")).unwrap();
+        std::fs::write(home.join(".claude/sessions/4242.json"), r#"{"name":"vendor-insights"}"#).unwrap();
+        // SAFETY: this test runs alone in its own process (`in_own_process`).
+        unsafe { std::env::set_var("HOME", &home) };
+        listed("claude", Some(4242), cx);
+        assert_eq!(label(cx), "vendor-insights");
+        let after_session = resolved();
+
+        listed("nvim", None, cx);
+        assert_eq!(label(cx), "Neovim");
+        assert_eq!(resolved() - after_session, 2, "a new foreground: both panes once");
     }
 
     #[test]

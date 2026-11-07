@@ -26,6 +26,7 @@ mod persist;
 #[cfg(target_os = "macos")]
 mod macos;
 mod mods;
+mod pane_label;
 mod pane_names;
 mod mod_files;
 mod process_cwd;

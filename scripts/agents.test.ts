@@ -49,13 +49,16 @@ test("already shared pins need no write and pending writes survive restart", () 
   expect(restarted.writes).toHaveLength(1);
 });
 
-test("an unnamed tab's row reads its terminal's title, not the tab number", () => {
+test("an unnamed tab's row reads its terminal's label, not the tab number", () => {
   const title = new Function("View", "localStorage", "props", "run", `${source}; return title;`)(class {}, {}, () => ({}), () => {});
-  const claude = { program: { name: "claude", key: "claude" }, title: "Herdr session names" };
+  const claude = { terminal: "t1", program: { name: "claude", key: "claude" }, label: "Herdr session names" };
   expect(title({ name: "3", named: false }, claude)).toBe("Herdr session names");
   expect(title({ name: "claude", named: true }, claude)).toBe("Herdr session names");
   expect(title({ name: "fix login", named: true }, claude)).toBe("fix login");
-  expect(title({ name: "3", named: false }, { ...claude, title: "claude" })).toBe("3");
+  // A label that is only the program's name or the address says less than the tab.
+  expect(title({ name: "3", named: false }, { ...claude, label: "claude" })).toBe("3");
+  expect(title({ name: "3", named: false }, { ...claude, label: "t1" })).toBe("3");
+  expect(title({ name: "3", named: false }, undefined)).toBe("3");
 });
 
 test("tab labels prefer the first agent, then focused terminal, then first terminal", () => {
@@ -97,9 +100,9 @@ function textOf(node: any): string {
 for (const sort of ["priority", "grouped"]) test(`${sort} render reads panes once and refreshes labels on the next render`, () => {
   const list = Array.from({ length: 64 }, (_, i) => ({
     address: `t${i}`, pane: `p${i}`, tab: `tab${i}`, space: "s1", space_name: "Project",
-    program: { name: "Claude", key: "claude", agent: true }, title: "Fallback", status: "idle", seq: i,
+    program: { name: "Claude", key: "claude", agent: true }, title: "Fallback", label: "Fallback", status: "idle", seq: i,
   }));
-  const snapshot = list.map((a, i) => ({ tab: a.tab, terminal: a.address, program: a.program, title: `Task ${i}` }));
+  const snapshot = list.map((a, i) => ({ tab: a.tab, terminal: a.address, program: a.program, label: `Task ${i}` }));
   let reads = 0;
   const orders: string[][] = [];
   const { agents } = harness([], {
@@ -114,7 +117,7 @@ for (const sort of ["priority", "grouped"]) test(`${sort} render reads panes onc
   expect(reads).toBe(1);
   for (let i = 0; i < list.length; i++) expect(first).toContain(`Task ${i}`);
   expect(orders[0]).toHaveLength(list.length);
-  snapshot[63].title = "Updated task";
+  snapshot[63].label = "Updated task";
   const second = textOf(agents.render({}).node);
   expect(reads).toBe(2);
   expect(second).toContain("Updated task");
@@ -122,17 +125,31 @@ for (const sort of ["priority", "grouped"]) test(`${sort} render reads panes onc
   expect(orders[1]).toEqual(orders[0]);
 });
 
+test("an agent whose tab isn't listed yet reads as its label", () => {
+  const program = { name: "Claude", key: "claude", agent: true };
+  const list = [{ address: "t1", pane: "p1", tab: "new-tab", space: "s1", space_name: "Project", program, title: "claude-prompt-9acc2eb1-37f2.md - Nvim", label: "vendor-insights", status: "working", seq: 1 }];
+  const { agents } = harness([], {
+    agents: () => list, terminals: () => [], panes: () => [], focused: () => null, spaces: () => [{ tabs: [] }],
+    layout: () => ({ id: "sidebar", size: { px: 268 } }), shared: () => "priority",
+    theme: () => ({}), settings: () => ({ working_spinner: null }), setAgentOrder: () => {},
+    div: element, v_flex: element, h_flex: element, svg: element, image: element,
+  });
+  const text = textOf(agents.render({}).node);
+  expect(text).toContain("vendor-insights");
+  expect(text).not.toContain("Nvim");
+});
+
 // A kept sub-agent: started by t1 (`hc run`), then given a pane (`terminal.keep`).
 function keptRender(sort: string, { width = 268, kept = [{ address: "t3", parent: "t1" }], paneless = [] as { address: string; parent: string }[], pinned = [] as string[] } = {}) {
   const program = { name: "Claude", key: "claude", agent: true };
-  const row = (address: string, seq: number) => ({ address, pane: `p-${address}`, tab: "tab1", space: "s1", space_name: "Project", program, title: address, status: "working", seq, pinned: pinned.includes(address) });
+  const row = (address: string, seq: number) => ({ address, pane: `p-${address}`, tab: "tab1", space: "s1", space_name: "Project", program, title: address, label: address, status: "working", seq, pinned: pinned.includes(address) });
   const list = [row("t1", 1), ...kept.map((k, i) => row(k.address, i + 2))];
   const live = (address: string, parent: string | null) => ({ address, parent, state: "live", status: "working", program, labels: {} });
   const orders: string[][] = [];
   const { agents, writes } = harness([], {
     agents: () => list,
     terminals: () => [live("t1", null), ...paneless.map(k => live(k.address, k.parent)), ...kept.map(k => live(k.address, k.parent))],
-    panes: () => list.map(a => ({ tab: a.tab, terminal: a.address, program, title: a.title })), focused: () => null,
+    panes: () => list.map(a => ({ tab: a.tab, terminal: a.address, program, title: a.title, label: a.label })), focused: () => null,
     spaces: () => [{ tabs: [{ id: "tab1", name: "Project", named: true }] }],
     layout: () => ({ id: "sidebar", size: { px: width } }), shared: () => sort,
     theme: () => ({}), settings: () => ({ working_spinner: null }), setAgentOrder: (order: string[]) => orders.push(order),

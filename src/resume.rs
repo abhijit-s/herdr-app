@@ -44,17 +44,29 @@ pub struct Rule {
     pub rerun: bool,
 }
 
-/// A JSON file per process that names the session it runs.
+/// A JSON file per process that describes the session it runs.
 #[derive(Deserialize, Serialize, Clone, Default, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SessionFile {
     /// Its path; `{pid}` is the program's process id, `~/` its machine's home.
     pub file: String,
-    /// The field holding the session id.
+    /// The field read: the session's id for a resume rule, its name for `session_name`.
     pub field: String,
     /// Fields that must hold exactly these values, or there's nothing to resume.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub when: BTreeMap<String, Value>,
+}
+
+impl SessionFile {
+    pub fn check(&self) -> Result<(), String> {
+        if self.field.is_empty() {
+            return Err("field is empty".into());
+        }
+        if self.file.is_empty() {
+            return Err("file is empty".into());
+        }
+        Ok(())
+    }
 }
 
 impl Rule {
@@ -71,15 +83,10 @@ impl Rule {
                 return Err(format!("append word {word:?} may only use letters, digits and _ . / : = + -"));
             }
         }
-        if let Some(s) = &self.session {
-            if s.field.is_empty() {
-                return Err("session.field is empty".into());
-            }
-            if s.file.is_empty() {
-                return Err("session.file is empty".into());
-            }
+        match &self.session {
+            Some(s) => s.check().map_err(|why| format!("session.{why}")),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     fn needs_session(&self) -> bool {
