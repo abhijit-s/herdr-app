@@ -6,12 +6,21 @@ artwork (assets/icons/herdr-ui-icon-clean.svg, whose attribution they keep).
   python3 scripts/app-icons.py --check  fails if the checked-in SVGs differ
                                         from what this script draws
 
-Writing needs rsvg-convert (librsvg) and macOS's iconutil; checking needs
-neither. "classic" is assets/icons/Herdr.icns itself. Sizes up to 32 px are
-drawn without glows, shadows, sheens and scan lines, which blur a small icon
-into its tile.
+Writing needs rsvg-convert (librsvg) and macOS's iconutil and sips; checking
+needs none of them. "classic" is assets/icons/Herdr.icns itself. Sizes up to
+32 px are drawn without the artwork's glows, shadows, sheens and scan lines,
+which blur a small icon into its tile.
+
+Every variant sits on macOS's icon grid, as the system draws other apps' icons
+(measured from its own renderings, macOS 26 and later): an 824 px tile with
+100 px margins on the 1024 canvas, corners that are superellipse quarters
+(radius 256, exponent 2.5) rather than circular arcs, and the system's drop
+shadow (black at 25%, blur 16, 8 down) in the margin. The Dock shows the image
+Herdr hands it as it is, so the tile and shadow have to be in the image. The
+artwork itself is drawn on its own 896 px tile and scaled onto the grid.
 """
 
+import math
 import pathlib
 import re
 import shutil
@@ -21,30 +30,61 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "assets/icons/herdr-ui-icon-clean.svg"
+CLASSIC = ROOT / "assets/icons/Herdr.icns"
 VARIANTS = ROOT / "assets/icons/variants"
 PREVIEWS = ROOT / "defaults/frame/settings/app-icons"
 PREVIEW_PX = 96
 SMALL_PX = 32
 
+CANVAS = 1024
+GRID_TILE = 824
+CORNER_RADIUS = 256
+CORNER_EXPONENT = 2.5
+CORNER_STEPS = 24
+SHADOW = 'flood-opacity=".25" stdDeviation="16" dy="8"'
+ART_TILE = 896
+ART_SCALE = GRID_TILE / ART_TILE
 RAM_T = "translate(-80 967) scale(.22 -.22)"
-TILE = 'x="64" y="64" width="896" height="896" rx="192"'
 
 
-def svg(src, title, defs, tile, ram, overlay=""):
+def tile_path():
+    """The grid's tile: a square with superellipse corners, as an SVG path."""
+    lo, hi, r, n = (CANVAS - GRID_TILE) / 2, (CANVAS + GRID_TILE) / 2, CORNER_RADIUS, CORNER_EXPONENT
+    points = []
+    # Clockwise from the top edge; each corner's angle runs edge to edge.
+    for i, (cx, cy, sx, sy) in enumerate(((hi - r, lo + r, 1, -1), (hi - r, hi - r, 1, 1), (lo + r, hi - r, -1, 1), (lo + r, lo + r, -1, -1))):
+        for k in range(CORNER_STEPS + 1):
+            t = (CORNER_STEPS - k if i % 2 == 0 else k) / CORNER_STEPS * math.pi / 2
+            points.append((cx + sx * r * math.cos(t) ** (2 / n), cy + sy * r * math.sin(t) ** (2 / n)))
+    return "M" + " L".join(f"{round(x, 2):g} {round(y, 2):g}" for x, y in points) + "Z"
+
+
+def svg(src, title, defs, fill, inner, ram, overlay=""):
+    """A variant: the tile filled with `fill`, then `inner` (an inset stroke or a
+    sheen), the artwork and `overlay`, all clipped to the tile."""
     meta = re.search(r"<metadata>.*?</metadata>", src, re.S).group(0)
     path = re.search(r'<path id="ram" d="([^"]+)"', src).group(1)
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+    offset = round(CANVAS / 2 * (1 - ART_SCALE), 3)
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{CANVAS}" height="{CANVAS}" viewBox="0 0 {CANVAS} {CANVAS}">
   <title>Herdr – {title}</title>
   {meta}
   <defs>
-    <clipPath id="clip"><rect {TILE}/></clipPath>
+    <path id="tile" d="{tile_path()}"/>
+    <clipPath id="clip"><use href="#tile"/></clipPath>
+    <filter id="drop" x="-10%" y="-10%" width="120%" height="125%"><feDropShadow dx="0" {SHADOW} flood-color="#000"/></filter>
     <path id="ram" d="{path}"/>
     {defs}
   </defs>
-  {tile}
-  <g clip-path="url(#clip)">{ram}{overlay}</g>
+  <use href="#tile" fill="{fill}" filter="url(#drop)"/>
+  <g clip-path="url(#clip)">{inner}<g transform="translate({offset:g} {offset:g}) scale({round(ART_SCALE, 6):g})">{ram}</g>{overlay}</g>
 </svg>
 '''
+
+
+def inset(color, opacity, width):
+    """A line `width` px wide just inside the tile's edge (half of a stroke
+    on the edge, the clip cutting the other half)."""
+    return f'<use href="#tile" fill="none" stroke="{color}" stroke-opacity="{opacity}" stroke-width="{2 * width:g}"/>'
 
 
 def use(fill, extra=""):
@@ -56,29 +96,29 @@ def variants(src, small=False):
     return {
         "midnight": svg(src, "Midnight",
             '<linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a2f38"/><stop offset="1" stop-color="#15181d"/></linearGradient>',
-            f'<rect {TILE} fill="url(#g)"/><rect x="65" y="65" width="894" height="894" rx="191" fill="none" stroke="#ffffff" stroke-opacity=".08" stroke-width="2"/>',
+            "url(#g)", inset("#ffffff", ".08", 2),
             use("#f4f1e9")),
         "mirage": svg(src, "Mirage",
             '<linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2a3142"/><stop offset="1" stop-color="#1a1f29"/></linearGradient>'
             '<linearGradient id="r" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffd580"/><stop offset="1" stop-color="#f29e74"/></linearGradient>',
-            f'<rect {TILE} fill="url(#g)"/>',
+            "url(#g)", "",
             use("url(#r)")),
         "glass": svg(src, "Glass",
             '<linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7fd3e8"/><stop offset=".55" stop-color="#4a8fd9"/><stop offset="1" stop-color="#5b5bd6"/></linearGradient>'
             '<linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".45"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/></linearGradient>'
             '<filter id="sh" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#0b1f4a" flood-opacity=".45"/></filter>',
-            f'<rect {TILE} fill="url(#g)"/>' + ("" if small else f'<rect {TILE} fill="url(#sheen)"/><rect x="66" y="66" width="892" height="892" rx="190" fill="none" stroke="#fff" stroke-opacity=".5" stroke-width="4"/>'),
+            "url(#g)", "" if small else '<use href="#tile" fill="url(#sheen)"/>' + inset("#fff", ".5", 4),
             use("#ffffff", 'fill-opacity=".94"' + ("" if small else ' filter="url(#sh)"'))),
         "phosphor": svg(src, "Phosphor",
             '<radialGradient id="g" cx=".5" cy=".45" r=".75"><stop offset="0" stop-color="#0f2a17"/><stop offset="1" stop-color="#050b07"/></radialGradient>'
             '<filter id="glow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>'
             '<pattern id="scan" width="8" height="8" patternUnits="userSpaceOnUse"><rect width="8" height="3" fill="#000" fill-opacity=".2"/></pattern>',
-            f'<rect {TILE} fill="url(#g)"/>',
+            "url(#g)", "",
             use("#3dff7a", "" if small else 'filter="url(#glow)"'),
-            "" if small else f'<rect {TILE} fill="url(#scan)"/>'),
+            "" if small else '<use href="#tile" fill="url(#scan)"/>'),
         "graphite": svg(src, "Graphite",
             '<linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d9dadc"/><stop offset="1" stop-color="#a9abaf"/></linearGradient>',
-            f'<rect {TILE} fill="url(#g)"/><rect x="65" y="65" width="894" height="894" rx="191" fill="none" stroke="#fff" stroke-opacity=".6" stroke-width="3"/>',
+            "url(#g)", inset("#fff", ".6", 3),
             use("#3a3d42")),
     }
 
@@ -107,12 +147,13 @@ def main():
         if stale:
             sys.exit(f"stale: {', '.join(stale)}; run python3 scripts/app-icons.py")
         return
-    for tool in ("rsvg-convert", "iconutil"):
+    for tool in ("rsvg-convert", "iconutil", "sips"):
         if not shutil.which(tool):
             sys.exit(f"{tool} is needed to write the icons")
     VARIANTS.mkdir(parents=True, exist_ok=True)
     PREVIEWS.mkdir(parents=True, exist_ok=True)
-    render(SOURCE, PREVIEW_PX, PREVIEWS / "classic.png")
+    # Classic's preview is its .icns, which is on the grid, rather than its SVG.
+    subprocess.run(["sips", "-s", "format", "png", "-z", str(PREVIEW_PX), str(PREVIEW_PX), str(CLASSIC), "--out", str(PREVIEWS / "classic.png")], check=True, stdout=subprocess.DEVNULL)
     with tempfile.TemporaryDirectory() as tmp:
         for name, text in full.items():
             (VARIANTS / f"{name}.svg").write_text(text)
