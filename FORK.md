@@ -4,6 +4,8 @@ This fork of [herdrdev/herdr-app](https://github.com/herdrdev/herdr-app) is the 
 
 This file is the inventory of what diverges. Update it in the same commit that adds, removes or upstreams a change.
 
+Where a change belongs (app Rust core, mods or herdr-core) and the order changes go upstream are decided in [FORK-ADR-001](fork/adr/ADR-001-fork-architecture-stance.md). Each change's section records its answers to upstream's three questions and its upstream verdict. The per-feature audit behind it is [fork/upstream-audit-2026-11-08.md](fork/upstream-audit-2026-11-08.md).
+
 ## Branches
 
 - `master`: `upstream/master` plus every change below, merged in. This is what gets built and installed.
