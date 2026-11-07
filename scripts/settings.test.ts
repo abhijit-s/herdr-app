@@ -115,6 +115,12 @@ function click(person: Record<string, any>, shown: Record<string, any>, id: stri
   return written;
 }
 
+test("dock badge: on unless false, and a click toggles the key in settings.json", () => {
+  const toggle = (person: Record<string, any>) => click(person, {}, "st-dock_badge", ["choicePicker"], "alerts");
+  expect(toggle({})).toEqual({ dock_badge: false });
+  expect(toggle({ dock_badge: false, dock_bounce: true })).toEqual({ dock_bounce: true });
+});
+
 test("interface scale steppers step 5% from the value in use", () => {
   expect(click({}, { ui_zoom: 1, ui_text_scale: 1 }, "st-ui_zoom-plus")).toEqual({ ui_zoom: 1.05 });
   expect(click({ ui_text_scale: 1.1 }, { ui_zoom: 1, ui_text_scale: 1.1 }, "st-ui_text_scale-minus")).toEqual({ ui_text_scale: 1.05 });

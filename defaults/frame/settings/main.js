@@ -1715,6 +1715,20 @@ export default class Settings extends View {
           "dock_bounce",
         ),
       )
+      .child(
+        this.row(
+          t,
+          "Count waiting agents on the Dock icon",
+          "Agents that need you or finished while you weren't looking, as a badge.",
+          this.toggle(t, "st-dock_badge", this.person.dock_badge !== false, (_e, cx) =>
+            this.change((p) => {
+              if (p.dock_badge === false) delete p.dock_badge;
+              else p.dock_badge = false;
+            }, cx),
+          ),
+          "dock_badge",
+        ),
+      )
       .child(this.heading(t, "After a restart"))
       .child(
         this.row(
