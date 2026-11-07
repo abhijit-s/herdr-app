@@ -97,9 +97,9 @@ fn fixture(populated: bool, props: Value, update: Value) -> BTreeMap<String, Val
             {"id":"s1","index":1,"name":"Local","folder":"/fixture/project","machine":null,"branch":"main","active":true,"status":"working","tabs":[{"id":"tab1","index":1,"name":"Build","active":true,"status":"working","panes":1,"zoomed":false,"settled":false,"settled_at":null,"changed_at":1700000000000i64,"working_since":1700000000000i64}]},
             {"id":"s2","index":2,"name":"Remote","folder":"/remote/project","machine":"remote","branch":null,"active":false,"status":"done","tabs":[{"id":"tab2","index":1,"name":"Done","active":true,"status":"done","panes":1,"zoomed":false,"settled":false,"settled_at":null,"changed_at":null,"working_since":null}]}
         ]));
-        values.insert("panes".into(), json!([{"pane":"p1","terminal":"t1","tab":"tab1","title":"Build","cwd":"/fixture/project","branch":"main","status":"working","app":"pi","program":program,"focused":true,"zoomed":false}, {"pane":"p2","terminal":"t2","tab":"tab2","title":"Remote task","cwd":"/remote/project","branch":null,"status":"done","app":"pi","program":program,"focused":false,"zoomed":false}]));
+        values.insert("panes".into(), json!([{"pane":"p1","terminal":"t1","tab":"tab1","title":"Build","label":"Build","session":null,"cwd":"/fixture/project","branch":"main","status":"working","app":"pi","program":program,"focused":true,"zoomed":false}, {"pane":"p2","terminal":"t2","tab":"tab2","title":"Remote task","label":"Remote task","session":null,"cwd":"/remote/project","branch":null,"status":"done","app":"pi","program":program,"focused":false,"zoomed":false}]));
         values.insert("terminals".into(), json!([{"address":"t1","name":"Build","title":"Build","argv":["pi"],"parent":null,"labels":{},"state":"running","status":"working","report":{"app":"pi"},"program":program,"cwd":"/fixture/project"}, {"address":"t2","name":"Remote task","title":"Remote task","argv":["pi"],"parent":null,"labels":{},"state":"running","status":"done","report":{"app":"pi"},"program":program,"cwd":"/remote/project"}]));
-        values.insert("agents".into(), json!([{"address":"t1","pane":"p1","space":"s1","space_name":"Local","tab":"tab1","tab_index":1,"tab_name":"Build","status":"working","app":"pi","program":program,"title":"Build","seq":1,"focused":true}, {"address":"t2","pane":"p2","space":"s2","space_name":"Remote","tab":"tab2","tab_index":1,"tab_name":"Done","status":"done","app":"pi","program":program,"title":"Remote task","seq":2,"focused":false}]));
+        values.insert("agents".into(), json!([{"address":"t1","pane":"p1","space":"s1","space_name":"Local","tab":"tab1","tab_index":1,"tab_name":"Build","status":"working","app":"pi","program":program,"title":"Build","label":"Build","session":null,"seq":1,"focused":true}, {"address":"t2","pane":"p2","space":"s2","space_name":"Remote","tab":"tab2","tab_index":1,"tab_name":"Done","status":"done","app":"pi","program":program,"title":"Remote task","label":"Remote task","session":null,"seq":2,"focused":false}]));
         values.insert(
             "focused".into(),
             json!({"space":"s1","tab":"tab1","pane":"p1","terminal":"t1","agent":"t1","shown":null,"cwd":"/fixture/project"}),
@@ -361,7 +361,7 @@ fn font_pickers_contain_scroll_on_the_wrapper(cx: &mut TestAppContext) {
     let staged = Staged::new();
     for which in ["font", "ui_font"] {
         let mut p = props();
-        p["section"] = json!("text");
+        p["section"] = json!("fonts");
         let tree = describe(
             cx, &staged, "frame/settings", true, p, updates("current", "current"),
             Some(&format!("this.picking = '{which}';")),
@@ -377,12 +377,14 @@ fn font_pickers_contain_scroll_on_the_wrapper(cx: &mut TestAppContext) {
 fn terminal_text_rows_show_whose_value_is_in_use(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
-    let mut p = props();
-    p["section"] = json!("text");
     let layout = "This layout sets its own; yours shows in the others.";
     for (person, overridden) in [("{}", 0), ("{font_weight: 300, line_height: 1.4, letter_spacing: 1}", 3)] {
         let setup = format!("this.load = async () => {{}}; this.person = {person};");
-        let tree = describe(cx, &staged, "frame/settings", true, p.clone(), updates("current", "current"), Some(&setup)).unwrap();
+        let tree: String = ["fonts", "grid", "rendering"].map(|page| {
+            let mut p = props();
+            p["section"] = json!(page);
+            describe(cx, &staged, "frame/settings", true, p, updates("current", "current"), Some(&setup)).unwrap()
+        }).concat();
         for id in ["st-font_weight-plus", "st-font_weight_bold-plus", "st-faint_opacity-plus", "st-line_height-plus", "st-letter_spacing-plus", "st-cw-Font", "st-cw-Whole pixels", "st-font_ligatures", "Terminal text"] {
             assert!(tree.contains(id), "missing {id}: {tree}");
         }
@@ -395,7 +397,7 @@ fn interface_zoom_and_text_size_rows_show_their_percent(cx: &mut TestAppContext)
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut p = props();
-    p["section"] = json!("text");
+    p["section"] = json!("zoom");
     for ((ui_zoom, ui_text_scale), (zoom_shown, text_shown)) in [((1.0, 1.0), ("100%", "100%")), ((1.2, 1.1), ("120%", "110%"))] {
         let mut values = fixture(true, p.clone(), updates("current", "current"));
         values.get_mut("settings").unwrap()["ui_zoom"] = json!(ui_zoom);
@@ -422,7 +424,7 @@ fn zoom_row_shows_points_at_whole_point_steps(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut p = props();
-    p["section"] = json!("text");
+    p["section"] = json!("zoom");
     for (step, zoom, shown) in [("tenth", 1.1, "110%"), ("point", 13.0 / 12.0, "13 pt"), ("point", 1.1, "13.2 pt")] {
         let mut values = fixture(true, p.clone(), updates("current", "current"));
         let settings = values.get_mut("settings").unwrap();
@@ -464,14 +466,14 @@ fn pane_header_shows_a_panes_own_text_size(cx: &mut TestAppContext) {
     }
 }
 
-/// The Text page has a "Pane zoom keys" toggle under Zoom steps, on unless
+/// The Zoom page has a "Pane zoom keys" toggle under Zoom steps, on unless
 /// settings.json turns it off.
 #[gpui::test]
 fn pane_zoom_keys_toggle_shows_the_setting(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut p = props();
-    p["section"] = json!("text");
+    p["section"] = json!("zoom");
     for on in [true, false] {
         let mut values = fixture(true, p.clone(), updates("current", "current"));
         values.get_mut("settings").unwrap()["pane_zoom_keys"] = json!(on);
@@ -481,21 +483,18 @@ fn pane_zoom_keys_toggle_shows_the_setting(cx: &mut TestAppContext) {
         let keys = tree.find("Pane zoom keys").expect("Pane zoom keys");
         assert!(steps < keys, "under Zoom steps");
         let toggle = tree.lines().skip_while(|l| !l.contains("st-pane_zoom_keys")).take(6).collect::<Vec<_>>().join("\n");
-        let other = tree.lines().skip_while(|l| !l.contains("st-font_ligatures")).take(6).collect::<Vec<_>>().join("\n");
-        let (ligatures_on, keys_on) = (other.contains("justify_end"), toggle.contains("justify_end"));
-        assert!(!ligatures_on, "ligatures are off in the fixture: {other}");
-        assert_eq!(keys_on, on, "{toggle}");
+        assert_eq!(toggle.contains("justify_end"), on, "{toggle}");
     }
 }
 
-/// The Text page has a Cell rounding choice under Cell width, showing the
-/// person's pick.
+/// The Terminal grid page has a Cell rounding choice under Cell width,
+/// showing the person's pick.
 #[gpui::test]
 fn cell_rounding_row_shows_the_pick(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut p = props();
-    p["section"] = json!("text");
+    p["section"] = json!("grid");
     for (person, want) in [("{}", "st-cr-Outward"), (r#"{ cell_rounding: "nearest" }"#, "st-cr-Nearest")] {
         let values = fixture(true, p.clone(), updates("current", "current"));
         let tree = describe_with_values(cx, &staged, "frame/settings", values, Some(&format!("this.load = async () => {{}}; this.person = {person};"))).unwrap();
@@ -505,7 +504,7 @@ fn cell_rounding_row_shows_the_pick(cx: &mut TestAppContext) {
     }
 }
 
-/// The Look page's Panes section has Focus border (From theme, then the
+/// The Panes page has Focus border (From theme, then the
 /// theme's colors as swatches) and Focus border width, each showing the
 /// person's pick.
 #[gpui::test]
@@ -513,7 +512,7 @@ fn focus_border_rows_show_the_pick(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut p = props();
-    p["section"] = json!("look");
+    p["section"] = json!("panes");
     for (person, colour, width) in [("{}", "st-fc-theme", "st-fw-Layout"), (r##"{ colors: { focus: "#ff8800" }, focus_border_width: 2 }"##, "st-fc-#ff8800", "st-fw-2 px")] {
         let values = fixture(true, p.clone(), updates("current", "current"));
         let tree = describe_with_values(cx, &staged, "frame/settings", values, Some(&format!("this.load = async () => {{}}; this.person = {person};"))).unwrap();
@@ -543,28 +542,28 @@ fn settings_search_filters_every_page(cx: &mut TestAppContext) {
     assert!(!tree.contains("st-found-"), "no results with nothing typed: {tree}");
 
     let tree = search("rounding");
-    assert!(tree.contains("st-found-text") && tree.contains("st-cr-Nearest"), "{tree}");
+    assert!(tree.contains("st-found-grid") && tree.contains("st-cr-Nearest"), "{tree}");
     assert!(tree.contains("cell_"), "the row's settings.json key: {tree}");
-    for hidden in ["st-found-look", "st-found-alerts", "st-cw-", "st-font_ligatures", "Ligatures"] {
+    for hidden in ["st-found-themes", "st-found-alerts", "st-cw-", "st-font_ligatures", "Ligatures"] {
         assert!(!tree.contains(hidden), "{hidden} shows: {tree}");
     }
 
     let tree = search("sound");
     assert!(tree.contains("st-found-alerts") && tree.contains("st-sounds"), "{tree}");
-    assert!(!tree.contains("st-found-text"), "{tree}");
+    assert!(!tree.contains("st-found-grid"), "{tree}");
 
     let tree = search("qqqzzz");
     assert!(tree.contains("st-none") && tree.contains("No settings match"), "{tree}");
 }
 
-/// The Look page's App icon row: a previewed tile per built-in, the
+/// The Window page's App icon row: a previewed tile per built-in, the
 /// person's outlined, and an image file shown as its path.
 #[gpui::test]
 fn app_icon_picker_outlines_the_pick(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut p = props();
-    p["section"] = json!("look");
+    p["section"] = json!("window");
     for (person, picked) in [("{}", Some("classic")), (r#"{ app_icon: "mirage" }"#, Some("mirage")), (r#"{ app_icon: "theme" }"#, Some("theme")), (r#"{ app_icon: "~/mine.icns" }"#, None)] {
         let values = fixture(true, p.clone(), updates("current", "current"));
         let tree = describe_with_values(cx, &staged, "frame/settings", values, Some(&format!("this.load = async () => {{}}; this.person = {person};"))).unwrap();
@@ -582,29 +581,21 @@ fn app_icon_picker_outlines_the_pick(cx: &mut TestAppContext) {
     }
 }
 
+/// The Themes page's cards are a virtual list's rows: the page itself builds
+/// none, however many themes there are.
 #[gpui::test]
-fn long_theme_names_stay_inside_their_card(cx: &mut TestAppContext) {
+fn theme_cards_are_rows_of_a_virtual_list(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
-    let long = "catppuccin-macchiato";
     let mut p = props();
-    p["section"] = json!("look");
+    p["section"] = json!("themes");
     let mut values = fixture(true, p, updates("current", "current"));
     let theme = values["theme"].clone();
-    values.insert("themes".into(), json!([{ "name": long, "light": false, "colors": theme }]));
-    let mut settings = values["settings"].clone();
-    settings["theme_dark"] = json!(long);
-    values.insert("settings".into(), settings);
+    let names: Vec<String> = (0..40).map(|i| format!("dark-{i:02}")).collect();
+    values.insert("themes".into(), json!(names.iter().map(|n| json!({ "name": n, "light": false, "colors": theme })).collect::<Vec<_>>()));
     let tree = describe_with_values(cx, &staged, "frame/settings", values, None).unwrap();
-    let lines: Vec<&str> = tree.lines().collect();
-    let card = lines.iter().position(|l| l.contains(&format!("st-t-{long}"))).unwrap();
-    let row = lines[card..].iter().find(|l| l.trim_start().starts_with("h_flex") && l.contains("min_w")).unwrap();
-    assert!(row.contains(".w_full"), "the name row must fill the card: {row}");
-    assert!(row.contains(".min_w[Number(0.0)]"), "the name row must be allowed to shrink: {row}");
-    let name = lines[card..].iter().find(|l| l.contains("truncate")).unwrap();
-    assert!(name.contains(":tooltip[Str(\"catppuccin macchiato\")]"), "a cut name needs its full text on hover: {name}");
-    let check = lines[card..].iter().find(|l| l.contains("check.svg")).unwrap();
-    assert!(check.contains(".flex_none"), "the selected check must not shrink: {check}");
+    assert!(tree.contains("v_virtual_list \"st-themes\" ×8"), "40 themes in rows of five: {tree}");
+    assert!(!tree.contains("st-t-dark-"), "the page built a card: {tree}");
 }
 
 #[gpui::test]
@@ -725,11 +716,11 @@ fn settings_sections_and_updates(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let start = Instant::now();
     let staged = Staged::new();
-    for section in ["look", "text", "alerts", "privacy", "updates"] {
+    for section in ["look", "fonts", "alerts", "privacy", "updates"] {
         let mut p = props();
         p["section"] = json!(section);
         let tree = describe(cx, &staged, "frame/settings", true, p, updates("current", "current"), None).unwrap();
-        assert_eq!(tree.contains("Terminal text"), section == "text", "{section}: {tree}");
+        assert_eq!(tree.contains("TERMINAL TEXT"), section == "fonts", "{section}: {tree}");
     }
     for app in ["source", "current", "ready"] {
         for core in ["current", "ready", "error", "managed", "updating"] {
@@ -1062,13 +1053,13 @@ fn pane_headers_show_the_automatic_name_after_the_persons(cx: &mut TestAppContex
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let shell = json!({"key":"shell", "name":"zsh", "icon":null, "tint":true, "tile":null, "color":null, "shell":true, "agent":false});
-    // What each shows without one: the shell's program name, the title else "shell".
-    for (entry, fallback) in [("mods/pane", "zsh"), ("mods/terminals-pane", "shell")] {
+    // What each shows without one: the shell's program name (its label, as its title is empty).
+    for (entry, fallback) in [("mods/pane", "zsh"), ("mods/terminals-pane", "zsh")] {
         // A shell's title as Herdr gives it an automatic name: a folder, never empty.
         let header = |name: Value, auto_name: Value, cx: &mut TestAppContext| {
             let title = if auto_name.is_null() { "" } else { "~/src" };
             let mut values = fixture(true, props(), updates("current", "current"));
-            values.insert("panes".into(), json!([{"pane":"p1","terminal":"t1","tab":"tab1","title":title,"name":name,"auto_name":auto_name,"cwd":"/fixture/project","branch":null,"status":null,"app":null,"program":shell,"focused":true,"zoomed":false}]));
+            values.insert("panes".into(), labelled(json!([{"pane":"p1","terminal":"t1","tab":"tab1","title":title,"name":name,"auto_name":auto_name,"session":null,"cwd":"/fixture/project","branch":null,"status":null,"app":null,"program":shell,"focused":true,"zoomed":false}])));
             describe_with_values(cx, &staged, entry, values, None).unwrap()
         };
         let tree = header(Value::Null, json!("hazy-inlet"), cx);
@@ -1121,4 +1112,102 @@ fn agent_spinners_follow_the_working_spinner_setting(cx: &mut TestAppContext) {
         }
         assert_eq!(spinner[1].trim(), r#"text "⠋""#, "{entry} starts on the first frame");
     }
+}
+
+/// Panes as the app publishes them: `label` and `session` filled in by the
+/// app's own resolver (pane_label.rs) from the other fields.
+fn labelled(mut panes: Value) -> Value {
+    for p in panes.as_array_mut().unwrap() {
+        let label = crate::pane_label::label(&crate::pane_label::Parts {
+            name: p["name"].as_str(), auto_name: p["auto_name"].as_str(), title: p["title"].as_str().unwrap_or_default(),
+            session: p["session"].as_str(), program: &p["program"], address: p["terminal"].as_str().unwrap_or_default(),
+        });
+        p["label"] = json!(label);
+    }
+    panes
+}
+
+fn texts(tree: &str) -> Vec<&str> {
+    tree.lines().filter_map(|l| l.trim().strip_prefix("text ")).collect()
+}
+
+/// The mods that name a pane read its `label`: with telling titles they draw
+/// what they drew from the title, byte for byte (the whole populated fixture
+/// was diffed when they moved to `label`; the names are pinned here), and a
+/// title that names nothing gives way to the session's name, else the program's.
+#[gpui::test]
+fn mods_name_panes_by_their_label(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let p2 = json!({"pane":"p2","terminal":"t2"});
+    let w1 = json!({"role":"window","pane":"p1"});
+    let w2 = json!({"role":"window","pane":"p2"});
+    let shown = |entry: &str, p: &Value, values: Option<BTreeMap<String, Value>>, cx: &mut TestAppContext| {
+        let values = values.unwrap_or_else(|| fixture(true, p.clone(), updates("current", "current")));
+        let tree = describe_with_values(cx, &staged, entry, values, None).unwrap();
+        texts(&tree).into_iter().map(str::to_owned).collect::<Vec<_>>()
+    };
+    let telling: [(&str, &Value, &[&str]); 6] = [
+        ("mods/agents", &props(), &["\"Agents\"", "\"Done\"", "\"1\"", "\"Remote\"", "\"· Remote task\"", "\"<1m\"", "\"Working\"", "\"1\"", "\"Local\"", "\"· Build\"", "\"<1m\""]),
+        ("mods/pane", &p2, &["\"Pi\"", "\"/remote/project\""]),
+        ("mods/terminals-pane", &props(), &["\"Build\"", "\"~/project\""]),
+        ("mods/terminals-pane", &p2, &["\"Remote task\"", "\"/remote/project\""]),
+        ("mods/win98", &w1, &["\"Pi - Build\""]),
+        ("mods/win98", &w2, &["\"Pi - Remote task\""]),
+    ];
+    for (entry, p, want) in telling {
+        assert_eq!(shown(entry, p, None, cx), want, "{entry} {p}");
+    }
+
+    // Claude Code's prompt left in Neovim's title: the session names the agent.
+    let nvim = "claude-prompt-9acc2eb1-37f2-4d7e-9c1a-5b6f0e2d8a11.md + (/private/tmp/claude-501) - Nvim";
+    let throwaway = |p: &Value, session: Value| {
+        let mut values = fixture(true, p.clone(), updates("current", "current"));
+        let mut panes = values["panes"].clone();
+        panes[1]["title"] = json!(nvim);
+        panes[1]["session"] = session;
+        let panes = labelled(panes);
+        let mut agents = values["agents"].clone();
+        agents[1]["title"] = json!(nvim);
+        agents[1]["label"] = panes[1]["label"].clone();
+        values.insert("panes".into(), panes);
+        values.insert("agents".into(), agents);
+        values
+    };
+    let named = |p: &Value| Some(throwaway(p, json!("vendor-insights")));
+    assert!(shown("mods/agents", &props(), named(&props()), cx).contains(&"\"· vendor-insights\"".to_owned()));
+    assert_eq!(shown("mods/terminals-pane", &p2, named(&p2), cx)[0], "\"vendor-insights\"");
+    assert_eq!(shown("mods/win98", &w2, named(&w2), cx), ["\"Pi - vendor-insights\""]);
+    assert_eq!(shown("mods/pane", &p2, named(&p2), cx)[0], "\"Pi\"", "an unnamed agent's header shows its program");
+    // No session: the program's name, which the agents panel never shows as the tab.
+    let unnamed = |p: &Value| Some(throwaway(p, Value::Null));
+    assert!(shown("mods/agents", &props(), unnamed(&props()), cx).contains(&"\"· Done\"".to_owned()));
+    assert_eq!(shown("mods/terminals-pane", &p2, unnamed(&p2), cx)[0], "\"Pi\"");
+    assert_eq!(shown("mods/win98", &w2, unnamed(&w2), cx), [r#""Pi - C:\\remote\\project""#]);
+
+    // A status glyph or a bracket before a telling title is shown as before.
+    for title in ["\u{2713} build passed", "[3/5] Building crates"] {
+        let titled = |p: &Value| {
+            let mut values = fixture(true, p.clone(), updates("current", "current"));
+            let mut panes = values["panes"].clone();
+            panes[1]["title"] = json!(title);
+            values.insert("panes".into(), labelled(panes));
+            Some(values)
+        };
+        assert_eq!(shown("mods/terminals-pane", &p2, titled(&p2), cx)[0], format!("{title:?}"));
+        assert_eq!(shown("mods/win98", &w2, titled(&w2), cx), [format!("\"Pi - {title}\"")]);
+    }
+
+    // A program that is neither an agent nor a shell: the header shows its label.
+    let neovim = json!({"key":"nvim", "name":"Neovim", "icon":null, "tint":true, "tile":null, "color":null, "shell":false, "agent":false});
+    let editor = |title: &str, cx: &mut TestAppContext| {
+        let mut values = fixture(true, p2.clone(), updates("current", "current"));
+        let mut panes = values["panes"].clone();
+        panes[1]["title"] = json!(title);
+        panes[1]["program"] = neovim.clone();
+        values.insert("panes".into(), labelled(panes));
+        shown("mods/pane", &p2, Some(values), cx)[0].clone()
+    };
+    assert_eq!(editor("Fix nvim config", cx), "\"Fix nvim config\"");
+    assert_eq!(editor(nvim, cx), "\"Neovim\"");
 }

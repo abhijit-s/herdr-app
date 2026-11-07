@@ -12,8 +12,8 @@ export function paneTitle(p) {
   if (p.mod) return p.title || p.mod;
   const prog = p.program;
   if (!prog || prog.shell) return `DOS Prompt - ${dosPath(p.cwd, home())}`;
-  const t = (p.title ?? "").trim();
-  return t && t !== prog.name ? `${prog.name} - ${t}` : `${prog.name} - ${dosPath(p.cwd, home())}`;
+  const t = p.label;
+  return t !== prog.name ? `${prog.name} - ${t}` : `${prog.name} - ${dosPath(p.cwd, home())}`;
 }
 
 export default class PaneWindow {

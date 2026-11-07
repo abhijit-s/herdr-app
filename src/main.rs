@@ -8,6 +8,7 @@ mod bench;
 mod commands;
 mod control;
 mod core_bin;
+mod dock_badge;
 mod files;
 mod focus_history;
 mod git_status;
@@ -25,6 +26,7 @@ mod persist;
 #[cfg(target_os = "macos")]
 mod macos;
 mod mods;
+mod pane_label;
 mod pane_names;
 mod mod_files;
 mod process_cwd;

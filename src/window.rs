@@ -552,6 +552,10 @@ pub struct AppWindow {
     cwds: HashMap<String, String>,
     /// The automatic names panes show (`pane_auto_names`), by pane, as last published.
     auto_names: HashMap<String, String>,
+    /// What each pane is called (pane_label.rs), by pane, as last published.
+    labels: HashMap<String, String>,
+    /// Agent sessions' own names, by terminal (pane_label.rs).
+    session_names: crate::pane_label::Sessions,
     /// When each terminal's repo and branch were last read, and what it was doing.
     /// Whether each terminal was busy at the last look at its folder.
     folders_busy: HashMap<String, bool>,
@@ -593,6 +597,8 @@ pub struct AppWindow {
     tab_shown: bool,
     pane_history: Vec<String>,
     window_active: bool,
+    /// The Dock's count of agents waiting on the person (dock_badge.rs).
+    dock_badge: crate::dock_badge::Badge,
     /// Agents with a system notification up (alert.rs), taken down once seen.
     notified: HashSet<String>,
     /// Agents that don't report (OSC 7501), read off their screens (harness.rs).
@@ -670,10 +676,13 @@ impl AppWindow {
             watched: Watched::default(),
             live: HashMap::new(),
             listed_once: false,
+            dock_badge: Default::default(),
             resume: crate::resume::Tracker::load(&resume_path()),
             resume_offer: Some(Instant::now()),
             cwds: HashMap::new(),
             auto_names: HashMap::new(),
+            labels: HashMap::new(),
+            session_names: Default::default(),
             folders_busy: HashMap::new(),
             born: RefCell::new(HashMap::new()),
             waits: HashMap::new(),
@@ -1068,6 +1077,7 @@ impl AppWindow {
         if auto_names {
             self.publish(cx);
         }
+        self.badge_dock(self.dock_badge.waiting());
     }
 
     fn theme_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1951,9 +1961,11 @@ impl AppWindow {
             .or_else(|| terminal_block(&self.chrome, self.focused_pane.as_deref()));
         let focused_pane = if block.is_some() { None } else { m.focused_pane() };
         let mut agents = Vec::new();
+        let mut rows = Vec::new();
         let mut panes = Vec::new();
         let auto_names_on = settings::get().pane_auto_names;
         let mut auto_names = HashMap::new();
+        let mut labels = HashMap::new();
         for pr in &m.spaces {
             for (ci, ctx) in pr.tabs.iter().enumerate() {
                 let names = if auto_names_on { crate::pane_names::for_tab(ctx.root.panes().iter().map(|p| p.id.as_str())) } else { HashMap::new() };
@@ -1962,7 +1974,8 @@ impl AppWindow {
                     let zoomed = ctx.zoomed.as_deref() == Some(p.id.as_str());
                     // A mod pane: what it shows, no terminal.
                     if let Some(Content::Mod { name, .. }) = p.content() {
-                        panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "tab": ctx.id, "title": name, "name": p.title, "auto_name": null, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
+                        let label = crate::pane_label::given(p.title.as_deref()).unwrap_or(name);
+                        panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "tab": ctx.id, "title": name, "name": p.title, "auto_name": null, "label": label, "session": null, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
                         continue;
                     }
                     let Some(addr) = p.terminal() else { continue };
@@ -1978,20 +1991,30 @@ impl AppWindow {
                     if let Some(n) = auto_name {
                         auto_names.insert(p.id.clone(), n.clone());
                     }
+                    let session = self.session_names.name(addr, self.live.get(addr).and_then(|r| r.pointer("/foreground/pid")).and_then(Value::as_u64));
+                    let label = crate::pane_label::label(&crate::pane_label::Parts {
+                        name: p.title.as_deref(), auto_name: auto_name.map(String::as_str), title: title.as_deref().unwrap_or_default(),
+                        session, program: &program, address: addr,
+                    });
+                    labels.insert(p.id.clone(), label.clone());
                     panes.push(json!({
                         "pane": p.id, "terminal": addr, "tab": ctx.id, "title": title.clone().unwrap_or_default(), "name": p.title, "auto_name": auto_name,
+                        "label": label, "session": session,
                         "cwd": cwd, "branch": m.folder_info.get(addr).and_then(|f| f.branch.clone()),
                         "status": m.status(addr), "app": a.and_then(|a| a.app.clone()), "program": program,
                         "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id),
                         "text_size": self.pane_term(&p.id).and_then(|t| t.view.read(cx).text_size()),
                     }));
                     let Some(status) = m.status(addr) else { continue };
+                    let pinned = self.live.get(addr).and_then(|r| r.pointer("/labels/herdr.pinned")).and_then(Value::as_str).is_some_and(|v| !v.is_empty());
+                    rows.push(crate::dock_badge::Listed { address: addr, status, pinned });
                     agents.push(json!({
                         "address": addr, "pane": p.id, "space": pr.id, "space_name": m.space_name(pr, &home),
                         "tab": ctx.id, "tab_index": ci + 1, "tab_name": Model::tab_name(pr, ctx),
                         "status": status, "app": a.and_then(|a| a.app.clone()), "program": self.program(addr), "title": title.unwrap_or_default(),
+                        "label": label, "session": session,
                         "seq": a.map(|a| a.seq).unwrap_or(0),
-                        "pinned": self.live.get(addr).and_then(|r| r.pointer("/labels/herdr.pinned")).and_then(Value::as_str).is_some_and(|v| !v.is_empty()),
+                        "pinned": pinned,
                         "focused": m.active.as_deref() == Some(pr.id.as_str()) && focused_pane.as_deref() == Some(p.id.as_str()),
                     }));
                 }
@@ -2010,9 +2033,21 @@ impl AppWindow {
                 "pane": pane, "agent": self.shown_agent(), "cwd": cwd }))
         });
         self.auto_names = auto_names;
+        self.labels = labels;
         let machines = self.documents.iter().map(|(name, slot)| json!({
             "name": (!name.is_empty()).then_some(name), "layout": slot.layout(),
         })).collect();
+        let live: Vec<_> = self
+            .live
+            .iter()
+            .filter(|(_, r)| r.get("state").and_then(Value::as_str) == Some("live"))
+            .map(|(address, r)| crate::dock_badge::Live {
+                address,
+                parent: r.get("parent").and_then(Value::as_str).filter(|p| !p.is_empty()),
+                word: r.get("status").and_then(Value::as_str),
+            })
+            .collect();
+        let waiting = crate::dock_badge::count_rows(&rows, &live);
         let mut changed = mods::publish_machines(Value::Array(machines));
         changed |= mods::publish_spaces(Value::Array(spaces));
         changed |= mods::publish_agents(Value::Array(agents));
@@ -2026,6 +2061,21 @@ impl AppWindow {
             self.refresh_snapshot_mods(cx);
         }
         self.write_where(cx);
+        self.badge_dock(waiting);
+    }
+
+    /// The Dock badge counts the agents list's waiting rows; the Dock
+    /// hears only of changes. `dock_bounce_on_wait` bounces it once when
+    /// something starts waiting and nothing did.
+    fn badge_dock(&mut self, waiting: usize) {
+        let s = settings::get();
+        let change = self.dock_badge.update(waiting, s.dock_badge);
+        if let Some(label) = change.label {
+            crate::dock_badge::show(&label);
+        }
+        if change.rose && s.dock_bounce_on_wait && !self.window_active {
+            crate::dock_badge::bounce();
+        }
     }
 
     /// Where the person is: the active tab's focused pane. Overlays, popups and
@@ -2432,6 +2482,7 @@ impl AppWindow {
         }
         self.track_folders(cx);
         self.track_resume(window, cx);
+        self.track_session_names(listed, cx);
         for t in self.terms.values() {
             if self.live.get(&t.address).is_some_and(|r| r["pid"].as_u64().is_some()) {
                 t.view.update(cx, |v, cx| v.reattach_if_needed(self.core.clone(), cx));
@@ -2478,6 +2529,25 @@ impl AppWindow {
             .detach();
         }
         self.offer_resume(window, cx);
+    }
+
+    /// Agent sessions' own names (`session` on panes, pane_label.rs), read off
+    /// the main thread; a name that changed is published.
+    fn track_session_names(&mut self, listed: bool, cx: &mut Context<Self>) {
+        let checks = self.session_names.checks(&self.live, listed, Instant::now(), &home(), crate::programs::session_name);
+        if checks.is_empty() {
+            return;
+        }
+        let job = cx.background_executor().spawn(async move { checks.into_iter().map(crate::pane_label::look).collect::<Vec<_>>() });
+        cx.spawn(async move |this, cx| {
+            let found = job.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.session_names.found(found) {
+                    this.publish(cx);
+                }
+            });
+        })
+        .detach();
     }
 
     fn save_resume(&self) {
@@ -4689,6 +4759,7 @@ impl AppWindow {
                 "terminal": addr, "pane": pane, "status": m.status(addr),
                 "app": m.agents.get(addr).and_then(|a| a.app.clone()),
                 "name": rec.and_then(|r| r.get("name")).cloned(),
+                "label": self.labels.get(pane), "session": self.session_names.name(addr, rec.and_then(|r| r.pointer("/foreground/pid")).and_then(Value::as_u64)),
                 "sub_agents": children(addr),
             })
         };
@@ -6661,7 +6732,7 @@ export default class Recent extends View {
     }
 
     /// Only a copied mouse selection says "Copied": not a click in the
-    /// terminal, and not presses on a Settings stepper drawn over it.
+    /// terminal, and not presses in the Settings window drawn over it.
     #[gpui::test]
     fn copied_toast(cx: &mut gpui::TestAppContext) {
         use serde_json::json;
@@ -6706,15 +6777,66 @@ export default class Recent extends View {
         assert_ne!(first, second, "the second copy didn't replace the first toast");
 
         cx.update(|window, cx| view.update(cx, |this, cx| {
-            this.run_as("app.settings", json!({ "section": "text" }), false, window, cx);
+            this.run_as("app.settings", json!({ "section": "themes" }), false, window, cx);
         }));
         cx.run_until_parked();
-        let plus = cx.debug_bounds("st-text_contrast-plus").expect("no contrast stepper").center();
-        for _ in 0..3 {
-            cx.simulate_click(plus, none);
+        // The slot tabs: presses that write no file, whose watcher would wake
+        // the test from another thread.
+        for tab in ["st-tt-light", "st-tt-dark", "st-tt-light"] {
+            let at = cx.debug_bounds(tab).expect("no theme tab").center();
+            cx.simulate_click(at, none);
             cx.run_until_parked();
         }
-        assert_eq!(copied(cx), 1, "presses on a Settings stepper said Copied");
+        assert_eq!(copied(cx), 1, "presses in the Settings window said Copied");
+    }
+
+    #[test]
+    fn the_theme_grid_lays_out_only_the_cards_on_screen() {
+        in_own_process("theme_grid");
+    }
+
+    /// 120 dark themes on the Settings window's Themes page: it opens on the
+    /// picked one, lays out only the rows on screen, and a scroll lays out
+    /// the rows it reaches without rendering the page again.
+    #[gpui::test]
+    fn theme_grid(cx: &mut gpui::TestAppContext) {
+        use gpui::{ScrollDelta, ScrollWheelEvent};
+        use serde_json::json;
+        if !running_alone("theme_grid") {
+            return;
+        }
+        let home = crate::mods::app_dir();
+        std::fs::create_dir_all(home.join("themes")).unwrap();
+        let names: Vec<String> = (0..120).map(|i| format!("grid-{i:03}")).collect();
+        let ansi: Vec<String> = (0..16).map(|i| format!("#{:02x}4080", i * 16)).collect();
+        for name in &names {
+            std::fs::write(home.join(format!("themes/{name}.json")), json!({ "background": "#101418", "foreground": "#d0d0d0", "selection": "#304050", "ansi": ansi }).to_string()).unwrap();
+        }
+        std::fs::write(home.join("settings.json"), json!({ "appearance": "dark", "theme": { "dark": "grid-100", "light": "github-light" } }).to_string()).unwrap();
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
+        cx.run_until_parked();
+        let renders = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.runtime.as_ref().unwrap().read_metrics().script_renders());
+        let script_time = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.runtime.as_ref().unwrap().read_metrics().script_render_time());
+        // debug_bounds takes a static id: one per card, kept for the test's life.
+        let ids: Vec<(&String, &'static str)> = names.iter().map(|n| (n, &*Box::leak(format!("st-t-{n}").into_boxed_str()))).collect();
+        let laid_out = |cx: &mut gpui::VisualTestContext| ids.iter().filter(|(_, id)| cx.debug_bounds(id).is_some()).map(|(n, _)| (*n).clone()).collect::<Vec<_>>();
+        let (before, took) = (renders(cx), script_time(cx));
+        cx.update(|window, cx| view.update(cx, |this, cx| this.run_as("app.settings", json!({ "section": "themes" }), false, window, cx)));
+        cx.run_until_parked();
+        let (opened, open_renders) = (laid_out(cx), renders(cx) - before);
+        eprintln!("theme grid: {} cards laid out and {open_renders} script renders ({:?} in script) opening", opened.len(), script_time(cx) - took);
+        assert!(opened.iter().any(|n| n == "grid-100"), "opened away from the picked theme: {opened:?}");
+        assert!(!opened.is_empty() && opened.len() <= 30, "{} of 120 cards laid out on opening", opened.len());
+        let at = cx.debug_bounds("st-t-grid-100").unwrap().center();
+        let before = renders(cx);
+        for _ in 0..4 {
+            cx.simulate_event(ScrollWheelEvent { position: at, delta: ScrollDelta::Pixels(point(px(0.), px(250.))), ..Default::default() });
+            cx.run_until_parked();
+        }
+        let (scrolled, scroll_renders) = (laid_out(cx), renders(cx) - before);
+        eprintln!("theme grid: {} cards laid out and {scroll_renders} script renders after 4 scrolls", scrolled.len());
+        assert_eq!(scroll_renders, 0, "a scroll rendered the page");
+        assert!(scrolled.len() <= 30 && scrolled.iter().all(|n| n.as_str() < "grid-100"), "after scrolling up: {scrolled:?}");
     }
 
     /// Runs `window::tests::<name>` alone in a test process of its own, on a
@@ -7448,6 +7570,54 @@ export default class Recent extends View {
     }
 
     #[test]
+    fn the_dock_badge_follows_listings_and_the_setting() {
+        in_own_process("dock_badge");
+    }
+
+    /// The badge counts the agents list's waiting rows as listings arrive, and
+    /// settings.json's `dock_badge` takes it off and puts it back.
+    #[gpui::test]
+    fn dock_badge(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("dock_badge") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
+        view.update(cx, |this, _| {
+            this.model.add_space("p1", "api", "/src/api", crate::model::Tab::new("c1", "one", "x1", "t1"));
+            this.model.add_space("p2", "web", "/src/web", crate::model::Tab::new("c2", "two", "x2", "t2"));
+        });
+        let list = |terminals: serde_json::Value, cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                this.person.sounds.enabled = false;
+                this.window_active = false;
+                this.terminals_listed(json!({ "terminals": terminals }), window, cx);
+                this.publish(cx);
+            }));
+        };
+        let shown = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.dock_badge.shown().to_owned());
+        let agent = |address: &str, state: &str| json!({ "address": address, "state": "live", "status": { "state": state } });
+        list(json!([agent("t1", "working"), agent("t2", "working")]), cx);
+        assert_eq!(shown(cx), "");
+        list(json!([agent("t1", "blocked"), agent("t2", "working")]), cx);
+        assert_eq!(shown(cx), "1");
+        let mut kid = agent("t3", "blocked");
+        kid["parent"] = json!("t2");
+        list(json!([agent("t1", "blocked"), agent("t2", "working"), kid]), cx);
+        assert_eq!(shown(cx), "2", "a blocked sub-agent puts its parent's row in");
+        let set = |on: bool, cx: &mut gpui::VisualTestContext| cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.person.dock_badge = on;
+            this.apply_look(window, cx);
+        }));
+        set(false, cx);
+        assert_eq!(shown(cx), "", "off takes it off at once");
+        set(true, cx);
+        assert_eq!(shown(cx), "2", "on puts the count back");
+        list(json!([agent("t1", "working"), agent("t2", "working")]), cx);
+        assert_eq!(shown(cx), "", "nothing waits: no badge");
+    }
+
+    #[test]
     fn focus_follows_mouse_works_beside_an_open_window_but_not_through_it() {
         in_own_process("follow_beside_window");
     }
@@ -7691,6 +7861,77 @@ export default class Recent extends View {
         assert_eq!(a, b, "a focused: the same grid for both");
         assert_eq!(grids(cx, "b"), (a, b, area), "b focused: nothing resized");
         view.update_in(cx, |_, window, _| assert_eq!(a, crate::terminal::grid_size(area, crate::terminal::cell_size(window)), "the grid fills the area a new terminal starts in"));
+    }
+
+    #[test]
+    fn pane_labels_follow_changes_not_frames() {
+        in_own_process("labels_follow_changes");
+    }
+
+    /// A pane's label is resolved when what it's made of changes (its title,
+    /// the program running), for the panes then published, never per frame.
+    #[gpui::test]
+    fn labels_follow_changes(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use serde_json::json;
+        if !running_alone("labels_follow_changes") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.select_tab("t");
+            this.sync(window, cx);
+        });
+        let listed = |program: &str, pid: Option<u64>, cx: &mut gpui::VisualTestContext| {
+            let foreground = pid.map(|pid| json!({ "pid": pid, "argv": [program] }));
+            let terminals = json!({ "terminals": [{ "address": "ta", "argv": [program], "foreground": foreground }, { "address": "tb", "argv": ["zsh"] }] });
+            cx.update(|window, cx| view.update(cx, |this, cx| this.terminals_listed(terminals, window, cx)));
+            cx.run_until_parked();
+        };
+        let title = |text: &str, cx: &mut gpui::VisualTestContext| {
+            let term = view.update(cx, |this, _| this.terms["a"].view.clone());
+            let osc = format!("\x1b]2;{text}\x07").into_bytes();
+            term.update(cx, |t, cx| t.ingest(vec![crate::hc::Stream::Data(osc)], cx));
+            cx.executor().advance_clock(std::time::Duration::from_millis(100));
+            cx.run_until_parked();
+        };
+        let resolved = || crate::pane_label::RESOLVED.with(std::cell::Cell::get);
+        let label = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.labels["a"].clone());
+        listed("claude", None, cx);
+        title("\u{2733} Fix the login bug", cx);
+        assert_eq!(label(cx), "Fix the login bug");
+
+        let (before, frames) = (resolved(), crate::terminal::frame());
+        for _ in 0..30 {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        assert!(crate::terminal::frame() >= frames + 30, "30 frames drawn");
+        assert_eq!(resolved(), before, "no label is resolved for a frame");
+
+        title("claude-prompt-9acc2eb1-37f2-4d7e-9c1a-5b6f0e2d8a11.md + (/private/tmp/claude-501) - Nvim", cx);
+        assert_eq!(label(cx), "Claude Code");
+        let after_title = resolved();
+        assert_eq!(after_title - before, 2, "one publish: both panes once");
+
+        // Its session file names it: read off the main thread, then published.
+        let home = crate::mods::app_dir();
+        std::fs::create_dir_all(home.join(".claude/sessions")).unwrap();
+        std::fs::write(home.join(".claude/sessions/4242.json"), r#"{"name":"vendor-insights"}"#).unwrap();
+        // SAFETY: this test runs alone in its own process (`in_own_process`).
+        unsafe { std::env::set_var("HOME", &home) };
+        listed("claude", Some(4242), cx);
+        assert_eq!(label(cx), "vendor-insights");
+        let after_session = resolved();
+
+        listed("nvim", None, cx);
+        assert_eq!(label(cx), "Neovim");
+        assert_eq!(resolved() - after_session, 2, "a new foreground: both panes once");
     }
 
     #[test]

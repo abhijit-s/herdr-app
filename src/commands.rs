@@ -101,7 +101,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("app.whats_new", &[], "Show what this release brought (it opens once by itself after an update)."),
     cmd("app.feedback", &[opt("message"), opt("from")], "Draft feedback for the person to review and send (from: person or agent)."),
     cmd("app.palette", &[], "Toggle the command palette: every command by name, with its key; calling again closes it."),
-    cmd("app.settings", &[opt("section")], "Open the settings (section: look, text, alerts, updates)."),
+    cmd("app.settings", &[opt("section")], "Open the settings at a page (section: themes, layout, window, panes, zoom, fonts, grid, rendering, keyboard on macOS, mouse, activity, alerts, machines, updates, privacy; look opens themes and text zoom)."),
     cmd("app.check_updates", &[], "Look for a newer Herdr and herdr-core now."),
     cmd("app.update_core", &[], "Update herdr-core to its latest release of this generation; terminals keep running."),
     cmd("app.reset", &[], "The escape hatch: set the shown layout and keys aside, back to the default screen."),
