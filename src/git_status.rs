@@ -112,6 +112,14 @@ fn entry<R>(place: &Place, f: impl FnOnce(&mut Entry) -> R) -> R {
     })
 }
 
+/// An answer for `place` as if git had given it, lasting, with no git asked.
+#[cfg(test)]
+pub fn set_for_test(place: &Place, value: Value) {
+    ENTRIES.with_borrow_mut(|all| {
+        all.insert(place.clone(), Entry { value, revision: 1, checked: Instant::now(), pending: false, again: false, lasting: true, waiters: Vec::new() });
+    });
+}
+
 /// The answer for `place` now (`null` while git is first asked), its revision,
 /// and whether it is lasting (changes on disk, or none possible, bring the next one).
 pub fn read<R>(place: &Place, f: impl FnOnce(&Value, u64, bool) -> R) -> R {

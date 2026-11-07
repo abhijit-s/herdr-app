@@ -3094,8 +3094,7 @@ impl AppWindow {
         }
     }
 
-    /// Reads each terminal's live folder, and its repo and branch for mods.
-    /// Each terminal's folder, and its repo and branch from the shared git
+    /// Each terminal's live folder, and its repo and branch from the shared git
     /// status (`git_status`): asked once per folder, again when its repo changes
     /// on disk. One that isn't watched (another machine's, no repo) is asked again
     /// when a command or an agent's turn ends there (a clone, a checkout).
@@ -3877,7 +3876,11 @@ impl AppWindow {
             }
             "pane.menu" => {
                 let Some(pane) = Self::owned(a, "pane").or_else(|| self.model.focused_pane()) else { return self.fail("no pane") };
-                let terminal = self.model.address_of(&pane).or_else(|| self.terms.get(&pane).map(|t| t.address.clone()));
+                if self.model.tab_of(&pane).is_none() && self.pane_term(&pane).is_none() {
+                    return self.fail(format!("no pane {pane:?}"));
+                }
+                // What the pane shows: a terminal swapped in (`terminal.show`), else its own.
+                let terminal = self.pane_term(&pane).map(|t| t.address.clone()).or_else(|| self.model.address_of(&pane));
                 let cwd = terminal.as_deref().and_then(|t| self.terminal_cwd(t));
                 self.open_menu("pane", json!({ "pane": pane, "terminal": terminal, "cwd": cwd }), None, window, cx);
             }
@@ -8784,6 +8787,82 @@ export default class Recent extends View {
             cx.run_until_parked();
         }
         assert_eq!(resolved(), after, "and frames after it none");
+    }
+
+    #[test]
+    fn pane_menu_names_what_the_pane_shows() {
+        in_own_process("pane_menu_shows");
+    }
+
+    /// `pane.menu` (a pane header's right-click) opens the menu for the
+    /// terminal the pane shows, a swapped-in one too, and fails for a pane
+    /// that isn't there.
+    #[gpui::test]
+    fn pane_menu_shows(cx: &mut gpui::TestAppContext) {
+        use crate::model::Tab;
+        use serde_json::json;
+        if !running_alone("pane_menu_shows") {
+            return;
+        }
+        let menu = r#"import { View, div } from "gpui-kit"; export default class Menu extends View { render() { return div().child("menu"); } }"#;
+        let (view, cx) = open_window(cx, "menu", menu, json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        let target = view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            this.model.add_space("s", "", "/tmp", Tab::new("t", "", "a", "ta"));
+            this.model.select_tab("t");
+            this.sync(window, cx);
+            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                this.close_overlay(&id, window, cx);
+            }
+            this.live.insert("tx".into(), json!({ "address": "tx", "cwd": "/swapped" }));
+            this.run_as("terminal.show", json!({ "pane": "a", "terminal": "tx" }), false, window, cx);
+            this.sync(window, cx);
+            let reply = this.run_as("pane.menu", json!({ "pane": "a" }), false, window, cx);
+            assert!(reply.get("error").is_none(), "{reply}");
+            let missing = this.run_as("pane.menu", json!({ "pane": "nope" }), false, window, cx);
+            assert!(missing.get("error").is_some(), "an unknown pane fails: {missing}");
+            assert_eq!(this.overlays.len(), 1, "and opens nothing");
+            this.copies.values().find(|c| c.inst.name == "menu").map(|c| c.inst.props["target"].clone())
+        });
+        assert_eq!(target, Some(json!({ "pane": "a", "terminal": "tx", "cwd": "/swapped" })), "the swapped-in terminal, not the pane's own");
+    }
+
+    #[test]
+    fn header_info_git_keys_count_once_turned_on() {
+        in_own_process("header_info_git_keys");
+    }
+
+    /// Turning on a template with git counts reads the folders again at once
+    /// (`apply_look`): `{branch}` to `{branch}{dirty}` fills `dirty` from the
+    /// cached status with no other event.
+    #[gpui::test]
+    fn header_info_git_keys(cx: &mut gpui::TestAppContext) {
+        use crate::model::Tab;
+        use serde_json::json;
+        if !running_alone("header_info_git_keys") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        let place = crate::git_status::Place { on: None, folder: "/work/repo".into() };
+        crate::git_status::set_for_test(&place, json!({ "root": "/work/repo", "branch": "main", "ahead": 0, "behind": 0, "staged": 0, "unstaged": 2, "untracked": 0, "conflicted": 0 }));
+        let dirty = |template: &str, cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| {
+                this.person.pane_header_info = Some(template.into());
+                this.apply_look(window, cx);
+                this.model.folder_info.get("ta").map(|f| (f.branch.clone(), f.dirty))
+            })
+        };
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            this.model.add_space("s", "", "/work/repo", Tab::new("t", "", "a", "ta"));
+            this.model.select_tab("t");
+            this.sync(window, cx);
+            this.live.insert("ta".into(), json!({ "address": "ta", "foreground": { "cwd": "/work/repo" } }));
+            this.track_folders(cx);
+        });
+        assert_eq!(dirty("{branch}", cx), Some((Some("main".into()), false)), "no dirty key: not counted");
+        assert_eq!(dirty("{branch}{dirty}", cx), Some((Some("main".into()), true)), "counted as soon as the template shows it");
+        assert_eq!(dirty("{branch}", cx), Some((Some("main".into()), false)), "and dropped again");
     }
 
     #[test]
