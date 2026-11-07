@@ -361,7 +361,7 @@ fn font_pickers_contain_scroll_on_the_wrapper(cx: &mut TestAppContext) {
     let staged = Staged::new();
     for which in ["font", "ui_font"] {
         let mut p = props();
-        p["section"] = json!("text");
+        p["section"] = json!("fonts");
         let tree = describe(
             cx, &staged, "frame/settings", true, p, updates("current", "current"),
             Some(&format!("this.picking = '{which}';")),
@@ -377,12 +377,14 @@ fn font_pickers_contain_scroll_on_the_wrapper(cx: &mut TestAppContext) {
 fn terminal_text_rows_show_whose_value_is_in_use(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
-    let mut p = props();
-    p["section"] = json!("text");
     let layout = "This layout sets its own; yours shows in the others.";
     for (person, overridden) in [("{}", 0), ("{font_weight: 300, line_height: 1.4, letter_spacing: 1}", 3)] {
         let setup = format!("this.load = async () => {{}}; this.person = {person};");
-        let tree = describe(cx, &staged, "frame/settings", true, p.clone(), updates("current", "current"), Some(&setup)).unwrap();
+        let tree: String = ["fonts", "grid", "rendering"].map(|page| {
+            let mut p = props();
+            p["section"] = json!(page);
+            describe(cx, &staged, "frame/settings", true, p, updates("current", "current"), Some(&setup)).unwrap()
+        }).concat();
         for id in ["st-font_weight-plus", "st-font_weight_bold-plus", "st-faint_opacity-plus", "st-line_height-plus", "st-letter_spacing-plus", "st-cw-Font", "st-cw-Whole pixels", "st-font_ligatures", "Terminal text"] {
             assert!(tree.contains(id), "missing {id}: {tree}");
         }
@@ -395,7 +397,7 @@ fn interface_zoom_and_text_size_rows_show_their_percent(cx: &mut TestAppContext)
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut p = props();
-    p["section"] = json!("text");
+    p["section"] = json!("zoom");
     for ((ui_zoom, ui_text_scale), (zoom_shown, text_shown)) in [((1.0, 1.0), ("100%", "100%")), ((1.2, 1.1), ("120%", "110%"))] {
         let mut values = fixture(true, p.clone(), updates("current", "current"));
         values.get_mut("settings").unwrap()["ui_zoom"] = json!(ui_zoom);
@@ -422,7 +424,7 @@ fn zoom_row_shows_points_at_whole_point_steps(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut p = props();
-    p["section"] = json!("text");
+    p["section"] = json!("zoom");
     for (step, zoom, shown) in [("tenth", 1.1, "110%"), ("point", 13.0 / 12.0, "13 pt"), ("point", 1.1, "13.2 pt")] {
         let mut values = fixture(true, p.clone(), updates("current", "current"));
         let settings = values.get_mut("settings").unwrap();
@@ -464,14 +466,14 @@ fn pane_header_shows_a_panes_own_text_size(cx: &mut TestAppContext) {
     }
 }
 
-/// The Text page has a "Pane zoom keys" toggle under Zoom steps, on unless
+/// The Zoom page has a "Pane zoom keys" toggle under Zoom steps, on unless
 /// settings.json turns it off.
 #[gpui::test]
 fn pane_zoom_keys_toggle_shows_the_setting(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut p = props();
-    p["section"] = json!("text");
+    p["section"] = json!("zoom");
     for on in [true, false] {
         let mut values = fixture(true, p.clone(), updates("current", "current"));
         values.get_mut("settings").unwrap()["pane_zoom_keys"] = json!(on);
@@ -481,21 +483,18 @@ fn pane_zoom_keys_toggle_shows_the_setting(cx: &mut TestAppContext) {
         let keys = tree.find("Pane zoom keys").expect("Pane zoom keys");
         assert!(steps < keys, "under Zoom steps");
         let toggle = tree.lines().skip_while(|l| !l.contains("st-pane_zoom_keys")).take(6).collect::<Vec<_>>().join("\n");
-        let other = tree.lines().skip_while(|l| !l.contains("st-font_ligatures")).take(6).collect::<Vec<_>>().join("\n");
-        let (ligatures_on, keys_on) = (other.contains("justify_end"), toggle.contains("justify_end"));
-        assert!(!ligatures_on, "ligatures are off in the fixture: {other}");
-        assert_eq!(keys_on, on, "{toggle}");
+        assert_eq!(toggle.contains("justify_end"), on, "{toggle}");
     }
 }
 
-/// The Text page has a Cell rounding choice under Cell width, showing the
-/// person's pick.
+/// The Terminal grid page has a Cell rounding choice under Cell width,
+/// showing the person's pick.
 #[gpui::test]
 fn cell_rounding_row_shows_the_pick(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut p = props();
-    p["section"] = json!("text");
+    p["section"] = json!("grid");
     for (person, want) in [("{}", "st-cr-Outward"), (r#"{ cell_rounding: "nearest" }"#, "st-cr-Nearest")] {
         let values = fixture(true, p.clone(), updates("current", "current"));
         let tree = describe_with_values(cx, &staged, "frame/settings", values, Some(&format!("this.load = async () => {{}}; this.person = {person};"))).unwrap();
@@ -505,7 +504,7 @@ fn cell_rounding_row_shows_the_pick(cx: &mut TestAppContext) {
     }
 }
 
-/// The Look page's Panes section has Focus border (From theme, then the
+/// The Panes page has Focus border (From theme, then the
 /// theme's colors as swatches) and Focus border width, each showing the
 /// person's pick.
 #[gpui::test]
@@ -513,7 +512,7 @@ fn focus_border_rows_show_the_pick(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut p = props();
-    p["section"] = json!("look");
+    p["section"] = json!("panes");
     for (person, colour, width) in [("{}", "st-fc-theme", "st-fw-Layout"), (r##"{ colors: { focus: "#ff8800" }, focus_border_width: 2 }"##, "st-fc-#ff8800", "st-fw-2 px")] {
         let values = fixture(true, p.clone(), updates("current", "current"));
         let tree = describe_with_values(cx, &staged, "frame/settings", values, Some(&format!("this.load = async () => {{}}; this.person = {person};"))).unwrap();
@@ -543,28 +542,28 @@ fn settings_search_filters_every_page(cx: &mut TestAppContext) {
     assert!(!tree.contains("st-found-"), "no results with nothing typed: {tree}");
 
     let tree = search("rounding");
-    assert!(tree.contains("st-found-text") && tree.contains("st-cr-Nearest"), "{tree}");
+    assert!(tree.contains("st-found-grid") && tree.contains("st-cr-Nearest"), "{tree}");
     assert!(tree.contains("cell_"), "the row's settings.json key: {tree}");
-    for hidden in ["st-found-look", "st-found-alerts", "st-cw-", "st-font_ligatures", "Ligatures"] {
+    for hidden in ["st-found-themes", "st-found-alerts", "st-cw-", "st-font_ligatures", "Ligatures"] {
         assert!(!tree.contains(hidden), "{hidden} shows: {tree}");
     }
 
     let tree = search("sound");
     assert!(tree.contains("st-found-alerts") && tree.contains("st-sounds"), "{tree}");
-    assert!(!tree.contains("st-found-text"), "{tree}");
+    assert!(!tree.contains("st-found-grid"), "{tree}");
 
     let tree = search("qqqzzz");
     assert!(tree.contains("st-none") && tree.contains("No settings match"), "{tree}");
 }
 
-/// The Look page's App icon row: a previewed tile per built-in, the
+/// The Window page's App icon row: a previewed tile per built-in, the
 /// person's outlined, and an image file shown as its path.
 #[gpui::test]
 fn app_icon_picker_outlines_the_pick(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut p = props();
-    p["section"] = json!("look");
+    p["section"] = json!("window");
     for (person, picked) in [("{}", Some("classic")), (r#"{ app_icon: "mirage" }"#, Some("mirage")), (r#"{ app_icon: "~/mine.icns" }"#, None)] {
         let values = fixture(true, p.clone(), updates("current", "current"));
         let tree = describe_with_values(cx, &staged, "frame/settings", values, Some(&format!("this.load = async () => {{}}; this.person = {person};"))).unwrap();
@@ -582,29 +581,21 @@ fn app_icon_picker_outlines_the_pick(cx: &mut TestAppContext) {
     }
 }
 
+/// The Themes page's cards are a virtual list's rows: the page itself builds
+/// none, however many themes there are.
 #[gpui::test]
-fn long_theme_names_stay_inside_their_card(cx: &mut TestAppContext) {
+fn theme_cards_are_rows_of_a_virtual_list(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
-    let long = "catppuccin-macchiato";
     let mut p = props();
-    p["section"] = json!("look");
+    p["section"] = json!("themes");
     let mut values = fixture(true, p, updates("current", "current"));
     let theme = values["theme"].clone();
-    values.insert("themes".into(), json!([{ "name": long, "light": false, "colors": theme }]));
-    let mut settings = values["settings"].clone();
-    settings["theme_dark"] = json!(long);
-    values.insert("settings".into(), settings);
+    let names: Vec<String> = (0..40).map(|i| format!("dark-{i:02}")).collect();
+    values.insert("themes".into(), json!(names.iter().map(|n| json!({ "name": n, "light": false, "colors": theme })).collect::<Vec<_>>()));
     let tree = describe_with_values(cx, &staged, "frame/settings", values, None).unwrap();
-    let lines: Vec<&str> = tree.lines().collect();
-    let card = lines.iter().position(|l| l.contains(&format!("st-t-{long}"))).unwrap();
-    let row = lines[card..].iter().find(|l| l.trim_start().starts_with("h_flex") && l.contains("min_w")).unwrap();
-    assert!(row.contains(".w_full"), "the name row must fill the card: {row}");
-    assert!(row.contains(".min_w[Number(0.0)]"), "the name row must be allowed to shrink: {row}");
-    let name = lines[card..].iter().find(|l| l.contains("truncate")).unwrap();
-    assert!(name.contains(":tooltip[Str(\"catppuccin macchiato\")]"), "a cut name needs its full text on hover: {name}");
-    let check = lines[card..].iter().find(|l| l.contains("check.svg")).unwrap();
-    assert!(check.contains(".flex_none"), "the selected check must not shrink: {check}");
+    assert!(tree.contains("v_virtual_list \"st-themes\" ×8"), "40 themes in rows of five: {tree}");
+    assert!(!tree.contains("st-t-dark-"), "the page built a card: {tree}");
 }
 
 #[gpui::test]
@@ -725,11 +716,11 @@ fn settings_sections_and_updates(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let start = Instant::now();
     let staged = Staged::new();
-    for section in ["look", "text", "alerts", "privacy", "updates"] {
+    for section in ["look", "fonts", "alerts", "privacy", "updates"] {
         let mut p = props();
         p["section"] = json!(section);
         let tree = describe(cx, &staged, "frame/settings", true, p, updates("current", "current"), None).unwrap();
-        assert_eq!(tree.contains("Terminal text"), section == "text", "{section}: {tree}");
+        assert_eq!(tree.contains("TERMINAL TEXT"), section == "fonts", "{section}: {tree}");
     }
     for app in ["source", "current", "ready"] {
         for core in ["current", "ready", "error", "managed", "updating"] {
