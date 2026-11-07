@@ -102,6 +102,7 @@ Mod pane props are stored as given, never machine-qualified. Space order is loca
 machine first, then machines by name; `space.move` stays inside its machine's block.
 In the expanded Spaces sidebar, drag a space to reorder it within its machine;
 the highlighted line shows where it will land.
+In the tab bar, drag a tab to reorder it: it follows the pointer and a line shows where it will land (either end and the gaps count); Esc or leaving the bar cancels. A tab's right-click menu has Move left and Move right, and `tab.move_left` / `tab.move_right` move the shown tab by keys.
 
 - A **space** is a place to work, on one machine: this one, or another
   from `hc machine ls` (`spaces()[i].machine`). Herdr leaves out machines
@@ -596,13 +597,14 @@ The main ones:
   in beside it like any tab), `tab.close {id?, confirmed?}` (closing the last tab
   closes its space and asks first unless confirmed),
   `tab.rename {id?, name}` ("": its number again), `tab.move {id, index}`,
+  `tab.move_left {id?}`, `tab.move_right {id?}` (one place; nothing at the end),
   `tab.select {index | id}`, `tab.next`, `tab.prev`,
   `tab.settle {id?}`, `tab.unsettle {id?}` (index, next and prev
   skip settled tabs).
 - Panes: `pane.split {direction: "right" | "down", pane?, argv? | mod?, props?}` (a new
   terminal, or a mod pane), `pane.close {pane?}`, `pane.rename {pane?, name}` ("": its program's name again),
   `pane.set_icon {pane?, icon}` and `tab.set_icon {id?, icon}` (`icon`: `{kind: "glyph" | "emoji", value}` or `{kind: "letter"}`; null: the automatic icon again; kept by id in the machine's layout and gone with the pane or tab; the shipped `menu` offers them as Change icon… and Clear icon, through the shipped `icon-picker`),
-  `pane.zoom {pane?}`, `pane.focus {pane | terminal}`, `pane.go {direction}`, `pane.swap {direction}`.
+  `pane.zoom {pane?}`, `pane.focus {pane | terminal}`, `pane.refocus` (the keyboard back to the focused pane after a mod took it for a moment, as a tab drag does), `pane.go {direction}`, `pane.swap {direction}`.
   `pane.zoom_text_in {pane?}`, `pane.zoom_text_out {pane?}`, `pane.zoom_text_reset {pane?}` zoom one terminal pane's text (default: the terminal with the keyboard, else the focused pane) on top of the app's `zoom`, a zoom step at a time (`zoom_step`: whole points of the pane's own size, or tenths), as Ghostty's per-surface font size does. The pane's cells follow `cell_width` and `cell_rounding`, its program gets the new rows and columns, and other panes, the panels and the layout don't change. Its size is `font_size × its zoom × zoom`: changing or resetting the app's zoom keeps the pane's, and resetting the pane's keeps the app's. It lasts as long as the pane and isn't saved. `panes()` has the pane's `text_size` (px, app zoom included) while it differs from the default, and the shipped `pane` header shows it ("16pt"). macOS binds Ctrl+= (and Ctrl++), Ctrl+- and Ctrl+0 in `global` (Cmd+= and friends stay `app.zoom_*`); other platforms leave them unbound, since Ctrl+= is `app.zoom_in` there. With `pane_zoom_keys` off, or no terminal holding the keyboard, a key bound to them is left unhandled, so the focused terminal's program gets it as if it were unbound. With the setting on, Ctrl+- (^_, undo in zsh, readline and emacs) and Ctrl+0 don't reach programs; turn `pane_zoom_keys` off to give them back. A pane zoomed by command while its tab is hidden is resized at once, so its program gets the new rows and columns before the tab shows. However the pane's and the app's zoom multiply, the text stays between `font_size × 0.5` and `font_size × 3`, the app zoom's own range, and a press never goes past that. At `zoom_step` `"point"` a press moves the pane's own size (`font_size × its zoom`) by a whole point, so at an app zoom other than 1 the drawn text moves by `zoom` points per press (2 points at zoom 2), not by one. A swapped-in terminal (`terminal.show`) has its own zoom, and the keys and `text_size` follow the view on screen. Keys bound in the object form (`{"command": "pane.zoom_text_in"}`) follow `pane_zoom_keys` too.
   `pane.go` prefers the most recently focused pane along the nearest edge in that
   direction; unvisited panes fall back to overlap, then top/left layout order.

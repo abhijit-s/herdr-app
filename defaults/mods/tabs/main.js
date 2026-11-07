@@ -19,10 +19,69 @@ function find(node, id) {
   return null;
 }
 
+// Dragging a tab: a press becomes a drag once the pointer moves this far (px).
+export const DRAG_THRESHOLD = 4;
+
+// A drop slot is the gap before tab `slot` (tabs.length: after the last).
+// Over a tab, its left half is the slot before it and its right half the one after.
+export function slotOver(i, x, width) {
+  return x < width / 2 ? i : i + 1;
+}
+
+// The tab.move index (1 = first) that puts the tab at `from` into `slot`,
+// or null when that leaves it where it is.
+export function dropIndex(from, slot) {
+  if (slot === null || slot === from || slot === from + 1) return null;
+  return slot < from ? slot + 1 : slot;
+}
+
 export default class Tabs extends View {
-  init() {
-    this.pressed = null;
+  init(_props, cx) {
+    // press: the tab the left button went down on; drag: once it moved far enough.
+    this.press = null;
+    this.drag = null;
+    this.handle = cx.focus_handle();
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
+  }
+
+  pressTab(c, e) {
+    this.press = { id: c.id, x: e.position.x, y: e.position.y, grab: e.local_position?.x ?? 0, width: e.bounds?.width ?? 0 };
+  }
+
+  // Every pointer move over the strip; `slot` is where a drop would land, or
+  // undefined to keep the last one (the gaps between tabs).
+  movePointer(e, slot, cx) {
+    if (!this.press) return;
+    if (!this.drag) {
+      if (Math.max(Math.abs(e.position.x - this.press.x), Math.abs(e.position.y - this.press.y)) <= DRAG_THRESHOLD) return;
+      // Esc cancels, so the keyboard comes here until the drop; it goes back after.
+      this.drag = { id: this.press.id, x: e.position.x, slot: null };
+      this.handle.focus();
+    }
+    if (slot !== undefined) this.drag.slot = slot;
+    this.drag.x = e.position.x;
+    cx.notify();
+  }
+
+  // Outside the row of tabs (the strip's padding, the buttons): the ends.
+  edgeSlot(x, shown) {
+    const row = this.row;
+    if (row && x < row.x) return 0;
+    if (row && x > row.x + row.width) return shown.length;
+    return undefined;
+  }
+
+  drop(shown) {
+    const from = shown.findIndex(c => c.id === this.drag.id);
+    const index = from === -1 ? null : dropIndex(from, this.drag.slot);
+    if (index !== null) run("tab.move", { id: this.drag.id, index });
+  }
+
+  endDrag(cx) {
+    if (this.drag && this.handle.is_focused()) run("pane.refocus");
+    this.press = null;
+    this.drag = null;
+    cx?.notify();
   }
 
   // The side panel is remembered per space: switching shows that space's choice
@@ -62,25 +121,37 @@ export default class Tabs extends View {
     const stop = (_e, cx) => cx.stop_propagation();
     const button = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", stop).on_click(action).child(label);
-    const item = (c, i) => {
+    const drag = this.drag, from = drag ? shown.findIndex(x => x.id === drag.id) : -1;
+    const marker = from === -1 || dropIndex(from, drag.slot) === null ? null : drag.slot;
+    // What a tab looks like; the dragged one's ghost is drawn the same, without its controls.
+    const face = (c, ghost) => {
       const program = ps.find(p => p.tab === c.id && p.program?.agent)?.program ?? ps.find(p => p.tab === c.id)?.program;
       const name = /^tb\d+$/.test(c.name) ? program?.name ?? "Terminal" : c.name;
-      return h_flex().id(`tab-${c.id}`).h(29).px(10).gap(7).rounded(7).items_center().flex_none().text_size(12.8)
-        .border(1).border_color(c.active ? t.border : t.chrome).bg(c.active ? t.raised : t.chrome).text_color(c.active ? t.foreground : t.muted)
-        .hover(s => s.bg(t.hover))
-        .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = i; if (e.click_count === 2) run("tab.rename", { id: c.id }); })
-        .on_mouse_up("left", () => {
-          const from = this.pressed; this.pressed = null;
-          if (from !== null && from !== i) run("tab.move", { id: shown[from].id, index: space.tabs.findIndex(x => x.id === c.id) + 1 });
-          else run("tab.select", { id: c.id });
-        })
-        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
+      return h_flex().h(29).px(10).gap(7).rounded(7).items_center().flex_none().text_size(12.8)
+        .border(1).border_color(c.active || ghost ? t.border : t.chrome).bg(c.active || ghost ? t.raised : t.chrome).text_color(c.active ? t.foreground : t.muted)
         .when(Boolean(c.icon), el => el.child(div().flex_none().text_size(13).text_color(t.muted).when(c.icon.kind === "glyph", g => g.font_family("Symbols Nerd Font")).when(c.icon.kind === "letter", l => l.font_bold()).child(c.icon.text)))
         .when(!c.icon && Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))
         .child(div().max_w(170).truncate().child(c.zoomed ? `${name} Z` : name))
         .when(c.status === "working", el => el.child(working(t)))
         .when(c.status === "blocked" || c.status === "done", el => el.child(div().size(6).rounded(3).bg(t[c.status])))
-        .when(c.active, el => el.child(div().id(`close-${c.id}`).text_color(t.dim).on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); run("tab.close", { id: c.id }); }).child(svg("mods/pane/close.svg").size(12))));
+        .when(c.active && !ghost, el => el.child(div().id(`close-${c.id}`).text_color(t.dim).on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); run("tab.close", { id: c.id }); }).child(svg("mods/pane/close.svg").size(12))));
+    };
+    // Where a drop lands: a line in the gap, centred in it (inside the strip's edge at the first tab).
+    const line = (side, first) => div().absolute().top(4).h(21).w(2).rounded(1).bg(t.accent)
+      .when(side === "left", el => el.left(first ? 0 : -2.5)).when(side === "right", el => el.right(-2.5));
+    const item = (c, i) => face(c, false).id(`tab-${c.id}`).relative()
+        .when(c.id === drag?.id, el => el.opacity(0.4))
+        .when(!drag, el => el.hover(s => s.bg(t.hover)))
+        .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressTab(c, e); if (e.click_count === 2) run("tab.rename", { id: c.id }); })
+        .on_mouse_move((e, cx) => this.movePointer(e, slotOver(i, e.local_position.x, e.bounds.width), cx))
+        .on_mouse_up("left", () => { if (this.press?.id === c.id && !this.drag) run("tab.select", { id: c.id }); })
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
+        .when(marker === i, el => el.child(line("left", i === 0)))
+        .when(marker === shown.length && i === shown.length - 1, el => el.child(line("right", false)));
+    const ghost = () => {
+      const c = shown[from], box = this.strip, w = this.press?.width ?? 0;
+      const x = Math.max(0, Math.min(box.width - w, drag.x - box.x - (this.press?.grab ?? 0)));
+      return div().absolute().left(x).top(Math.max(0, (box.height - 29) / 2)).opacity(0.9).child(face(c, true));
     };
     const root = layout(), sidebar = find(root, "sidebar"), w = window();
     // Old saved rails and a dragged-narrow sidebar can be smaller than the window buttons.
@@ -100,15 +171,24 @@ export default class Tabs extends View {
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
         }).child(svg(icon).size(14)).child(label);
     };
-    return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
-      .on_mouse_up("left", () => { this.pressed = null; })
-      .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
-      .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar().children(shown.map(item)))
+    return h_flex().id("tab-strip").relative().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
+      .on_mouse_move((e, cx) => { this.strip = e.bounds; this.movePointer(e, this.edgeSlot(e.position.x, shown), cx); })
+      .on_mouse_up("left", (_e, cx) => { if (this.drag) this.drop(shown); this.endDrag(cx); })
+      // Leaving the strip (released outside it, or not) cancels a drag.
+      .on_hover((on, cx) => { if (!on && this.press) this.endDrag(cx); })
+      .track_focus(this.handle)
+      .on_key_down((e, cx) => { if (e.key === "escape" && this.drag) { cx.stop_propagation(); this.endDrag(cx); } })
+      .on_scroll_wheel(e => { if (!this.drag && Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
+      .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar()
+        .on_mouse_move(e => { this.row = e.bounds; }).children(shown.map(item))
+        // Past the last tab: drop at the end.
+        .child(div().id("tab-tail").flex_1().min_w(24).h_full().on_mouse_move((e, cx) => this.movePointer(e, shown.length, cx))))
       .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
-        .child(button("close-window", w.platform === "windows" ? svg("mods/tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));
+        .child(button("close-window", w.platform === "windows" ? svg("mods/tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))))
+      .when(from !== -1 && Boolean(this.strip), el => el.child(ghost()));
   }
 }
