@@ -4,6 +4,7 @@
     "Cargo.toml",
     "crates/ghostty-sys/Cargo.toml",
     "defaults/icons/LICENSES.md",
+    "defaults/mods/icon-picker/names/LICENSES.md",
     "vendor/gpui-kit/Cargo.toml",
     "vendor/gpui-kit/LICENSE-APACHE",
     "vendor/gpui-kit/crates/base/Cargo.toml",
@@ -198,6 +199,21 @@
       "source": "Ram path adapted from https://github.com/herdrdev/herdr/blob/HEAD/assets/logo.svg (Apache-2.0). Herdr 98 artwork is drawn by defaults/mods/win98/art/generate.ts, under the app's Apache-2.0 license.",
       "files": [
         "LICENSE"
+      ]
+    },
+    {
+      "name": "Nerd Fonts glyph names (the icon-picker mod's names/glyphs.json)",
+      "source": "https://github.com/ryanoasis/nerd-fonts/blob/v3.5.1/glyphnames.json",
+      "files": [
+        "defaults/mods/icon-picker/names/LICENSE-NerdFonts.txt"
+      ]
+    },
+    {
+      "name": "Emojibase data, with Unicode CLDR names and keywords (the icon-picker mod's names/emoji.json)",
+      "source": "https://github.com/milesj/emojibase (emojibase-data 16.0.3 en/compact.json) and https://cldr.unicode.org",
+      "files": [
+        "defaults/mods/icon-picker/names/LICENSE-emojibase.txt",
+        "licenses/Unicode.txt"
       ]
     }
   ]
