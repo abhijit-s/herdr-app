@@ -98,6 +98,15 @@ Move a tab to a position in its space (1 = first).
 | `id` | yes |
 | `index` | yes |
 
+## `tab.set_icon`
+
+Choose a tab's icon (default: the selected tab): icon {"kind": "glyph" | "emoji", "value": one glyph or emoji} or {"kind": "letter"} (the first letter of its name); null or none: its focused pane's again. Kept with the tab.
+
+| Argument | Required |
+|---|---|
+| `id` | no |
+| `icon` | no |
+
 ## `pane.split`
 
 Split a pane (default: the focused one) "right" or "down" with a new terminal, or with a mod (`mod`, its `props`) beside it.
@@ -126,6 +135,15 @@ Name a pane (default: the focused one; asks the person when no name, starting fr
 |---|---|
 | `pane` | no |
 | `name` | no |
+
+## `pane.set_icon`
+
+Choose a pane's icon (default: the focused one): icon {"kind": "glyph" | "emoji", "value": one glyph or emoji} or {"kind": "letter"} (the first letter of its label); null or none: its automatic icon again. Kept with the pane.
+
+| Argument | Required |
+|---|---|
+| `pane` | no |
+| `icon` | no |
 
 ## `terminal.open`
 

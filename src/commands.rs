@@ -39,9 +39,11 @@ pub const COMMANDS: &[Command] = &[
     cmd("tab.close", &[opt("id"), opt("confirmed")], "Close a tab and end its terminals."),
     cmd("tab.rename", &[opt("id"), opt("name")], "Rename a tab (asks the person when no name; an empty name: called by its number again)."),
     cmd("tab.move", &[req("id"), req("index")], "Move a tab to a position in its space (1 = first)."),
+    cmd("tab.set_icon", &[opt("id"), opt("icon")], "Choose a tab's icon (default: the selected tab): icon {\"kind\": \"glyph\" | \"emoji\", \"value\": one glyph or emoji} or {\"kind\": \"letter\"} (the first letter of its name); null or none: its focused pane's again. Kept with the tab."),
     cmd("pane.split", &[req("direction"), opt("pane"), opt("argv"), opt("mod"), opt("props")], "Split a pane (default: the focused one) \"right\" or \"down\" with a new terminal, or with a mod (`mod`, its `props`) beside it."),
     cmd("pane.close", &[opt("pane")], "Close a pane and end its terminal."),
     cmd("pane.rename", &[opt("pane"), opt("name")], "Name a pane (default: the focused one; asks the person when no name, starting from the name it shows: its own or, with pane_auto_names, its automatic one; an empty name: its program's again)."),
+    cmd("pane.set_icon", &[opt("pane"), opt("icon")], "Choose a pane's icon (default: the focused one): icon {\"kind\": \"glyph\" | \"emoji\", \"value\": one glyph or emoji} or {\"kind\": \"letter\"} (the first letter of its label); null or none: its automatic icon again. Kept with the pane."),
     cmd("terminal.open", &[opt("argv"), opt("folder"), opt("place"), opt("name")], "Start a terminal: as a new tab (place \"tab\", default), or \"right\"/\"down\" of the focused pane."),
     cmd("terminal.popup", &[req("argv"), opt("cwd"), opt("hold"), opt("wait"), opt("width"), opt("height")],
         "Run a program on this computer in a popup over the tab (terminal.peek's, with keep-as-tab and close), started without a parent. It closes when the program ends, and the terminal goes with it unless wait is true, which keeps it until `{\"wait\": terminal}` on the control socket (as `herdr-app popup` sends) has read its exit code and signal (unread for a minute, it goes too). cwd: where it starts (default: home); hold: keep it up after the program ends until a key (not on Windows); width, height: the popup's size (px, or a fraction of the window up to 1; default 0.8). ✕ hides the popup and the program keeps running until the next popup, which ends the program the last popup started, open or hidden."),
@@ -215,7 +217,7 @@ mod tests {
 
     #[test]
     fn malformed_targets_cannot_fall_back_to_the_current_work() {
-        for (name, arg) in [("tab.close", "id"), ("pane.close", "pane"), ("pane.rename", "pane"), ("space.close", "id"), ("tab.new", "space"), ("terminal.show", "terminal")] {
+        for (name, arg) in [("tab.close", "id"), ("pane.close", "pane"), ("pane.rename", "pane"), ("pane.set_icon", "pane"), ("tab.set_icon", "id"), ("space.close", "id"), ("tab.new", "space"), ("terminal.show", "terminal")] {
             let c = find(name).unwrap();
             for value in [json!(123), json!(false), json!([]), json!({"id": "target"})] {
                 let error = validate_args(c, &json!({arg: value})).unwrap_err();

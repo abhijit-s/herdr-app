@@ -98,6 +98,9 @@ pub struct Model {
     pub folder_info: HashMap<String, FolderInfo>,
     /// The mode tabs made on this screen start in (settings.json `default_arrange`).
     pub default_arrange: Option<crate::arrange::Mode>,
+    /// Icons someone chose (`pane.set_icon`, `tab.set_icon`), by pane or tab id;
+    /// kept in each machine's layout document with its spaces.
+    pub icons: BTreeMap<String, crate::pane_icons::Choice>,
 }
 
 /// Herdr's attention priority: blocked > done > working > idle > nothing.
@@ -260,6 +263,19 @@ impl Model {
         let Some(n) = self.tab_of_mut(pane).and_then(|c| c.root.find_mut(pane)).filter(|n| n.is_pane()) else { return false };
         let name = name.trim();
         n.title = (!name.is_empty()).then(|| name.to_owned());
+        true
+    }
+
+    /// Chooses a pane's or a tab's icon (None: its automatic one again). False: no such pane or tab.
+    pub fn set_icon(&mut self, id: &str, icon: Option<crate::pane_icons::Choice>) -> bool {
+        let pane = self.tab_of(id).and_then(|c| c.root.find(id)).is_some_and(|n| n.is_pane());
+        if !pane && self.tab(id).is_none() {
+            return false;
+        }
+        match icon {
+            Some(c) => self.icons.insert(id.to_owned(), c),
+            None => self.icons.remove(id),
+        };
         true
     }
 
@@ -672,13 +688,16 @@ pub struct FolderInfo {
 
 /// A space as mods see it. `name` is what to call it; `named`: someone gave it
 /// (else it's Herdr's automatic name, which a mod may show its own way).
-pub fn space_json(m: &Model, p: &Space, index: usize, branch: Option<&str>, home: &str) -> Value {
+/// `icon`: each tab's icon (`pane_icons::tab`) and the letter a letter icon
+/// shows; `own_icon` the one chosen for it.
+pub fn space_json(m: &Model, p: &Space, index: usize, branch: Option<&str>, home: &str, icon: &dyn Fn(&Tab) -> (Value, String)) -> Value {
     let active = p.active_tab().map(|c| c.id.clone());
     let tabs: Vec<Value> = p
         .tabs
         .iter()
         .enumerate()
         .map(|(i, c)| {
+            let (icon, letter) = icon(c);
             json!({
                 "id": c.id,
                 "index": i + 1,
@@ -693,6 +712,9 @@ pub fn space_json(m: &Model, p: &Space, index: usize, branch: Option<&str>, home
                 "settled_at": c.settled,
                 "changed_at": m.changed_at(c),
                 "working_since": m.working_since(c),
+                "icon": icon,
+                "own_icon": m.icons.get(&c.id),
+                "letter": letter,
             })
         })
         .collect();
