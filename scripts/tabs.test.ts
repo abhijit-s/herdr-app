@@ -6,7 +6,7 @@ const tabsSource = strip(await readFile(new URL("../defaults/mods/tabs/main.js",
 const menuSource = strip(await readFile(new URL("../defaults/mods/menu/main.js", import.meta.url), "utf8"), "Menu");
 
 type Tab = { id: string; name: string; active: boolean };
-type Ev = { position: { x: number; y: number }; local_position?: { x: number; y: number }; bounds?: { x: number; y: number; width: number; height: number }; click_count?: number; key?: string };
+type Ev = { position: { x: number; y: number }; pressed_button?: string | null; local_position?: { x: number; y: number }; bounds?: { x: number; y: number; width: number; height: number }; click_count?: number; key?: string };
 
 // Every element a render builds, with its id and handlers, so a test can find
 // a tab by id and press, move and release on it as GPUI would.
@@ -52,22 +52,25 @@ function harness(names = ["a", "b", "c", "d"]) {
   const box = (id: string) => ({ x: 20 + tabs.findIndex(t => t.id === id) * 104, y: 5, width: 100, height: 29 });
   const at = (id: string, dx: number): Ev => {
     const b = box(id);
-    return { position: { x: b.x + dx, y: 20 }, local_position: { x: dx, y: 15 }, bounds: b };
+    return { position: { x: b.x + dx, y: 20 }, local_position: { x: dx, y: 15 }, bounds: b, pressed_button: held };
   };
-  const stripEv = (x: number): Ev => ({ position: { x, y: 20 }, local_position: { x, y: 20 }, bounds: { x: 0, y: 0, width: 800, height: 40 } });
+  const stripEv = (x: number): Ev => ({ position: { x, y: 20 }, local_position: { x, y: 20 }, bounds: { x: 0, y: 0, width: 800, height: 40 }, pressed_button: held });
   // GPUI bubbles a pointer event from the innermost element out.
-  const press = (id: string, dx = 50, click_count = 1) => { find(`tab-${id}`).$handlers["on_mouse_down:left"]({ ...at(id, dx), click_count }, cx); render(); };
+  // The button a move reports held: left from a press to its release.
+  let held: string | null = null;
+  const press = (id: string, dx = 50, click_count = 1) => { held = "left"; find(`tab-${id}`).$handlers["on_mouse_down:left"]({ ...at(id, dx), click_count }, cx); render(); };
   // The row of tabs (and the tail after them) spans x = 20 to 640.
-  const rowEv = (x: number): Ev => ({ position: { x, y: 20 }, local_position: { x: x - 20, y: 20 }, bounds: { x: 20, y: 0, width: 620, height: 40 } });
+  const rowEv = (x: number): Ev => ({ position: { x, y: 20 }, local_position: { x: x - 20, y: 20 }, bounds: { x: 20, y: 0, width: 620, height: 40 }, pressed_button: held });
   const inRow = (x: number) => find("tab-scroll").$handlers.on_mouse_move(rowEv(x), cx);
   const moveOver = (id: string, dx: number) => { const x = at(id, dx).position.x; find(`tab-${id}`).$handlers.on_mouse_move(at(id, dx), cx); inRow(x); strip().$handlers.on_mouse_move(stripEv(x), cx); render(); };
   const moveStrip = (x: number) => { if (x >= 20 && x <= 640) inRow(x); strip().$handlers.on_mouse_move(stripEv(x), cx); render(); };
   const moveTail = (x: number) => { find("tab-tail").$handlers.on_mouse_move(stripEv(x), cx); inRow(x); strip().$handlers.on_mouse_move(stripEv(x), cx); render(); };
-  const release = (id?: string) => { if (id) find(`tab-${id}`).$handlers["on_mouse_up:left"](at(id, 50), cx); strip().$handlers["on_mouse_up:left"](stripEv(0), cx); render(); };
+  const release = (id?: string) => { held = null; if (id) find(`tab-${id}`).$handlers["on_mouse_up:left"](at(id, 50), cx); strip().$handlers["on_mouse_up:left"](stripEv(0), cx); render(); };
   const leave = () => { strip().$handlers.on_hover(false, cx); render(); };
   const key = (k: string) => { strip().$handlers.on_key_down({ key: k }, cx); render(); };
   const setTabs = (next: Tab[]) => { tabs = next; render(); };
-  return { view, runs, handle, find, all: () => elements, press, moveOver, moveStrip, moveTail, release, leave, key, render, setTabs, ...Tabs };
+  const lose = () => { held = null; };
+  return { view, runs, handle, find, all: () => elements, press, moveOver, moveStrip, moveTail, release, leave, key, render, setTabs, lose, ...Tabs };
 }
 
 test("a drop slot is the half of the tab under the pointer", () => {
@@ -198,6 +201,32 @@ test("Escape or leaving the strip cancels a drag", () => {
   // Other keys go nowhere; a key without a drag does nothing.
   g.key("escape");
   expect(g.runs.length).toBe(1);
+});
+
+test("a drag whose release went missing ends at the next move without the button", () => {
+  const h = harness();
+  h.press("a");
+  h.moveOver("c", 60);
+  h.lose();
+  h.moveOver("d", 60);
+  expect(h.view.drag).toBeNull();
+  expect(h.view.press).toBeNull();
+  expect(h.runs).toEqual([["pane.refocus", undefined]]);
+  // A plain move over the strip starts nothing, and the next click only selects.
+  h.moveOver("b", 10);
+  expect(h.view.drag).toBeNull();
+  h.press("b");
+  h.release("b");
+  expect(h.runs.slice(1)).toEqual([["tab.select", { id: "b" }]]);
+
+  // A press over a drag still going (its release never came) ends that drag first.
+  const g = harness();
+  g.press("a");
+  g.moveOver("c", 60);
+  g.press("d");
+  expect(g.view.drag).toBeNull();
+  g.release("d");
+  expect(g.runs).toEqual([["pane.refocus", undefined], ["tab.select", { id: "d" }]]);
 });
 
 test("a tab closed during its drag is not moved", () => {

@@ -4205,6 +4205,17 @@ impl ShellRuntime {
             event_bounds.set("height", f32::from(bounds.size.height))?;
             payload.set("bounds", event_bounds)?;
             payload.set("modifiers", modifiers_object(&ctx, event.modifiers)?)?;
+            // HERDR: the held button, so a script can tell a drag whose release it never heard.
+            let pressed = match event.pressed_button {
+                Some(gpui::MouseButton::Left) => Some("left"),
+                Some(gpui::MouseButton::Right) => Some("right"),
+                Some(gpui::MouseButton::Middle) => Some("middle"),
+                _ => None,
+            };
+            match pressed {
+                Some(button) => payload.set("pressed_button", button)?,
+                None => payload.set("pressed_button", rquickjs::Null)?,
+            }
             handler.call::<_, ()>((
                 payload,
                 context_object(ctx, ContextBinding::Call(generation))?,

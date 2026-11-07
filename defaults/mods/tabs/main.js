@@ -45,6 +45,8 @@ export default class Tabs extends View {
   }
 
   pressTab(c, e) {
+    // A drag still going missed its release: it ends here, as it would have then.
+    if (this.drag) this.endDrag();
     this.press = { id: c.id, x: e.position.x, y: e.position.y, grab: e.local_position?.x ?? 0, width: e.bounds?.width ?? 0 };
   }
 
@@ -52,6 +54,8 @@ export default class Tabs extends View {
   // undefined to keep the last one (the gaps between tabs).
   movePointer(e, slot, cx) {
     if (!this.press) return;
+    // The left button came up where the strip didn't hear it (a lost mouse-up).
+    if (e.pressed_button !== "left") return this.endDrag(cx);
     if (!this.drag) {
       if (Math.max(Math.abs(e.position.x - this.press.x), Math.abs(e.position.y - this.press.y)) <= DRAG_THRESHOLD) return;
       // Esc cancels, so the keyboard comes here until the drop; it goes back after.
