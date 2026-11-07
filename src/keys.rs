@@ -39,6 +39,8 @@ const SHIPPED_KEYS: &[&str] = &[
     include_str!("keys/shipped/v0.1.4-keys.json"),
     include_str!("keys/shipped/v0.1.5-keys.json"),
     include_str!("keys/shipped/v0.1.12-keys.json"),
+    // The fork's defaults before the tab move keys (master 0990622).
+    include_str!("keys/shipped/fork-0990622-keys.json"),
 ];
 #[cfg(any(target_os = "macos", test))]
 const SHIPPED_MACOS_KEYS: &[&str] = &[
@@ -46,6 +48,8 @@ const SHIPPED_MACOS_KEYS: &[&str] = &[
     include_str!("keys/shipped/v0.1.5-keys.macos.json"),
     // The fork's defaults before the pane text zoom keys (master 07fcfec).
     include_str!("keys/shipped/fork-07fcfec-keys.macos.json"),
+    // The fork's defaults before the tab move keys (master 0990622).
+    include_str!("keys/shipped/fork-0990622-keys.macos.json"),
 ];
 
 #[derive(serde::Deserialize)]

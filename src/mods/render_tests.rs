@@ -338,6 +338,30 @@ fn tabs_leave_room_for_macos_traffic_lights(cx: &mut TestAppContext) {
     }
 }
 
+/// Mid-drag, the tab strip dims the dragged tab, draws a line where it lands
+/// and a ghost under the pointer; the native tree takes all three.
+#[gpui::test]
+fn tabs_draw_a_drag_in_progress(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut values = fixture(true, props(), updates("current", "current"));
+    let tabs = values.get_mut("spaces").unwrap()[0]["tabs"].as_array_mut().unwrap();
+    let mut second = tabs[0].clone();
+    second["id"] = json!("tab3");
+    second["index"] = json!(2);
+    second["name"] = json!("Review");
+    second["active"] = json!(false);
+    tabs.push(second);
+    let idle = describe_with_values(cx, &staged, "mods/tabs", values.clone(), None).unwrap();
+    let setup = r#"this.press = { id: "tab1", x: 40, y: 20, grab: 12, width: 90 }; this.drag = { id: "tab1", x: 300, slot: 2, before: null }; this.strip = { x: 0, y: 0, width: 800, height: 40 };"#;
+    let dragging = describe_with_values(cx, &staged, "mods/tabs", values, Some(setup)).unwrap();
+    assert!(!idle.contains("opacity"), "{idle}");
+    assert!(dragging.contains(".opacity[Number(0.4)]"), "the dragged tab dims: {dragging}");
+    assert!(dragging.contains(".right[Number(-2.5)]"), "the line after the last tab: {dragging}");
+    assert!(dragging.contains(".left[Number(288.0)]") || dragging.contains(".left[Number(288)]"), "the ghost at the pointer less the grab: {dragging}");
+    assert_eq!(dragging.matches("\"Build\"").count(), 2, "the ghost draws the tab again: {dragging}");
+}
+
 #[gpui::test]
 fn windows_tab_buttons_use_matching_vector_icons(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);

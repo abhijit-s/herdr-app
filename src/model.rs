@@ -206,6 +206,26 @@ impl Model {
         true
     }
 
+    /// Moves a tab to a position in its space (1 = first; past the end: last).
+    pub fn move_tab(&mut self, id: &str, index: usize) -> bool {
+        let Some(p) = self.spaces.iter_mut().find(|p| p.tab(id).is_some()) else { return false };
+        let from = p.tabs.iter().position(|c| c.id == id).unwrap();
+        let c = p.tabs.remove(from);
+        let to = index.saturating_sub(1).min(p.tabs.len());
+        p.tabs.insert(to, c);
+        true
+    }
+
+    /// Moves a tab one place left (-1) or right (1) in its space. None: no such
+    /// tab; Some(false): it's already at that end.
+    pub fn step_tab(&mut self, id: &str, step: isize) -> Option<bool> {
+        let p = self.spaces.iter_mut().find(|p| p.tab(id).is_some())?;
+        let from = p.tabs.iter().position(|c| c.id == id).unwrap();
+        let Some(to) = from.checked_add_signed(step).filter(|to| *to < p.tabs.len()) else { return Some(false) };
+        p.tabs.swap(from, to);
+        Some(true)
+    }
+
     pub fn active_index(&self) -> Option<usize> {
         let id = self.active.as_deref()?;
         self.spaces.iter().position(|p| p.id == id).or((!self.spaces.is_empty()).then_some(0))
@@ -765,6 +785,33 @@ mod tests {
         assert_eq!(names.iter().map(String::as_str).collect::<Vec<_>>(), ["1", "review", "3"]);
         m.space_mut("p1").unwrap().name = "api".into();
         assert_eq!(m.space_name(m.space("p1").unwrap(), "/home/me"), "api");
+    }
+
+    #[test]
+    fn tabs_move_to_a_place_or_one_step_and_stop_at_the_ends() {
+        let mut m = Model::default();
+        m.add_space("p1", "", "/home/me", Tab::new("c1", "", "x1", "t1"));
+        m.add_tab("p1", Tab::new("c2", "", "x2", "t2"));
+        m.add_tab("p1", Tab::new("c3", "", "x3", "t3"));
+        let order = |m: &Model| m.space("p1").unwrap().tabs.iter().map(|c| c.id.clone()).collect::<Vec<_>>();
+        assert!(m.move_tab("c1", 3));
+        assert_eq!(order(&m), ["c2", "c3", "c1"]);
+        assert!(m.move_tab("c1", 0));
+        assert_eq!(order(&m), ["c1", "c2", "c3"]);
+        assert!(m.move_tab("c1", 99));
+        assert_eq!(order(&m), ["c2", "c3", "c1"]);
+        // Only tabs: a pane or an unknown id moves nothing.
+        assert!(!m.move_tab("x1", 1));
+        assert!(!m.move_tab("nope", 1));
+
+        assert_eq!(m.step_tab("c1", 1), Some(false));
+        assert_eq!(m.step_tab("c1", -1), Some(true));
+        assert_eq!(order(&m), ["c2", "c1", "c3"]);
+        assert_eq!(m.step_tab("c2", -1), Some(false));
+        assert_eq!(m.step_tab("c2", 1), Some(true));
+        assert_eq!(order(&m), ["c1", "c2", "c3"]);
+        assert_eq!(m.step_tab("x1", 1), None);
+        assert_eq!(m.step_tab("nope", -1), None);
     }
 
     #[test]
