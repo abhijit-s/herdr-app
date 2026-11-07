@@ -322,6 +322,33 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 - Files: `src/terminal.rs` (`TerminalEvent::Copied`, `select`, `copy`), `src/window.rs` (the terminal subscription, test `copy_on_select_says_copied_once_and_settings_presses_do_not`)
 - Upstream: none yet
 
+### Toasts stand out, and go where you put them
+
+`feat/toast-look` (branched from `master`, fork only): toasts drew on `popover` with the panel `border`, which on many themes is barely apart from the window (ayu-mirage: surface 1.16:1 and border 1.43:1 on the background; ayu-light: 1.00:1 and 1.14:1), so they were easy to miss. They now draw from their own colors, computed once in `settings::resolve` each time the theme resolves (`toast_colors`), never per toast or per frame. The colors are `toast` (the surface), `toast_border`, `toast_shadow`, `toast_foreground`, `toast_muted`, and a level stripe and dot color per level (`toast_info`, `toast_success`, `toast_warning`, `toast_error`). Each is the smallest step that holds a measurable floor:
+
+- **Surface:** on a dark theme, at least 1.3:1 on `background` (`TOAST_LIFT`), stepped toward the terminal's foreground, else white. On a light theme it is white: a white background can't show a lighter surface, so the border and shadow carry it there.
+- **Border:** at least 1.7:1 on the background (`TOAST_EDGE`) and 1.25:1 on the surface (`TOAST_SEAM`).
+- **Title and body:** at least 4.5:1 on the surface (`TOAST_TEXT`).
+- **Level stripe and dot:** at least 3:1 on the surface (`TOAST_MARK`), from `accent`, `done`, `working` and `blocked`.
+- **Shadow:** two layers, deeper on dark themes.
+- **Overrides:** a theme's or settings.json's own `toast*` colors win, and the rest are held to the `toast` actually drawn. A theme that paints its own panels (Win98) keeps its `popover` and `border` where they hold the floors.
+- **Results:** ayu-mirage goes to 1.32:1 (surface) and 1.75:1 (border); ayu-light to 1.05:1 and 1.74:1. Every preset, shipped file, public extreme and installed Rex theme holds every floor.
+
+`toast_position` in settings.json (`bottom-right` default, `bottom-left`, `bottom-center`, `top-right`, `top-left`, `top-center`) places the stack, and the core-update notice follows it.
+
+- **Stacking:** bottom stacks grow up with the oldest nearest the edge, as before. Top stacks grow down with the newest nearest the edge.
+- **Offset:** `toast_offset {x, y}` moves the stack in from the side and from its edge. The whole stack moves together (`toast_start` clamps once, at the edge), and never under the update pill. The pill is reserved for right and centre stacks only.
+- **Settings window:** "Notification position" (Rex's label) on Appearance > Window, a small window of six places in its top row and bottom row, the chosen one the tonal pill.
+
+- Tests:
+  - `settings::derivation_tests::toasts_stand_off_every_theme` checks every floor over the presets, shipped files and 7 public extremes, under tinted, shaded and classic panels, plus own-toast and Win98 cases. `theme_file_problems` includes `toast_problems`, so `rex_themes::tests::the_installed_rex_themes_all_load` holds Rex's themes to them.
+  - `settings::tests::toast_position_and_offset_parse`.
+  - `window::tests::toast_sizes`, extended: every position, with and without an offset, its edge, side and stacking direction.
+  - `window::tests::{toasts_stack_away_from_their_edge, a_toast_offset_moves_the_stack_and_keeps_clear_of_the_pill}`.
+  - `scripts/settings.test.ts` covers the picker.
+- Files: `src/settings.rs` (`toast_colors`, `step_until`, `toast_problems`, `ToastPosition`, `ToastSide`, `ToastOffset`), `src/window.rs` (`toast_frame`, `toast_start`, `toast_stack`, `at_toast_spot`, `render_overlays`), `defaults/mods/toast/main.js`, `defaults/frame/settings/main.js`, `scripts/settings.test.ts`, `defaults/AGENTS.md`, `defaults/herdr.d.ts`
+- Upstream: none yet
+
 ### Popup command
 
 `feat/popup-command` (branched from `master`, fork only): `terminal.popup {argv, cwd?, hold?, wait?, width?, height?}` starts a program on this computer as `hc run --bg --no-parent` does (`rm` unless `wait`) and opens the `terminal.peek` overlay for it in the same step, so there is no retry while the window learns about the terminal. `herdr-app popup [--cwd DIR] [--hold] [--wait] [--size WxH] [--] cmd args…` drives it over the control socket; with `--wait` it sends `{"wait": terminal}`, which the window answers from the core's events once the terminal finishes, then removes the terminal, and the CLI exits with its exit code, 128 + the signal for a program a signal killed (the core's `signal`), or 1 (removed before it ended, the window is not open or the popup failed). The popup's ✕ and backdrop only hide it and the program keeps running: `POPUP_CLOSE_ENDS_PROGRAM` in `src/window.rs` flips that, through the peek bar's `close_ends_program` prop. A new popup ends the program the last `terminal.popup` started, whether that popup is open or hidden (`popped` tracks it, with the core's `created_ms`, until it is ended or a listing shows it finished, gone or another terminal at its address, since addresses come back after a core restart; a wait popup's terminal stays until its waiter has the exit code). A `terminal.peek` of an existing terminal is never ended, and a plain `terminal.peek`, such as a link clicked in a popup, ends nothing: it only hides an open popup, which the next popup still ends. It replaces the logic of the `herdr-popup` shell script in dotfiles, which is now a wrapper.

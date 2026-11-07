@@ -5472,12 +5472,14 @@ impl AppWindow {
 
     fn render_overlays(&self, viewport: Size<Pixels>, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut out = Vec::new();
-        let mut toast_y = 16.0;
+        let s = settings::get();
+        let top = s.toast_position.top();
         // Drawn last, so it stays clickable over an open dialog.
         let pill = self.render_update_pill(cx);
-        if pill.is_some() {
-            toast_y += UPDATE_PILL_HEIGHT + 8.0;
-        }
+        let start = toast_start(s.toast_offset.y, pill.is_some() && !top && s.toast_position.side() != settings::ToastSide::Left);
+        let heights: Vec<f32> = self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).map(|o| o.size.height).collect();
+        let (spots, past) = toast_stack(&heights, start, top);
+        let mut spots = spots.into_iter();
         // Windows under dialogs, popups and toasts; each kind in the order opened
         // (a window pressed last is last: on top).
         let order = self.overlays.iter().filter(|o| o.kind == OverlayKind::Window).chain(self.overlays.iter().filter(|o| o.kind != OverlayKind::Window));
@@ -5500,7 +5502,8 @@ impl AppWindow {
                 .when(o.kind == OverlayKind::Toast, |d| d.min_w(settings::z(TOAST_MIN_WIDTH)).max_w(settings::z(TOAST_MAX_WIDTH)))
                 .debug_selector(|| format!("overlay-{id}"))
                 .when(sized(o.size.height), |d| if o.fit { d.max_h(h) } else { d.h(h) })
-                .when(!o.bare, |d| d.bg(c("popover")).border_1().border_color(c("border")).rounded(settings::z(8.0)).shadow_lg())
+                .when(!o.bare && o.kind != OverlayKind::Toast, |d| d.bg(c("popover")).border_1().border_color(c("border")).rounded(settings::z(8.0)).shadow_lg())
+                .when(!o.bare && o.kind == OverlayKind::Toast, toast_frame)
                 .overflow_hidden()
                 .flex()
                 // Scroll, hover and cursor stop here, not on the pane behind.
@@ -5541,19 +5544,18 @@ impl AppWindow {
                             .into_any_element(),
                     );
                 }
-                OverlayKind::Toast => {
-                    out.push(div().absolute().right(settings::z(16.0)).bottom(settings::z(toast_y)).child(body).into_any_element());
-                    toast_y += o.size.height + 8.0;
-                }
+                OverlayKind::Toast => out.push(at_toast_spot(body.into_any_element(), &s, spots.next().unwrap_or(past))),
             }
         }
+        // Past the toasts, on their edge: it stays until an update goes through.
         if let Some(error) = crate::update::core().error {
-            out.push(div().absolute().right(settings::z(16.0)).bottom(settings::z(toast_y))
-                .max_w(settings::z(540.0)).p(settings::z(12.0)).rounded_lg().bg(c("popover"))
-                .border_1().border_color(c("border")).text_size(settings::zt(13.0)).text_color(c("foreground"))
+            let notice = toast_frame(div().max_w(settings::z(540.0)).flex().overflow_hidden())
+                .text_size(settings::zt(13.0)).text_color(c("toast_foreground"))
                 .id("core-update-error").cursor_pointer()
                 .on_click(cx.listener(|this, _, w, cx| this.run("app.settings", json!({ "section": "updates" }), w, cx)))
-                .child(format!("herdr-core update failed: {error} · Open Updates")).into_any_element());
+                .child(div().w(settings::z(TOAST_STRIPE)).flex_none().bg(c("toast_error")))
+                .child(div().p(settings::z(12.0)).child(format!("herdr-core update failed: {error} · Open Updates")));
+            out.push(at_toast_spot(notice.into_any_element(), &s, past));
         }
         out.extend(pill);
         out
@@ -5561,6 +5563,65 @@ impl AppWindow {
 }
 
 const UPDATE_PILL_HEIGHT: f32 = 34.0;
+
+/// A toast stack's distance from the window's edges, and between its toasts (px at zoom 1).
+const TOAST_MARGIN: f32 = 16.0;
+const TOAST_GAP: f32 = 8.0;
+/// The level stripe down a toast's left side, as the toast mod draws it (px at zoom 1).
+const TOAST_STRIPE: f32 = 3.0;
+
+/// A toast's box: its own lifted surface, border and shadow (`toast_colors`
+/// in settings.rs), so it stands off whatever it's over on every theme.
+fn toast_frame<E: Styled>(e: E) -> E {
+    let shadow = c("toast_shadow");
+    let near = Hsla { a: shadow.a * 0.6, ..shadow };
+    e.bg(c("toast")).border_1().border_color(c("toast_border")).rounded(settings::z(8.0)).shadow(vec![
+        BoxShadow { color: shadow, offset: point(px(0.0), settings::z(8.0)), blur_radius: settings::z(24.0), spread_radius: px(0.0), inset: false },
+        BoxShadow { color: near, offset: point(px(0.0), settings::z(1.0)), blur_radius: settings::z(3.0), spread_radius: px(0.0), inset: false },
+    ])
+}
+
+/// Where a toast stack starts (px at zoom 1 from its edge): the margin moved
+/// by `toast_offset.y`, the window's edge at most, so the whole stack moves
+/// together. Under the update pill (it holds the bottom-right corner, and a
+/// centred stack can reach it), it starts above the pill whatever the offset.
+fn toast_start(offset_y: f32, above_pill: bool) -> f32 {
+    let start = (TOAST_MARGIN + offset_y).max(0.0);
+    if above_pill { (start + UPDATE_PILL_HEIGHT + TOAST_GAP).max(TOAST_MARGIN + UPDATE_PILL_HEIGHT + TOAST_GAP) } else { start }
+}
+
+/// Each toast's distance (px at zoom 1) from its stack's edge, for `heights`
+/// in the order opened: the nearest `start` from the edge, then `TOAST_GAP`
+/// apart. A bottom stack keeps its oldest nearest the edge, a top stack its
+/// newest. Also where one more would go.
+fn toast_stack(heights: &[f32], start: f32, top: bool) -> (Vec<f32>, f32) {
+    let mut at = vec![0.0; heights.len()];
+    let mut along = start;
+    let mut place = |i: usize| {
+        at[i] = along;
+        along += heights[i] + TOAST_GAP;
+    };
+    if top { (0..heights.len()).rev().for_each(&mut place) } else { (0..heights.len()).for_each(&mut place) }
+    (at, along)
+}
+
+/// `el` where `toast_position` puts a toast, `along` px (at zoom 1) from its
+/// top or bottom edge (`toast_start` has applied `toast_offset.y`), its side
+/// moved in by `toast_offset.x`.
+fn at_toast_spot(el: AnyElement, s: &settings::Settings, along: f32) -> AnyElement {
+    use settings::ToastSide;
+    let position = s.toast_position;
+    let side = settings::z((TOAST_MARGIN + s.toast_offset.x).max(0.0));
+    let along = settings::z(along);
+    let spot = match position.side() {
+        ToastSide::Left => div().absolute().left(side),
+        ToastSide::Right => div().absolute().right(side),
+        // Full width, so the toast centres without knowing its own width.
+        ToastSide::Center => div().absolute().left_0().right_0().flex().justify_center(),
+    };
+    let spot = if position.top() { spot.top(along) } else { spot.bottom(along) };
+    spot.child(el).into_any_element()
+}
 
 impl AppWindow {
     /// "Herdr 0.2.0 is ready · Restart": the frame's, so no layout or mod can hide it.
@@ -6602,6 +6663,68 @@ mod tests {
             assert_eq!(content, pill.inset(px(1.0)), "{id}: the content fills the pill inside its border");
             assert!((text.center().y - pill.center().y).abs() < px(0.5), "{id}: text centred: text {text:?}, pill {pill:?}");
         }
+        // Every `toast_position`, with and without `toast_offset`: the stack
+        // sits on its edge and side, bottom stacks grow up (the oldest
+        // nearest the edge), top stacks down (the newest nearest it).
+        use crate::settings::{ToastOffset, ToastPosition, ToastSide};
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let near = |a: gpui::Pixels, b: gpui::Pixels| (a - b).abs() < px(0.5);
+        for position in ToastPosition::ALL {
+            for offset in [None, Some(ToastOffset { x: 10.0, y: 24.0 })] {
+                view.update_in(cx, |this, window, cx| {
+                    this.person.toast_position = position;
+                    this.person.toast_offset = offset;
+                    this.apply_look(window, cx);
+                });
+                cx.run_until_parked();
+                let stack = ["short", "medium", "long", "body", "tall"].map(|id| cx.debug_bounds(format!("overlay-{id}").leak()).unwrap());
+                let o = offset.unwrap_or_default();
+                let (side, edge) = (px(16.0 + o.x), px(16.0 + o.y));
+                let at = format!("{position:?} {offset:?}: {stack:?}");
+                if position.top() {
+                    assert!(near(stack[4].top(), edge), "the newest on the top edge, {at}");
+                    for pair in stack.windows(2) {
+                        assert!(near(pair[0].top(), pair[1].bottom() + px(8.0)), "older below newer, {at}");
+                    }
+                } else {
+                    assert!(near(stack[0].bottom(), viewport.height - edge), "the oldest on the bottom edge, {at}");
+                    for pair in stack.windows(2) {
+                        assert!(near(pair[1].bottom(), pair[0].top() - px(8.0)), "newer above older, {at}");
+                    }
+                }
+                for b in stack {
+                    let lined = match position.side() {
+                        ToastSide::Left => near(b.left(), side),
+                        ToastSide::Right => near(b.right(), viewport.width - side),
+                        ToastSide::Center => near(b.center().x, viewport.width / 2.0),
+                    };
+                    assert!(lined, "on its side, {at}");
+                }
+            }
+        }
+    }
+
+    /// A stack's spots: from `start`, each toast's height and the gap apart,
+    /// the oldest first at the bottom and the newest first at the top.
+    #[test]
+    fn toasts_stack_away_from_their_edge() {
+        use super::toast_stack;
+        assert_eq!(toast_stack(&[40.0, 72.0, 40.0], 16.0, false), (vec![16.0, 64.0, 144.0], 192.0));
+        assert_eq!(toast_stack(&[40.0, 72.0, 40.0], 16.0, true), (vec![144.0, 64.0, 16.0], 192.0));
+        assert_eq!(toast_stack(&[], 58.0, false), (vec![], 58.0));
+    }
+
+    /// `toast_offset.y` moves the whole stack, to the edge at most, and never
+    /// under the update pill.
+    #[test]
+    fn a_toast_offset_moves_the_stack_and_keeps_clear_of_the_pill() {
+        use super::toast_start;
+        assert_eq!(toast_start(0.0, false), 16.0);
+        assert_eq!(toast_start(24.0, false), 40.0);
+        assert_eq!(toast_start(-100.0, false), 0.0);
+        assert_eq!(toast_start(0.0, true), 58.0);
+        assert_eq!(toast_start(24.0, true), 82.0);
+        assert_eq!(toast_start(-100.0, true), 58.0);
     }
 
     #[test]
