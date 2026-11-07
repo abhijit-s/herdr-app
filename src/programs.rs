@@ -46,6 +46,9 @@ struct Entry {
     /// How to bring it back after a reboot (resume.rs); `{}` turns a shipped rule off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resume: Option<crate::resume::Rule>,
+    /// Where its session's own name is (pane_label.rs: `session` on panes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_name: Option<crate::resume::SessionFile>,
 }
 
 impl Entry {
@@ -63,6 +66,9 @@ impl Entry {
         }
         if mine.resume.is_some() {
             self.resume = mine.resume;
+        }
+        if mine.session_name.is_some() {
+            self.session_name = mine.session_name;
         }
     }
 }
@@ -175,7 +181,7 @@ pub fn load() -> Result<(), String> {
                 for (key, entry) in mine.programs {
                     table.programs.entry(key).or_default().over(entry);
                 }
-                bad_resume_rules(&mut table)
+                bad_rules(&mut table)
             }
         },
     };
@@ -183,13 +189,17 @@ pub fn load() -> Result<(), String> {
     result
 }
 
-/// Drops resume rules that don't hold up; Err names them.
-fn bad_resume_rules(table: &mut Table) -> Result<(), String> {
+/// Drops resume rules and session name files that don't hold up; Err names them.
+fn bad_rules(table: &mut Table) -> Result<(), String> {
     let mut bad = Vec::new();
     for (key, e) in &mut table.programs {
         if let Some(Err(why)) = e.resume.as_ref().map(crate::resume::Rule::check) {
             bad.push(format!("programs.json: {key}.resume: {why}"));
             e.resume = None;
+        }
+        if let Some(Err(why)) = e.session_name.as_ref().map(crate::resume::SessionFile::check) {
+            bad.push(format!("programs.json: {key}.session_name: {why}"));
+            e.session_name = None;
         }
     }
     if bad.is_empty() { Ok(()) } else { Err(bad.join("; ")) }
@@ -203,6 +213,15 @@ pub fn resume_rule(argv: &[String]) -> Option<(String, String, crate::resume::Ru
         let key = shown["key"].as_str()?;
         let rule = t.programs.get(key)?.resume.clone().filter(|r| !r.is_off())?;
         Some((key.to_owned(), shown["name"].as_str().unwrap_or(key).to_owned(), rule))
+    })
+}
+
+/// Where the program a command line runs keeps its session's own name.
+pub fn session_name(argv: &[String]) -> Option<crate::resume::SessionFile> {
+    TABLE.with(|t| {
+        let t = t.borrow();
+        let shown = resolve(&t, None, argv);
+        t.programs.get(shown["key"].as_str()?)?.session_name.clone()
     })
 }
 
@@ -455,7 +474,7 @@ mod tests {
     #[test]
     fn resume_rules_are_checked_and_a_persons_empty_rule_turns_one_off() {
         let mut shipped = t();
-        assert!(bad_resume_rules(&mut shipped).is_ok(), "shipped rules hold up");
+        assert!(bad_rules(&mut shipped).is_ok(), "shipped rules hold up");
         let claude = shipped.programs["claude"].resume.clone().expect("Claude Code resumes");
         let argv: Vec<String> = ["claude", "-c", "--model", "opus"].map(String::from).to_vec();
         assert_eq!(crate::resume::rewrite(&argv, &claude, Some("s1")).unwrap(), ["claude", "--model", "opus", "--resume", "s1"]);
@@ -470,11 +489,33 @@ mod tests {
         for (key, entry) in mine.programs {
             table.programs.entry(key).or_default().over(entry);
         }
-        let error = bad_resume_rules(&mut table).unwrap_err();
+        let error = bad_rules(&mut table).unwrap_err();
         assert!(error.contains("bad.resume") && !error.contains("htop"), "{error}");
         assert!(table.programs["bad"].resume.is_none());
         assert!(table.programs["claude"].resume.as_ref().is_some_and(crate::resume::Rule::is_off));
         assert!(serde_json::from_str::<Table>(r#"{ "programs": { "x": { "resume": { "typo": 1 } } } }"#).is_err(), "unknown fields are errors");
+    }
+
+    #[test]
+    fn session_name_files_are_checked_and_a_persons_replaces_the_shipped_one() {
+        let shipped = t();
+        let claude = shipped.programs["claude"].session_name.clone().expect("Claude Code names its sessions");
+        assert_eq!((claude.file.as_str(), claude.field.as_str()), ("~/.claude/sessions/{pid}.json", "name"));
+        let mine: Table = serde_json::from_str(r#"{ "programs": {
+            "claude": { "session_name": { "file": "~/elsewhere/{pid}.json", "field": "title" } },
+            "bad": { "session_name": { "file": "", "field": "name" } } } }"#).unwrap();
+        let mut table = t();
+        for (key, entry) in mine.programs {
+            table.programs.entry(key).or_default().over(entry);
+        }
+        let error = bad_rules(&mut table).unwrap_err();
+        assert!(error.contains("bad.session_name: file is empty") && !error.contains("claude"), "{error}");
+        assert!(table.programs["bad"].session_name.is_none());
+        assert_eq!(table.programs["claude"].session_name.as_ref().map(|s| s.field.as_str()), Some("title"));
+        assert!(table.programs["claude"].resume.is_some(), "the resume rule stays");
+        let argv = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        assert_eq!(session_name(&argv(&["/usr/local/bin/claude", "--resume", "x"])).map(|s| s.field), Some("name".into()));
+        assert_eq!(session_name(&argv(&["zsh"])), None);
     }
 
     #[test]

@@ -130,6 +130,7 @@ the highlighted line shows where it will land.
   nobody named shows its program (an agent's name, else the terminal's
   title); `pane.rename` names it ("server"), saved with its tab, and
   `panes()[i].name` gives the name (null: none). With `pane_auto_names` on, a pane at a bare shell nobody named shows two words of its own instead (`panes()[i].auto_name`, "hazy-inlet"; see The person).
+  What a pane or agent is called is one value, `label`, on `panes()`, `agents()` and `herdr-app ls`: the first of the pane's name (one with a letter or digit), its `auto_name`, its title when telling, the agent session's own name (`session`), the program's name, the terminal's address. A title is telling when, judged without what leads up to its first letter, digit or path (a `✓`, a `[`), it is not empty or only digits, not the program's name, not its command line (first word the program's key or name: `claude attach 1f2e`), not a path (`~`, `/`, `C:\`, `\\server`), has no `@`, and isn't a throwaway: anything holding a UUID, `claude-prompt-…` and `tmp.…` files, or an editor's ` - Nvim` / ` - VIM` (Neovim as Claude Code's Ctrl+G prompt editor leaves `claude-prompt-<uuid>.md + (/private/tmp/…) - Nvim`). `session` is the session's own name, read from the program's session file (`session_name` in Programs; Claude Code's `/rename`), for the process running in the terminal on this computer; null otherwise. Name things by `label` rather than re-deriving it from `title`, which stays the title as the program set it (spinners cut).
   A
   mod pane splits, zooms, closes and gets a header like any pane, keeps
   the keyboard when clicked, and is saved with its tab; its `props` tell
@@ -402,7 +403,7 @@ The tab block says how each pane of the shown tab is wrapped:
 - Each pane's content sits in by the wider of `border` and `focus`, so moving the focus never resizes a terminal; with the narrower line drawn, the rest shows the frame's `background` if it sets one. settings.json's `focus_border_width` replaces the `focus` width.
 - `header`: a mod drawn on each pane, one copy per pane, with
   `props().pane` and `props().terminal`. It reads its live facts from
-  `panes()` (name, auto_name, title, folder, branch, agent status, focused, zoomed, text_size) and its
+  `panes()` (name, auto_name, label, session, title, folder, branch, agent status, focused, zoomed, text_size) and its
   buttons run pane commands with that pane (`pane.split`, `pane.zoom`,
   `pane.close`). `position`: `top` or `bottom`; `reveal: "hover"` shows it
   only while the pointer is on the pane, drawn over the terminal so the
@@ -709,7 +710,7 @@ From a shell:
 ```sh
 herdr-app do tab.new --name "fix login" --argv '["claude"]' --task "look at the login bug"
 herdr-app do pane.split:right
-herdr-app ls          # spaces, their tabs (with each tab's arrange mode) and terminals (sub-agents under their parent)
+herdr-app ls          # spaces, their tabs (with each tab's arrange mode) and terminals with their label and session (sub-agents under their parent)
 herdr-app status      # what's on screen: layout, focus, overlays, zoom, errors from files and mods
 herdr-app commands    # every command and its arguments
 herdr-app popup --wait -- make test   # a command in a popup; exits with its exit code
@@ -983,6 +984,7 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
   ```
 
   `drop` takes flags out of the command line it ran with (`--flag value`, `--flag=value`; the number is how many values it takes at most, and a value never starts with `-`), the rest (model, permissions) stays, then `append` is added, `{session_id}` being its session. The session comes from the agent's own report, a label on its terminal, `herdr.session.<program key>=<id>` (or, better, `<id>@<pid>` with the agent's process id, honored only for that process, so a label left from an earlier run never names a new one; an empty value clears it), which a hook sets with `hc label "$HC_TERMINAL_ID" herdr.session.claude=<id>`; else from `session.file` (`{pid}`: the program's process id; `~/`: the home of the machine it runs on, read there for terminals on other machines), whose `field` is the id and whose `when` fields must all match (a Claude Code `-p` run is `kind: "bg"`: not recorded). Ids must be at most 256 letters, digits or `_ . / : = + -`, not starting with `-`; others are refused, as is an `append` word with any other character. `{ "rerun": true }` resumes by running the same command line again (no shipped program has it); `"resume": {}` turns a shipped rule off. Claude Code writes its session file once, at start: after `/clear` or `/resume` inside it, only a hook's label names the new session. Codex, Cursor, OpenCode, Pi, Copilot, Gemini and the others have resume flags but no file that maps their process to a session: give them a rule with `append` (e.g. `"codex": { "resume": { "append": ["resume", "{session_id}"] } }`) and report the id from a hook.
+- `session_name`: where the program's session keeps its own name, read for `session` and `label` on panes (see Panes): `{ "file", "field", "when"? }` as in `resume.session`, the file read only for terminals on this computer, once per process and again when its modification time moves. Claude Code ships with `"session_name": { "file": "~/.claude/sessions/{pid}.json", "field": "name" }`; a name needs a letter or digit.
 - A record goes when its program ends in a terminal that kept running (the person quit it), when its terminal goes while Herdr watches, or when another session replaces it; a reboot or core restart keeps it.
 
 ## Mods: `mods/<name>/`
@@ -1151,7 +1153,7 @@ All of it is in `herdr.d.ts`. In short:
   machine, branch), `machines()` (name, null for this computer; layout:
   `loading`, `ready`, or `unavailable` on this connection; loading ends on
   the first read even if it fails, and offline machines are unavailable),
-  `agents()` (status, app, space, tab, pinned, focused; "done" turns "idle"
+  `agents()` (status, app, space, tab, label, session, pinned, focused; "done" turns "idle"
   once someone looks at it on any Herdr client), `terminals()`
   (every core terminal), `focused()`, `layout()`, `theme()` (every color by
   name: background (the terminals', cards), canvas (behind cards), chrome
