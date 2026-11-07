@@ -41,6 +41,8 @@ const SHIPPED_KEYS: &[&str] = &[
     include_str!("keys/shipped/v0.1.12-keys.json"),
     // The fork's defaults before the tab move keys (master 0990622).
     include_str!("keys/shipped/fork-0990622-keys.json"),
+    // The fork's defaults with Alt+Shift+[ / ] moving tabs (master 1225b24).
+    include_str!("keys/shipped/fork-1225b24-keys.json"),
 ];
 #[cfg(any(target_os = "macos", test))]
 const SHIPPED_MACOS_KEYS: &[&str] = &[
@@ -334,6 +336,30 @@ mod tests {
         std::fs::write(&path, &edited).unwrap();
         assert_eq!(super::load_text(&path, defaults, super::SHIPPED_MACOS_KEYS).unwrap(), edited);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Alt+Shift+[ / ] are terminal programs' (Meta-{ / Meta-} in emacs and
+    /// readline), so Linux and Windows ship no tab move keys: an untouched
+    /// keys.json that had them loses them, an edited one keeps them.
+    #[test]
+    fn untouched_fork_keys_give_alt_shift_brackets_back_to_programs() {
+        let dir = std::env::temp_dir().join(format!("herdr-keys-alt-brackets-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keys.json");
+        let before = include_str!("keys/shipped/fork-1225b24-keys.json");
+        let defaults = include_str!("../defaults/keys.json");
+        let moves = |text: &str| -> Vec<String> {
+            let v: serde_json::Value = serde_json::from_str(text).unwrap();
+            v["global"].as_object().unwrap().iter().filter(|(_, c)| c.as_str().is_some_and(|c| c.starts_with("tab.move_"))).map(|(k, _)| k.clone()).collect()
+        };
+        assert_eq!(moves(before), ["alt-shift-[", "alt-shift-]"]);
+        assert!(moves(defaults).is_empty(), "no tab move keys in the Linux and Windows defaults");
+        std::fs::write(&path, before).unwrap();
+        assert_eq!(super::load_text(&path, defaults, super::SHIPPED_KEYS).unwrap(), defaults);
+        let edited = before.replace("tab.new", "pane.zoom");
+        std::fs::write(&path, &edited).unwrap();
+        assert_eq!(super::load_text(&path, defaults, super::SHIPPED_KEYS).unwrap(), edited);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
