@@ -23,6 +23,8 @@ from the same parts you have.
   (`hc --help`). The Herdr app is one client of it.
 
 `herdr-app` controls this app; `hc` controls herdr-core.
+`herdr-app --version` prints the version, and on this fork's builds the
+commit beside it (`herdr-app 0.1.13 (fork c7a05ef)`).
 
 ## What you can and can't do
 
@@ -128,10 +130,22 @@ In the tab bar, drag a tab to reorder it: it follows the pointer and a line show
   agent in it needing the user, brings it back.
 - A **pane** is a terminal on screen, or a **mod** beside them (a markdown
   viewer, a board, a git panel): `pane.split {direction, mod, props}`. One
-  nobody named shows its program (an agent's name, else the terminal's
-  title); `pane.rename` names it ("server"), saved with its tab, and
+  nobody named shows its `label` (below); `pane.rename` names it
+  ("server"), saved with its tab, and
   `panes()[i].name` gives the name (null: none). With `pane_auto_names` on, a pane at a bare shell nobody named shows two words of its own instead (`panes()[i].auto_name`, "hazy-inlet"; see The person).
-  What a pane or agent is called is one value, `label`, on `panes()`, `agents()` and `herdr-app ls`: the first of the pane's name (one with a letter or digit), its `auto_name`, its title when telling, the agent session's own name (`session`), the program's name, the terminal's address. A title is telling when, judged without what leads up to its first letter, digit or path (a `✓`, a `[`), it is not empty or only digits, not the program's name, not its command line (first word the program's key or name: `claude attach 1f2e`), not a path (`~`, `/`, `C:\`, `\\server`), has no `@`, and isn't a throwaway: anything holding a UUID, `claude-prompt-…` and `tmp.…` files, or an editor's ` - Nvim` / ` - VIM` (Neovim as Claude Code's Ctrl+G prompt editor leaves `claude-prompt-<uuid>.md + (/private/tmp/…) - Nvim`). `session` is the session's own name, read from the program's session file (`session_name` in Programs; Claude Code's `/rename`), for the process running in the terminal on this computer; null otherwise. Name things by `label` rather than re-deriving it from `title`, which stays the title as the program set it (spinners cut).
+  What a pane or agent is called is one value, `label`, on `panes()`,
+  `agents()` and `herdr-app ls`: the first of the pane's name (one with a
+  letter or digit), its `auto_name`, its title when telling, the agent
+  session's own name (`session`), the program's name, the terminal's
+  address. A title is telling when it says something of its own:
+  `✓ build passed` is; a path, a `user@host`, only digits, the program's
+  name or command line, or a throwaway (anything holding a UUID, or
+  universally unique identifier, `tmp.…` files, an editor's
+  `claude-prompt-<id>.md - Nvim`) is not. `session` is read from the program's
+  session file (`session_name` in Programs; Claude Code's `/rename`) for
+  the process running in the terminal on this computer; null otherwise.
+  Name things by `label` rather than re-deriving it from `title`, which
+  stays the title as the program set it (spinners cut).
   A
   mod pane splits, zooms, closes and gets a header like any pane, keeps
   the keyboard when clicked, and is saved with its tab; its `props` tell
@@ -178,8 +192,9 @@ In the tab bar, drag a tab to reorder it: it follows the pointer and a line show
   front stops being the agent or the terminal ends.
 - **Sub-agents** are terminals an agent started with `hc run`: the core
   records the starter as `parent` (see `terminals()`). They belong to their
-  parent's tab without a pane; the `agents` mod shows them,
-  `terminal.peek` opens one, `terminal.keep` gives one a pane.
+  parent's tab without a pane; the `agents` mod shows them (a parent's
+  row counts its live ones, `⧉ 2`), `terminal.peek` opens one,
+  `terminal.keep` gives one a pane.
   Ctrl-click (Cmd-click on macOS) a live terminal address in terminal text to
   peek at it. Bare addresses refer to the machine of the terminal showing them;
   use `machine/address` for another machine. Names and non-live addresses aren't links.
@@ -351,7 +366,24 @@ layout's look and a block can differ:
 - `themes/<name>.json`: `{ "background", "foreground", "selection",
   "cursor"?, "ansi": [16 colors], "colors"?: {...} }`, all `#rrggbb`; panel
   colors are derived from these, `colors` overrides them.
-  With `panel_colors` at its default, each derived panel color is the background stepped toward the theme's own `foreground`, so panels carry the theme's tint: `canvas` a hair darker than the terminal, `chrome` (sidebars, bars) a small step (on a dark theme level with `canvas` while `sidebar_shade` shades it), `popover` then `raised` further on a dark theme (on a light one `popover` is the background and `raised` a light shade), `border` and `input` (the stronger border) further still; `hover` and `selected` are the terminal's `foreground` at low alpha. Panel text stays a neutral ink, with `muted`, `dim`, `idle` and `unknown` stepped from the background toward it, and `ring` is the accent in use (`ansi[4]`, or `colors.accent` when a theme, look or settings.json sets it, its alpha dropped) when that reads at 3:1 on the background, else a mix toward the panel ink, else black or white, so it always reads at 3:1. `focus`, the active pane's border in the shipped Herdr layout (`main`; Win98 and Terminals draw their own), is the accent in use the same way, under either `panel_colors`, so a theme that leaves it unset keeps its accent there when that reads at 3:1; a theme file's, a look's or settings.json's `colors.focus` sets it apart from the accent. A `colors` value that isn't `#rrggbb` or `#rrggbbaa` is reported as a problem. Toasts draw from their own colors, worked out once each time the theme resolves from whatever the theme ends up with, so they stand off any window: `toast`, the surface, lifted off `background` to at least 1.3:1 on a dark theme (toward the terminal's foreground, else white; on a light theme it is white, and the border and shadow carry it); `toast_border`, at least 1.7:1 on the background and 1.25:1 on the surface; `toast_shadow`, a black shadow, deeper on a dark theme; `toast_foreground` and `toast_muted`, the title and body, at least 4.5:1 on the surface; and `toast_info`, `toast_success`, `toast_warning` and `toast_error`, the level stripe and dot (from `accent`, `done`, `working` and `blocked`), at least 3:1 on the surface. A theme that paints its own panels (Win98) keeps its `popover` and `border` for the toast where they hold those ratios, and a `colors.toast` of your own is the surface the rest are held to. Set any of these in `colors` to replace it. A theme file or layout look whose own `colors` paint its panels (`surface`, `popover` or `raised`), such as Win98 or Terminals, or a theme whose `foreground` sits under 3:1 on its background or on the wrong side of it, derives what it leaves unset the classic way (`panel_colors`). settings.json's `colors` don't decide that: they only replace the colors they name.
+  With `panel_colors` at its default, each derived panel color is the
+  background stepped toward the theme's own `foreground`, so panels carry
+  the theme's tint: `canvas` a hair darker than the terminal, then
+  `chrome` (sidebars, bars), `popover`, `raised`, `border` and `input`
+  further on; `hover` and `selected` are the `foreground` at low alpha.
+  `ring` (focus rings) and `focus` (the active pane's border in the
+  shipped Herdr layout) are the accent in use when it reads at 3:1 on the
+  background, else a stand-in that does; `colors.focus` sets `focus` apart
+  from the accent. Toasts have their own colors, held to contrast floors
+  on every theme: `toast`, `toast_border`, `toast_shadow`,
+  `toast_foreground`, `toast_muted`, and `toast_info`, `toast_success`,
+  `toast_warning` and `toast_error` (the level stripe); set any in
+  `colors` to replace it. A `colors` value that isn't `#rrggbb` or
+  `#rrggbbaa` is reported as a problem. A theme file or layout look whose
+  own `colors` paint its panels (`surface`, `popover` or `raised`: Win98,
+  Terminals), or whose `foreground` sits under 3:1 on its background or
+  on the wrong side of it,
+  derives what it leaves unset the classic way (`panel_colors`).
   Herdr ships
   `atom-one-dark`. The original unedited Atom One Dark and Win98 theme files
   are upgraded to readable terminal colors; edited theme files are kept.
@@ -602,10 +634,23 @@ The main ones:
   `tab.settle {id?}`, `tab.unsettle {id?}` (index, next and prev
   skip settled tabs).
 - Panes: `pane.split {direction: "right" | "down", pane?, argv? | mod?, props?}` (a new
-  terminal, or a mod pane), `pane.close {pane?}`, `pane.rename {pane?, name}` ("": its program's name again),
+  terminal, or a mod pane), `pane.close {pane?}`, `pane.rename {pane?, name}` ("": unnamed again),
   `pane.set_icon {pane?, icon}` and `tab.set_icon {id?, icon}` (`icon`: `{kind: "glyph" | "emoji", value}` or `{kind: "letter"}`; null: the automatic icon again; kept by id in the machine's layout and gone with the pane or tab; the shipped `menu` offers them as Change icon… and Clear icon, through the shipped `icon-picker`: Suggested, every Symbols Nerd Font glyph and every emoji, searchable by name and keyword. A mod keeping icons of its own opens the same picker with `openOverlay({mod: "icon-picker", kind: "dialog", width: 452, height: 392, props: {shared: "<key>", id, name, letter?, now?, extra?}})`: the pick is written to `shared(key)[id]` as `{kind, value?}` and Clear icon deletes it; `now` (`{kind, text}`) is the icon shown today, `extra` (`[{kind, text, word}]`) adds the mod's own kinds beside the letter),
-  `pane.zoom {pane?}`, `pane.menu {pane?}` (the pane's menu at the pointer, the layout's `terminal_menu` as a terminal right-click opens it, with no selection: what a pane header's right-click runs), `pane.focus {pane | terminal}`, `pane.refocus` (the keyboard back to the focused pane after a mod took it for a moment, as a tab drag does), `pane.go {direction}`, `pane.swap {direction}`.
-  `pane.zoom_text_in {pane?}`, `pane.zoom_text_out {pane?}`, `pane.zoom_text_reset {pane?}` zoom one terminal pane's text (default: the terminal with the keyboard, else the focused pane) on top of the app's `zoom`, a zoom step at a time (`zoom_step`: whole points of the pane's own size, or tenths), as Ghostty's per-surface font size does. The pane's cells follow `cell_width` and `cell_rounding`, its program gets the new rows and columns, and other panes, the panels and the layout don't change. Its size is `font_size × its zoom × zoom`: changing or resetting the app's zoom keeps the pane's, and resetting the pane's keeps the app's. It lasts as long as the pane and isn't saved. `panes()` has the pane's `text_size` (px, app zoom included) while it differs from the default, and the shipped `pane` header shows it ("16pt"). macOS binds Ctrl+= (and Ctrl++), Ctrl+- and Ctrl+0 in `global` (Cmd+= and friends stay `app.zoom_*`); other platforms leave them unbound, since Ctrl+= is `app.zoom_in` there. With `pane_zoom_keys` off, or no terminal holding the keyboard, a key bound to them is left unhandled, so the focused terminal's program gets it as if it were unbound. With the setting on, Ctrl+- (^_, undo in zsh, readline and emacs) and Ctrl+0 don't reach programs; turn `pane_zoom_keys` off to give them back. A pane zoomed by command while its tab is hidden is resized at once, so its program gets the new rows and columns before the tab shows. However the pane's and the app's zoom multiply, the text stays between `font_size × 0.5` and `font_size × 3`, the app zoom's own range, and a press never goes past that. At `zoom_step` `"point"` a press moves the pane's own size (`font_size × its zoom`) by a whole point, so at an app zoom other than 1 the drawn text moves by `zoom` points per press (2 points at zoom 2), not by one. A swapped-in terminal (`terminal.show`) has its own zoom, and the keys and `text_size` follow the view on screen. Keys bound in the object form (`{"command": "pane.zoom_text_in"}`) follow `pane_zoom_keys` too.
+  `pane.zoom {pane?}`, `pane.menu {pane?}` (the pane's menu at the pointer, the layout's `terminal_menu` as a terminal right-click opens it, with no selection: what a pane header's right-click runs; the shipped `menu` lists Copy with a selection, Copy all, Paste, Copy path when the folder is known, then Rename, Split right and down, Zoom, Change icon… and Clear icon, then where right-clicks go, Send back for a kept sub-agent, and Close pane), `pane.focus {pane | terminal}`, `pane.refocus` (the keyboard back to the focused pane after a mod took it for a moment, as a tab drag does), `pane.go {direction}`, `pane.swap {direction}`.
+  `pane.zoom_text_in {pane?}`, `pane.zoom_text_out {pane?}`,
+  `pane.zoom_text_reset {pane?}` zoom one terminal pane's text (default:
+  the terminal with the keyboard, else the focused pane) a `zoom_step` at
+  a time, on top of the app's `zoom`, as Ghostty's per-surface font size
+  does: its program gets the new rows and columns, and other panes and the
+  panels don't change. The size is `font_size × its zoom × zoom`, kept
+  within `font_size × 0.5` to `× 3`; resetting either zoom keeps the
+  other. It lasts as long as the pane and isn't saved; `panes()` has the
+  pane's `text_size` while it differs, and the shipped `pane` header shows
+  it ("16pt"). macOS binds Ctrl+= (and Ctrl++), Ctrl+- and Ctrl+0 in
+  `global`; other platforms leave them unbound, since Ctrl+= is
+  `app.zoom_in` there. With `pane_zoom_keys` off, or no terminal holding
+  the keyboard, those keys reach the program; object-form bindings
+  (`{"command": "pane.zoom_text_in"}`) follow it too.
   `pane.go` prefers the most recently focused pane along the nearest edge in that
   direction; unvisited panes fall back to overlap, then top/left layout order.
   `pane.go` also reaches visible mods whose `mod.json` says `"focusable": true`, and
@@ -679,7 +724,7 @@ The main ones:
   Terminals display Kitty graphics, including Unicode placeholder images used by
   programs such as yazi; partial images and scrolling follow the placeholder cells.
 - Agents: `agent.next`, `agent.prev`, `agent.focus {terminal}`.
-- Notifications: `system.notify {title, body?, subtitle?, sound?, agent?, id?, urgent?, icon?}` posts a notification as Herdr for any program: `herdr-app do system.notify '{"title": "Build", "body": "passed", "sound": "Glass", "id": "build"}'`. `sound` as one `notification_sounds` value (default `"default"`); `agent` (a terminal address, or an agent's name when only one has it) makes a click show that terminal and attaches its program's icon (unless `icon` is given or `notification_icons` is `false`); a newer one with the same `id` (1 to 64 of `A-Z a-z 0-9 . _ : -`) replaces the older; `icon` is an absolute path to a PNG, JPEG, GIF or HEIC up to 10 MB (Herdr attaches a copy). It follows `system_notifications`: `off` fails; `background` while Herdr is the app in front shows the window's toast instead (answer `{"shown": "toast"}`) unless `urgent: true`; otherwise it posts (answer `{"shown": "notification", "tag": ...}`). Title and subtitle are cut at 200 characters and the body at 2000; control characters (the body keeps its line breaks) and direction overrides are left out. It fails, exiting 1, where macOS won't show it: notifications for Herdr turned off in System Settings, or a build not run from Herdr.app.
+- Notifications: `system.notify {title, body?, subtitle?, sound?, agent?, id?, urgent?, icon?}` posts a notification as Herdr for any program: `herdr-app do system.notify '{"title": "Build", "body": "passed", "sound": "Glass", "id": "build"}'`. `sound` as one `notification_sounds` value (default `"default"`); `agent` (a terminal address, or an agent's name when only one has it) makes a click show that terminal and attaches its program's icon (unless `icon` is given or `notification_icons` is `false`); a newer one with the same `id` (1 to 64 of `A-Z a-z 0-9 . _ : -`) replaces the older; `icon` is an absolute path to an image up to 10 MB (megabytes): PNG (Portable Network Graphics), JPEG (Joint Photographic Experts Group), GIF (Graphics Interchange Format) or HEIC (High Efficiency Image Container); Herdr attaches a copy. It follows `system_notifications`: `off` fails; `background` while Herdr is the app in front shows the window's toast instead (answer `{"shown": "toast"}`) unless `urgent: true`; otherwise it posts (answer `{"shown": "notification", "tag": ...}`). Title and subtitle are cut at 200 characters and the body at 2000; control characters (the body keeps its line breaks) and direction overrides are left out. It fails, exiting 1, where macOS won't show it: notifications for Herdr turned off in System Settings, or a build not run from Herdr.app.
 - Sessions: `session.saved` lists the recorded agents (programs with a `resume` rule in `programs.json`) with `terminal`, `where`, `program`, `name`, `cwd`, the resuming `argv`, `session`, `saved_ms`, and `ready` (its terminal is live and back to a bare shell) or `why` not. `session.resume {terminal?, confirmed?}` types `cd <cwd> && <argv>` (each word shell-quoted; PowerShell: `Set-Location`) into every ready one (or just `terminal`) and answers `{resumed, skipped: [{terminal, why}]}`; it asks the person first unless `confirmed`, and scripts must pass `confirmed: true` (`herdr-app do session.resume --confirmed true`). It never types into a terminal whose foreground isn't a shell, and skips a session two terminals share.
 - Layout: `layout.switch {name?}`, `layout.toggle {id}`, `layout.show {id}`, `layout.hide {id}`,
   `layout.resize {id, px | weight}`, `layout.select {stack, child}`, `layout.set {layout}`
@@ -690,7 +735,7 @@ The main ones:
   column holding the tab block, `terminal_padding` `[x, y]` the root's; `reset` lists
   names to put back as the file has them),
   `layout.clone {name, as?}` (duplicate, then switch; default `<name>-copy`).
-- App: `mod.clone {name, as?}` (duplicate; default `<name>-copy`), `mod.open {name, props?}` (as the overlay its mod.json describes, `props` being what its `props()` holds; again: closes it, or opens it afresh with other props), `overlay.close {id?}`, `app.help` (again: closes it), `app.palette` (again: closes it), `app.settings {section?}` (a Settings page: `themes`, `layout`, `window`, `panes`, `zoom`, `fonts`, `grid`, `rendering`, `keyboard` (macOS), `mouse`, `activity`, `alerts`, `machines`, `updates` or `privacy`; `look` opens Themes and `text` Zoom, the older page names)
+- App: `mod.clone {name, as?}` (duplicate; default `<name>-copy`), `mod.open {name, props?}` (as the overlay its mod.json describes, `props` being what its `props()` holds; again: closes it, or opens it afresh with other props), `overlay.close {id?}`, `app.help` (again: closes it), `app.palette` (again: closes it), `app.settings {section?}` (a Settings page: `themes`, `layout`, `window`, `panes`, `zoom`, `fonts`, `grid`, `rendering`, `keyboard` (macOS), `mouse`, `activity`, `alerts`, `machines`, `updates` or `privacy`; `look` and `text` are aliases for Themes and Zoom)
   (Machines lists, updates, renames and removes ssh machines; settings edit the same files you do; its search field, focused by cmd-f or ctrl-f or by typing, finds a setting by its name, description or settings.json key, such as `cell_rounding`, and shows each page's matches with their controls).
   `app.check_updates` (only a successful check reports Up to date; a failed check clears the checked time and can be retried), `app.update_core` (a newer herdr-core of this generation, terminals kept;
   never one a package manager owns), `app.welcome`, `app.whats_new`, `app.feedback {message?, from?}` (from `"person"` or `"agent"`; opens a review window, where the person can paste up to 3 screenshots; never sends until the person clicks Send), `app.reset`,
@@ -745,7 +790,7 @@ What's about the user, never a look:
   the newest). `done` / `blocked` replace the bundled MP3s
   (path absolute or relative to `~/.config/herdr-app`). Changes apply live,
   including the Play buttons in Settings > Alerts.
-- `resume_agents`: `"ask"` (default), `"auto"` or `"off"`: what happens after Herdr starts or reconnects to the core when recorded agents (see `resume` in Programs) are in terminals back to a bare shell, as after a reboot. `ask`: one toast, "Resume N sessions", whose click runs `session.resume`; `auto`: resumes them at once; `off`: leaves the shells (records are still kept, and `session.resume` still works). Settings > Alerts has it as "Resume agents after restart".
+- `resume_agents`: `"ask"` (default), `"auto"` or `"off"`: what happens after Herdr starts or reconnects to the core when recorded agents (see `resume` in Programs) are in terminals back to a bare shell, as after a reboot. `ask`: one toast, "Resume N sessions", whose click runs `session.resume`; `auto`: resumes them at once; `off`: leaves the shells (records are still kept, and `session.resume` still works). Settings > Agents > Activity has it under After a restart, as "Resume agents after restart".
 - `system_notifications`: `"background"` (default), `"always"` or `"off"`.
   The same alerts also go to the system's notification center: titled as
   the toast, with "space / tab" as the body, one per agent (a newer alert
@@ -759,19 +804,46 @@ What's about the user, never a look:
 - `notification_marks`: `true` puts the agent's glyph before an agent notification's title (Claude 🤖, Codex 🧠, Gemini ✨, Cursor 🖱️, Copilot 🚀, Aider 🛠️, Crush 💜, OpenCode 📂, Amp ⚡, others 🤖) and the state's mark before its body (✋ needs you, 🔴 error, ✅ finished): "🤖 Claude needs you" over "✋ approve Bash: make". Off by default; Settings > Alerts > Notifications has it as "Marks".
 - `notification_icons`: the agent's program icon (programs.json's `icon`, drawn as the agents list draws it: a one-color glyph in its `color` on its `tile`, or a picture) shows with its system notification on macOS. Drawn once per program and look into `cache/notification-icons/` in the home folder. A program without an icon, or one that can't be read, shows none. On by default; `false` leaves them off. Settings > Alerts > Notifications has it as "Agent icons".
 - `dock_bounce`: `true` bounces the Dock icon when an agent needs the
-  person while Herdr is in the background. Off by default.
+  person while Herdr is in the background. Off by default. Settings >
+  Alerts > Notifications has it as "Bounce the Dock icon".
 - `dock_badge`: on macOS the Dock icon counts the agents waiting on the person, the way Mail counts unread mail: each row the agents list shows as needing you (blocked on a question, a permission or a login, or stopped on an error, its own or a sub-agent's) or as finished and not yet seen. Looking at a finished agent, or it starting work again, takes it off the count; no badge when none waits. On by default; `false` takes the badge off. Settings > Alerts > Notifications has it as "Count waiting agents on the Dock icon".
 - `dock_bounce_on_wait`: `true` bounces the Dock icon once (macOS's short, informational bounce) when an agent starts waiting and none was, while Herdr is in the background. Off by default.
-- `pane_auto_names`: `true` gives each pane nobody named two calm words of its own, such as `hazy-inlet`, picked from its id so it keeps them across redraws and restarts (two panes of one tab that would share a name: the one whose id sorts later takes the next in the list, so a new split whose id sorts earlier can take an existing pane's name, which moves to the next one until that split closes; rare, about 1 in 2,304 per extra pane in a tab). A pane shows it only while nothing better names it: the person's `pane.rename` name comes first, then an agent or a running command, and the automatic name only at a bare shell whose title is empty, the terminal's address (its title before the shell sets one), the shell's name (`zsh`, `-zsh`) or a folder (`~/src`, `me@box: ~/src`, the folder's name). Mods read it as `panes()[i].auto_name` (null when off or not shown); the shipped `pane` and `terminals-pane` headers show it. Display only: never written into a layout or settings.json, though `pane.rename`'s prompt starts from it, so Enter keeps it as the pane's real name. The words are `defaults/pane-names.json` in the app. Off by default; Settings > Appearance > Panes has it as "Name panes automatically".
-- `space_avatar`: how mods that draw space avatars (a space's tile in a spaces list) draw them: `"letter"` its first letter on its color, `"glyph"` (the default) a one-color icon on its color, `"emoji"` an emoji on a neutral tile, `"repo"` the language or tool of the project in its folder (else a glyph). Herdr also uses it for pane and tab icons: in glyph, emoji or repo (glyph) mode, a bare shell showing its `pane_auto_names` name gets its noun's icon (meadow: wheat; the nouns' icons are `defaults/pane-icons.json`), as `panes()[i].icon`, and a tab shows its focused pane's; in letter mode `icon` is null unless one was chosen (pane.set_icon, tab.set_icon), so everything draws as it did. Mods read the setting as `settings().space_avatar`, `"glyph"` when unset; a value other than those four is reported as a settings problem and mods see `"glyph"`. The Settings window doesn't set it. For glyph and emoji avatars that match a space's name, read the icon picker's name files once, when first needed: `readTextFile(appHome() + "/mods/icon-picker/names/keywords.json")` (`icons: [{words, glyph, emoji}]`: curated words such as docs, api or infra, a glyph by its `glyphs.json` name such as `md-book_open_variant`, an emoji as `emoji.json` writes it, each word once; `glyph_sets`: the glyph name prefixes to match, best first; `no_emoji_groups`: emoji groups to leave out; `deny: {words, emoji}`: words and emoji that read as an agent's state, such as check, done or a warning sign, never to match), then `glyphs.json` and `emoji.json` for words that are a glyph's or an emoji's own name; a name matching nothing can fall back to a hash of the name, settled in an order that doesn't depend on the list's.
-- `working_spinner`: the spinner shown while an agent works, in the pane header, tabs, agents list, picker and peek. `"ring"` (the default) is the spinning ring icon. Presets, each at its own speed: `"braille"` ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏, `"braille-heavy"` ⣾⣽⣻⢿⡿⣟⣯⣷, `"orbit"` ⠁⠂⠄⡀⢀⠠⠐⠈, `"line"` | / - \, `"arc"` ◜◠◝◞◡◟, `"quarters"` ◴◷◶◵, `"pulse"` · • ● •, `"sparkle"` · ✢ ✳ ✶ ✻ ✽. Or your own: `{"frames": ["◐", "◓", "◑", "◒"], "interval_ms": 120}`, 1 to 32 frames of 1 to 4 characters (Unicode code points) each, 16 to 1000 ms apart. An unknown name or a frames object outside those limits draws the ring and is reported as a settings problem. Mods read it as `settings().working_spinner`: `null` for the ring, else `{ frames, interval_ms }` with the frames padded with spaces to one length, and `settings().working_spinner_presets` lists `{ name, frames, interval_ms }` for each preset besides the ring (for a picker); draw it as `div().font_family(settings().font_family).frames(frames, interval_ms).child(frames[0])` in `t.working`, centred in a box at least 12 px wide, and the ring as `svg("mods/workspace-chrome/spinner.svg").size(12).spin(900)`.
-- `pane_header_info`: extra words in an agent pane's header, between its name and its status, as a template. Unset or empty (the default): none, and headers draw as without it. Keys: `{ask}` what the agent needs from you while it waits (its own summary, such as "approve Bash: make", else the kind: "permission", "question"), drawn in the blocked colour; `{state}` working, blocked, done or idle, and `{elapsed}` how long since that state began (as Herdr saw it: `<1m`, then `3m`, `1h2m`; it changes only on the minute and is redrawn then, never by the second); `{branch}`, `{ahead}` (`↑2`), `{behind}` (`↓1`), `{dirty}` (`●` with uncommitted changes) from the folder's cached git status. Each is empty when unknown or zero. Any other text, an unknown `{word}` too, is drawn as written. `·` or `|` split it into segments, drawn with their spaces between two that show; a segment whose keys are all empty is left out, so no separator dangles. Where the header is short of room, whole segments go from the right, a waiting `{ask}` last; the last one left is cut with an ellipsis, and hidden under about four characters; the hover buttons and the name keep their room. The whole line is the info's tooltip. Suggested: `"{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed}"`. Shells show nothing. Mods read it resolved as `PaneInfo.header_info` and keep what fits with `fitHeaderInfo`.
+- `pane_auto_names`: `true` gives each pane nobody named two calm words of
+  its own, such as `hazy-inlet`, picked from its id so they last across
+  redraws and restarts. Two panes of one tab never share them: the one
+  whose id sorts later takes the next pair, so a split can move an
+  existing pane's name on until it closes. A pane
+  shows them only at a bare shell whose title says nothing more (empty,
+  its address, the shell's name, a folder such as `~/src`); a name given
+  with `pane.rename`, an agent or a running command comes first. Mods read
+  `panes()[i].auto_name` (null when off or not shown); the shipped `pane`
+  and `terminals-pane` headers show it. Display only: never written into a
+  layout or settings.json, though `pane.rename`'s prompt starts from it.
+  The words are `defaults/pane-names.json` in the app. Off by default;
+  Settings > Appearance > Panes has it as "Name panes automatically".
+- `space_avatar`: how mods that draw space avatars (a space's tile in a spaces list) draw them: `"letter"` its first letter on its color, `"glyph"` (the default) a one-color icon on its color, `"emoji"` an emoji on a neutral tile, `"repo"` the language or tool of the project in its folder (else a glyph). Herdr also uses it for pane and tab icons: in glyph, emoji or repo (glyph) mode, a bare shell showing its `pane_auto_names` name gets its noun's icon (meadow: wheat; the nouns' icons are `defaults/pane-icons.json` in the app), as `panes()[i].icon`, and a tab shows its focused pane's; in letter mode `icon` is null unless one was chosen (pane.set_icon, tab.set_icon), so panes and tabs draw their program's icon. Mods read the setting as `settings().space_avatar`, `"glyph"` when unset; a value other than those four is reported as a settings problem and mods see `"glyph"`. The Settings window doesn't set it. For glyph and emoji avatars that match a space's name, read the icon picker's name files once, when first needed: `readTextFile(appHome() + "/mods/icon-picker/names/keywords.json")` (`icons: [{words, glyph, emoji}]`: curated words such as docs, api or infra, a glyph by its `glyphs.json` name such as `md-book_open_variant`, an emoji as `emoji.json` writes it, each word once; `glyph_sets`: the glyph name prefixes to match, best first; `no_emoji_groups`: emoji groups to leave out; `deny: {words, emoji}`: words and emoji that read as an agent's state, such as check, done or a warning sign, never to match), then `glyphs.json` and `emoji.json` for words that are a glyph's or an emoji's own name; a name matching nothing can fall back to a hash of the name, settled in an order that doesn't depend on the list's.
+- `working_spinner`: the spinner shown while an agent works, in the pane header, tabs, agents list, picker and peek. `"ring"` (the default) is the spinning ring icon. Presets, each at its own speed: `"braille"` ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏, `"braille-heavy"` ⣾⣽⣻⢿⡿⣟⣯⣷, `"orbit"` ⠁⠂⠄⡀⢀⠠⠐⠈, `"line"` | / - \, `"arc"` ◜◠◝◞◡◟, `"quarters"` ◴◷◶◵, `"pulse"` · • ● •, `"sparkle"` · ✢ ✳ ✶ ✻ ✽ and back. Or your own: `{"frames": ["◐", "◓", "◑", "◒"], "interval_ms": 120}`, 1 to 32 frames of 1 to 4 characters (Unicode code points) each, 16 to 1000 ms apart. An unknown name or a frames object outside those limits draws the ring and is reported as a settings problem. Mods read it as `settings().working_spinner`: `null` for the ring, else `{ frames, interval_ms }` with the frames padded with spaces to one length, and `settings().working_spinner_presets` lists `{ name, frames, interval_ms }` for each preset besides the ring (for a picker); draw it as `div().font_family(settings().font_family).frames(frames, interval_ms).child(frames[0])` in `t.working`, centred in a box at least 12 px wide, and the ring as `svg("mods/workspace-chrome/spinner.svg").size(12).spin(900)`. Settings > Agents > Activity has it as "Working spinner".
+- `pane_header_info`: extra words in an agent pane's header, between its
+  name and its status, as a template. Unset or empty (the default): none.
+  Keys: `{ask}` what the agent needs from you while it waits ("approve
+  Bash: make", else "permission", "question"), `{state}` and `{elapsed}`
+  (`<1m`, `3m`, `1h2m`, changing on the minute), and `{branch}`, `{ahead}`
+  (`↑2`), `{behind}` (`↓1`) and `{dirty}` (`●`) from the folder's cached
+  git status; each is empty when unknown or zero, and other text is drawn
+  as written. `·` or `|` split it into segments: one whose keys are all
+  empty is left out, and where the header is short of room whole segments
+  go from the right, a waiting `{ask}` last. Suggested:
+  `"{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed}"`. Shells
+  show nothing. Mods read it resolved as `PaneInfo.header_info` and keep
+  what fits with `fitHeaderInfo`. Settings > Agents > Activity has it as
+  "Header info".
 - `focus_follows_mouse`: `true` focuses a terminal pane (a tab's, or a layout's
   terminal block) once the pointer rests on it for `focus_follows_mouse_delay_ms`
   (0 to 2000, default 150), as a click would: the delay counts from the
   pointer's last move, so a pane it only crosses on the way somewhere else is
   left alone; at 0 the first move onto a pane focuses it. Off by default;
-  `focus.toggle_follows_mouse` flips it. Only a real pointer move counts:
+  `focus.toggle_follows_mouse` flips it, and Settings > Input > Mouse has
+  it, with the delay while it's on. Only a real pointer move counts:
   content scrolling or panes moving under a still pointer never move the focus,
   nor does a jitter under 1 px. After a key, or the focus moving some other way,
   the pointer must first go more than 4 px from where it was, so a pane focused
@@ -840,7 +912,7 @@ What's about the user, never a look:
   text" picker (Auto, On, Off), and a strength stepper in steps of 16 while
   it's On.
 - `text_contrast` (0..1): sharpens the edges of terminal text without widening its strokes. When the text is blended, each edge pixel's coverage moves toward an S-curve: faint pixels fade and nearly solid ones fill, so a stroke keeps about the same ink. Thickening adds ink instead. 0 (the default) draws text as rasterised; 1 uses the full curve. Try 0.5 first. Panels follow `ui_text_contrast`. Changes apply immediately. The Settings window sets it on its Rendering page under Terminal text, with a "Contrast" stepper in steps of 0.1.
-- `faint_opacity` (0..1): the opacity faint (dim, SGR 2) terminal text draws at, as Ghostty's `faint-opacity`. Default 0.5; 1 draws faint text like the rest. Changes apply immediately. The Settings window sets it on its Rendering page under Terminal text, with a "Faint text" stepper in steps of 0.1.
+- `faint_opacity` (0..1): the opacity faint (dim, SGR (Select Graphic Rendition) 2) terminal text draws at, as Ghostty's `faint-opacity`. Default 0.5; 1 draws faint text like the rest. Changes apply immediately. The Settings window sets it on its Rendering page under Terminal text, with a "Faint text" stepper in steps of 0.1.
 - `font_fallbacks` (a list of family names): fonts terminal text takes a character from, in order, when its own font lacks it, before the system's choice. Default empty. `["ZedMono Nerd Font Mono"]` draws symbols such as ⏺ as Ghostty does with that font as its fallback; bold text takes the fallback's bold face. A fallback glyph keeps its cell, as in Ghostty: in a one-cell character, ink wider or taller than the cell shrinks to fit it, and ink past an edge moves inside; ink already inside its cell is drawn as the font draws it. Nerd Font icons (private use characters) the font lacks don't use this list: they always come from the bundled Symbols Nerd Font, fitted to their cells. Families that aren't installed are skipped. Changes apply immediately. The Settings window doesn't set it.
 - `ui_text_contrast` (0..1): the same for the panels' text (every mod, tab, popup, toast and the Settings window), apart from the terminals' `text_contrast`. Icons are left as drawn. Default 0. The Settings window sets it on its Rendering page under Interface text, with an "Interface contrast" stepper in steps of 0.1.
 - `unfocused_dim` (0..1): while the Herdr window isn't the active one, it fades this fraction of the way toward the background, so a glance shows which window has the keyboard. What fades is `unfocused_dim_scope`'s choice. The switch is instant both ways: back in Herdr, everything is at full brightness at once. 0 (the default) never dims; try 0.3. The Settings window sets it on its Window page under Inactive window, with a "Dim when inactive" stepper in steps of 0.1.
@@ -921,7 +993,7 @@ What's about the user, never a look:
   `"pixel"` puts it on whole device pixels after `letter_spacing`, rounded as
   `cell_rounding` says (JetBrains Mono at 12 on a Retina display: 14.4 to 14
   device pixels). Changes apply immediately.
-- `app_icon`: the app's icon. `"classic"` (default), `"midnight"`, `"mirage"`, `"glass"`, `"phosphor"` or `"graphite"`, all drawn from Herdr's own artwork; `"theme"`, the same artwork in the colours of the theme showing (its background, foreground and accent), which changes with the theme, light and dark included; or an absolute path (or one starting `~/`, your home folder) to an `.icns`, `.png` or `.svg` file; a relative path is refused, like any other unknown value. On macOS the Dock shows it from start-up and changes as soon as settings.json does; a file that can't be read is tried again whenever settings change. An install from a checkout (`just install`) also writes it into the app bundle (an `.icns` or `.png`; an `.svg` stays in the Dock only) or, on Linux, the launcher (an `.svg` or `.png`), so Finder, Spotlight and the app switcher match. `"theme"` is drawn while Herdr runs, so it is in the Dock only: an install puts classic on the bundle. Release packages keep the classic icon.
+- `app_icon`: the app's icon. `"classic"` (default), `"midnight"`, `"mirage"`, `"glass"`, `"phosphor"` or `"graphite"`, all drawn from Herdr's own artwork; `"theme"`, the same artwork in the colours of the theme showing (its background, foreground and accent), which changes with the theme, light and dark included; or an absolute path (or one starting `~/`, your home folder) to an `.icns`, `.png` or `.svg` file; a relative path is refused, like any other unknown value. On macOS the Dock shows it from start-up and changes as soon as settings.json does; a file that can't be read is tried again whenever settings change. An install from a checkout (`just install`) also writes it into the app bundle (an `.icns` or `.png`; an `.svg` stays in the Dock only) or, on Linux, the launcher (an `.svg` or `.png`), so Finder, Spotlight and the app switcher match. `"theme"` is drawn while Herdr runs, so it is in the Dock only: an install puts classic on the bundle. Release packages keep the classic icon. Settings > Appearance > Window has it as "App icon".
 - `cell_rounding`: how the terminal grid snaps to whole device pixels: the row height (the font's ascent plus descent, times `line_height`) always, and the cell width when `cell_width` is `"pixel"`. `"outward"` (default) rounds the row up and the width down, so either can be up to a device pixel off the font's size. `"nearest"` rounds both to the nearest device pixel, at least one, so the grid is never more than half a pixel off the font's design, as Ghostty sizes its cells. A row rounded below the font's height keeps text centred, so tall glyphs reach past it equally above and below (at most a quarter of a device pixel each at `line_height` 1); program backgrounds paint before text and don't cover it, the cursor can. Changes apply immediately.
 - `letter_spacing`: px (at zoom 1, like `font_size`) added to the terminal
   cell width, from `-2` to `10` (default `0`, the font's own advance).
@@ -996,7 +1068,25 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
       "append": ["--resume", "{session_id}"] } }
   ```
 
-  `drop` takes flags out of the command line it ran with (`--flag value`, `--flag=value`; the number is how many values it takes at most, and a value never starts with `-`), the rest (model, permissions) stays, then `append` is added, `{session_id}` being its session. The session comes from the agent's own report, a label on its terminal, `herdr.session.<program key>=<id>` (or, better, `<id>@<pid>` with the agent's process id, honored only for that process, so a label left from an earlier run never names a new one; an empty value clears it), which a hook sets with `hc label "$HC_TERMINAL_ID" herdr.session.claude=<id>`; else from `session.file` (`{pid}`: the program's process id; `~/`: the home of the machine it runs on, read there for terminals on other machines), whose `field` is the id and whose `when` fields must all match (a Claude Code `-p` run is `kind: "bg"`: not recorded). Ids must be at most 256 letters, digits or `_ . / : = + -`, not starting with `-`; others are refused, as is an `append` word with any other character. `{ "rerun": true }` resumes by running the same command line again (no shipped program has it); `"resume": {}` turns a shipped rule off. Claude Code writes its session file once, at start: after `/clear` or `/resume` inside it, only a hook's label names the new session. Codex, Cursor, OpenCode, Pi, Copilot, Gemini and the others have resume flags but no file that maps their process to a session: give them a rule with `append` (e.g. `"codex": { "resume": { "append": ["resume", "{session_id}"] } }`) and report the id from a hook.
+  `drop` takes flags out of the command line it ran with (the number is
+  how many values each takes at most), the rest (model, permissions)
+  stays, then `append` is added, `{session_id}` being its session. The
+  session comes from the agent's own report, the terminal label
+  `herdr.session.<program key>=<id>` (or `<id>@<pid>`, honored only for
+  that process; an empty value clears it), which a hook sets with
+  `hc label "$HC_TERMINAL_ID" herdr.session.claude=<id>`, else from
+  `session.file` (`{pid}`: the program's process id; `~/`: the home of
+  the machine it runs on), whose `field` is the
+  id and whose `when` fields must all match. An id is at most 256 letters,
+  digits or `_ . / : = + -` and never starts with `-`, and an `append`
+  word uses only those characters; others are refused (a rule with a bad
+  word is dropped and named in `programs.error`).
+  `{ "rerun": true }` runs the same command line again; `"resume": {}`
+  turns a shipped rule off. Claude Code writes its session file once, at
+  start, so after `/clear` or `/resume` only a hook's label is current.
+  Other agents need a rule with `append` (e.g.
+  `"codex": { "resume": { "append": ["resume", "{session_id}"] } }`) and a
+  hook that reports the id.
 - `session_name`: where the program's session keeps its own name, read for `session` and `label` on panes (see Panes): `{ "file", "field", "when"? }` as in `resume.session`, the file read only for terminals on this computer, once per process and again when its modification time moves. Claude Code ships with `"session_name": { "file": "~/.claude/sessions/{pid}.json", "field": "name" }`; a name needs a letter or digit.
 - A record goes when its program ends in a terminal that kept running (the person quit it), when its terminal goes while Herdr watches, or when another session replaces it; a reboot or core restart keeps it.
 
@@ -1172,8 +1262,9 @@ All of it is in `herdr.d.ts`. In short:
   name: background (the terminals', cards), canvas (behind cards), chrome
   (sidebars, bars), surface, popover, raised, hover, selected, border,
   input (a stronger border), foreground, muted, dim, accent,
-  accent_foreground, solid and solid_foreground (a primary button),
-  selection, working, blocked, done, idle, unknown, ansi0..15, and the
+  accent_foreground, solid and solid_foreground (a primary button), ring
+  (focus rings), focus (the active pane's border), selection, working,
+  blocked, done, idle, unknown, ansi0..15, and the
   toast's own: toast, toast_border, toast_shadow, toast_foreground,
   toast_muted, toast_info, toast_success, toast_warning, toast_error; light
   and dark themes name the same ones), `settings()` (with `dark`: the
@@ -1200,8 +1291,12 @@ All of it is in `herdr.d.ts`. In short:
   stay in it until pushed out: check them against `panes()`. Kept across restarts
   in the core document `herdr.focus` (see herdr-core below).
   Terminal copy/paste and implicit right-click routing follow the focused block.
-  Reads subscribe: a copy re-renders only when something it read (in render, a callback or a child) changes, so read what you show and no more. Each call returns a fresh copy of the whole list (tens of µs for 30 panes or terminals): read it once per render into a variable, not once per row. A hidden copy (another tab's pane header, an inactive stack child) is not redrawn; it catches up when shown.
-- Git: `gitStatus(folder, { on, files })`: the status of the repo `folder` is in (branch, head, upstream, ahead, behind, staged, unstaged, untracked, conflicted, root, name, linked; with `files: true`, each changed file's path and git's two status letters), `null` until the first answer, `false` outside a repo. Cached and shared by every mod: git runs once per change on disk (ignored folders don't count), never once per mod or per render, and the copy re-renders when that folder's answer changes. Read it in render instead of running `git status` on a timer. `nextGitStatus(folder, { on, files, after })` resolves with `{ status, revision }` once there is an answer newer than `after` (for work outside render); `refreshGitStatus(folder, { on })` asks again now. Another machine's folder (`on`) has no watcher: refresh it when a command ends there; it is also asked again when read a minute old. Older herdr-app builds lack these: `import * as herdr from "herdr"` and check `typeof herdr.gitStatus === "function"` to keep a fallback.
+  Reads subscribe: a copy re-renders only when something it read
+  changes, so read what you show and no more. Each call returns a fresh
+  copy of the whole list: read it once per render into a variable, not
+  once per row. A hidden copy (another tab's pane header, an inactive
+  stack child) is not redrawn until shown.
+- Git: `gitStatus(folder, { on, files })`: the status of the repo `folder` is in (branch, head, upstream, ahead, behind, staged, unstaged, untracked, conflicted, root, name, linked; with `files: true`, each changed file's path and git's two status letters), `null` until the first answer, `false` outside a repo. Cached and shared by every mod: git runs once per change on disk (ignored folders don't count), never once per mod or per render, and the copy re-renders when that folder's answer changes. Read it in render instead of running `git status` on a timer. `nextGitStatus(folder, { on, files, after })` resolves with `{ status, revision }` once there is an answer newer than `after` (for work outside render); `refreshGitStatus(folder, { on })` asks again now. Another machine's folder (`on`) has no watcher: refresh it when a command ends there; it is also asked again when read a minute old. To keep a fallback for builds without them, `import * as herdr from "herdr"` and check `typeof herdr.gitStatus === "function"`.
 - Floating: `placement()` (null unless this copy floats).
 - Act: `run(command, args)`.
 - Overlays: `openOverlay({ mod, props, kind: "dialog" | "popup" | "window", width, height, at, frame })`
@@ -1210,7 +1305,8 @@ All of it is in `herdr.d.ts`. In short:
   drops Herdr's border, corners and shadow so the mod draws its own.
   `notify({ title, body, level, icon, timeout })` posts a notification, drawn by the `toast` mod
   in an overlay as wide as its content (200 to 340 px) and 40 px high, 72 with a body (blank text is none).
-  At most 5 toasts show: a sixth closes the oldest.
+  At most 5 toasts show: past that the oldest close, routine ones before
+  errors and warnings.
 - Windows (`kind: "window"`): stay open until closed, over the layout and
   under dialogs; a press the mod doesn't stop drags it (stop it on your
   controls, like a title bar's buttons), it stays where dropped, and the one
@@ -1263,24 +1359,20 @@ including a small herdr-core skill you can install with the user's permission.
 - Other machines: `hc machine ls`; `hc run --on <machine> ...` starts a
   terminal there (`vps/t7`), `hc exec --on <machine> git status` runs one
   command there and prints exactly its output.
-- Focus history: the core document `herdr.focus` (`doc.get`/`doc.set`, API only)
-  is `{"v": 1, "places": [{pane, terminal, tab, space, machine, at}, ...]}`,
-  newest first, at most 20, one place per pane; `pane` (a non-empty string) and
-  `at` (an integer, ms since the Unix epoch) are required; `terminal`, `tab`,
-  `space` and `machine` may be null or left out.
-  Herdr app windows write it on this machine's core when the person settles on a
-  pane; places on another machine stay here with their `machine` (remote cores are
-  never written). Any client may add to it: read, merge (the union by `pane`, the
-  later `at` winning, sorted by `at` newest first then `pane`, cut to 20), and
-  `doc.set` with the version read; on `conflict`, read and merge again. Write only
-  when the merge keeps a visit the stored list lacks (a new pane or a later `at`),
-  not to tidy another client's order or length. Keep what you don't read: other
-  top-level fields, other fields of a place, and entries without a `pane` and an
-  integer `at` (the app writes the first 20 of those back as they were, after the
-  places, and drops the rest). A `v`
-  above 1 is a newer shape: read it, don't write it. A value that isn't an object
-  with an integer `v` (and a `places` list) is unreadable: the app says so once and
-  its next write replaces it with a fresh `{"v": 1}`. Writing `{"v": 1, "places": []}` clears it.
+- Focus history: the core document `herdr.focus`, read and written with
+  `doc.get`/`doc.set` through the API (application programming interface)
+  only, is `{"v": 1, "places": [{pane, terminal, tab, space, machine, at},
+  ...]}`, newest first, at most 20, one place per pane; `pane` (a
+  non-empty string) and `at` (an integer, ms since the Unix epoch) are
+  required. Herdr app windows write it on this machine's core when the
+  person settles on a pane. Any client may add a visit: read, merge (the
+  union by `pane`, the later `at` winning, sorted by `at` newest first
+  then `pane`, cut to 20), and `doc.set` with the version read; on
+  `conflict`, read and merge again. Write only when the merge adds a
+  visit, and keep fields and entries you don't read. A stored `v` above 1
+  is a newer shape: read it, never write it. A value that isn't an object
+  with an integer `v` is unreadable, and the app's next write replaces it.
+  `{"v": 1, "places": []}` clears it.
 
 ## Keep in mind
 

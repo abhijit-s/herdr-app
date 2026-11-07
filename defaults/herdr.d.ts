@@ -57,7 +57,12 @@ export function playSound(sound: string): null;
  *   tab.move_left {id?}, tab.move_right {id?} (one place; nothing at the end), tab.next, tab.prev.
  * Panes: pane.split {direction: "right" | "down", pane?}, pane.close {pane?}, pane.zoom {pane?},
  *   pane.zoom_text_in|zoom_text_out|zoom_text_reset {pane?} (a terminal pane's own text size, on top of the app's zoom),
- *   pane.focus {pane | terminal}, pane.refocus (the keyboard back to the focused pane after a mod took it), pane.go {direction}, pane.swap {direction}, focus.toggle_follows_mouse. Pane menus get target { pane, terminal }.
+ *   pane.focus {pane | terminal}, pane.refocus (the keyboard back to the focused pane after a mod took it), pane.go {direction}, pane.swap {direction},
+ *   pane.rename {pane?, name?} ("": unnamed again), pane.set_icon {pane?, icon} and tab.set_icon {id?, icon}
+ *   (icon: {kind: "glyph" | "emoji", value} or {kind: "letter"}; null: the automatic icon again),
+ *   pane.menu {pane?} (the pane's menu at the pointer: the layout's terminal_menu mod, else menu).
+ *   Pane menus get target { pane, terminal, cwd, selected? } (cwd: the terminal's folder or null;
+ *   selected: whether the right-clicked terminal has a selection). focus.toggle_follows_mouse.
  *   pane.arrange {mode: "tiled" | "bsp" | "master" | "columns" | "rows" | "next" | "off", tab?} rebuilds a tab's panes evenly in that shape
  *   (next: the one after the tab's last, from tiled); terminals, mod panes and focus stay, a zoomed pane unzooms. The tab keeps
  *   the mode: each split or close in it arranges it again (the new pane right after the one split); off clears it.
@@ -66,6 +71,8 @@ export function playSound(sound: string): null;
  *   terminal.park {terminal} (its pane goes, it keeps running; the menu's "Send back"),
  *   terminal.peek {terminal} (peek over the tab, with keep-as-tab and close),
  *   terminal.show {terminal?, pane?} (shown in the pane for now, in place of its own), terminal.copy, terminal.paste,
+ *   terminal.copy_all (the screen and kept history as text), terminal.copy_path (the terminal's folder),
+ *   terminal.popup {argv, cwd?, hold?, wait?, width?, height?} (a program on this computer in a popup),
  *   terminal.right_click {to: "program" | "menu", terminal?} (right-clicks to a program that takes the mouse; Shift: the menu).
  *   terminal.scroll {lines | pages | to: "top" | "bottom", terminal?} (Herdr's view of the history: negative goes up; pages may be fractional).
  * Agents: agent.next, agent.prev (the agents list's order), agent.focus {terminal} (sub-agents too).
@@ -83,7 +90,8 @@ export function playSound(sound: string): null;
  *   layout.spacing {pane_gap?, area_padding?, area_gap?, terminal_padding?, reset?: string[]} sets space around
  *   the shown tab's panes (px 0 to 40) as clicks, on any layout: the tab block's pane.gap, the padding and gap of
  *   the row or column holding it, the root's terminal_padding [x, y]; reset puts those named back as the file has them.
- * App: mod.open {name, props?}, overlay.close {id?}, app.help, app.reset, app.theme {name}, app.zoom_in|zoom_out|zoom_reset.
+ * App: mod.open {name, props?}, overlay.close {id?}, app.help, app.reset, app.theme {name}, app.zoom_in|zoom_out|zoom_reset,
+ *   system.notify {title, body?, subtitle?, sound?, agent?, id?, urgent?, icon?} (a system notification as Herdr).
  * Mods: "<mod>.<command>" delivers <command> to that mod's nextCommand().
  */
 export function run(name: string, args?: Record<string, unknown>): null;
@@ -220,7 +228,7 @@ export function agents(): AgentInfo[];
 export interface PaneInfo {
   pane: string;
   /** null for a mod pane (`pane.split {mod}`): then `mod` names it, and only
-   *  pane, mod, tab, title, name, auto_name (null), label, session (null), icon, own_icon, focused and zoomed are set. */
+   *  pane, mod, tab, title, name, auto_name (null), label, session (null), icon, own_icon, focused, zoomed and movable are set. */
   terminal: string | null;
   mod?: string;
   tab: string;
@@ -245,7 +253,7 @@ export interface PaneInfo {
    *  session file (`session_name` in programs.json), on this computer; else null. */
   session: string | null;
   /** What to draw for it in place of the program's icon, or null: draw `program`'s
-   *  as before. Set for an icon chosen with pane.set_icon (any `space_avatar`), and with
+   *  icon. Set for an icon chosen with pane.set_icon (any `space_avatar`), and with
    *  `space_avatar` glyph, emoji or repo (glyph) for a bare shell showing its `auto_name`:
    *  its noun's icon (meadow: wheat). */
   icon: Icon | null;
@@ -390,7 +398,7 @@ export function placement(): {
 /** Every theme color by name: background (the terminals'), surface, canvas (behind cards),
  *  chrome (sidebars and bars), popover, raised, hover, selected, border, input, foreground,
  *  muted, dim, accent, accent_foreground, solid and solid_foreground (a primary button: ink on
- *  paper, paper on ink), selection, working, blocked, done, idle, unknown, ansi0..ansi15, and a
+ *  paper, paper on ink), ring (focus rings), focus (the active pane's border), selection, working, blocked, done, idle, unknown, ansi0..ansi15, and a
  *  toast's own (held to contrast floors on every theme): toast (its surface), toast_border,
  *  toast_shadow, toast_foreground, toast_muted, toast_info, toast_success, toast_warning, toast_error.
  *  Light and dark themes name the same colors, so a mod that uses them follows both. */
@@ -451,7 +459,8 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
 
 /** What the app runs with: the shown layout's look (theme name, fonts, sizes, terminal
  *  padding and opacity) with the person's zoom and sounds. `ui_scale` is what a mod's px
- *  are drawn at (zoom × ui_zoom): divide window px by it. `panels_in_use` is the panel
+ *  are drawn at (zoom × ui_zoom): divide window px by it; `ui_scale_ranges` is
+ *  `{ ui_zoom: [min, max], ui_text_scale: [min, max] }`. `panels_in_use` is the panel
  *  derivation drawing now ("tinted" or "classic"): `panel_colors`, or classic for a theme
  *  or look that paints its own panels. `working_spinner` is the spinner to show while an
  *  agent works: `null` for the ring icon (`svg("mods/workspace-chrome/spinner.svg").spin(900)`),
@@ -595,6 +604,8 @@ export interface GitStatus {
  * Missing on older herdr-app builds: `import * as herdr from "herdr"` and check
  * `typeof herdr.gitStatus === "function"` to keep a fallback.
  */
+export function gitStatus(folder: string, options?: { on?: string | null; files?: boolean }): GitStatus | false | null;
+
 /** The segments of `header_info` that fit in `width` px of `fontPx` text, as Herdr
  *  estimates them: whole segments go from the right, a blocked `ask` last; a lone one that
  *  still doesn't fit stays (draw it with `.truncate()`), and none when fewer than about four
@@ -607,10 +618,8 @@ export function fitHeaderInfo(segments: HeaderSegment[], width: number, fontPx: 
 export function headerInfoPreview(template: string): HeaderInfo | null;
 
 /** About how wide `text` is in `fontPx` text, as `fitHeaderInfo` estimates it (wide
- *  characters, CJK and emoji, twice): for sizing what sits beside the info. */
+ *  characters, Chinese, Japanese and Korean (CJK) and emoji, twice): for sizing what sits beside the info. */
 export function headerTextWidth(text: string, fontPx: number): number;
-
-export function gitStatus(folder: string, options?: { on?: string | null; files?: boolean }): GitStatus | false | null;
 
 /**
  * Resolves with the folder's git status and its revision once there is an answer
