@@ -2082,7 +2082,7 @@ impl AppWindow {
                     if let Some(Content::Mod { name, .. }) = p.content() {
                         let label = crate::pane_label::given(p.title.as_deref()).unwrap_or(name);
                         let own = m.icons.get(&p.id);
-                        let icon = crate::pane_icons::pane(own, None, &p.id, label, icon_style);
+                        let icon = crate::pane_icons::pane(own, None, label, icon_style);
                         icons.insert(&p.id, icon.clone());
                         shown_labels.insert(&p.id, label.to_owned());
                         panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "tab": ctx.id, "title": name, "name": p.title, "auto_name": null, "label": label, "session": null, "icon": icon, "own_icon": own, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
@@ -2107,7 +2107,7 @@ impl AppWindow {
                         session, program: &program, address: addr,
                     });
                     let own = m.icons.get(&p.id);
-                    let icon = crate::pane_icons::pane(own, auto_name.map(String::as_str), &p.id, &label, icon_style);
+                    let icon = crate::pane_icons::pane(own, auto_name.map(String::as_str), &label, icon_style);
                     icons.insert(&p.id, icon.clone());
                     shown_labels.insert(&p.id, label.clone());
                     labels.insert(p.id.clone(), label.clone());
@@ -8690,6 +8690,7 @@ export default class Recent extends View {
             this.live.insert("tb".into(), json!({ "address": "tb", "title": "~/src", "foreground": { "argv": ["cargo", "build"] }, "labels": {} }));
             this.sync(window, cx);
             this.person.pane_auto_names = true;
+            this.person.space_avatar = Some("letter".into());
             this.apply_look(window, cx);
             let name = crate::pane_names::for_tab(["a", "b"])["a"].clone();
             assert_eq!(published("a", "auto_name"), json!(name));
@@ -8699,7 +8700,7 @@ export default class Recent extends View {
             for (mode, kind) in [("emoji", crate::pane_icons::Kind::Emoji), ("glyph", crate::pane_icons::Kind::Glyph), ("repo", crate::pane_icons::Kind::Glyph)] {
                 this.person.space_avatar = Some(mode.into());
                 this.apply_look(window, cx);
-                let expected = crate::pane_icons::pane(None, Some(&name), "a", &name, Some(kind));
+                let expected = crate::pane_icons::pane(None, Some(&name), &name, Some(kind));
                 assert!(!expected.is_null());
                 assert_eq!(published("a", "icon"), expected, "{mode}: the automatic name's icon, at once");
                 assert_eq!(published("b", "icon"), Value::Null, "{mode}: a running command shows its program's");
@@ -8715,7 +8716,7 @@ export default class Recent extends View {
             assert_eq!(published("b", "own_icon"), rocket);
             assert_eq!(published("a", "own_icon"), Value::Null);
             assert_eq!(tab_icon(this, "icon"), published("b", "icon"));
-            this.person.space_avatar = None;
+            this.person.space_avatar = Some("letter".into());
             this.apply_look(window, cx);
             assert_eq!(published("b", "icon"), json!({ "kind": "glyph", "text": "\u{f135}" }), "in letter mode too");
 

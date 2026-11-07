@@ -1643,6 +1643,9 @@ pub struct SpinnerFrames {
 
 /// settings.json's `space_avatar` values: how mods draw space avatars.
 const SPACE_AVATARS: &[&str] = &["letter", "glyph", "emoji", "repo"];
+/// `space_avatar` when unset or unknown: a theme-tinted icon matching the name,
+/// the same one-colour look as the rest of the chrome.
+const SPACE_AVATAR_DEFAULT: &str = "glyph";
 
 /// `working_spinner`'s presets besides `"ring"` (the spinning icon), each with its speed.
 const SPINNER_PRESETS: &[(&str, &[&str], u32)] = &[
@@ -1921,7 +1924,8 @@ pub struct Settings {
     pub dock_badge: bool,
     pub dock_bounce_on_wait: bool,
     pub pane_auto_names: bool,
-    /// How mods draw space avatars; None: `letter` (also for a value it doesn't know).
+    /// How mods draw space avatars: one of `SPACE_AVATARS`, `glyph` when
+    /// unset or unknown. Always set once composed; None only in hand-built settings.
     pub space_avatar: Option<String>,
     pub alert_command: Option<AlertCommand>,
     /// The frames mods animate while an agent works; None: the ring.
@@ -1931,7 +1935,7 @@ pub struct Settings {
     /// Why settings.json's `working_spinner` fell back to the ring.
     #[serde(skip)]
     pub working_spinner_problem: Option<String>,
-    /// Why settings.json's `space_avatar` fell back to `letter`.
+    /// Why settings.json's `space_avatar` fell back to `glyph`.
     #[serde(skip)]
     pub space_avatar_problem: Option<String>,
 }
@@ -2019,7 +2023,7 @@ impl Default for Settings {
             dock_badge: true,
             dock_bounce_on_wait: false,
             pane_auto_names: false,
-            space_avatar: None,
+            space_avatar: Some(SPACE_AVATAR_DEFAULT.into()),
             alert_command: None,
             working_spinner: None,
             pane_header_info: None,
@@ -2110,12 +2114,12 @@ impl Settings {
             dock_badge: person.dock_badge,
             dock_bounce_on_wait: person.dock_bounce_on_wait,
             pane_auto_names: person.pane_auto_names,
-            space_avatar: person.space_avatar.clone().filter(|v| SPACE_AVATARS.contains(&v.as_str())),
+            space_avatar: Some(person.space_avatar.clone().filter(|v| SPACE_AVATARS.contains(&v.as_str())).unwrap_or_else(|| SPACE_AVATAR_DEFAULT.into())),
             alert_command: person.alert_command.clone(),
             working_spinner,
             pane_header_info: person.pane_header_info.clone().filter(|t| !t.trim().is_empty()),
             working_spinner_problem,
-            space_avatar_problem: person.space_avatar.as_ref().filter(|v| !SPACE_AVATARS.contains(&v.as_str())).map(|v| format!("space_avatar {v:?} is not one of letter, glyph, emoji, repo: using \"letter\"")),
+            space_avatar_problem: person.space_avatar.as_ref().filter(|v| !SPACE_AVATARS.contains(&v.as_str())).map(|v| format!("space_avatar {v:?} is not one of letter, glyph, emoji, repo: using \"{SPACE_AVATAR_DEFAULT}\"")),
             clipboard_write: person.clipboard_write,
             minimum_contrast: person.minimum_contrast,
             letter_spacing: look.letter_spacing.or(person.letter_spacing).unwrap_or(d.letter_spacing),
@@ -3538,21 +3542,21 @@ mod tests {
     }
 
     /// `space_avatar`: what mods read as how to draw space avatars; unset or
-    /// unknown is null (letter), and an unknown value is reported.
+    /// unknown is glyph, and an unknown value is reported. Unset is never written.
     #[test]
     fn space_avatar_reaches_mods_and_unknown_values_fall_back() {
         use serde_json::json;
         let compose = |v: serde_json::Value| Settings::compose(&serde_json::from_value(json!({"space_avatar": v})).unwrap(), &crate::layout::Look::default(), true);
         let unset = Settings::compose(&Person::default(), &crate::layout::Look::default(), true);
-        assert_eq!((unset.for_mods()["space_avatar"].clone(), unset.problems()), (serde_json::Value::Null, vec![]));
+        assert_eq!((unset.for_mods()["space_avatar"].clone(), unset.problems()), (json!("glyph"), vec![]));
         assert!(serde_json::to_value(Person::default()).unwrap().get("space_avatar").is_none());
         for mode in ["letter", "glyph", "emoji", "repo"] {
             let s = compose(json!(mode));
             assert_eq!((s.for_mods()["space_avatar"].clone(), s.problems()), (json!(mode), vec![]), "{mode}");
         }
         let odd = compose(json!("pictures"));
-        assert_eq!(odd.for_mods()["space_avatar"], serde_json::Value::Null);
-        assert_eq!(odd.problems(), vec!["space_avatar \"pictures\" is not one of letter, glyph, emoji, repo: using \"letter\"".to_string()]);
+        assert_eq!(odd.for_mods()["space_avatar"], json!("glyph"));
+        assert_eq!(odd.problems(), vec!["space_avatar \"pictures\" is not one of letter, glyph, emoji, repo: using \"glyph\"".to_string()]);
     }
 
     /// `toast_position` reads the six places, kebab-case, and leaves the

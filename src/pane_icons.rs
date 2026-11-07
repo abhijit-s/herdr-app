@@ -5,13 +5,12 @@
 //! A pane's, first that applies:
 //! 1. the icon someone chose (`pane.set_icon`), kept by pane id;
 //! 2. with `space_avatar` at glyph, emoji or repo (glyph), a bare shell
-//!    showing its automatic name (`pane_auto_names`): the icon of one of the
-//!    name's words (meadow: wheat), noun first; neither word listed: one picked
-//!    from the pane id's hash;
+//!    showing its automatic name (`pane_auto_names`): its noun's icon
+//!    (meadow: wheat); every noun has one;
 //! 3. null: an agent or program shows its program's icon, a bare shell the terminal's.
 //!
 //! A tab's: the icon someone chose (`tab.set_icon`), else its focused pane's.
-//! The words' icons are data, `defaults/pane-icons.json`.
+//! The nouns' icons are data, `defaults/pane-icons.json`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -102,15 +101,11 @@ impl Words {
         Ok(Words { by_word })
     }
 
-    /// The icon for an automatic name ("hazy-inlet"): its noun's, else its
-    /// adjective's, else one from the id's hash among all the words' icons.
-    fn pick(&self, name: &str, id: &str, kind: Kind) -> String {
-        let of = |(glyph, emoji): &(String, String)| if kind == Kind::Emoji { emoji.clone() } else { glyph.clone() };
-        if let Some(icon) = name.rsplit('-').find_map(|w| self.by_word.get(w)) {
-            return of(icon);
-        }
-        let i = (crate::pane_names::fnv1a(id.as_bytes()) % self.by_word.len() as u64) as usize;
-        of(self.by_word.values().nth(i).expect("i < len"))
+    /// The icon for an automatic name ("hazy-inlet"): its noun's. None only
+    /// for a noun the file doesn't list, which `shipped_icons_hold_up` rules out.
+    fn pick(&self, name: &str, kind: Kind) -> Option<String> {
+        let (glyph, emoji) = self.by_word.get(name.rsplit('-').next()?)?;
+        Some(if kind == Kind::Emoji { emoji.clone() } else { glyph.clone() })
     }
 }
 
@@ -123,8 +118,8 @@ fn words() -> Option<&'static Words> {
         .as_ref()
 }
 
-/// The automatic icon's style for `space_avatar`: none for letter (or unset),
-/// which keeps every icon as it was.
+/// The automatic icon's style for `space_avatar`: none for letter, which keeps
+/// every icon as it was (and for None, only in settings built by hand).
 pub fn style(space_avatar: Option<&str>) -> Option<Kind> {
     match space_avatar {
         Some("glyph" | "repo") => Some(Kind::Glyph),
@@ -141,14 +136,14 @@ thread_local! {
 
 /// A pane's icon: what someone chose, else (in `style`) its automatic name's,
 /// else null. `label` gives a letter its letter.
-pub fn pane(chosen: Option<&Choice>, auto_name: Option<&str>, id: &str, label: &str, style: Option<Kind>) -> Value {
+pub fn pane(chosen: Option<&Choice>, auto_name: Option<&str>, label: &str, style: Option<Kind>) -> Value {
     #[cfg(test)]
     RESOLVED.with(|n| n.set(n.get() + 1));
     if let Some(c) = chosen {
         return shown(c, label);
     }
     match (style, auto_name, words()) {
-        (Some(kind), Some(name), Some(w)) => json!({ "kind": kind.name(), "text": w.pick(name, id, kind) }),
+        (Some(kind), Some(name), Some(w)) => w.pick(name, kind).map_or(Value::Null, |text| json!({ "kind": kind.name(), "text": text })),
         _ => Value::Null,
     }
 }
@@ -178,12 +173,12 @@ pub fn letter(name: &str) -> String {
 mod tests {
     use super::*;
 
-    fn words_listed() -> Vec<String> {
+    fn nouns_listed() -> Vec<String> {
         let names: Value = serde_json::from_str(include_str!("../defaults/pane-names.json")).unwrap();
-        ["adjectives", "nouns"].iter().flat_map(|k| names[k].as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_owned())).collect()
+        names["nouns"].as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_owned()).collect()
     }
 
-    /// Every word the names use has an icon, and nothing else: each glyph is in
+    /// Every noun the names use has an icon, and nothing else: each glyph is in
     /// the bundled Symbols Nerd Font under the name the file gives it.
     #[test]
     fn shipped_icons_hold_up() {
@@ -193,9 +188,9 @@ mod tests {
         }
         let file: File = serde_json::from_str(SHIPPED).unwrap();
         let w = Words::parse(SHIPPED).expect("defaults/pane-icons.json");
-        let mut listed = words_listed();
+        let mut listed = nouns_listed();
         listed.sort();
-        assert_eq!(file.words.keys().cloned().collect::<Vec<_>>(), listed, "an icon for every word of pane-names.json, and only those");
+        assert_eq!(file.words.keys().cloned().collect::<Vec<_>>(), listed, "an icon for every noun of pane-names.json, and only those");
         let face = ttf_parser::Face::parse(crate::settings::SYMBOLS_FONT_FILE, 0).unwrap();
         let names = face.tables().post.unwrap().names();
         let named: BTreeMap<u16, &str> = names.enumerate().map(|(i, n)| (i as u16, n)).collect();
@@ -222,47 +217,33 @@ mod tests {
     }
 
     #[test]
-    fn a_name_shows_its_nouns_icon_else_its_adjectives() {
-        let w = Words::parse(r#"{"words":{"meadow":{"emoji":"🌾","glyph":"f0d23","nf":""},"hazy":{"emoji":"🌇","glyph":"f0f30","nf":""},"river":{"emoji":"🌊","glyph":"f078d","nf":""}}}"#).unwrap();
-        assert_eq!(w.pick("hazy-meadow", "p1", Kind::Emoji), "🌾", "the noun first");
-        assert_eq!(w.pick("hazy-meadow", "p1", Kind::Glyph), "\u{f0d23}");
-        assert_eq!(w.pick("hazy-ford", "p1", Kind::Emoji), "🌇", "an unlisted noun: the adjective's");
-        // The shipped words: the brief's examples.
+    fn a_name_shows_its_nouns_icon() {
+        let w = Words::parse(r#"{"words":{"meadow":{"emoji":"🌾","glyph":"f0d23","nf":""},"river":{"emoji":"🌊","glyph":"f078d","nf":""}}}"#).unwrap();
+        assert_eq!(w.pick("hazy-meadow", Kind::Emoji).as_deref(), Some("🌾"));
+        assert_eq!(w.pick("hazy-meadow", Kind::Glyph).as_deref(), Some("\u{f0d23}"));
+        assert_eq!(w.pick("hazy-ford", Kind::Emoji), None, "an unlisted noun: none");
+        // The shipped words: the brief's examples, and every automatic name has one.
         let shipped = words().unwrap();
-        assert_eq!(shipped.pick("sunny-meadow", "p", Kind::Emoji), "🌾");
-        assert_eq!(shipped.pick("sunny-meadow", "p", Kind::Glyph), "\u{f0073}", "md-barley, wheat");
-        assert_eq!(shipped.pick("hazy-glen", "p", Kind::Emoji), "🦊");
-    }
-
-    /// Neither word listed: the id's hash picks, the same every time, another
-    /// id usually another, always one of the words' icons.
-    #[test]
-    fn a_name_without_listed_words_keeps_a_stable_icon_by_id() {
-        let w = Words::parse(r#"{"words":{"a":{"emoji":"🌾","glyph":"f0d23","nf":""},"b":{"emoji":"🌇","glyph":"f0f30","nf":""},"c":{"emoji":"🌊","glyph":"f078d","nf":""}}}"#).unwrap();
-        let id = "p0123456789abcdef0123456789abcdef";
-        let first = w.pick("odd-word", id, Kind::Emoji);
-        for _ in 0..3 {
-            assert_eq!(w.pick("odd-word", id, Kind::Emoji), first);
+        assert_eq!(shipped.pick("sunny-meadow", Kind::Emoji).as_deref(), Some("🌾"));
+        assert_eq!(shipped.pick("sunny-meadow", Kind::Glyph).as_deref(), Some("\u{f0073}"), "md-barley, wheat");
+        assert_eq!(shipped.pick("hazy-glen", Kind::Emoji).as_deref(), Some("🦊"));
+        for i in 0..500 {
+            let name = &crate::pane_names::for_tab([format!("p{i}").as_str()])[&format!("p{i}")];
+            assert!(shipped.pick(name, Kind::Glyph).is_some() && shipped.pick(name, Kind::Emoji).is_some(), "{name}");
         }
-        assert_eq!(w.pick("other-thing", id, Kind::Emoji), first, "the id picks, not the words");
-        // FNV-1a of the id, modulo three, in word order: pinned so a change to the hash shows.
-        assert_eq!(first, ["🌾", "🌇", "🌊"][(crate::pane_names::fnv1a(id.as_bytes()) % 3) as usize]);
-        let picks: std::collections::BTreeSet<String> = (0..32).map(|i| w.pick("x-y", &format!("p{i}"), Kind::Emoji)).collect();
-        assert_eq!(picks.len(), 3, "ids spread over every icon");
-        assert!(picks.iter().all(|p| ["🌾", "🌇", "🌊"].contains(&p.as_str())));
     }
 
     #[test]
     fn a_choice_wins_and_letter_mode_keeps_the_program_icon() {
         let glyph = Choice { kind: Kind::Glyph, value: Some("\u{f135}".into()) };
         let own_letter = Choice { kind: Kind::Letter, value: None };
-        let expected = words().unwrap().pick("hazy-meadow", "p1", Kind::Emoji);
-        assert_eq!(pane(None, Some("hazy-meadow"), "p1", "hazy-meadow", Some(Kind::Emoji)), json!({ "kind": "emoji", "text": expected }));
-        assert_eq!(pane(None, Some("hazy-meadow"), "p1", "hazy-meadow", None), Value::Null, "letter mode: as before");
-        assert_eq!(pane(None, None, "p1", "zsh", Some(Kind::Glyph)), Value::Null, "no automatic name: the program's icon");
+        let expected = words().unwrap().pick("hazy-meadow", Kind::Emoji).unwrap();
+        assert_eq!(pane(None, Some("hazy-meadow"), "hazy-meadow", Some(Kind::Emoji)), json!({ "kind": "emoji", "text": expected }));
+        assert_eq!(pane(None, Some("hazy-meadow"), "hazy-meadow", None), Value::Null, "letter mode: as before");
+        assert_eq!(pane(None, None, "zsh", Some(Kind::Glyph)), Value::Null, "no automatic name: the program's icon");
         for style in [None, Some(Kind::Glyph), Some(Kind::Emoji)] {
-            assert_eq!(pane(Some(&glyph), Some("hazy-meadow"), "p1", "x", style), json!({ "kind": "glyph", "text": "\u{f135}" }), "a choice wins in {style:?}");
-            assert_eq!(pane(Some(&own_letter), None, "p1", "\u{2733} build", style), json!({ "kind": "letter", "text": "B" }));
+            assert_eq!(pane(Some(&glyph), Some("hazy-meadow"), "x", style), json!({ "kind": "glyph", "text": "\u{f135}" }), "a choice wins in {style:?}");
+            assert_eq!(pane(Some(&own_letter), None, "\u{2733} build", style), json!({ "kind": "letter", "text": "B" }));
         }
         let focused = json!({ "kind": "emoji", "text": "🌾" });
         assert_eq!(tab(None, "1", Some(&focused)), focused, "a tab shows its focused pane's");

@@ -232,3 +232,17 @@ test("perf: parse and per-keystroke search over everything", () => {
   console.log(`bun: parse ${parse.toFixed(1)} ms, search ${perKey.toFixed(2)} ms per keystroke`);
   expect(perKey).toBeLessThan(16);
 });
+
+test("keywords.json: each word once, every icon one the name files hold", () => {
+  const { icons } = JSON.parse(readFileSync(new URL("names/keywords.json", dir), "utf8"));
+  const glyphNames = new Set(glyphs.map((g) => g.name));
+  const emojiTexts = new Set(emoji.entries.map((e) => e.text));
+  const words = icons.flatMap((i: { words: string[] }) => i.words);
+  expect(icons.length).toBeGreaterThan(40);
+  expect(new Set(words).size).toBe(words.length);
+  for (const w of words) expect(w).toMatch(/^[a-z0-9]+$/);
+  for (const i of icons) {
+    expect(glyphNames.has(i.glyph)).toBe(true);
+    expect(emojiTexts.has(i.emoji)).toBe(true);
+  }
+});
