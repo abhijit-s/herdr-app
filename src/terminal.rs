@@ -785,6 +785,15 @@ impl TerminalView {
         true
     }
 
+    /// A full-screen program (the alternate screen): no history of its own here.
+    pub fn full_screen(&self) -> bool {
+        self.grid.borrow().vt.alt_screen()
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.grid.borrow().vt.selection_text().is_some_and(|text| !text.is_empty())
+    }
+
     pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
         self.grid.borrow_mut().vt.clear_selection();
         cx.notify();

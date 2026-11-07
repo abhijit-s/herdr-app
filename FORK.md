@@ -633,6 +633,18 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Files: `src/dock_badge.rs`, `src/window.rs`, `src/settings.rs`, `src/main.rs`, `Cargo.toml` (`NSDockTile` feature), `defaults/frame/settings/main.js`, `defaults/AGENTS.md`
 - Upstream: none yet
 
+### Pane menu copy items
+
+`feat/pane-menu-copy` (branched from `master`, fork only): the pane right-click menu opens with a copy group above Split: Copy (only when the clicked terminal has a selection), Copy all, Paste, and Copy path (only when its folder is known). Each acts on the clicked terminal, not the focused one.
+
+- Commands: `terminal.copy` and `terminal.paste` take an optional `terminal` (default: the focused one, as before). New `terminal.copy_all {terminal?}` reads `terminal.read` with all the history the core keeps (`lines` 1e9, not `usize::MAX`: the core adds the screen's rows to it), drops the blank rows below the last text, and toasts "Copied 1,234 lines" (with a note when the core says part of the history is missing). On a full-screen program the core reads history by scrolling it with the wheel while typed keys wait (its stitch, up to 1000 lines and 15 s), so a "Copying…" toast shows first and the read gets 30 s. The command answers at once; failures and a reply without text are error toasts. New `terminal.copy_path {terminal?}` copies the terminal's live folder, else the core record's foreground or start folder. Copy by command toasts "Copied"; the copy key stays silent as before.
+- The window fills the menu's `target` with `selected` (the clicked view has a selection) and `cwd` when it opens the menu, so the mod needs no new API. A right-click never touched the selection (only a left press, a key or a program-taken click clears it); `pane_menu_copy` pins that.
+- A terminal can show in a pane and a peek at once, each with its own selection: `terminal.copy {terminal}` takes the view holding one.
+- The menu popup's most height is 420 px (was 260); it still fits its items. Icons `copy.svg` and `clipboard.svg` (Lucide) join `workspace-chrome`.
+- Tests: `window::tests::{copy_all_text_drops_the_blank_rows_below_the_last_text, pane_menu_copy_items_act_on_the_clicked_terminal}` (own process: drag-select in t2 with t1 focused, right-click keeps the selection and opens the menu with `selected` and `cwd`; copy, copy_path and copy_all with `terminal` act on t2, without it on t1; the read asks for all history), `mods::render_tests::pane_menu_copy_items` (visibility rules and order).
+- Files: `src/window.rs`, `src/terminal.rs` (`has_selection`), `src/commands.rs`, `defaults/mods/menu/main.js`, `defaults/mods/workspace-chrome/{copy,clipboard}.svg`, `defaults/AGENTS.md`, `docs/commands.md`, `src/mods/render_tests.rs`
+- Upstream: none yet
+
 ### Rejected text experiments
 
 Two text-quality experiments measured against the shipped thicken, contrast and weight settings, and not kept. The numbers are here so neither is tried again without a new reason.

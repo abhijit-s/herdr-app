@@ -1211,3 +1211,24 @@ fn mods_name_panes_by_their_label(cx: &mut TestAppContext) {
     assert_eq!(editor("Fix nvim config", cx), "\"Fix nvim config\"");
     assert_eq!(editor(nvim, cx), "\"Neovim\"");
 }
+
+/// The pane menu's copy group: Copy only over a selection, Copy path only
+/// with a known folder, Copy all and Paste always, all above Split.
+#[gpui::test]
+fn pane_menu_copy_items(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let labels = |target: Value, cx: &mut TestAppContext| {
+        let mut p = props();
+        p["target"] = target;
+        let tree = describe(cx, &staged, "mods/menu", true, p, updates("current", "current"), None).unwrap();
+        texts(&tree).into_iter().filter(|t| !t.is_empty() && *t != "\"\"").map(str::to_owned).collect::<Vec<_>>()
+    };
+    let all = labels(json!({"pane":"p1","terminal":"t1","selected":true,"cwd":"/fixture/project"}), cx);
+    assert_eq!(all[..5], ["\"Copy\"", "\"Copy all\"", "\"Paste\"", "\"Copy path\"", "\"Split right\""], "{all:?}");
+    let bare = labels(json!({"pane":"p1","terminal":"t1","selected":false,"cwd":null}), cx);
+    assert_eq!(bare[..3], ["\"Copy all\"", "\"Paste\"", "\"Split right\""], "{bare:?}");
+    // No such terminal: nothing to copy from.
+    let gone = labels(json!({"pane":"p1","terminal":"t9","selected":true,"cwd":"/x"}), cx);
+    assert!(!gone.iter().any(|t| t.contains("Copy") || t.contains("Paste")), "{gone:?}");
+}
