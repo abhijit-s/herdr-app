@@ -256,6 +256,8 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 `feat/toast-fit-content` (branched from `master`, fork only): a toast is as wide as its content, 200 to 340 px (titles still truncate at 340), and 40 px high without a body, 72 with one (a body as the toast mod draws one: text that isn't blank, or any other value JavaScript calls true); an explicit `height` still wins, and toasts stay right-anchored and stacked. `fix/toast-content-fill`: the toast mod's root fills the pill (inside its border) and its text is vertically centred; a fitted `ShellRoot` grows to its container when `set_fill_fitted` is on, which only toasts use, so fitted popups and floats are unchanged. A keyed (`.id(...)`) script element records its bounds under that id in debug test builds, so tests can measure mod content.
 
+- Upstream: issue https://github.com/herdrdev/herdr-app/issues/685 proposes it, with the branch `abhijit-s:feat/toast-fit-content-upstream` ready.
+
 - Files: `src/window.rs` (`toast_height`, `open_overlay`, `render_overlays`, tests `toast_sizes` and `a_toast_is_two_lines_high_only_with_a_body_the_mod_draws`), `defaults/mods/toast/main.js` (`hasBody`), `vendor/gpui-kit/crates/shell/src/root.rs` (`fill_fitted`), `vendor/gpui-kit/crates/shell/src/materialize.rs` (debug selector for keyed elements), `defaults/AGENTS.md`
 - Upstream: none yet
 
