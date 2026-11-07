@@ -1074,7 +1074,7 @@ export default class Settings extends View {
         )
         .child(div().w(16).h(5).rounded(2).bg(on ? sel.text : t.dim));
     };
-    const label = (TOAST_POSITIONS.find(([v]) => v === now) ?? TOAST_POSITIONS[5])[1];
+    const label = (TOAST_POSITIONS.find(([v]) => v === now) ?? TOAST_POSITIONS.find(([v]) => v === TOAST_POSITION_DEFAULT))[1];
     return v_flex()
       .gap(4)
       .items_end()
