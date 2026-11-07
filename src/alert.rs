@@ -9,6 +9,7 @@ use gpui::{App, SystemNotification, SystemNotificationSound};
 use serde_json::Value;
 
 use crate::model::Alert;
+use crate::notification_icon::Source;
 use crate::settings::{AlertCommand, Settings, SystemNotifications};
 
 /// One alert, as the notification and the command see it.
@@ -105,13 +106,14 @@ pub struct Look {
     pub sound: SystemNotificationSound,
     /// The agent's glyph before the title and the state's mark before the body.
     pub marks: bool,
-    /// A copy of the agent's program icon for the notification to take.
-    pub image: Option<PathBuf>,
+    /// The agent's program icon, made into the notification's image off the
+    /// main thread (`show`).
+    pub icon: Option<Source>,
 }
 
 impl Look {
-    /// For posting `note` now: with `notification_icons`, a fresh copy of its
-    /// program's icon (notification_icon.rs).
+    /// For posting `note`: with `notification_icons`, its program's icon
+    /// (notification_icon.rs).
     pub fn of(note: &Note, settings: &Settings) -> Look {
         let sounds = &settings.notification_sounds;
         let sound = match note.alert {
@@ -119,14 +121,9 @@ impl Look {
             Alert::Error => &sounds.error,
             Alert::Done => &sounds.done,
         };
-        let image = if settings.notification_icons { note.app.as_deref().and_then(program_icon) } else { None };
-        Look { sound: sound.clone(), marks: settings.notification_marks, image }
+        let icon = if settings.notification_icons { note.app.as_deref().and_then(Source::program) } else { None };
+        Look { sound: sound.clone(), marks: settings.notification_marks, icon }
     }
-}
-
-/// A copy of the program icon an agent's 7501 `app` shows, for one notification.
-pub fn program_icon(app: &str) -> Option<PathBuf> {
-    crate::notification_icon::copy_for_posting(&crate::notification_icon::cached(app)?)
 }
 
 /// Each agent's glyph by its programs.json key (or its `app` with -code,
@@ -173,14 +170,57 @@ pub fn system_notification(note: &Note, look: &Look) -> SystemNotification {
         title: title.into(),
         body: body.into(),
         sound: look.sound.clone(),
-        image: look.image.clone(),
         ..Default::default()
     }
 }
 
 /// Posts `note` as its system notification, looking as the settings say.
 pub fn post(note: &Note, settings: &Settings, cx: &App) {
-    cx.show_system_notification(system_notification(note, &Look::of(note, settings)));
+    let look = Look::of(note, settings);
+    show(system_notification(note, &look), look.icon, cx);
+}
+
+thread_local! {
+    /// Notifications waiting for their image, by tag: the newest one's number.
+    static WAITING: std::cell::RefCell<std::collections::HashMap<String, u64>> = Default::default();
+}
+
+/// Shows `notification`, with `icon` made into its image off the main thread
+/// first (it reads, draws and copies files). A notification posted or
+/// dismissed under the same tag meanwhile wins: the late one isn't shown.
+pub fn show(mut notification: SystemNotification, icon: Option<Source>, cx: &App) {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tag = notification.tag.to_string();
+    let Some(icon) = icon else {
+        WAITING.with(|w| w.borrow_mut().remove(&tag));
+        return cx.show_system_notification(notification);
+    };
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    WAITING.with(|w| w.borrow_mut().insert(tag.clone(), n));
+    let image = cx.background_executor().spawn(async move { icon.copy() });
+    cx.spawn(async move |cx| {
+        notification.image = image.await;
+        let newest = WAITING.with(|w| {
+            let mut w = w.borrow_mut();
+            let newest = w.get(&tag) == Some(&n);
+            if newest {
+                w.remove(&tag);
+            }
+            newest
+        });
+        if newest {
+            cx.update(|cx| cx.show_system_notification(notification));
+        } else if let Some(image) = notification.image {
+            let _ = std::fs::remove_file(image);
+        }
+    })
+    .detach();
+}
+
+/// Takes back the notification under `tag`, and one still waiting for its image.
+pub fn dismiss(tag: &str, cx: &App) {
+    WAITING.with(|w| w.borrow_mut().remove(tag));
+    cx.dismiss_system_notification(tag);
 }
 
 /// The agent's own message when it gave one, over "space / tab".
@@ -465,14 +505,13 @@ pub fn notify_tag(id: Option<&str>) -> String {
     }
 }
 
-pub fn notify_notification(notify: &Notify, tag: &str, image: Option<PathBuf>) -> SystemNotification {
+pub fn notify_notification(notify: &Notify, tag: &str) -> SystemNotification {
     SystemNotification {
         tag: tag.to_owned().into(),
         title: notify.title.clone().into(),
         subtitle: notify.subtitle.clone().into(),
         body: notify.body.clone().into(),
         sound: notify.sound.clone(),
-        image,
         ..Default::default()
     }
 }
@@ -790,11 +829,47 @@ mod tests {
     }
 
     #[test]
-    fn an_image_given_is_attached() {
-        let image = std::env::temp_dir().join("herdr-alert-image.png");
-        let n = system_notification(&note(Alert::Done), &Look { image: Some(image.clone()), ..Look::default() });
-        assert_eq!(n.image, Some(image));
-        assert_eq!(Look::of(&note(Alert::Done), &plain()).image, None, "notification_icons off");
+    fn the_icon_comes_from_the_program_unless_notification_icons_is_off() {
+        assert_eq!(Look::of(&note(Alert::Done), &plain()).icon, None, "notification_icons off");
+        let on = Look::of(&note(Alert::Done), &Settings { notification_icons: true, ..plain() });
+        assert!(matches!(on.icon, Some(Source::Program(ref shown)) if shown["key"] == "claude"), "{on:?}");
+        assert_eq!(system_notification(&note(Alert::Done), &on).image, None, "the image comes later, off the main thread");
+    }
+
+    /// The icon's file work happens off the main thread: nothing shows until
+    /// the background executor has run, then the notification shows with its
+    /// copy. A post or dismissal under the same tag meanwhile wins.
+    #[gpui::test]
+    fn an_icon_is_made_off_the_main_thread_and_a_newer_post_wins(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_app_identity("dev.herdr.test", "Herdr"));
+        let png = std::env::temp_dir().join(format!("herdr-alert-icon-{}.png", std::process::id()));
+        std::fs::write(&png, b"png").unwrap();
+        let notification = |title: &str| SystemNotification { tag: tag("local:t7").into(), title: title.to_owned().into(), ..Default::default() };
+        cx.update(|cx| show(notification("first"), Source::file(&png), cx));
+        assert!(cx.shown_system_notifications().is_empty(), "posting didn't wait for the file work");
+        cx.run_until_parked();
+        let shown = cx.shown_system_notifications();
+        let image = shown[0].image.clone().expect("a copy of the image");
+        assert!(image != png && std::fs::read(&image).unwrap() == b"png", "{image:?}");
+        let _ = std::fs::remove_file(&image);
+
+        // A newer one without an image shows at once, and the older one's late image is dropped.
+        cx.update(|cx| {
+            show(notification("older"), Source::file(&png), cx);
+            show(notification("newer"), None, cx);
+        });
+        cx.run_until_parked();
+        let titles: Vec<String> = cx.shown_system_notifications().iter().map(|n| n.title.to_string()).collect();
+        assert_eq!(titles, ["first", "newer"]);
+
+        // Dismissed while its image is made: never shown.
+        cx.update(|cx| {
+            show(notification("dismissed"), Source::file(&png), cx);
+            dismiss(&tag("local:t7"), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(cx.shown_system_notifications().len(), 2);
+        let _ = std::fs::remove_file(&png);
     }
 
     #[test]
@@ -869,7 +944,7 @@ mod tests {
         let post = |title: &str, id: Option<&str>, cx: &mut gpui::TestAppContext| {
             let notify = parse_notify(&serde_json::json!({ "title": title, "id": id })).unwrap();
             let tag = notify_tag(notify.id.as_deref());
-            cx.update(|cx| cx.show_system_notification(notify_notification(&notify, &tag, None)));
+            cx.update(|cx| cx.show_system_notification(notify_notification(&notify, &tag)));
             tag
         };
         let first = post("build 1", Some("build"), cx);

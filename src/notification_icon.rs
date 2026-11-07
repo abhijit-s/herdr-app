@@ -19,8 +19,10 @@ const GLYPH_ALONE: f32 = 0.85;
 const TILE_RADIUS: f32 = 0.22;
 /// A one-color glyph without a color of its own: legible on light and dark.
 const GLYPH_FALLBACK: [u8; 3] = [0x80, 0x80, 0x80];
-/// Copies the notification center never took (a failed post) are swept after this.
+/// Copies the notification center never took (a failed post) are swept after
+/// this, and beyond this many the oldest go.
 const OUTGOING_KEEP: Duration = Duration::from_secs(600);
+const OUTGOING_MAX: usize = 32;
 /// Bumped when the drawing changes, so older PNGs aren't reused.
 const DRAWING_VERSION: u32 = 1;
 
@@ -35,12 +37,45 @@ pub fn dir() -> PathBuf {
     std::env::temp_dir().join(format!("herdr-test-notification-icons-{}", std::process::id()))
 }
 
-/// The cached PNG of the icon programs.json shows for an agent's 7501 `app`,
-/// drawn now if it isn't there yet; `None` when the program has no icon or it
-/// can't be read.
-pub fn cached(app: &str) -> Option<PathBuf> {
-    cached_in(&dir(), &crate::programs::of(Some(app), &[]), &crate::mods::app_dir())
+/// What a notification's image is made from, chosen on the main thread
+/// (programs.rs's table lives there); `copy` does the file work, off it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Source {
+    /// The icon programs.json shows for an agent's 7501 `app`, as `programs::of` shows it.
+    Program(Value),
+    /// An image file as it is.
+    File(PathBuf),
 }
+
+impl Source {
+    /// An agent's program icon; `None` when it has none, or where no image
+    /// shows (only macOS has GPUI's `SystemNotification::image`).
+    pub fn program(app: &str) -> Option<Source> {
+        if !SHOWS_IMAGES {
+            return None;
+        }
+        let shown = crate::programs::of(Some(app), &[]);
+        shown.get("icon").and_then(Value::as_str).is_some_and(|i| !i.is_empty()).then_some(Source::Program(shown))
+    }
+
+    /// An image file given for a notification; `None` where no image shows.
+    pub fn file(path: &Path) -> Option<Source> {
+        SHOWS_IMAGES.then(|| Source::File(path.to_owned()))
+    }
+
+    /// A fresh copy of the image for one notification to take: the program's
+    /// icon drawn (or found cached) first. Reads and writes files: not on the
+    /// main thread.
+    pub fn copy(self) -> Option<PathBuf> {
+        let file = match self {
+            Source::Program(shown) => cached_in(&dir(), &shown, &crate::mods::app_dir())?,
+            Source::File(path) => path,
+        };
+        copy_into(&dir().join("outgoing"), &file)
+    }
+}
+
+const SHOWS_IMAGES: bool = cfg!(any(target_os = "macos", test));
 
 /// `shown` is a programs.rs entry as `programs::of` shows it; its `icon` is a
 /// path in `home`.
@@ -79,26 +114,22 @@ fn forget_older(cache: &Path, key: &str, keep: &Path) {
     }
 }
 
-/// A copy of an image file for one notification to take (and move), under
-/// the cache's `outgoing/`.
-pub fn copy_for_posting(file: &Path) -> Option<PathBuf> {
-    // Only macOS shows an image (GPUI's `SystemNotification::image`).
-    if !cfg!(any(target_os = "macos", test)) {
-        return None;
-    }
-    copy_into(&dir().join("outgoing"), file)
-}
-
-/// Copies older than `OUTGOING_KEEP` are swept first.
+/// A copy of `file` under `outgoing`, which is swept first: copies older
+/// than `OUTGOING_KEEP`, and the oldest beyond `OUTGOING_MAX` (copies the
+/// notification center never took: a failed attachment, notifications denied).
 fn copy_into(outgoing: &Path, file: &Path) -> Option<PathBuf> {
     static COUNT: AtomicU64 = AtomicU64::new(0);
     std::fs::create_dir_all(outgoing).ok()?;
-    sweep(outgoing, OUTGOING_KEEP);
+    sweep(outgoing, OUTGOING_KEEP, OUTGOING_MAX - 1);
     let n = COUNT.fetch_add(1, Ordering::Relaxed);
-    let name = format!("{}-{}-{n}.{}", std::process::id(), stem(file), file.extension()?.to_str()?);
+    // Zero-padded: copies made in the same instant sweep oldest first.
+    let name = format!("{}-{}-{n:020}.{}", std::process::id(), stem(file), file.extension()?.to_str()?);
     let copy = outgoing.join(name);
-    if let Err(error) = std::fs::copy(file, &copy) {
+    // macOS's copy keeps the source's modification time; the sweep needs the copy's own.
+    let copied = std::fs::copy(file, &copy).and_then(|_| std::fs::File::options().write(true).open(&copy)?.set_modified(std::time::SystemTime::now()));
+    if let Err(error) = copied {
         tracing::warn!("notification image {} not copied: {error}", file.display());
+        let _ = std::fs::remove_file(&copy);
         return None;
     }
     Some(copy)
@@ -108,13 +139,23 @@ fn stem(path: &Path) -> String {
     safe(path.file_stem().and_then(|s| s.to_str()).unwrap_or("icon"))
 }
 
-/// Removes files in `dir` last changed more than `keep` ago.
-fn sweep(dir: &Path, keep: Duration) {
+/// Removes files in `dir` last changed more than `keep` ago, then the oldest
+/// until at most `max` are left.
+fn sweep(dir: &Path, keep: Duration, max: usize) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut left = Vec::new();
     for entry in entries.flatten() {
-        let old = entry.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).is_some_and(|age| age > keep);
-        if old {
+        let changed = entry.metadata().ok().and_then(|m| m.modified().ok());
+        if changed.and_then(|t| t.elapsed().ok()).is_some_and(|age| age > keep) {
             let _ = std::fs::remove_file(entry.path());
+        } else {
+            left.push((changed, entry.path()));
+        }
+    }
+    if left.len() > max {
+        left.sort();
+        for (_, path) in &left[..left.len() - max] {
+            let _ = std::fs::remove_file(path);
         }
     }
 }
@@ -288,9 +329,39 @@ mod tests {
         // The notification center takes (moves) the copy: the cached one stays.
         std::fs::remove_file(&a).unwrap();
         assert!(png.is_file());
-        sweep(&cache.join("outgoing"), Duration::ZERO);
+        sweep(&cache.join("outgoing"), Duration::ZERO, OUTGOING_MAX);
         assert!(!b.exists(), "an old copy nobody took is swept");
         assert!(png.is_file(), "the cache itself isn't swept");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn copies_nobody_took_are_capped_oldest_first() {
+        let home = scratch("cap");
+        let outgoing = home.join("outgoing");
+        let png = home.join("icons/x.png");
+        std::fs::write(&png, b"png").unwrap();
+        // A cached icon is usually older than OUTGOING_KEEP: its copies aren't.
+        let old = std::time::SystemTime::now() - OUTGOING_KEEP * 2;
+        std::fs::File::options().write(true).open(&png).unwrap().set_modified(old).unwrap();
+        let copies: Vec<PathBuf> = (0..OUTGOING_MAX + 5).map(|_| copy_into(&outgoing, &png).unwrap()).collect();
+        assert_eq!(std::fs::read_dir(&outgoing).unwrap().count(), OUTGOING_MAX, "never more than the cap");
+        assert!(!copies[0].exists() && !copies[4].exists(), "the oldest went");
+        assert!(copies[5..].iter().all(|c| c.exists()), "the newest stay");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_source_is_the_program_entry_and_its_copy_is_made_from_files() {
+        let claude = Source::program("claude-code").expect("claude has an icon");
+        assert!(matches!(&claude, Source::Program(shown) if shown["key"] == "claude"), "{claude:?}");
+        let home = scratch("source");
+        let png = home.join("icons/x.png");
+        std::fs::write(&png, b"png").unwrap();
+        let copy = Source::file(&png).unwrap().copy().unwrap();
+        assert!(copy.starts_with(dir().join("outgoing")), "{copy:?}");
+        assert_eq!(std::fs::read(&copy).unwrap(), b"png");
+        let _ = std::fs::remove_file(&copy);
         let _ = std::fs::remove_dir_all(&home);
     }
 

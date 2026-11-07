@@ -2545,7 +2545,7 @@ impl AppWindow {
             }
             // Seen, or back at work: its notification is old news.
             if (looking || word.as_deref() == Some("working")) && self.notified.remove(addr) {
-                cx.dismiss_system_notification(&crate::alert::tag(addr));
+                crate::alert::dismiss(&crate::alert::tag(addr), cx);
             }
             changed |= self.model.set_word(addr, word, app, looking);
             let turn = rec.get("turn").and_then(Value::as_u64).unwrap_or(0);
@@ -2558,7 +2558,7 @@ impl AppWindow {
         }
         self.written_seen.retain(|a, _| self.live.contains_key(a));
         for gone in self.notified.extract_if(|a| !self.live.contains_key(a)) {
-            cx.dismiss_system_notification(&crate::alert::tag(&gone));
+            crate::alert::dismiss(&crate::alert::tag(&gone), cx);
         }
         changed |= self.share_seen(cx);
         // Changes already made before Herdr started aren't news.
@@ -2756,16 +2756,14 @@ impl AppWindow {
                 self.fail("system.notify: Herdr can't show system notifications here: allow them in System Settings > Notifications, and run Herdr from its app")
             }
             crate::alert::NotifyTo::System => {
-                // The notification center takes (moves) the file it's given: a copy.
-                let image = match &notify.icon {
-                    Some(icon) => crate::notification_icon::copy_for_posting(icon),
-                    None if settings.notification_icons => {
-                        agent.as_ref().and_then(|addr| self.model.agents.get(addr)?.app.clone()).and_then(|app| crate::alert::program_icon(&app))
-                    }
+                use crate::notification_icon::Source;
+                let icon = match &notify.icon {
+                    Some(icon) => Source::file(icon),
+                    None if settings.notification_icons => agent.as_ref().and_then(|addr| self.model.agents.get(addr)?.app.clone()).and_then(|app| Source::program(&app)),
                     None => None,
                 };
                 let tag = crate::alert::notify_tag(notify.id.as_deref());
-                cx.show_system_notification(crate::alert::notify_notification(&notify, &tag, image));
+                crate::alert::show(crate::alert::notify_notification(&notify, &tag), icon, cx);
                 self.notify_clicks.posted(&tag, agent.as_deref());
                 self.answer(Ok(json!({ "ok": true, "shown": "notification", "tag": tag })));
             }
