@@ -8,6 +8,7 @@ mod bench;
 mod commands;
 mod control;
 mod core_bin;
+mod dock_badge;
 mod files;
 mod focus_history;
 mod git_status;

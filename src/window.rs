@@ -597,6 +597,8 @@ pub struct AppWindow {
     tab_shown: bool,
     pane_history: Vec<String>,
     window_active: bool,
+    /// The Dock's count of agents waiting on the person (dock_badge.rs).
+    dock_badge: crate::dock_badge::Badge,
     /// Agents with a system notification up (alert.rs), taken down once seen.
     notified: HashSet<String>,
     /// Agents that don't report (OSC 7501), read off their screens (harness.rs).
@@ -674,6 +676,7 @@ impl AppWindow {
             watched: Watched::default(),
             live: HashMap::new(),
             listed_once: false,
+            dock_badge: Default::default(),
             resume: crate::resume::Tracker::load(&resume_path()),
             resume_offer: Some(Instant::now()),
             cwds: HashMap::new(),
@@ -1074,6 +1077,7 @@ impl AppWindow {
         if auto_names {
             self.publish(cx);
         }
+        self.badge_dock(self.dock_badge.waiting());
     }
 
     fn theme_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1957,6 +1961,7 @@ impl AppWindow {
             .or_else(|| terminal_block(&self.chrome, self.focused_pane.as_deref()));
         let focused_pane = if block.is_some() { None } else { m.focused_pane() };
         let mut agents = Vec::new();
+        let mut rows = Vec::new();
         let mut panes = Vec::new();
         let auto_names_on = settings::get().pane_auto_names;
         let mut auto_names = HashMap::new();
@@ -2001,13 +2006,15 @@ impl AppWindow {
                         "text_size": self.pane_term(&p.id).and_then(|t| t.view.read(cx).text_size()),
                     }));
                     let Some(status) = m.status(addr) else { continue };
+                    let pinned = self.live.get(addr).and_then(|r| r.pointer("/labels/herdr.pinned")).and_then(Value::as_str).is_some_and(|v| !v.is_empty());
+                    rows.push(crate::dock_badge::Listed { address: addr, status, pinned });
                     agents.push(json!({
                         "address": addr, "pane": p.id, "space": pr.id, "space_name": m.space_name(pr, &home),
                         "tab": ctx.id, "tab_index": ci + 1, "tab_name": Model::tab_name(pr, ctx),
                         "status": status, "app": a.and_then(|a| a.app.clone()), "program": self.program(addr), "title": title.unwrap_or_default(),
                         "label": label, "session": session,
                         "seq": a.map(|a| a.seq).unwrap_or(0),
-                        "pinned": self.live.get(addr).and_then(|r| r.pointer("/labels/herdr.pinned")).and_then(Value::as_str).is_some_and(|v| !v.is_empty()),
+                        "pinned": pinned,
                         "focused": m.active.as_deref() == Some(pr.id.as_str()) && focused_pane.as_deref() == Some(p.id.as_str()),
                     }));
                 }
@@ -2030,6 +2037,17 @@ impl AppWindow {
         let machines = self.documents.iter().map(|(name, slot)| json!({
             "name": (!name.is_empty()).then_some(name), "layout": slot.layout(),
         })).collect();
+        let live: Vec<_> = self
+            .live
+            .iter()
+            .filter(|(_, r)| r.get("state").and_then(Value::as_str) == Some("live"))
+            .map(|(address, r)| crate::dock_badge::Live {
+                address,
+                parent: r.get("parent").and_then(Value::as_str).filter(|p| !p.is_empty()),
+                word: r.get("status").and_then(Value::as_str),
+            })
+            .collect();
+        let waiting = crate::dock_badge::count_rows(&rows, &live);
         let mut changed = mods::publish_machines(Value::Array(machines));
         changed |= mods::publish_spaces(Value::Array(spaces));
         changed |= mods::publish_agents(Value::Array(agents));
@@ -2043,6 +2061,21 @@ impl AppWindow {
             self.refresh_snapshot_mods(cx);
         }
         self.write_where(cx);
+        self.badge_dock(waiting);
+    }
+
+    /// The Dock badge counts the agents list's waiting rows; the Dock
+    /// hears only of changes. `dock_bounce_on_wait` bounces it once when
+    /// something starts waiting and nothing did.
+    fn badge_dock(&mut self, waiting: usize) {
+        let s = settings::get();
+        let change = self.dock_badge.update(waiting, s.dock_badge);
+        if let Some(label) = change.label {
+            crate::dock_badge::show(&label);
+        }
+        if change.rose && s.dock_bounce_on_wait && !self.window_active {
+            crate::dock_badge::bounce();
+        }
     }
 
     /// Where the person is: the active tab's focused pane. Overlays, popups and
@@ -7534,6 +7567,54 @@ export default class Recent extends View {
         let shown = cx.shown_system_notifications();
         assert_eq!(shown.last().map(|n| n.title.to_string()), Some("Claude hit an error".into()));
         assert!(!shown.last().unwrap().body.contains("approve"), "an old message doesn't linger");
+    }
+
+    #[test]
+    fn the_dock_badge_follows_listings_and_the_setting() {
+        in_own_process("dock_badge");
+    }
+
+    /// The badge counts the agents list's waiting rows as listings arrive, and
+    /// settings.json's `dock_badge` takes it off and puts it back.
+    #[gpui::test]
+    fn dock_badge(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("dock_badge") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
+        view.update(cx, |this, _| {
+            this.model.add_space("p1", "api", "/src/api", crate::model::Tab::new("c1", "one", "x1", "t1"));
+            this.model.add_space("p2", "web", "/src/web", crate::model::Tab::new("c2", "two", "x2", "t2"));
+        });
+        let list = |terminals: serde_json::Value, cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                this.person.sounds.enabled = false;
+                this.window_active = false;
+                this.terminals_listed(json!({ "terminals": terminals }), window, cx);
+                this.publish(cx);
+            }));
+        };
+        let shown = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.dock_badge.shown().to_owned());
+        let agent = |address: &str, state: &str| json!({ "address": address, "state": "live", "status": { "state": state } });
+        list(json!([agent("t1", "working"), agent("t2", "working")]), cx);
+        assert_eq!(shown(cx), "");
+        list(json!([agent("t1", "blocked"), agent("t2", "working")]), cx);
+        assert_eq!(shown(cx), "1");
+        let mut kid = agent("t3", "blocked");
+        kid["parent"] = json!("t2");
+        list(json!([agent("t1", "blocked"), agent("t2", "working"), kid]), cx);
+        assert_eq!(shown(cx), "2", "a blocked sub-agent puts its parent's row in");
+        let set = |on: bool, cx: &mut gpui::VisualTestContext| cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.person.dock_badge = on;
+            this.apply_look(window, cx);
+        }));
+        set(false, cx);
+        assert_eq!(shown(cx), "", "off takes it off at once");
+        set(true, cx);
+        assert_eq!(shown(cx), "2", "on puts the count back");
+        list(json!([agent("t1", "working"), agent("t2", "working")]), cx);
+        assert_eq!(shown(cx), "", "nothing waits: no badge");
     }
 
     #[test]

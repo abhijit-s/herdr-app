@@ -620,6 +620,18 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Files: `src/settings.rs` (`SpinnerFrames`, `SPINNER_PRESETS`, `working_spinner`, `compose`, `problems`, `for_mods`), `defaults/mods/{pane,peek,picker,tabs,agents}/main.js`, `defaults/frame/settings/main.js`, `defaults/AGENTS.md`, `defaults/herdr.d.ts`, `src/mods/render_tests.rs`, `scripts/settings.test.ts`, `scripts/agents.test.ts`
 - Upstream: none yet
 
+### Dock badge
+
+`feat/dock-badge` (branched from `master`, fork only): on macOS the Dock icon counts the agents waiting on the person, the way Mail counts unread mail. `dock_badge` in settings.json, on by default; `false` clears it. `dock_bounce_on_wait` (off by default) bounces the Dock once, informationally, when the count rises from zero while Herdr is in the background.
+
+- Waiting: a row of the agents list whose agent `Model::status` calls `blocked` (blocked or error) or `done` (finished, not yet seen), the statuses `agents()` gives mods and the list shows as "Needs you" and "Done". `dock_badge::count_rows` follows the list's rules for sub-agents: one with a pane is nested under its parent (no row, its finish no news) unless pinned, and a live sub-agent that is blocked or hit an error puts its parent's row in. Seen idle agents don't count, or the badge would never clear while agents sit at a prompt. The list's narrow (collapsed) view un-nests sub-agents; the badge always counts the wide view.
+- Where: `AppWindow::publish` counts while it builds `agents()`, so the badge follows every state change without polling; `apply_look` re-applies it when settings change. `dock_badge::Badge` remembers the label shown, so AppKit hears only of changes; nothing redraws.
+- Code: `src/dock_badge.rs` (count, label, `Badge`, the `NSDockTile` call), kept apart from `src/app_icon.rs`; the icon image and the badge are separate `NSDockTile` properties.
+- Settings window: Agents > Alerts > Notifications, "Count waiting agents on the Dock icon", under "Bounce the Dock icon". `dock_bounce_on_wait` is settings.json only.
+- Tests: `window::tests::the_dock_badge_follows_listings_and_the_setting`, `dock_badge::tests::{counts_agents_that_need_you_or_finished_unseen, counts_what_the_model_shows, counts_rows_as_the_agents_list_shows_them, the_settings_default_to_a_badge_and_no_bounce, labels_the_count_and_clears_for_none_or_off, tells_the_dock_only_when_the_label_changes}`, `settings::tests::the_guide_explains_every_setting`.
+- Files: `src/dock_badge.rs`, `src/window.rs`, `src/settings.rs`, `src/main.rs`, `Cargo.toml` (`NSDockTile` feature), `defaults/frame/settings/main.js`, `defaults/AGENTS.md`
+- Upstream: none yet
+
 ### Rejected text experiments
 
 Two text-quality experiments measured against the shipped thicken, contrast and weight settings, and not kept. The numbers are here so neither is tried again without a new reason.
