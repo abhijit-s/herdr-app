@@ -173,6 +173,64 @@ mod tests {
         }
     }
 
+    /// The sizes in a built-in's .icns as AppKit decodes them: pixels across ->
+    /// the alpha of every pixel, row by row.
+    #[cfg(target_os = "macos")]
+    fn icns_alpha(icon: &AppIcon) -> std::collections::BTreeMap<isize, Vec<u8>> {
+        use objc2_app_kit::{NSBitmapFormat, NSBitmapImageRep};
+        let data = objc2_foundation::NSData::with_bytes(&icon.bytes().unwrap());
+        let mut sizes = std::collections::BTreeMap::new();
+        for rep in NSBitmapImageRep::imageRepsWithData(&data) {
+            let Ok(rep) = rep.downcast::<NSBitmapImageRep>() else { continue };
+            let (px, row, step) = (rep.pixelsWide(), rep.bytesPerRow() as usize, rep.bitsPerPixel() as usize / 8);
+            assert!(!rep.isPlanar() && rep.bitsPerSample() == 8 && rep.hasAlpha(), "{px} px: an 8-bit RGBA bitmap");
+            let alpha_at = if rep.bitmapFormat().contains(NSBitmapFormat::AlphaFirst) { 0 } else { step - 1 };
+            // SAFETY: the rep owns `row` bytes for each of its `px` rows while it lives.
+            let bytes = unsafe { std::slice::from_raw_parts(rep.bitmapData(), row * px as usize) };
+            let alpha = (0..px as usize).flat_map(|y| (0..px as usize).map(move |x| bytes[y * row + x * step + alpha_at])).collect();
+            sizes.insert(px, alpha);
+        }
+        sizes
+    }
+
+    /// macOS draws an app icon at 16 to 1024 px; each built-in's .icns holds
+    /// every one of those sizes, so none is scaled from another.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn every_built_in_has_every_icon_size() {
+        for (name, icon) in BUILT_IN {
+            let sizes: Vec<_> = icns_alpha(&icon).into_keys().collect();
+            assert_eq!(sizes, [16, 32, 64, 128, 256, 512, 1024], "{name}");
+        }
+    }
+
+    /// Each drawn variant (scripts/app-icons.py) sits on macOS's icon grid, as
+    /// the system draws other apps' icons beside it in the Dock and the app
+    /// switcher: an opaque tile 824 of 1024 px across with 100 px margins, at
+    /// every size, and nothing in the margins more than a soft shadow. Classic
+    /// is upstream's own .icns and isn't drawn here.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn drawn_variants_sit_on_the_macos_icon_grid() {
+        for (name, icon) in BUILT_IN.into_iter().filter(|(_, icon)| !icon.is_classic()) {
+            for (px, alpha) in icns_alpha(&icon) {
+                let n = px as usize;
+                let solid = |x: usize, y: usize| alpha[y * n + x] > 127;
+                let rows: Vec<_> = (0..n).filter(|&y| (0..n).any(|x| solid(x, y))).collect();
+                let cols: Vec<_> = (0..n).filter(|&x| (0..n).any(|y| solid(x, y))).collect();
+                let (x0, y0, x1, y1) = (cols[0], rows[0], cols[cols.len() - 1], rows[rows.len() - 1]);
+                let margins = [x0, y0, n - 1 - x1, n - 1 - y1];
+                let (want, slack) = (100.0 * px as f64 / 1024.0, 1.0 + 3.0 * px as f64 / 1024.0);
+                for margin in margins {
+                    assert!((margin as f64 - want).abs() <= slack, "{name} at {px} px: margins {margins:?}, want {want:.1}");
+                }
+                let outside = (0..n).flat_map(|y| (0..n).map(move |x| (x, y))).filter(|&(x, y)| x < x0 || x > x1 || y < y0 || y > y1);
+                let densest = outside.map(|(x, y)| alpha[y * n + x]).max().unwrap_or(0);
+                assert!(densest < 80, "{name} at {px} px: a margin pixel is {densest}/255 opaque");
+            }
+        }
+    }
+
     /// SVG files decode too (AppKit's own SVG support), as the docs promise.
     #[cfg(target_os = "macos")]
     #[test]
