@@ -9,7 +9,7 @@ use crate::{
     AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
     Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
     DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
-    EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
+    EntityId, EventEmitter, FileDropEvent, FontId, FrameCycle, Global, GlobalElementId, GlyphId, GpuSpecs,
     Hsla, InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
     Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent,
     MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels,
@@ -1200,9 +1200,13 @@ pub struct Window {
     pub(crate) rendered_frame: Frame,
     // HERDR: distinguish an empty scene from a window that has not drawn yet.
     rendered_frame_size: Option<(Size<Pixels>, f32)>,
-    // HERDR: the frame on screen has spinning sprites / their next step is due.
-    presents_spinners: bool,
-    spin_step_scheduled: bool,
+    // HERDR: when (on `spin_clock_ms`) the frame on screen next needs
+    // presenting for its spinners and frame cycles (None: it has none), and
+    // when the step already scheduled is due.
+    spin_due: Option<f64>,
+    spin_step_due: Option<f64>,
+    // HERDR: the frame cycle `paint_glyph` and `paint_emoji` tag their sprites with.
+    frame_cycle: Option<FrameCycle>,
     // HERDR: the thickening `paint_glyph` uses (`with_glyph_thicken`).
     glyph_thicken: GlyphThicken,
     // HERDR: the thickening each frame's paint starts at (`set_glyph_thicken`).
@@ -2113,8 +2117,9 @@ impl Window {
             focused_text_input_active: false,
             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             rendered_frame_size: None,
-            presents_spinners: false,
-            spin_step_scheduled: false,
+            spin_due: None,
+            spin_step_due: None,
+            frame_cycle: None,
             glyph_thicken: GlyphThicken::Auto,
             base_glyph_thicken: GlyphThicken::Auto,
             glyph_contrast: 0.,
@@ -3578,7 +3583,7 @@ impl Window {
         let _foreground_turn = profiler::journal::foreground_turn();
         #[cfg(feature = "profiler")]
         let present_start = Instant::now();
-        self.presents_spinners = self.rendered_frame.scene.turn_spinners(spin_clock_ms());
+        self.spin_due = self.rendered_frame.scene.turn_spinners(spin_clock_ms());
         #[cfg(any(test, feature = "test-support"))]
         {
             self.presents += 1;
@@ -3595,22 +3600,30 @@ impl Window {
         profiling::finish_frame!();
     }
 
-    /// HERDR: while the frame on screen has spinning sprites, presents it again
-    /// (no draw) after [`SPIN_STEP`]. A draw in between turns them as well. A
+    /// HERDR: while the frame on screen has spinning sprites or frame cycles,
+    /// presents it again (no draw) when the next step is due: [`SPIN_STEP`]
+    /// for a spinner, a cycle's next frame. A draw in between steps them as
+    /// well, and a sooner step replaces a later one already scheduled. A
     /// hidden window steps again once it is visible.
     fn schedule_spin_step(&mut self, cx: &mut App) {
-        if !self.presents_spinners || self.spin_step_scheduled || !self.visibility.is_visible() {
+        let Some(due) = self.spin_due else { return };
+        if self.spin_step_due.is_some_and(|scheduled| scheduled <= due) || !self.visibility.is_visible() {
             return;
         }
-        self.spin_step_scheduled = true;
+        self.spin_step_due = Some(due);
+        let delay = Duration::from_secs_f64((due - spin_clock_ms()).max(1.0) / 1000.0);
         let handle = self.handle;
         cx.spawn(async move |cx| {
-            cx.background_executor().timer(SPIN_STEP).await;
+            cx.background_executor().timer(delay).await;
             handle
                 .update(cx, |_, window, _| {
-                    window.spin_step_scheduled = false;
+                    // A sooner step took this one's place.
+                    if window.spin_step_due != Some(due) {
+                        return;
+                    }
+                    window.spin_step_due = None;
                     // A draw since took the spinners away, or the window went out of sight.
-                    if !window.presents_spinners || !window.visibility.is_visible() {
+                    if window.spin_due.is_none() || !window.visibility.is_visible() {
                         return;
                     }
                     window.needs_present.set(true);
@@ -3626,6 +3639,18 @@ impl Window {
     #[cfg(any(test, feature = "test-support"))]
     pub fn presents(&self) -> usize {
         self.presents
+    }
+
+    /// HERDR: the frame cycles whose glyphs the last present showed.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn presented_frames(&self) -> Vec<FrameCycle> {
+        let scene = &self.rendered_frame.scene;
+        let mono = scene.monochrome_sprites.iter().map(|s| (s.frame, s.bounds));
+        let poly = scene.polychrome_sprites.iter().map(|s| (s.pad, s.bounds));
+        mono.chain(poly)
+            .filter(|(_, bounds)| !bounds.size.is_zero())
+            .filter_map(|(tag, _)| FrameCycle::from_tag(tag))
+            .collect()
     }
 
     /// HERDR: the transformations of the spinning sprites last presented.
@@ -4221,6 +4246,17 @@ impl Window {
     /// as `set_glyph_thicken`; a change shows from the frame being drawn.
     pub fn set_veil(&mut self, veil: Option<Hsla>) {
         self.veil = veil;
+    }
+
+    /// HERDR: paints `f`'s glyphs as frame `cycle.index` of a cycle that
+    /// steps at each present with no draw (`FrameCycle`): paint every frame,
+    /// stacked, each inside its own call. The glyphs draw grayscale, since
+    /// subpixel sprites have no room for the tag.
+    pub fn with_frame_cycle<R>(&mut self, cycle: FrameCycle, f: impl FnOnce(&mut Self) -> R) -> R {
+        let outer = self.frame_cycle.replace(cycle);
+        let result = f(self);
+        self.frame_cycle = outer;
+        result
     }
 
     /// HERDR: paints the monochrome glyphs in `f` with their coverage pulled
@@ -4940,7 +4976,11 @@ impl Window {
             (quantized_origin.y.fract() * SUBPIXEL_VARIANTS_Y as f32) as u8,
         );
         let integer_origin = quantized_origin.map(|c| ScaledPixels(c.trunc()));
-        let subpixel_rendering = self.should_use_subpixel_rendering(font_id, font_size);
+        let subpixel_rendering = self.frame_cycle.is_none() && self.should_use_subpixel_rendering(font_id, font_size);
+        // A frame nobody can see would keep the window presenting for nothing.
+        if self.frame_cycle.is_some() && color.opacity(element_opacity).a <= 0.0 {
+            return Ok(());
+        }
         let thicken = self.glyph_thicken;
         let dilation = match thicken {
             GlyphThicken::Auto => self.text_system().glyph_dilation_for_color(color),
@@ -4994,7 +5034,7 @@ impl Window {
                     tile,
                     transformation: TransformationMatrix::unit(),
                     contrast: self.glyph_contrast,
-                    contrast_pad: 0,
+                    frame: self.frame_cycle.map_or(0, FrameCycle::tag),
                 });
             }
         }
@@ -5050,6 +5090,10 @@ impl Window {
         color: Hsla,
     ) -> Result<()> {
         self.invalidator.debug_assert_paint();
+        // A frame nobody can see would keep the window presenting for nothing.
+        if self.frame_cycle.is_some() && self.element_opacity() <= 0.0 {
+            return Ok(());
+        }
 
         let scale_factor = self.scale_factor();
         let glyph_origin = origin.scale(scale_factor);
@@ -5098,7 +5142,7 @@ impl Window {
 
             self.next_frame.scene.insert_primitive(PolychromeSprite {
                 order: 0,
-                pad: 0,
+                pad: self.frame_cycle.map_or(0, FrameCycle::tag),
                 grayscale: false.into(),
                 bounds,
                 corner_radii: Default::default(),
@@ -5212,7 +5256,7 @@ impl Window {
             tile,
             transformation,
             contrast: 0.,
-            contrast_pad: 0,
+            frame: 0,
         };
         if sprite.spins() {
             sprite.turn(spin_clock_ms());

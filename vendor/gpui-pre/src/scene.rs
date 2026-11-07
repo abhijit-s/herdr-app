@@ -50,7 +50,8 @@ pub struct Scene {
     pub subpixel_sprites: Vec<SubpixelSprite>,
     pub polychrome_sprites: Vec<PolychromeSprite>,
     pub surfaces: Vec<PaintSurface>,
-    /// HERDR: whether any monochrome sprite spins, so presents skip the scan.
+    /// HERDR: whether any sprite spins or is a frame of a cycle
+    /// (`FrameCycle`), so presents skip the scan.
     has_spinners: bool,
 }
 
@@ -122,7 +123,7 @@ impl Scene {
             }
             Primitive::MonochromeSprite(sprite) => {
                 sprite.order = order;
-                self.has_spinners |= sprite.spins();
+                self.has_spinners |= sprite.spins() || sprite.frame != 0;
                 self.monochrome_sprites.push(*sprite);
             }
             Primitive::SubpixelSprite(sprite) => {
@@ -131,6 +132,7 @@ impl Scene {
             }
             Primitive::PolychromeSprite(sprite) => {
                 sprite.order = order;
+                self.has_spinners |= sprite.pad != 0;
                 self.polychrome_sprites.push(*sprite);
             }
             Primitive::Surface(surface) => {
@@ -723,7 +725,9 @@ pub struct MonochromeSprite {
     // HERDR: how far the shader pulls this glyph's coverage toward an
     // S-curve, 0 (as rasterised) to 1 (`Window::with_glyph_contrast`).
     pub contrast: f32,
-    pub contrast_pad: u32,
+    // HERDR: the `FrameCycle` this glyph is a frame of (0: none), in the
+    // bytes that align the sprite to 8, which no shader reads.
+    pub frame: u32,
 }
 
 // HERDR: a spinning sprite keeps turning with no draw. Its `pad`, which no
@@ -747,18 +751,71 @@ impl MonochromeSprite {
     }
 }
 
+/// HERDR: one frame of a `frames` spinner: its glyphs are painted with every
+/// other frame's and drawn only while the clock is on it (`Scene::turn_spinners`),
+/// so it steps with no draw. Packed into a sprite's spare `u32`, so a cached
+/// view that replays the sprite replays the cycle too.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameCycle {
+    /// Which frame this is.
+    pub index: u8,
+    /// How many frames take turns (at least 1).
+    pub count: u8,
+    /// How long each shows, in ms (at least 16).
+    pub period_ms: u16,
+}
+
+impl FrameCycle {
+    pub(crate) fn tag(self) -> u32 {
+        u32::from(self.period_ms.max(16)) << 16 | u32::from(self.count.max(1)) << 8 | u32::from(self.index)
+    }
+
+    pub(crate) fn from_tag(tag: u32) -> Option<Self> {
+        (tag != 0).then(|| FrameCycle { index: tag as u8, count: (tag >> 8) as u8, period_ms: (tag >> 16) as u16 })
+    }
+
+    /// Whether this frame shows at `clock_ms`, and ms until the next frame does.
+    fn at(self, clock_ms: f64) -> (bool, f64) {
+        let period = f64::from(self.period_ms);
+        let step = (clock_ms / period).floor();
+        (step as u64 % u64::from(self.count) == u64::from(self.index), (step + 1.0) * period - clock_ms)
+    }
+}
+
+/// Shows a glyph sprite at its tile's size, or hides it at none.
+fn show_sprite(bounds: &mut Bounds<ScaledPixels>, tile: &AtlasTile, shown: bool) {
+    bounds.size = if shown { tile.bounds.size.map(Into::into) } else { Size::default() };
+}
+
 impl Scene {
-    /// HERDR: turns the spinning sprites to `clock_ms`; whether there are any.
-    pub fn turn_spinners(&mut self, clock_ms: f64) -> bool {
+    /// HERDR: turns the spinning sprites and shows each cycle's current frame
+    /// at `clock_ms`; when (on the same clock) the next of them is due, None
+    /// when there are none.
+    pub fn turn_spinners(&mut self, clock_ms: f64) -> Option<f64> {
         if !self.has_spinners {
-            return false;
+            return None;
         }
-        let mut any = false;
-        for sprite in self.monochrome_sprites.iter_mut().filter(|s| s.spins()) {
-            sprite.turn(clock_ms);
-            any = true;
+        let mut next: Option<f64> = None;
+        let mut due = |ms: f64| next = Some(next.map_or(ms, |n| n.min(ms)));
+        for sprite in &mut self.monochrome_sprites {
+            if sprite.spins() {
+                sprite.turn(clock_ms);
+                due(crate::SPIN_STEP.as_secs_f64() * 1000.0);
+            }
+            if let Some(cycle) = FrameCycle::from_tag(sprite.frame) {
+                let (shown, ms) = cycle.at(clock_ms);
+                show_sprite(&mut sprite.bounds, &sprite.tile, shown);
+                due(ms);
+            }
         }
-        any
+        for sprite in &mut self.polychrome_sprites {
+            if let Some(cycle) = FrameCycle::from_tag(sprite.pad) {
+                let (shown, ms) = cycle.at(clock_ms);
+                show_sprite(&mut sprite.bounds, &sprite.tile, shown);
+                due(ms);
+            }
+        }
+        next.map(|ms| clock_ms + ms)
     }
 }
 

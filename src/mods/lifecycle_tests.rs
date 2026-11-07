@@ -119,6 +119,141 @@ export default class extends View {{
     }
 }
 
+// A `frames` spinner steps as a ring does: each present shows the frame the
+// shared clock is on, with no window render, no script and no rebuild of the
+// mod. CoreText shapes it, so its glyphs are real sprites.
+#[cfg(target_os = "macos")]
+#[test]
+fn frames_step_without_drawing_the_window() {
+    let cx = &mut TestAppContext::build_with_text_system(gpui::TestDispatcher::new(0), None, std::sync::Arc::new(gpui_macos::MacTextSystem::new()));
+    cx.update(gpui_shell::init);
+    gpui_shell::policy::set_default(Policy::new());
+    let fixture = Fixture::new(r#"
+import { View, div } from "gpui-kit";
+export default class extends View {
+  render() {
+    return div().size_full().child(div().child("Pi"))
+      .child(div().frames(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], 80).child("⠋"));
+  }
+}"#);
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let renders = Rc::new(Cell::new(0));
+    let counted = renders.clone();
+    let window = cx.add_window(|window, cx| Counted(runtime.try_load(&fixture.0, window, cx).unwrap(), counted));
+    let handle: gpui::AnyWindowHandle = window.into();
+    for _ in 0..3 {
+        cx.simulate_window_frame_request(handle);
+        cx.run_until_parked();
+    }
+    let presented = |cx: &mut TestAppContext| handle.update(cx, |_, window, _| window.presented_frames()).unwrap();
+    let first = presented(cx);
+    assert_eq!(first.iter().map(|c| (c.count, c.period_ms)).collect::<Vec<_>>(), [(10, 80)], "one frame of ten on screen");
+    let (drawn, before) = (renders.get(), runtime.read_metrics());
+    let presents = handle.update(cx, |_, window, _| window.presents()).unwrap();
+    let started = Instant::now();
+    // The shared clock is real time and the timers run on the simulated
+    // one: move both, 20 ms a display frame.
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        cx.executor().advance_clock(std::time::Duration::from_millis(20));
+        cx.run_until_parked();
+        cx.simulate_window_frame_request(handle);
+        cx.run_until_parked();
+    }
+    let after = runtime.read_metrics();
+    assert_eq!(renders.get(), drawn, "a simulated second of frames rendered the window");
+    assert_eq!(after.script_renders(), before.script_renders());
+    assert_eq!(after.materializations(), before.materializations(), "a frame step rebuilt the mod");
+    let stepped = handle.update(cx, |_, window, _| window.presents()).unwrap() - presents;
+    // A present per frame the real clock reached, however long the loop took.
+    let most = started.elapsed().as_millis() as usize / 80 + 2;
+    assert!((12..=most).contains(&stepped), "a present per 80 ms frame (12 to {most}), not per display frame: {stepped}");
+    // As the clock moves on, so does the frame shown.
+    let mut last = first[0].index;
+    for _ in 0..3 {
+        std::thread::sleep(std::time::Duration::from_millis(85));
+        cx.executor().advance_clock(std::time::Duration::from_millis(100));
+        cx.run_until_parked();
+        cx.simulate_window_frame_request(handle);
+        let now = presented(cx);
+        assert_eq!(now.len(), 1, "one frame at a time: {now:?}");
+        assert_ne!(now[0].index, last, "the frame advances");
+        last = now[0].index;
+    }
+    assert_eq!(renders.get(), drawn, "still without a render");
+    let _ = handle.update(cx, |_, window, _| window.remove_window());
+    cx.run_until_parked();
+}
+
+// A sooner step replaces a later one already scheduled: a slow cycle on
+// screen doesn't hold back a fast one drawn after it.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_faster_spinner_drawn_later_steps_at_its_own_pace() {
+    let cx = &mut TestAppContext::build_with_text_system(gpui::TestDispatcher::new(0), None, std::sync::Arc::new(gpui_macos::MacTextSystem::new()));
+    cx.update(gpui_shell::init);
+    gpui_shell::policy::set_default(Policy::new());
+    let slow = r#"div().frames(["◐", "◓"], 5000).child("◐")"#;
+    let only_slow = Fixture::new(&format!(r#"import {{ View, div }} from "gpui-kit"; export default class extends View {{ render() {{ return div().size_full().child({slow}); }} }}"#));
+    let both = Fixture::new(&format!(r#"import {{ View, div }} from "gpui-kit"; export default class extends View {{ render() {{ return div().size_full().child({slow}).child(div().frames(["⠋", "⠙", "⠹", "⠸"], 80).child("⠋")); }} }}"#));
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&only_slow.0, window, cx).unwrap()));
+    let handle: gpui::AnyWindowHandle = window.into();
+    for _ in 0..3 {
+        cx.simulate_window_frame_request(handle);
+        cx.run_until_parked();
+    }
+    window.update(cx, |_, window, cx| window.replace_root(cx, |window, cx| Mounted(runtime.try_load(&both.0, window, cx).unwrap()))).unwrap();
+    cx.simulate_window_frame_request(handle);
+    cx.run_until_parked();
+    let presents = handle.update(cx, |_, window, _| window.presents()).unwrap();
+    for _ in 0..12 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        cx.executor().advance_clock(std::time::Duration::from_millis(20));
+        cx.run_until_parked();
+        cx.simulate_window_frame_request(handle);
+        cx.run_until_parked();
+    }
+    let stepped = handle.update(cx, |_, window, _| window.presents()).unwrap() - presents;
+    assert!(stepped >= 2, "240 ms of an 80 ms spinner beside a 5 s one: {stepped} presents");
+    let _ = handle.update(cx, |_, window, _| window.remove_window());
+    cx.run_until_parked();
+}
+
+// Colour emoji take turns as glyphs do, and frames nobody can see (faded out,
+// or drawn in a clear colour) and a list of one frame are left out of the
+// cycles, so they don't keep the window presenting.
+#[cfg(target_os = "macos")]
+#[test]
+fn emoji_frames_cycle_and_invisible_frames_are_left_out() {
+    let cx = &mut TestAppContext::build_with_text_system(gpui::TestDispatcher::new(0), None, std::sync::Arc::new(gpui_macos::MacTextSystem::new()));
+    cx.update(gpui_shell::init);
+    gpui_shell::policy::set_default(Policy::new());
+    let fixture = Fixture::new(r##"
+import { View, div } from "gpui-kit";
+export default class extends View {
+  render() {
+    return div().size_full()
+      .child(div().frames(["🌑", "🌓", "🌕"], 200).child("🌑"))
+      .child(div().opacity(0).child(div().frames(["⠋", "⠙"], 80).child("⠋")))
+      .child(div().opacity(0).child(div().frames(["🌑", "🌕"], 150).child("🌑")))
+      .child(div().text_color("#00000000").frames(["◐", "◓"], 90).child("◐"))
+      .child(div().frames(["●"], 80).child("●"));
+  }
+}"##);
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&fixture.0, window, cx).unwrap()));
+    let handle: gpui::AnyWindowHandle = window.into();
+    for _ in 0..3 {
+        cx.simulate_window_frame_request(handle);
+        cx.run_until_parked();
+    }
+    let presented = handle.update(cx, |_, window, _| window.presented_frames()).unwrap();
+    assert_eq!(presented.iter().map(|c| (c.count, c.period_ms)).collect::<Vec<_>>(), [(3, 200)], "one emoji frame: nothing invisible, and one frame alone draws plainly");
+    let _ = handle.update(cx, |_, window, _| window.remove_window());
+    cx.run_until_parked();
+}
+
 // A spinner nobody can see (faded out, or drawn in a clear colour) is left
 // out of the frame, so it doesn't keep the window presenting ~10 times a second.
 #[gpui::test]
