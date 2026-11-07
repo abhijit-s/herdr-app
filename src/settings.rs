@@ -864,6 +864,17 @@ pub struct Person {
     /// When an alert also goes to the system's notification center (alert.rs).
     #[serde(skip_serializing_if = "SystemNotifications::is_background")]
     pub system_notifications: SystemNotifications,
+    /// The sound each system notification plays, as written (read through
+    /// `notification_sounds`): a sound for every state, or one per state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notification_sounds: Option<serde_json::Value>,
+    /// The agent's glyph before an agent notification's title, and the state's
+    /// mark (✋, 🔴, ✅) before its body.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub notification_marks: bool,
+    /// The agent's program icon on its system notifications. On unless set to false.
+    #[serde(skip_serializing_if = "is_true")]
+    pub notification_icons: bool,
     /// Bounce the Dock icon when an agent needs you while Herdr is in the background.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub dock_bounce: bool,
@@ -1060,6 +1071,87 @@ impl ResumeAgents {
 pub enum AlertCommand {
     Shell(String),
     Argv(Vec<String>),
+}
+
+/// The sound each agent alert's system notification plays (alert.rs).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct NotificationSounds {
+    #[serde(serialize_with = "sound_word")]
+    pub blocked: gpui::SystemNotificationSound,
+    #[serde(serialize_with = "sound_word")]
+    pub error: gpui::SystemNotificationSound,
+    #[serde(serialize_with = "sound_word")]
+    pub done: gpui::SystemNotificationSound,
+}
+
+impl<'de> Deserialize<'de> for NotificationSounds {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(d)?;
+        Ok(notification_sounds(Some(&v)).unwrap_or_default())
+    }
+}
+
+fn sound_word<S: serde::Serializer>(sound: &gpui::SystemNotificationSound, s: S) -> Result<S::Ok, S::Error> {
+    match sound {
+        gpui::SystemNotificationSound::Silent => s.serialize_str("none"),
+        gpui::SystemNotificationSound::Default => s.serialize_str("default"),
+        gpui::SystemNotificationSound::Named(name) => s.serialize_str(name),
+    }
+}
+
+/// The longest sound name taken; macOS's own are a word.
+const SOUND_NAME_MAX_CHARS: usize = 64;
+
+/// One sound as written: `"default"` (the system's), `"none"` / `false`
+/// (silent), `true` (the system's), or a sound's name (`"Glass"`).
+pub fn sound(v: &serde_json::Value) -> Result<gpui::SystemNotificationSound, String> {
+    use gpui::SystemNotificationSound as Sound;
+    match v {
+        serde_json::Value::Bool(false) => Ok(Sound::Silent),
+        serde_json::Value::Bool(true) => Ok(Sound::Default),
+        serde_json::Value::String(word) => match word.as_str() {
+            "none" => Ok(Sound::Silent),
+            "default" => Ok(Sound::Default),
+            name if is_sound_name(name) => Ok(Sound::Named(name.to_owned().into())),
+            name => Err(format!("{name:?} is not \"default\", \"none\" or a sound's name (letters, digits, spaces, - _ ., up to {SOUND_NAME_MAX_CHARS})")),
+        },
+        other => Err(format!("{other} is not a sound: \"default\", \"none\", false or a sound's name")),
+    }
+}
+
+/// A file name in a Sounds folder, without its extension or a path.
+fn is_sound_name(name: &str) -> bool {
+    (1..=SOUND_NAME_MAX_CHARS).contains(&name.chars().count())
+        && !name.starts_with(['.', ' '])
+        && name.chars().all(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.'))
+}
+
+/// `notification_sounds` as written: one sound for every state, or
+/// `{ "done": …, "blocked": …, "error": … }` (a state left out is silent).
+/// Absent: silent.
+fn notification_sounds(v: Option<&serde_json::Value>) -> Result<NotificationSounds, String> {
+    let fail = |why: String| Err(format!("notification_sounds {why}: notifications stay silent"));
+    let Some(v) = v else { return Ok(NotificationSounds::default()) };
+    let Some(states) = v.as_object() else {
+        return match sound(v) {
+            Ok(one) => Ok(NotificationSounds { blocked: one.clone(), error: one.clone(), done: one }),
+            Err(why) => fail(why),
+        };
+    };
+    let mut sounds = NotificationSounds::default();
+    for (state, v) in states {
+        let slot = match state.as_str() {
+            "blocked" => &mut sounds.blocked,
+            "error" => &mut sounds.error,
+            "done" => &mut sounds.done,
+            other => return fail(format!("has {other:?}, not one of done, blocked, error")),
+        };
+        *slot = match sound(v) {
+            Ok(s) => s,
+            Err(why) => return fail(format!("{state}: {why}")),
+        };
+    }
+    Ok(sounds)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1434,6 +1526,9 @@ impl Default for Person {
             ui_text_scale: 1.0,
             sounds: Sounds::default(),
             system_notifications: SystemNotifications::Background,
+            notification_sounds: None,
+            notification_marks: false,
+            notification_icons: true,
             dock_bounce: false,
             dock_badge: true,
             dock_bounce_on_wait: false,
@@ -1574,6 +1669,12 @@ pub struct Settings {
     pub option_as_alt: OptionAsAlt,
     pub sounds: Sounds,
     pub system_notifications: SystemNotifications,
+    pub notification_sounds: NotificationSounds,
+    /// Why settings.json's `notification_sounds` fell back to silence.
+    #[serde(skip)]
+    pub notification_sounds_problem: Option<String>,
+    pub notification_marks: bool,
+    pub notification_icons: bool,
     pub dock_bounce: bool,
     pub dock_badge: bool,
     pub dock_bounce_on_wait: bool,
@@ -1658,6 +1759,10 @@ impl Default for Settings {
             option_as_alt: OptionAsAlt::Auto,
             sounds: Sounds::default(),
             system_notifications: SystemNotifications::Background,
+            notification_sounds: NotificationSounds::default(),
+            notification_sounds_problem: None,
+            notification_marks: false,
+            notification_icons: true,
             dock_bounce: false,
             dock_badge: true,
             dock_bounce_on_wait: false,
@@ -1675,6 +1780,10 @@ impl Settings {
         let (working_spinner, working_spinner_problem) = match working_spinner(person.working_spinner.as_ref()) {
             Ok(spinner) => (spinner, None),
             Err(problem) => (None, Some(problem)),
+        };
+        let (notification_sounds, notification_sounds_problem) = match notification_sounds(person.notification_sounds.as_ref()) {
+            Ok(sounds) => (sounds, None),
+            Err(problem) => (NotificationSounds::default(), Some(problem)),
         };
         let mut colors = person.colors.clone();
         colors.extend(look.colors.clone().unwrap_or_default());
@@ -1732,6 +1841,10 @@ impl Settings {
             terminal_opacity: look.terminal_opacity.unwrap_or(1.0).clamp(0.0, 1.0),
             sounds: person.sounds.clone(),
             system_notifications: person.system_notifications,
+            notification_sounds,
+            notification_sounds_problem,
+            notification_marks: person.notification_marks,
+            notification_icons: person.notification_icons,
             dock_bounce: person.dock_bounce,
             dock_badge: person.dock_badge,
             dock_bounce_on_wait: person.dock_bounce_on_wait,
@@ -1838,6 +1951,7 @@ impl Settings {
             out.push(format!("font_weight_bold {bold} is outside 100..900"));
         }
         out.extend(self.working_spinner_problem.clone());
+        out.extend(self.notification_sounds_problem.clone());
         if !(-2.0..=10.0).contains(&self.letter_spacing) {
             out.push(format!("letter_spacing {} is outside -2..10", self.letter_spacing));
         }

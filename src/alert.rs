@@ -1,13 +1,15 @@
 //! Alerts outside the window: a system notification, or the person's own
 //! `alert_command` in its place. The toast and the sounds stay in window.rs.
 
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use gpui::{App, SystemNotification};
+use gpui::{App, SystemNotification, SystemNotificationSound};
+use serde_json::Value;
 
 use crate::model::Alert;
-use crate::settings::{AlertCommand, SystemNotifications};
+use crate::settings::{AlertCommand, Settings, SystemNotifications};
 
 /// One alert, as the notification and the command see it.
 #[derive(Clone, Debug, PartialEq)]
@@ -97,13 +99,88 @@ pub fn address_of(tag: &str) -> Option<&str> {
     tag.strip_prefix(TAG_PREFIX).filter(|a| !a.is_empty())
 }
 
-pub fn system_notification(note: &Note) -> SystemNotification {
+/// How an agent's system notification sounds and looks, from the settings.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Look {
+    pub sound: SystemNotificationSound,
+    /// The agent's glyph before the title and the state's mark before the body.
+    pub marks: bool,
+    /// A copy of the agent's program icon for the notification to take.
+    pub image: Option<PathBuf>,
+}
+
+impl Look {
+    /// For posting `note` now: with `notification_icons`, a fresh copy of its
+    /// program's icon (notification_icon.rs).
+    pub fn of(note: &Note, settings: &Settings) -> Look {
+        let sounds = &settings.notification_sounds;
+        let sound = match note.alert {
+            Alert::Blocked => &sounds.blocked,
+            Alert::Error => &sounds.error,
+            Alert::Done => &sounds.done,
+        };
+        let image = if settings.notification_icons { note.app.as_deref().and_then(program_icon) } else { None };
+        Look { sound: sound.clone(), marks: settings.notification_marks, image }
+    }
+}
+
+/// A copy of the program icon an agent's 7501 `app` shows, for one notification.
+pub fn program_icon(app: &str) -> Option<PathBuf> {
+    crate::notification_icon::copy_for_posting(&crate::notification_icon::cached(app)?)
+}
+
+/// Each agent's glyph by its programs.json key (or its `app` with -code,
+/// -cli or -agent left off), as the herdr-app-notify script had them.
+const AGENT_GLYPHS: &[(&str, &str)] = &[
+    ("claude", "🤖"),
+    ("codex", "🧠"),
+    ("gemini", "✨"),
+    ("cursor", "🖱️"),
+    ("copilot", "🚀"),
+    ("aider", "🛠️"),
+    ("crush", "💜"),
+    ("opencode", "📂"),
+    ("amp", "⚡"),
+];
+const AGENT_GLYPH_OTHER: &str = "🤖";
+
+/// The glyph before an agent notification's title.
+pub fn agent_glyph(app: Option<&str>) -> &'static str {
+    let Some(app) = app.filter(|a| !a.is_empty()) else { return AGENT_GLYPH_OTHER };
+    let key = crate::programs::of(Some(app), &[]).get("key").and_then(Value::as_str).map(str::to_owned);
+    let stem = ["-code", "-cli", "-agent"].iter().fold(app, |a, suffix| a.strip_suffix(suffix).unwrap_or(a));
+    let glyph = |name: &str| AGENT_GLYPHS.iter().find(|(n, _)| *n == name).map(|(_, g)| *g);
+    key.as_deref().and_then(glyph).or_else(|| glyph(stem)).unwrap_or(AGENT_GLYPH_OTHER)
+}
+
+/// The mark before an agent notification's body.
+pub fn state_mark(alert: Alert) -> &'static str {
+    match alert {
+        Alert::Blocked => "✋",
+        Alert::Error => "🔴",
+        Alert::Done => "✅",
+    }
+}
+
+pub fn system_notification(note: &Note, look: &Look) -> SystemNotification {
+    let (mut title, mut body) = (note.title(), body(note));
+    if look.marks {
+        title = format!("{} {title}", agent_glyph(note.app.as_deref()));
+        body = if body.is_empty() { state_mark(note.alert).to_owned() } else { format!("{} {body}", state_mark(note.alert)) };
+    }
     SystemNotification {
         tag: tag(&note.address).into(),
-        title: note.title().into(),
-        body: body(note).into(),
-        actions: Vec::new(),
+        title: title.into(),
+        body: body.into(),
+        sound: look.sound.clone(),
+        image: look.image.clone(),
+        ..Default::default()
     }
+}
+
+/// Posts `note` as its system notification, looking as the settings say.
+pub fn post(note: &Note, settings: &Settings, cx: &App) {
+    cx.show_system_notification(system_notification(note, &Look::of(note, settings)));
 }
 
 /// The agent's own message when it gave one, over "space / tab".
@@ -151,17 +228,17 @@ pub enum Sent {
     Fallback(String),
 }
 
-/// Sends the alert: the person's command when they set one, else (or when it
-/// doesn't start) the system notification.
-pub fn send(note: &Note, command: Option<&AlertCommand>, cx: &App) -> Sent {
-    let sent = match command.and_then(|c| Some((c, command_argv(c)?))) {
+/// Sends the alert: the person's `alert_command` when they set one, else (or
+/// when it doesn't start) the system notification.
+pub fn send(note: &Note, settings: &Settings, cx: &App) -> Sent {
+    let sent = match settings.alert_command.as_ref().and_then(|c| Some((c, command_argv(c)?))) {
         Some((c, argv)) => match run(&argv, label(c), note) {
             Ok(failed) => return Sent::Ran(failed),
             Err(error) => Sent::Fallback(error),
         },
         None => Sent::Posted,
     };
-    cx.show_system_notification(system_notification(note));
+    post(note, settings, cx);
     sent
 }
 
@@ -265,6 +342,193 @@ fn reap(mut child: std::process::Child, limit: Duration) -> Option<std::process:
     }
 }
 
+/// `system.notify`: a notification any program posts as Herdr.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Notify {
+    pub title: String,
+    pub body: String,
+    pub subtitle: String,
+    pub sound: SystemNotificationSound,
+    /// A terminal address or an agent's name: a click focuses it.
+    pub agent: Option<String>,
+    /// A newer notification with the same id replaces the older one.
+    pub id: Option<String>,
+    /// Posted even while Herdr is in front with `system_notifications: background`.
+    pub urgent: bool,
+    /// An image file shown with it.
+    pub icon: Option<PathBuf>,
+}
+
+/// Longer text is cut short with "…"; the notification center cuts it sooner.
+const NOTIFY_TITLE_MAX: usize = 200;
+const NOTIFY_SUBTITLE_MAX: usize = 200;
+const NOTIFY_BODY_MAX: usize = 2000;
+const NOTIFY_ID_MAX: usize = 64;
+const NOTIFY_AGENT_MAX: usize = 200;
+const NOTIFY_ICON_PATH_MAX: usize = 1024;
+/// macOS's own limit for an image attachment.
+const NOTIFY_ICON_BYTES_MAX: u64 = 10 * 1024 * 1024;
+const NOTIFY_ICON_TYPES: &[&str] = &["png", "jpg", "jpeg", "gif", "heic"];
+
+/// `system.notify`'s arguments, checked: an error says which one and why.
+pub fn parse_notify(args: &Value) -> Result<Notify, String> {
+    let text = |key: &str| -> Result<Option<&str>, String> {
+        match args.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(s)) => Ok(Some(s)),
+            Some(_) => Err(format!("system.notify: {key} must be a string")),
+        }
+    };
+    let title = clean(text("title")?.unwrap_or_default(), false, NOTIFY_TITLE_MAX);
+    if title.is_empty() {
+        return Err("system.notify: title is required".into());
+    }
+    let body = clean(text("body")?.unwrap_or_default(), true, NOTIFY_BODY_MAX);
+    let subtitle = clean(text("subtitle")?.unwrap_or_default(), false, NOTIFY_SUBTITLE_MAX);
+    let sound = match args.get("sound") {
+        None | Some(Value::Null) => SystemNotificationSound::Default,
+        Some(v) => crate::settings::sound(v).map_err(|why| format!("system.notify: sound {why}"))?,
+    };
+    let id = text("id")?.map(|id| {
+        let ok = (1..=NOTIFY_ID_MAX).contains(&id.len()) && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'));
+        if ok { Ok(id.to_owned()) } else { Err(format!("system.notify: id {id:?} must be 1 to {NOTIFY_ID_MAX} of A-Z a-z 0-9 . _ : -")) }
+    }).transpose()?;
+    let agent = text("agent")?.map(|agent| {
+        let ok = (1..=NOTIFY_AGENT_MAX).contains(&agent.chars().count()) && !agent.chars().any(is_unsafe_char);
+        if ok { Ok(agent.to_owned()) } else { Err(format!("system.notify: agent must be a terminal address or a name, 1 to {NOTIFY_AGENT_MAX} characters without control characters")) }
+    }).transpose()?;
+    let urgent = match args.get("urgent") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err("system.notify: urgent must be true or false".into()),
+    };
+    let icon = text("icon")?.map(notify_icon).transpose()?;
+    Ok(Notify { title, body, subtitle, sound, agent, id, urgent, icon })
+}
+
+/// An `icon` path: an absolute path to an image file macOS can attach.
+fn notify_icon(path: &str) -> Result<PathBuf, String> {
+    let fail = |why: &str| Err(format!("system.notify: icon {path:?} {why}"));
+    if path.len() > NOTIFY_ICON_PATH_MAX || path.chars().any(is_unsafe_char) {
+        return fail("is not a usable path");
+    }
+    let file = PathBuf::from(path);
+    if !file.is_absolute() {
+        return fail("must be an absolute path");
+    }
+    let kind = file.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    if !NOTIFY_ICON_TYPES.contains(&kind.as_str()) {
+        return fail(&format!("must be one of {}", NOTIFY_ICON_TYPES.join(", ")));
+    }
+    match std::fs::metadata(&file) {
+        Ok(m) if m.is_file() && m.len() <= NOTIFY_ICON_BYTES_MAX => Ok(file),
+        Ok(m) if m.is_file() => fail("is over 10 MB"),
+        _ => fail("is not a file"),
+    }
+}
+
+/// Control characters (a newline kept where `multiline`), and the direction
+/// overrides that make text read other than it is, are left out; past `max`
+/// characters it ends in "…".
+fn clean(text: &str, multiline: bool, max: usize) -> String {
+    let text = text.replace("\r\n", "\n");
+    let kept: String = text
+        .trim()
+        .chars()
+        .map(|c| if c == '\t' || (c == '\n' && !multiline) { ' ' } else { c })
+        .filter(|c| (*c == '\n' && multiline) || !is_unsafe_char(*c))
+        .collect();
+    if kept.chars().count() <= max {
+        return kept;
+    }
+    let mut cut: String = kept.chars().take(max - 1).collect();
+    cut.push('…');
+    cut
+}
+
+fn is_unsafe_char(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+const NOTIFY_TAG_PREFIX: &str = "herdr-notify:";
+
+/// `system.notify`'s tag: its id, else a new one each time.
+pub fn notify_tag(id: Option<&str>) -> String {
+    static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    match id {
+        Some(id) => format!("{NOTIFY_TAG_PREFIX}{id}"),
+        None => {
+            let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+            format!("{NOTIFY_TAG_PREFIX}~{at}-{n}")
+        }
+    }
+}
+
+pub fn notify_notification(notify: &Notify, tag: &str, image: Option<PathBuf>) -> SystemNotification {
+    SystemNotification {
+        tag: tag.to_owned().into(),
+        title: notify.title.clone().into(),
+        subtitle: notify.subtitle.clone().into(),
+        body: notify.body.clone().into(),
+        sound: notify.sound.clone(),
+        image,
+        ..Default::default()
+    }
+}
+
+/// Where `system.notify` goes: nowhere (`system_notifications: off`), the
+/// system's notification center, or the window's own toast (`background`
+/// while Herdr is in front, unless urgent).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NotifyTo {
+    Nowhere,
+    System,
+    Toast,
+}
+
+pub fn notify_to(mode: SystemNotifications, app_active: bool, urgent: bool) -> NotifyTo {
+    match mode {
+        SystemNotifications::Off => NotifyTo::Nowhere,
+        SystemNotifications::Background if app_active && !urgent => NotifyTo::Toast,
+        _ => NotifyTo::System,
+    }
+}
+
+/// Which agent a `system.notify` click focuses, by tag: the newest few.
+#[derive(Debug, Default)]
+pub struct NotifyClicks(std::collections::VecDeque<(String, String)>);
+
+/// How many clickable `system.notify` notifications are remembered.
+const NOTIFY_CLICKS_KEPT: usize = 64;
+
+impl NotifyClicks {
+    /// A notification posted under `tag`: it focuses `agent` when clicked, or
+    /// nothing (it replaced one that did).
+    pub fn posted(&mut self, tag: &str, agent: Option<&str>) {
+        self.0.retain(|(t, _)| t != tag);
+        if let Some(agent) = agent {
+            if self.0.len() == NOTIFY_CLICKS_KEPT {
+                self.0.pop_front();
+            }
+            self.0.push_back((tag.to_owned(), agent.to_owned()));
+        }
+    }
+
+    /// The agent a clicked notification focuses.
+    pub fn clicked(&mut self, tag: &str) -> Option<String> {
+        let at = self.0.iter().position(|(t, _)| t == tag)?;
+        self.0.remove(at).map(|(_, agent)| agent)
+    }
+}
+
+/// Whether a posted notification can show: not where the platform knows it
+/// can't (macOS: not run from an app bundle, or notifications denied in
+/// System Settings), so `system.notify` fails and its caller can fall back.
+pub fn can_post(cx: &App) -> bool {
+    cx.system_notifications_allowed() != Some(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +544,11 @@ mod tests {
             place: Some("herdr / main".into()),
             said: Said::default(),
         }
+    }
+
+    /// The settings with no program icons (their files are the person's).
+    fn plain() -> Settings {
+        Settings { notification_icons: false, ..Settings::default() }
     }
 
     fn said(message: &str) -> Said {
@@ -326,9 +595,9 @@ mod tests {
 
     #[test]
     fn the_notification_says_what_the_toast_says_tagged_by_agent() {
-        let n = system_notification(&note(Alert::Blocked));
+        let n = system_notification(&note(Alert::Blocked), &Look::default());
         assert_eq!((n.tag.as_ref(), n.title.as_ref(), n.body.as_ref()), ("herdr-agent:local:t7", "Claude needs you", "herdr / main"));
-        let done = system_notification(&Note { place: None, ..note(Alert::Done) });
+        let done = system_notification(&Note { place: None, ..note(Alert::Done) }, &Look::default());
         assert_eq!((done.title.as_ref(), done.body.as_ref()), ("Claude finished", ""));
         assert_eq!(address_of(&n.tag), Some("local:t7"));
         assert_eq!(address_of("herdr-agent:"), None);
@@ -371,9 +640,9 @@ mod tests {
         assert_eq!(get("HERDR_AGENT_MESSAGE"), Some(quoted));
         assert_eq!(get("HERDR_AGENT_KIND"), Some("permission"));
         assert_eq!(get("HERDR_AGENT_TITLE"), Some("fix the build"));
-        assert_eq!(system_notification(&n).body.as_ref(), format!("{quoted}\nherdr / main"));
+        assert_eq!(system_notification(&n, &Look::default()).body.as_ref(), format!("{quoted}\nherdr / main"));
         let alone = Note { place: None, said: said("  done: 3 files  "), ..note(Alert::Done) };
-        assert_eq!(system_notification(&alone).body.as_ref(), "done: 3 files");
+        assert_eq!(system_notification(&alone, &Look::default()).body.as_ref(), "done: 3 files");
         let report = serde_json::json!({ "state": "blocked", "kind": "question", "title": "t", "msg": "which one?" });
         assert_eq!(Said::of(Some(&report)), Said { kind: "question".into(), title: "t".into(), message: "which one?".into() });
         assert_eq!(Said::of(Some(&serde_json::json!("blocked"))), Said::default(), "a bare word says nothing more");
@@ -409,17 +678,18 @@ mod tests {
     fn send_posts_one_notification_per_agent_or_runs_the_command(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.set_app_identity("dev.herdr.test", "Herdr"));
         cx.update(|cx| {
-            assert!(matches!(send(&note(Alert::Done), None, cx), Sent::Posted));
-            assert!(matches!(send(&note(Alert::Blocked), None, cx), Sent::Posted));
+            assert!(matches!(send(&note(Alert::Done), &plain(), cx), Sent::Posted));
+            assert!(matches!(send(&note(Alert::Blocked), &plain(), cx), Sent::Posted));
         });
-        assert_eq!(cx.delivered_system_notifications(), [system_notification(&note(Alert::Blocked))]);
-        let ran = cx.update(|cx| send(&note(Alert::Done), Some(&AlertCommand::Argv(vec!["/usr/bin/true".into()])), cx));
+        assert_eq!(cx.delivered_system_notifications(), [system_notification(&note(Alert::Blocked), &Look::default())]);
+        let command = |c: AlertCommand| Settings { alert_command: Some(c), ..plain() };
+        let ran = cx.update(|cx| send(&note(Alert::Done), &command(AlertCommand::Argv(vec!["/usr/bin/true".into()])), cx));
         let Sent::Ran(failed) = ran else { panic!("{ran:?}") };
         assert!(failed.recv_blocking().is_err(), "a command that succeeds reports nothing");
         assert_eq!(cx.shown_system_notifications().len(), 2);
         // A command that doesn't start: the system notification instead, and why.
         let missing = AlertCommand::Argv(vec!["/nonexistent/herdr-notify".into()]);
-        let sent = cx.update(|cx| send(&note(Alert::Done), Some(&missing), cx));
+        let sent = cx.update(|cx| send(&note(Alert::Done), &command(missing), cx));
         assert!(matches!(&sent, Sent::Fallback(why) if why.contains("/nonexistent/herdr-notify")), "{sent:?}");
         assert_eq!(cx.shown_system_notifications().len(), 3);
         cx.update(|cx| cx.dismiss_system_notification(&tag("local:t7")));
@@ -477,5 +747,188 @@ mod tests {
         assert!(gone(), "the shell's child {sleep} outlived it");
         let quick = Command::new("true").spawn().unwrap();
         assert!(reap(quick, Duration::from_secs(5)).unwrap().success());
+    }
+
+    fn sounds(v: serde_json::Value) -> Settings {
+        let person: Person = serde_json::from_value(serde_json::json!({ "notification_sounds": v })).unwrap();
+        Settings::compose(&person, &crate::layout::Look::default(), false)
+    }
+
+    #[test]
+    fn each_state_plays_its_own_sound() {
+        use SystemNotificationSound::*;
+        let s = sounds(serde_json::json!({ "done": "Glass", "blocked": "Purr", "error": "Basso" }));
+        let look = |alert| Look::of(&note(alert), &Settings { notification_icons: false, ..s.clone() }).sound;
+        assert_eq!(look(Alert::Done), Named("Glass".into()));
+        assert_eq!(look(Alert::Blocked), Named("Purr".into()));
+        assert_eq!(look(Alert::Error), Named("Basso".into()));
+        assert_eq!(Look::of(&note(Alert::Done), &plain()).sound, Silent, "silent unless set");
+        let n = system_notification(&note(Alert::Error), &Look { sound: Named("Basso".into()), ..Look::default() });
+        assert_eq!(n.sound, Named("Basso".into()));
+    }
+
+    #[test]
+    fn marks_put_the_agents_glyph_on_the_title_and_the_states_on_the_body() {
+        let marked = Look { marks: true, ..Look::default() };
+        let n = system_notification(&Note { said: said("approve Bash: make"), ..note(Alert::Blocked) }, &marked);
+        assert_eq!((n.title.as_ref(), n.body.as_ref()), ("🤖 Claude needs you", "✋ approve Bash: make\nherdr / main"));
+        let codex = Note { app: Some("codex".into()), name: "Codex".into(), ..note(Alert::Error) };
+        let n = system_notification(&codex, &marked);
+        assert_eq!((n.title.as_ref(), n.body.as_ref()), ("🧠 Codex hit an error", "🔴 herdr / main"));
+        let bare = system_notification(&Note { place: None, ..note(Alert::Done) }, &marked);
+        assert_eq!(bare.body.as_ref(), "✅");
+        let plain_look = system_notification(&note(Alert::Done), &Look::default());
+        assert_eq!(plain_look.title.as_ref(), "Claude finished", "no marks unless asked");
+        // By programs.json's key (github-copilot is copilot's), else the app
+        // without -code, -cli or -agent, else the robot.
+        let glyphs: Vec<_> = [Some("claude-code"), Some("gemini-cli"), Some("github-copilot"), Some("cursor-agent"), Some("aider"), Some("someone-new"), Some(""), None]
+            .into_iter()
+            .map(agent_glyph)
+            .collect();
+        assert_eq!(glyphs, ["🤖", "✨", "🚀", "🖱️", "🛠️", "🤖", "🤖", "🤖"]);
+        assert!(AGENT_GLYPHS.iter().all(|(k, _)| agent_glyph(Some(k)) != AGENT_GLYPH_OTHER || *k == "claude"));
+    }
+
+    #[test]
+    fn an_image_given_is_attached() {
+        let image = std::env::temp_dir().join("herdr-alert-image.png");
+        let n = system_notification(&note(Alert::Done), &Look { image: Some(image.clone()), ..Look::default() });
+        assert_eq!(n.image, Some(image));
+        assert_eq!(Look::of(&note(Alert::Done), &plain()).image, None, "notification_icons off");
+    }
+
+    #[test]
+    fn notify_arguments_are_checked_and_cleaned() {
+        use serde_json::json;
+        let n = parse_notify(&json!({ "title": "Build", "body": "line one\r\nline two\u{7}", "subtitle": "ci\nmain", "sound": "Glass", "agent": "local:t3", "id": "build.main", "urgent": true })).unwrap();
+        assert_eq!(n, Notify {
+            title: "Build".into(),
+            body: "line one\nline two".into(),
+            subtitle: "ci main".into(),
+            sound: SystemNotificationSound::Named("Glass".into()),
+            agent: Some("local:t3".into()),
+            id: Some("build.main".into()),
+            urgent: true,
+            icon: None,
+        });
+        let least = parse_notify(&json!({ "title": "  hi  " })).unwrap();
+        assert_eq!((least.title.as_str(), least.sound, least.urgent), ("hi", SystemNotificationSound::Default, false));
+        assert_eq!(parse_notify(&json!({ "title": "x", "sound": "none" })).unwrap().sound, SystemNotificationSound::Silent);
+        assert_eq!(parse_notify(&json!({ "title": "x", "sound": false })).unwrap().sound, SystemNotificationSound::Silent);
+        // Direction overrides and control characters don't pass through.
+        assert_eq!(parse_notify(&json!({ "title": "a\u{202E}b\u{1b}[31mc\td" })).unwrap().title, "ab[31mc d");
+        // Too long: cut short.
+        let long = parse_notify(&json!({ "title": "t".repeat(500), "body": "b".repeat(5000) })).unwrap();
+        assert_eq!((long.title.chars().count(), long.body.chars().count()), (NOTIFY_TITLE_MAX, NOTIFY_BODY_MAX));
+        assert!(long.title.ends_with('…'));
+        let fails = [
+            (json!({}), "title is required"),
+            (json!({ "title": " \n " }), "title is required"),
+            (json!({ "title": 3 }), "title must be a string"),
+            (json!({ "title": "x", "id": "a b" }), "id \"a b\""),
+            (json!({ "title": "x", "id": "x".repeat(65) }), "id"),
+            (json!({ "title": "x", "id": "" }), "id"),
+            (json!({ "title": "x", "sound": "../../x" }), "sound"),
+            (json!({ "title": "x", "sound": 1 }), "sound"),
+            (json!({ "title": "x", "agent": "a\nb" }), "agent"),
+            (json!({ "title": "x", "agent": "" }), "agent"),
+            (json!({ "title": "x", "urgent": "yes" }), "urgent must be"),
+            (json!({ "title": "x", "icon": "relative.png" }), "absolute"),
+            (json!({ "title": "x", "icon": "/etc/hosts" }), "must be one of"),
+            (json!({ "title": "x", "icon": "/nonexistent/i.png" }), "not a file"),
+        ];
+        for (args, why) in fails {
+            let error = parse_notify(&args).expect_err(&args.to_string());
+            assert!(error.starts_with("system.notify: ") && error.contains(why), "{args}: {error}");
+        }
+        let icon = std::env::temp_dir().join(format!("herdr-notify-icon-{}.png", std::process::id()));
+        std::fs::write(&icon, b"png").unwrap();
+        assert_eq!(parse_notify(&json!({ "title": "x", "icon": icon })).unwrap().icon, Some(icon.clone()));
+        let _ = std::fs::remove_file(&icon);
+    }
+
+    #[test]
+    fn notify_goes_where_system_notifications_says() {
+        use SystemNotifications::*;
+        let cases = [
+            // mode, app_active, urgent, to
+            (Off, false, true, NotifyTo::Nowhere),
+            (Background, false, false, NotifyTo::System),
+            (Background, true, false, NotifyTo::Toast),
+            (Background, true, true, NotifyTo::System),
+            (Always, true, false, NotifyTo::System),
+        ];
+        for (mode, active, urgent, to) in cases {
+            assert_eq!(notify_to(mode, active, urgent), to, "{mode:?} active={active} urgent={urgent}");
+        }
+    }
+
+    #[gpui::test]
+    fn a_notify_with_the_same_id_replaces_the_older_one(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_app_identity("dev.herdr.test", "Herdr"));
+        let post = |title: &str, id: Option<&str>, cx: &mut gpui::TestAppContext| {
+            let notify = parse_notify(&serde_json::json!({ "title": title, "id": id })).unwrap();
+            let tag = notify_tag(notify.id.as_deref());
+            cx.update(|cx| cx.show_system_notification(notify_notification(&notify, &tag, None)));
+            tag
+        };
+        let first = post("build 1", Some("build"), cx);
+        let second = post("build 2", Some("build"), cx);
+        assert_eq!(first, second);
+        let (a, b) = (post("ping", None, cx), post("ping", None, cx));
+        assert_ne!(a, b, "without an id each one stands");
+        let delivered: Vec<String> = cx.delivered_system_notifications().iter().map(|n| n.title.to_string()).collect();
+        assert_eq!(delivered, ["build 2", "ping", "ping"]);
+        assert_eq!(address_of(&first), None, "not an agent alert's tag");
+    }
+
+    #[test]
+    fn a_notify_click_focuses_its_agent_until_replaced() {
+        let mut clicks = NotifyClicks::default();
+        clicks.posted("herdr-notify:build", Some("local:t3"));
+        clicks.posted("herdr-notify:other", None);
+        assert_eq!(clicks.clicked("herdr-notify:other"), None);
+        clicks.posted("herdr-notify:deploy", Some("local:t4"));
+        clicks.posted("herdr-notify:deploy", None);
+        assert_eq!(clicks.clicked("herdr-notify:deploy"), None, "replaced by one without an agent");
+        assert_eq!(clicks.clicked("herdr-notify:build").as_deref(), Some("local:t3"));
+        assert_eq!(clicks.clicked("herdr-notify:build"), None, "once");
+        for n in 0..NOTIFY_CLICKS_KEPT + 5 {
+            clicks.posted(&format!("herdr-notify:{n}"), Some("t"));
+        }
+        assert_eq!(clicks.0.len(), NOTIFY_CLICKS_KEPT);
+        assert_eq!(clicks.clicked("herdr-notify:0"), None, "the oldest are forgotten");
+    }
+
+    #[test]
+    fn notification_sounds_marks_and_icons_parse() {
+        use SystemNotificationSound::*;
+        let all = |s: Settings| [s.notification_sounds.blocked, s.notification_sounds.error, s.notification_sounds.done];
+        assert_eq!(all(Settings::default()), [Silent, Silent, Silent]);
+        assert_eq!(all(sounds(serde_json::json!("Glass"))), [Named("Glass".into()), Named("Glass".into()), Named("Glass".into())]);
+        assert_eq!(all(sounds(serde_json::json!("default"))), [Default, Default, Default]);
+        assert_eq!(all(sounds(serde_json::json!(true))), [Default, Default, Default]);
+        assert_eq!(all(sounds(serde_json::json!(false))), [Silent, Silent, Silent]);
+        assert_eq!(all(sounds(serde_json::json!("none"))), [Silent, Silent, Silent]);
+        assert_eq!(all(sounds(serde_json::json!({ "blocked": "Purr", "done": false }))), [Named("Purr".into()), Silent, Silent]);
+        for bad in [serde_json::json!({ "finished": "Glass" }), serde_json::json!("../Glass"), serde_json::json!(3), serde_json::json!({ "done": [] }), serde_json::json!(".hidden")] {
+            let s = sounds(bad.clone());
+            assert_eq!(all(s.clone()), [Silent, Silent, Silent], "{bad}");
+            assert!(s.problems().iter().any(|p| p.starts_with("notification_sounds ") && p.ends_with("notifications stay silent")), "{bad}: {:?}", s.problems());
+        }
+        assert!(sounds(serde_json::json!("Glass")).problems().iter().all(|p| !p.starts_with("notification_sounds")));
+
+        let person: Person = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!((person.notification_sounds.clone(), person.notification_marks, person.notification_icons), (None, false, true));
+        let saved = serde_json::to_value(&person).unwrap();
+        for key in ["notification_sounds", "notification_marks", "notification_icons"] {
+            assert!(saved.get(key).is_none(), "{key} written at its default");
+        }
+        let set: Person = serde_json::from_value(serde_json::json!({ "notification_marks": true, "notification_icons": false })).unwrap();
+        let s = Settings::compose(&set, &crate::layout::Look::default(), false);
+        assert!(s.notification_marks && !s.notification_icons);
+        // The composed settings travel as JSON (to mods) and back.
+        let back: Settings = serde_json::from_value(serde_json::to_value(sounds(serde_json::json!({ "done": "Glass", "error": "default" }))).unwrap()).unwrap();
+        assert_eq!(all(back), [Silent, Default, Named("Glass".into())]);
     }
 }

@@ -531,6 +531,21 @@ Toggle the keys dialog.
 
 No arguments.
 
+## `system.notify`
+
+Post a notification as Herdr, for any program. sound: "default" (the default), "none" or a sound's name ("Glass"); agent: a terminal address or an agent's name, whose terminal a click shows (and whose program icon it carries unless icon or notification_icons: false); id: a newer one with the same id replaces the older; icon: an absolute path to a PNG, JPEG, GIF or HEIC up to 10 MB. Follows system_notifications: off fails; background, while Herdr is in front, shows the window's toast instead unless urgent: true. Text is cut at 200 characters (title, subtitle) and 2000 (body); control characters are left out. Fails where macOS won't show it (notifications denied, or a build not run from Herdr.app).
+
+| Argument | Required |
+|---|---|
+| `title` | yes |
+| `body` | no |
+| `subtitle` | no |
+| `sound` | no |
+| `agent` | no |
+| `id` | no |
+| `urgent` | no |
+| `icon` | no |
+
 ## `app.welcome`
 
 Show the welcome again.
