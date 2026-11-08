@@ -826,6 +826,14 @@ mod derivation_tests {
                 }
             }
         }
+        // An accent darker than the lifted surface would sink the accent
+        // style's tint toward the background: it lifts again.
+        let mut ansi = vec!["\"#808080\"".to_owned(); 16];
+        ansi[4] = "\"#141432\"".to_owned();
+        let text = format!(r##"{{"background":"#000000","foreground":"#cccccc","selection":"#cccccc","ansi":[{}]}}"##, ansi.join(","));
+        let (dark_accent, own) = parse_theme_file("dark accent", &text).unwrap();
+        let t = drawn_as(&dark_accent, &own, PanelColors::Tinted, false, ToastStyle::Accent);
+        assert_eq!(toast_problems_for("dark accent", &t, ToastStyle::Accent), Vec::<String>::new());
         // A theme's or settings' own toast colors win, in every style.
         let p = GRAPHITE.clone();
         let own: BTreeMap<String, String> = [("toast".to_owned(), "#123456".to_owned())].into();
