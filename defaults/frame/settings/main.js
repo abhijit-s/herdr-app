@@ -2,7 +2,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { hc, run, theme, themes, fonts, updates, telemetry, settings, layoutSpacing, layouts, shared, setShared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window, headerInfoPreview } from "herdr";
+import { hc, run, theme, themes, fonts, updates, telemetry, settings, layoutSpacing, layouts, shared, setShared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window, headerInfoPreview, toastLooks } from "herdr";
 
 const I = (name) => `frame/settings/${name}.svg`;
 
@@ -223,6 +223,38 @@ const TOAST_POSITIONS = [
   ["bottom-right", "Bottom right"],
 ];
 const TOAST_POSITION_DEFAULT = "bottom-right";
+// How long toasts stay up (toast_duration); Normal is the default, left out of settings.json.
+const TOAST_DURATIONS = [
+  ["short", "Short"],
+  ["normal", "Normal"],
+  ["long", "Long"],
+  ["until-dismissed", "Until clicked"],
+];
+// How toasts look (toast_style), each drawn as a small toast in the current theme
+// (toastLooks().styles); Standard is the default, left out of settings.json.
+const TOAST_STYLES = [
+  ["standard", "Standard"],
+  ["subtle", "Subtle"],
+  ["high-contrast", "High contrast"],
+  ["accent", "Accent"],
+];
+// A toast's corners (toast_corners), their radius from toastLooks().radius; Rounded is the default.
+const TOAST_CORNERS = [
+  ["square", "Square"],
+  ["slight", "Slight"],
+  ["rounded", "Rounded"],
+];
+// The level mark down a toast's left (toast_mark); Stripe is the default.
+const TOAST_MARKS = [
+  ["stripe", "Stripe"],
+  ["dot", "Dot"],
+  ["none", "None"],
+];
+// A choice whose default isn't listed first: picking `def` leaves `key` out of settings.json.
+const writeOrDrop = (key, def) => (p, value) => {
+  if (value === def) delete p[key];
+  else p[key] = value;
+};
 // The active pane's border width (focus_border_width); Layout, the layout's own, is left out of settings.json.
 const FOCUS_WIDTHS = [
   [null, "Layout"],
@@ -1123,6 +1155,49 @@ export default class Settings extends View {
       .child(div().id("st-tp-now").text_size(12).text_color(t.dim).child(label));
   }
 
+  // One small toast per style, in the current theme's colours for that style, with the
+  // chosen corners and level mark, the chosen style the tonal pill. Its name underneath.
+  toastStylePicker(t) {
+    const now = this.person.toast_style ?? "standard";
+    const looks = toastLooks() ?? {};
+    const styles = looks.styles ?? {};
+    const sel = tonal(t, window()?.active !== false);
+    const radius = looks.radius?.[this.person.toast_corners] ?? looks.radius?.rounded ?? 8;
+    const mark = this.person.toast_mark ?? "stripe";
+    const cell = ([value, label]) => {
+      const on = now === value;
+      const c = styles[value] ?? t;
+      const toast = h_flex()
+        .w(58)
+        .h(22)
+        .gap(4)
+        .items_center()
+        .overflow_hidden()
+        .rounded(radius / 2)
+        .border_1()
+        .border_color(c.toast_border)
+        .bg(c.toast)
+        .when(mark === "stripe", (el) => el.child(div().id(`st-ts-${value}-stripe`).w(2).h_full().flex_none().bg(c.toast_info)))
+        .child(div().w(mark === "stripe" ? 1 : 4).flex_none())
+        .when(mark !== "none", (el) => el.child(div().id(`st-ts-${value}-dot`).size(5).rounded(3).flex_none().bg(c.toast_info)))
+        .child(div().w(22).h(3).rounded(1).bg(c.toast_foreground));
+      return v_flex()
+        .id(`st-ts-${value}`)
+        .p(4)
+        .gap(3)
+        .items_center()
+        .rounded(6)
+        .border_1()
+        .cursor_pointer()
+        .when(on, (el) => el.bg(sel.fill).border_color(sel.ring))
+        .when(!on, (el) => el.border_color(t.background).hover((s) => s.bg(hoverFill(t))))
+        .on_click((_e, cx) => this.change((p) => writeOrDrop("toast_style", "standard")(p, value), cx))
+        .child(toast)
+        .child(div().text_size(11).text_color(on ? sel.text : t.dim).child(label));
+    };
+    return h_flex().p(2).gap(2).rounded(8).border_1().border_color(t.border).bg(t.background).children(TOAST_STYLES.map(cell));
+  }
+
   themesPage(t) {
     const s = settings();
     const all = themes();
@@ -1421,6 +1496,10 @@ export default class Settings extends View {
         el.child(this.row(t, "Sidebar shade", "A shade darker sidebar on dark themes, while Herdr is the active window or always.", this.choicePicker(t, "st-ss", "sidebar_shade", SIDEBAR_SHADES), "sidebar_shade")),
       )
       .child(this.row(t, "Notification position", "Where toasts show. toast_offset in settings.json moves them in from the edges, to clear a status bar.", this.toastPositionPicker(t), ["toast_position", "toast_offset"]))
+      .child(this.row(t, "Notification time", "How long toasts stay up: errors and warnings stay longer than the rest. Until clicked keeps them until you click one. A toast that sets its own time, such as Copied, keeps it.", this.choicePicker(t, "st-td", "toast_duration", TOAST_DURATIONS, { now: this.person.toast_duration ?? "normal", write: writeOrDrop("toast_duration", "normal") }), "toast_duration"))
+      .child(this.row(t, "Notification style", "How toasts stand off the window: Subtle sits closer to the panels, High contrast has a stronger border and text, Accent takes the theme's accent. A theme's own toast colours still win.", this.toastStylePicker(t), "toast_style"))
+      .child(this.row(t, "Notification corners", "Square, slightly rounded or rounded toasts.", this.choicePicker(t, "st-tr", "toast_corners", TOAST_CORNERS, { now: this.person.toast_corners ?? "rounded", write: writeOrDrop("toast_corners", "rounded") }), "toast_corners"))
+      .child(this.row(t, "Notification level mark", "What shows a toast's level: a stripe down its left side with a dot, the dot alone, or neither.", this.choicePicker(t, "st-tm", "toast_mark", TOAST_MARKS), "toast_mark"))
       .child(this.plain(div().h(18)))
       .child(this.heading(t, "Inactive window"))
       .child(this.contrast(t, "unfocused_dim", "Dim when inactive", "Fades this far toward the background while Herdr isn't the active window."))
