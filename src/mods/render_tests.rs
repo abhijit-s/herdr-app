@@ -1737,7 +1737,22 @@ fn pane_header_fits_its_info_beside_the_name_and_buttons(cx: &mut TestAppContext
     assert!(!gone.contains("pane-info-p1") && gone.contains("text \"Pi\"") && gone.matches("svg \"mods/pane/").count() == 4, "too narrow: no info, name and buttons stay: {gone}");
 }
 
-/// A parent agent's row counts its live sub-agents (`⧉ N`, the rows its tree
+/// The agents mod's sub-agent count: its number, and its element's line.
+fn sub_count(tree: &str) -> Option<(String, String)> {
+    let mut lines = tree.lines().skip_while(|l| !l.contains("\"sub-count\""));
+    let head = lines.next()?;
+    let depth = head.len() - head.trim_start().len();
+    let inner: Vec<&str> = lines.take_while(|l| l.len() - l.trim_start().len() > depth).collect();
+    assert!(inner.iter().any(|l| l.contains("svg \"mods/workspace-chrome/copy.svg\"")), "{head}");
+    let n = inner.iter().find_map(|l| l.trim().strip_prefix("text ")).map(|t| t.trim_matches('"').to_owned())?;
+    Some((n, head.to_owned()))
+}
+
+fn sub_count_line(tree: &str) -> String {
+    tree.lines().find(|l| l.contains("\"sub-count\"")).unwrap_or_else(|| panic!("no count: {tree}")).to_owned()
+}
+
+/// A parent agent's row counts its live sub-agents (a copy icon and N, the rows its tree
 /// shows, nested ones too), unless the sidebar is too narrow; folded, then the
 /// chevron counts instead.
 #[gpui::test]
@@ -1757,10 +1772,47 @@ fn agents_rows_count_their_live_sub_agents(cx: &mut TestAppContext) {
         describe_with_values(cx, &staged, "mods/agents", values, None).unwrap()
     };
     let wide = row(None, cx);
-    assert!(wide.contains("text \"\u{29c9} 3\""), "three live under t1, one nested: {wide}");
-    assert_eq!(wide.matches('\u{29c9}').count(), 1, "only the parent counts: {wide}");
+    assert_eq!(sub_count(&wide), Some(("3".into(), sub_count_line(&wide))), "three live under t1, one nested: {wide}");
+    assert_eq!(wide.matches("\"sub-count\"").count(), 1, "only the parent counts: {wide}");
+    assert!(!wide.contains('\u{29c9}'), "a drawn icon, not a mark the UI font lacks: {wide}");
     let narrow = row(Some(200.0), cx);
-    assert!(!narrow.contains('\u{29c9}'), "a narrow sidebar drops it: {narrow}");
+    assert!(!narrow.contains("\"sub-count\""), "a narrow sidebar drops it: {narrow}");
+}
+
+/// The count takes its most urgent live sub-agent's colour (blocked or error:
+/// blocked; working; else dim), and a program's OSC 7501 child records (Claude
+/// Code's own sub-agents, reported by a hook) are sub-agents too: counted, a
+/// row each named by its title, coloured with the rest.
+#[gpui::test]
+fn agents_sub_agent_count_takes_the_most_urgent_colour_and_counts_child_records(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let program = json!({"key":"pi", "name":"Pi", "icon":null, "tint":true, "tile":null, "color":null, "shell":false, "agent":true});
+    let theme = crate::settings::theme();
+    let colour = |name: &str| format!(".text_color[Str({:?})]", theme[name].clone());
+    let draw = |kids: &[&str], records: Value, cx: &mut TestAppContext| {
+        let mut values = fixture(true, props(), updates("current", "current"));
+        let terminals = values.get_mut("terminals").unwrap().as_array_mut().unwrap();
+        terminals.iter_mut().filter(|t| t["address"] == "t1").for_each(|t| t["records"] = records.clone());
+        for (i, status) in kids.iter().enumerate() {
+            terminals.push(json!({"address":format!("k{i}"),"name":format!("k{i}"),"title":"","argv":["pi"],"parent":"t1","labels":{},"state":"live","status":status,"report":{"app":"pi"},"program":program}));
+        }
+        describe_with_values(cx, &staged, "mods/agents", values, None).unwrap()
+    };
+    let count = |tree: &str| sub_count(tree).map(|(n, _)| n).unwrap_or_else(|| panic!("no count: {tree}"));
+    let count_el = |tree: &str| sub_count_line(tree);
+    for (kids, expect) in [(&["idle", "done"][..], "dim"), (&["idle", "working"][..], "working"), (&["working", "blocked"][..], "blocked"), (&["idle", "error"][..], "blocked")] {
+        let tree = draw(kids, Value::Null, cx);
+        assert!(count_el(&tree).contains(&colour(expect)), "{kids:?}: {expect}: {}", count_el(&tree));
+        assert_eq!(count(&tree), "2", "{tree}");
+    }
+    let records = json!({"agent/a1":{"state":"working","title":"Explore"},"agent/b2":{"state":"blocked","title":"Plan"}});
+    let tree = draw(&["idle"], records, cx);
+    assert_eq!(count(&tree), "3", "two records and a terminal: {tree}");
+    assert!(count_el(&tree).contains(&colour("blocked")), "a blocked record: {tree}");
+    assert!(tree.contains("\"sub-t1#agent/a1\"") && tree.contains("text \"Explore\"") && tree.contains("text \"Plan\""), "a row each, by title: {tree}");
+    let idle = draw(&[], json!({"agent/a1":{"state":"idle"}}), cx);
+    assert!(count(&idle) == "1" && count_el(&idle).contains(&colour("dim")) && idle.contains("text \"agent/a1\""), "no title: its id: {idle}");
 }
 
 /// The pane menu names the pane first among the pane's own items, as the tab

@@ -264,14 +264,14 @@ const FOCUS_WIDTHS = [
 ];
 // Theme colors offered for the active pane's border (colors.focus).
 const FOCUS_SWATCHES = ["ansi1", "ansi2", "ansi3", "ansi4", "ansi5", "ansi6", "terminal_foreground"];
-// pane_header_info's suggestion: what the agent asks, the branch, the state and for how long.
+// pane_header_info's suggestion: what the agent asks, the branch, the state and for how long, its live sub-agents.
 // A header info separator as the pane header mods draw it (their separator()): the mark
 // alone with SEP_PAD (4) px either side, which is how fitHeaderInfo measures it.
 function headerSeparator(t, sep) {
   return div().flex_none().px(4).text_color(t.dim).child(sep.trim() || sep);
 }
 
-const SUGGESTED_HEADER_INFO = "{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed}";
+const SUGGESTED_HEADER_INFO = "{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed} · {subagents}";
 
 const RESUME_AGENTS = [
   ["ask", "Ask"],
@@ -1544,7 +1544,7 @@ export default class Settings extends View {
         this.row(
           t,
           "Header info",
-          "Extra words in an agent pane's header, as fit: {ask} what it needs from you, {state} {elapsed}, {branch}{ahead}{behind}{dirty}. · or | separates segments; empty ones and those that don't fit are left out. Empty: off.",
+          "Extra words in an agent pane's header, as fit: {ask} what it needs from you, {state} {elapsed}, {branch}{ahead}{behind}{dirty}, {subagents} its live sub-agents. · or | separates segments; empty ones and those that don't fit are left out. Empty: off.",
           this.headerInfoField(t),
           "pane_header_info",
         ),
