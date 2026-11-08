@@ -107,8 +107,8 @@ export default class Agents extends View {
     if (props()?.sortMenu) return;
     // Group headers folded this run.
     this.folded = new Set();
-    // The agents the person folded (true) or opened (false), kept across
-    // restarts; the rest follow agents_subagents.
+    // The agents the person folded (true) or opened (false) against
+    // agents_subagents, kept across restarts; the rest follow the setting.
     this.folds = JSON.parse(localStorage.getItem("folds") ?? "{}");
     // Each agent's last state and when it changed (ms), kept across restarts.
     this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}");
@@ -133,8 +133,13 @@ export default class Agents extends View {
     return this.folds[address] ?? subagentMode() === "folded";
   }
 
+  // Only a fold against the setting is kept, so a change of setting reaches the rest.
   setFolds(addresses, folded) {
-    for (const address of addresses) this.folds[address] = folded;
+    const usual = subagentMode() === "folded";
+    for (const address of addresses) {
+      if (folded === usual) delete this.folds[address];
+      else this.folds[address] = folded;
+    }
     localStorage.setItem("folds", JSON.stringify(this.folds));
   }
 

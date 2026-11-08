@@ -244,6 +244,10 @@ fn clone_mod_at(mods: &Path, name: &str, to: &str) -> std::io::Result<()> {
                             }
                         }
                     }
+                    // mod.json actions naming the mod's own commands follow it.
+                    if entry.file_name() == "mod.json" {
+                        text = text.replace(&format!("\"{from}."), &format!("\"{to}."));
+                    }
                     std::fs::write(dest, text)?;
                 }
             }
@@ -2079,13 +2083,15 @@ mod tests {
         let root = std::env::temp_dir().join(format!("herdr-mod-clone-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("original")).unwrap();
-        std::fs::write(root.join("original/mod.json"), "{}").unwrap();
+        std::fs::write(root.join("original/mod.json"), r#"{ "actions": [{ "title": "Fold", "command": "original.fold_all", "keywords": "original" }] }"#).unwrap();
         std::fs::write(root.join("original/main.js"), r#"const ASSETS = "mods/original"; const icon = 'mods/original/icon.svg'; openOverlay({ mod: "original" });"#).unwrap();
         std::fs::write(root.join("original/icon.svg"), "<svg/>").unwrap();
         clone_mod_at(&root, "original", "copy").unwrap();
         let text = std::fs::read_to_string(root.join("copy/main.js")).unwrap();
         assert!(text.contains("\"mods/copy\"") && text.contains("'mods/copy/icon.svg'") && text.contains("mod: \"copy\""));
         assert_eq!(std::fs::read_to_string(root.join("copy/icon.svg")).unwrap(), "<svg/>");
+        let meta: Value = serde_json::from_str(&std::fs::read_to_string(root.join("copy/mod.json")).unwrap()).unwrap();
+        assert_eq!(meta["actions"], json!([{ "title": "Fold", "command": "copy.fold_all", "keywords": "original" }]), "its own commands follow the copy");
         assert!(clone_mod_at(&root, "original", "copy").is_err());
         for invalid in ["[]", "42", "true", "null", "\"text\""] {
             std::fs::write(root.join("original/mod.json"), invalid).unwrap();

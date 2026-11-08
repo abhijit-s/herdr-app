@@ -256,12 +256,13 @@ for (const sort of ["priority", "grouped"]) {
   });
 
   test(`${sort}: folded starts every agent folded, with its count, and a click opens one`, () => {
-    const { ids, texts, clicks } = keptRender(sort, { ...subs, mode: "folded" });
+    const data = new Map<string, string>();
+    const { ids, texts, clicks } = keptRender(sort, { ...subs, mode: "folded", data });
     expect(ids).not.toContain("sub-t2");
     expect(ids).not.toContain("sub-t1#agent/9/a");
     expect(texts.get("sub-count")!.trim()).toBe("2");
     clicks.get("fold-t1")!(event, cx);
-    const data = new Map([["folds", JSON.stringify({ t1: false })]]);
+    expect(JSON.parse(data.get("folds")!)).toEqual({ t1: false });
     expect(keptRender(sort, { ...subs, mode: "folded", data }).ids).toContain("sub-t2");
   });
 
@@ -282,10 +283,11 @@ for (const sort of ["priority", "grouped"]) {
     first.clicks.get("fold-t1")!(event, cx);
     expect(JSON.parse(data.get("folds")!)).toEqual({ t1: true });
     expect(keptRender(sort, { ...subs, data }).ids).not.toContain("sub-t2");
-    // The agent's icon folds too: open it again.
+    // The agent's icon folds too: opened again it is as the setting says, so a change of setting reaches it.
     keptRender(sort, { ...subs, data }).clicks.get("agent-fold-t1")!(event, cx);
-    expect(JSON.parse(data.get("folds")!)).toEqual({ t1: false });
-    expect(keptRender(sort, { ...subs, mode: "folded", data }).ids).toContain("sub-t2");
+    expect(JSON.parse(data.get("folds")!)).toEqual({});
+    expect(keptRender(sort, { ...subs, data }).ids).toContain("sub-t2");
+    expect(keptRender(sort, { ...subs, mode: "folded", data }).ids).not.toContain("sub-t2");
   });
 }
 
@@ -302,16 +304,19 @@ test("folds go with their agent's entry: an agent gone and old loses its fold", 
   expect(Object.keys(JSON.parse(data.get("changed")!)).sort()).toEqual(["recent", "t1"]);
 });
 
-for (const sort of ["priority", "grouped"]) test(`${sort}: fold all and unfold all reach every listed agent, from keys and the palette`, async () => {
+for (const sort of ["priority", "grouped"]) test(`${sort}: fold all and unfold all set every listed agent against the setting`, async () => {
   const data = new Map<string, string>();
   const kept = { ...subs, kept: [{ address: "t3", parent: "t9" }] }; // t3: its own row, its parent gone
   expect(keptRender(sort, { ...kept, data, before: (a) => a.command("fold_all") }).ids).not.toContain("sub-t2");
   expect(JSON.parse(data.get("folds")!)).toEqual({ t1: true, t3: true });
+  keptRender(sort, { ...kept, data, before: (a) => a.command("something_else") });
+  expect(JSON.parse(data.get("folds")!)).toEqual({ t1: true, t3: true });
   // Unfold all opens them, over agents_subagents folded too.
   expect(keptRender(sort, { ...kept, mode: "folded", data, before: (a) => a.command("unfold_all") }).ids).toContain("sub-t2");
   expect(JSON.parse(data.get("folds")!)).toEqual({ t1: false, t3: false });
-  keptRender(sort, { ...kept, data, before: (a) => a.command("something_else") });
-  expect(JSON.parse(data.get("folds")!)).toEqual({ t1: false, t3: false });
+  // Under tree, unfolding all is the setting itself: nothing to keep.
+  keptRender(sort, { ...kept, data, before: (a) => a.command("unfold_all") });
+  expect(JSON.parse(data.get("folds")!)).toEqual({});
 });
 
 test("key commands reach the agents mod through nextCommand", async () => {
