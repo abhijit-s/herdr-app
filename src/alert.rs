@@ -355,13 +355,17 @@ fn own_group(cmd: &mut Command) {
 }
 
 /// Kills `child` and, on Unix, the process group it leads (`own_group`).
+/// The leader goes first: killpg signals the group one process at a time, so
+/// a shell whose child died first could exit with that child's 137 before its
+/// own kill landed, and its exit would not say it was killed. Until it is
+/// waited on, the leader is a zombie that keeps the group's id.
 fn kill(child: &mut std::process::Child) {
+    let _ = child.kill();
     #[cfg(unix)]
     if let Ok(group) = libc::pid_t::try_from(child.id()) {
         // SAFETY: killpg takes plain integers; a group already gone is ESRCH.
         unsafe { libc::killpg(group, libc::SIGKILL) };
     }
-    let _ = child.kill();
 }
 
 /// Waits for `child` up to `limit`, then kills it with its group: a hung
