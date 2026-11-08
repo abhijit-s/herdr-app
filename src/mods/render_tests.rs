@@ -82,6 +82,7 @@ fn fixture(populated: bool, props: Value, update: Value) -> BTreeMap<String, Val
         ("layoutSpacing".into(), crate::layout_sync::spacing_fields(&serde_json::from_str(include_str!("../../defaults/layouts/main.json")).unwrap())),
         ("layouts".into(), json!(crate::window::shipped_layouts())),
         ("modActions".into(), json!([])),
+        ("menuItems".into(), json!([])),
         ("theme".into(), serde_json::to_value(&*crate::settings::theme()).unwrap()),
         ("settings".into(), crate::settings::Settings::default().for_mods()),
         ("themes".into(), json!([{"name":"graphite", "colors": &*crate::settings::theme()}])),  ("fonts".into(), json!(["Monospace", "Sans"])),
@@ -1541,6 +1542,41 @@ fn pane_and_tab_menus_offer_change_and_clear_icon(cx: &mut TestAppContext) {
     assert!(!items(json!({"tab":"pane","target":{"pane":"block","terminal":"t1"}}), Value::Null, false, cx).iter().any(|t| t.contains("icon")));
     let space = items(json!({"tab":"space","target":{"id":"s1"}}), own, false, cx);
     assert!(!space.iter().any(|t| t.contains("icon")), "spaces have their own: {space:?}");
+}
+
+/// Mods' terminal menu items: after Herdr's own, before Close pane, one group
+/// per mod under a divider, each with its `when` and its target.
+#[gpui::test]
+fn pane_menu_lists_mods_items_in_groups(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let tree = |target: Value, cx: &mut TestAppContext| {
+        let mut values = fixture(true, json!({"tab":"pane","target":target}), updates("current", "current"));
+        values.insert("menuItems".into(), json!([
+            {"mod":"mover","title":"Move to…","command":"mod.open","args":{"name":"mover"},"when":"pane","icon":"mods/mover/move.svg","fill":["props"]},
+            {"mod":"mover","title":"Split under","command":"pane.split","args":{"direction":"down"},"when":null,"icon":null,"fill":["pane"]},
+            {"mod":"grab","title":"Grab selection","command":"terminal.copy","args":{},"when":"selected","icon":null,"fill":["terminal"]},
+            {"mod":"grab","title":"Open folder","command":"terminal.copy_path","args":{},"when":"cwd","icon":null,"fill":["terminal"]},
+            {"mod":"grab","title":"Zoom it","command":"pane.zoom","args":{},"when":"cwd","icon":null,"fill":["pane"]},
+        ]));
+        describe_with_values(cx, &staged, "mods/menu", values, None).unwrap()
+    };
+    let labels = |tree: &str| {
+        let lines: Vec<&str> = tree.lines().collect();
+        lines.windows(2).filter(|w| w[0].trim() == "div .flex_1").filter_map(|w| w[1].trim().strip_prefix("text ")).map(|t| t.trim_matches('"').to_owned()).collect::<Vec<_>>()
+    };
+    let all = tree(json!({"pane":"p1","terminal":"t1","selected":true,"cwd":"/fixture/project"}), cx);
+    let items = labels(&all);
+    let at = items.iter().position(|t| t == "Move to…").unwrap_or_else(|| panic!("{items:?}"));
+    assert_eq!(items[at..], ["Move to…", "Split under", "Grab selection", "Open folder", "Zoom it", "Close pane"], "{items:?}");
+    assert!(all.contains("mods/mover/move.svg"), "a mod's own icon: {all}");
+    // A divider (a 1 px rule) before each mod's group and before Close pane.
+    let rules = all.matches(".h[Number(1.0)]").count();
+    let bare = tree(json!({"pane":"p1","terminal":"t1"}), cx);
+    assert_eq!(labels(&bare)[labels(&bare).len() - 3..], ["Move to…", "Split under", "Close pane"], "no selection, no folder: {bare}");
+    assert_eq!(rules, bare.matches(".h[Number(1.0)]").count() + 1, "one group fewer, one divider fewer");
+    let block = labels(&tree(json!({"pane":"block","terminal":"t1","selected":true}), cx));
+    assert!(block.contains(&"Grab selection".into()) && !block.iter().any(|t| t == "Move to…" || t == "Split under"), "a terminal outside a tab has no pane: {block:?}");
 }
 
 /// The picker: Suggested first, its tiles a virtual grid's rows; the chosen

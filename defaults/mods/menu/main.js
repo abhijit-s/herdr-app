@@ -1,11 +1,12 @@
 // Context menus (Herdr's items). Opened as a popup with
 // props { tab: "pane" | "tab" | "space" | "global", target }.
-// ↑/↓ move, Enter runs, Esc closes. An item is [label, command, args];
+// ↑/↓ move, Enter runs, Esc closes. An item is [label, command, args, from?];
 // a command "worktree" opens the worktree dialog instead, "icon" the icon picker.
+// `from` is a mod's entry from menuItems(), for the pane menu's mod group.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec } from "herdr";
+import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec, menuItems } from "herdr";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 function place(s) {
@@ -19,6 +20,27 @@ async function checkout(folder, on) {
   const common = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: folder, on });
   if (top.code !== 0 || common.code !== 0) return null;
   return common.stdout.trim() === `${top.stdout.trim()}/.git` ? "main" : "linked";
+}
+
+// Whether a mod's menu item shows for this right-click: its `when`, and a
+// target for every argument it fills (a terminal outside a tab has no pane).
+function shows(item, tg, inTab) {
+  const fills = (k) => item.fill.includes(k);
+  if (item.when === "selected" && !tg.selected) return false;
+  if (item.when === "cwd" && !tg.cwd) return false;
+  if ((item.when === "pane" || fills("pane")) && !inTab) return false;
+  return !fills("terminal") || Boolean(tg.terminal);
+}
+
+// A mod's item's args with the right-clicked target filled in: the arguments
+// it leaves open, and mod.open's props.target.
+function targeted(item, tg) {
+  const args = { ...item.args };
+  for (const k of item.fill) {
+    if (k === "props") args.props = { ...args.props, target: tg };
+    else args[k] = tg[k];
+  }
+  return args;
 }
 
 // Copy, copy last output, copy all, paste, copy path: a group of their own at the top of the pane menu.
@@ -70,6 +92,7 @@ function items(p, git) {
             ]
           : []),
         ...(parent ? [[`Send back to ${parent.name || parent.address}`, "terminal.park", { terminal: term.address }]] : []),
+        ...menuItems().filter((it) => shows(it, tg, inTab)).map((it) => [it.title, it.command, targeted(it, tg), it]),
         ...(inTab ? [["Close pane", "pane.close", { pane: tg.pane }]] : []),
       ];
     }
@@ -167,7 +190,7 @@ export default class Menu extends View {
       .children(
         list.map((it, i) =>
           v_flex()
-            .when(i > 0 && ((clip(list[i - 1][1]) && !clip(it[1])) || it[1].endsWith(".close") || it[1] === "app.help" || (it[1] === "app.theme" && list[i - 1][1] !== "app.theme")), el => el.child(div().mx(7).my(4).h(1).bg(t.border)))
+            .when(i > 0 && (it[3] ? it[3].mod !== list[i - 1][3]?.mod : (clip(list[i - 1][1]) && !clip(it[1])) || it[1].endsWith(".close") || it[1] === "app.help" || (it[1] === "app.theme" && list[i - 1][1] !== "app.theme")), el => el.child(div().mx(7).my(4).h(1).bg(t.border)))
             .child(h_flex()
             .id(`mi-${i}`)
             .h(31)
@@ -180,7 +203,7 @@ export default class Menu extends View {
             .when(i === this.at, (el) => el.bg(t.selected))
             .hover((s) => s.bg(t.hover))
             .on_click((_e, cx) => this.choose(i, cx))
-            .child(svg(menuIcon(it[1])).size(14).flex_none().text_color(t.muted))
+            .child(svg(it[3]?.icon ?? menuIcon(it[1])).size(14).flex_none().text_color(t.muted))
             .child(div().flex_1().child(it[0]))
             .child(div().text_size(11).text_color(t.dim).child(shortcut(it[1], it[2])))),
         ),

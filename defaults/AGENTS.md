@@ -316,6 +316,8 @@ Properties any node can have:
 - Colors are theme names (`border`, `accent`, `surface`, ...) or `#rrggbb[aa]`.
 
 A personal terminal menu replaces the whole menu; it doesn't merge items.
+To add an item to the shipped menu instead, give a mod `"menu_items"` (see
+Mods); a personal menu reads them with `menuItems()` and shows what it likes.
 Create `mods/my-menu/main.js` and `mod.json` (e.g.
 `{"place":"none","overlay":{"width":280,"height":100}}`), then set the layout root's
 `"terminal_menu": "my-menu"`. It opens as a pointer popup, default 220 px wide and at most 420 px tall (it fits its items);
@@ -1139,11 +1141,12 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
 ```
 ~/.config/herdr-app/mods/<name>/
   main.js       the mod (required)
-  mod.json    where it first appears: { "place": "right" | "left" | "top" | "bottom" | "none", "size": 320 }, palette "actions"
+  mod.json    where it first appears: { "place": "right" | "left" | "top" | "bottom" | "none", "size": 320 }, palette "actions", terminal "menu_items"
   *.js, *.svg   more modules ("./ui.js"), its own icons
 ```
 
 - `"actions"` in `mod.json` adds entries to the command palette, listed under the mod's name: `[{ "title": "Send to all terminals", "command": "mod.open", "args": { "props": { "target": "shells" } }, "keywords": "broadcast" }]`. `command` is an app command (see Commands) run with `args` (optional); `keywords` (optional) are more words to find it by. `mod.open` without a `name` opens this mod, so an action can open the mod's own overlay with props that say what it's for. An entry the app can't run (no title, an unknown command, a misspelled or missing argument) is left out and named in `herdr-app status` and `herdr-app check`, as is a mod.json Herdr can't read; the mod's other entries and fields still count. Saving `mod.json` updates the palette, and a removed mod's actions go with it. `modActions()` lists every mod's actions as the palette shows them.
+- `"menu_items"` in `mod.json` adds entries to the terminal right-click menu (the shipped `menu`'s pane menu, also what `pane.menu` opens), after Herdr's own and before Close pane, one group per mod under a divider: `[{ "title": "Move to…", "command": "mod.open", "when": "pane", "icon": "move.svg" }]`. They act on the terminal right-clicked, not the focused one: an argument `pane` or `terminal` the command takes and the entry leaves out is filled with the clicked target's, and `mod.open` gets `props.target` (`{pane, terminal, selected, cwd, last_output}`, as a terminal menu's `props().target`), so `mod.open` without a `name` opens this mod for that pane. `when` (optional) shows it only if the terminal had a selection (`"selected"`), its folder is known (`"cwd"`) or it is a tab's pane (`"pane"`, not a layout terminal block); an entry filling `pane` needs one too. `icon` (optional) is an `.svg` in the mod's folder; otherwise the command's. Entries are checked as `actions` are and named in `herdr-app status` and `herdr-app check`. `menuItems()` lists them with `mod`, `args`, `when`, `icon` (a path for `svg()`) and `fill` (the arguments to fill: `pane`, `terminal`, `props`), so a layout's own `terminal_menu` can show them; nothing is added to it otherwise.
 - `"focusable": true` in `mod.json` lets `pane.go` give a shown copy the keyboard.
   It gets `"focus"` from `nextCommand()`: focus your own handle then
   (`this.handle.focus()`) and handle keys with `on_key_down`. The copy gets `"focus"`
@@ -1320,7 +1323,9 @@ All of it is in `herdr.d.ts`. In short:
   another screen; round sizes to whole device pixels with it), `keys()`,
   `commands()` (every app
   command, its arguments and what it does), `modActions()` (every mod's palette
-  actions: mod, title, command, args, keywords), `layouts()` (the layout names).
+  actions: mod, title, command, args, keywords), `menuItems()` (every mod's
+  terminal menu items: mod, title, command, args, when, icon, fill),
+  `layouts()` (the layout names).
   `focused().agent` is the agent an agent block shows.
   `focused().space`/`tab` describe the current window context. With a layout terminal
   block focused, `pane` and `shown` are null; `terminal` and `cwd` describe that block,

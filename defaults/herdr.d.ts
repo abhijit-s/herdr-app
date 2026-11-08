@@ -371,6 +371,22 @@ export function commands(): { name: string; args: { name: string; required: bool
  *  Entries the app can't run are left out and named in `herdr-app status`. Live: changes as mods do. */
 export function modActions(): { mod: string; title: string; command: string; args: Record<string, unknown>; keywords: string }[];
 
+/** Every mod's terminal menu items (the `menu_items` in its mod.json), in folder order, as the shipped
+ *  `menu` lists them after its own. Run one on the right-clicked target: set each `fill` argument from
+ *  the menu's `props().target` (`pane`, `terminal`; `props` gets `{ ...args.props, target }`), and show
+ *  it only when `when` holds (`selected`, `cwd`, or `pane`: the target is a tab's pane) and the target
+ *  has what it fills (a terminal outside a tab has no pane). `icon`: a path for `svg()`, or null.
+ *  Entries the app can't run are left out and named in `herdr-app status`. Live: changes as mods do. */
+export function menuItems(): {
+  mod: string;
+  title: string;
+  command: string;
+  args: Record<string, unknown>;
+  when: "selected" | "cwd" | "pane" | null;
+  icon: string | null;
+  fill: ("pane" | "terminal" | "props")[];
+}[];
+
 /** The window, for layouts that draw their own title bar (`"titlebar": "none"`). `buttons`:
  *  the system draws no window buttons, so draw them (`window.minimize`, `window.maximize`,
  *  `window.close`); on macOS the traffic lights always stay. `scale_factor`: device pixels per
