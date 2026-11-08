@@ -34,6 +34,15 @@ Where a change belongs (app Rust core, mods or herdr-core) and the order changes
 
 Each merge of `upstream/master` into `master`, with the conflict choices worth remembering.
 
+- 2026-11-08, `cfcf836..7fe7ac3` (19 commits: `pane.swap {target}` swaps two panes by id #665, kimi-code icon #647, render tests leave no folders #662, layout previews inside their cards #621, Codex from the menu without its daemon #657, `herdr-app check` out of the dock #398; and pushed without a pull request: modal overlays close before tabs and panes `1eb838f`, layout kept across reconnect failures `0e1b180`, per-agent titles in shared tabs `a167060`, deterministic mod exec and file notifications in GPUI tests `99fa122` `8ea7dcd`, terminals wait briefly for layout before replay `0b24b69`, Windows agent installs checked through the core `75ab10f`, core connection errors shown instead of the install screen `e5ba294`, add machine says what to run `adf94cb`, mod code reused across copies `029323e`, XIM property drain `1b8e79b`, core install offered for an unusable connect binary `72c7f3d`, mod sources revalidated on watcher rescan `7fe7ac3`). Choices:
+  - `pane.swap` takes upstream's `{pane?, direction | target}` everywhere (`commands.rs`, `needs_model_pane`, `herdr.d.ts`, `defaults/AGENTS.md`) beside the fork's `pane.refocus`, `pane.arrange`, `pane.rename`, `pane.set_icon` and `pane.menu`; `Model::swap_panes` sits next to `arrange_tab`, and a tab's arrange mode survives a swap as it does a directional one.
+  - Agents mod: upstream's per-agent titles in a shared tab, with the fork's `title()` (the app's `label`) and `a.label` as the fallback for an unlisted tab. Upstream's shared-tab test gives its agents a `label`, as the fork's `agents()` does.
+  - `exec_future` keeps the fork's `off_thread` (already deterministic under test, shared by `mod_files` and `known_agents`) over upstream's inline `#[cfg(test)] run()` from `99fa122`.
+  - Upstream's attach-after-first-fit tests (`0b24b69`) call `Grid::fit` with the fork's `font` argument: the fork's `TerminalView::fit` takes an area and a window for pane text zoom. Upstream's `ready_to_attach` merged into the fork's `Grid::fit`.
+  - `layout_previews_stay_inside_their_cards` (#621) opens the fork's `layout` page; upstream's `look` section is split across the fork's Settings groups.
+  - `programs.json` keeps the fork's Claude `resume` and `session_name` and takes Codex's `--no-daemon` (#657). `just test` runs upstream's `scripts/machine-add.test.ts` with the fork's test files.
+  - #662 brings in the fork's render-test folder cleanup, so its "Render tests clean up their folders" entry is gone. `029323e` (mod code reused across copies) merged cleanly with "Mod reads share one copy" (#545).
+  - `THIRD-PARTY-NOTICES` regenerated with `just notices`.
 - 2026-11-06, `e77f112..cfcf836` (12 commits: toast clock only while a toast shows #548, zoom follows agent navigation #568, sub-agents listed once #539, wide-character find highlight #587, `focused()` #554, menu and confirm dialog fixes #553 #570 #593, rename prompt #569, Linux XIM (X Input Method) and window fixes #558 #601). Choices:
   - `vt.rs` and `window.rs` keep the fork's tests beside upstream's new ones (`terminal_search_highlights_both_cells_of_a_wide_character`, `toast_clock`).
   - Upstream's `Tab::focus` moves a zoom to the pane it focuses; the fork's splits clear the zoom before focusing, so arrange and bsp splits are unaffected.
@@ -600,13 +609,6 @@ Metal gains what Zed's Linux and Windows backends have: a BGRA (blue, green, red
 - Turn on: `"text_rendering": "subpixel"` and/or `"ui_text_rendering": "subpixel"` in `~/.config/herdr-app/settings.json`, or the Settings window's Text > Rendering page ("Text smoothing" under Terminal text, "Interface text smoothing" under Interface text). Turn off: remove the keys or pick Grayscale; both apply live.
 - Files: `vendor/gpui-pre-macos/src/{lcd.rs,text_system.rs,window.rs,gpui_macos.rs}`, `vendor/gpui-pre-macos/Cargo.toml` (`swash`, `memmap2`), `vendor/gpui-pre-apple/{src/metal_atlas.rs,src/metal_renderer.rs,src/shaders.metal,build.rs,vendor/gpui/src/scene.rs}`, `vendor/gpui-pre/src/{scene.rs,window.rs,platform.rs,platform/test/window.rs,app/headless_app_context.rs}`, `src/settings.rs`, `src/terminal.rs`, `src/window.rs`, `defaults/AGENTS.md`, `defaults/frame/settings/main.js`, `scripts/settings.test.ts`, `tests/subpixel_text.rs`. The filter's, `thicken_level`'s, `Weight`'s and `Samples::growth`'s unit tests run with `cargo test -p gpui-pre-macos --lib lcd`.
 - Upstream: fork only, trial
-
-### Render tests clean up their folders
-
-Fork only, merged with `feat/font-weight-bold`: each render test stages the shipped mods in `/var/tmp/herdr-render-<pid>-<n>` (short, for macOS socket path limits) and removes it on drop. A mod's localStorage write runs on the executor and recreates the folder if it lands after that drop, so `describe_with_values` runs the executor until parked once the window closes, and no folder outlives its test.
-
-- Files: `src/mods/render_tests.rs` (`describe_with_values`)
-- Upstream: merged as #662 (`e7a6a91`, `fix/render-tests-cleanup-upstream`, with a regression test). Delete this entry at the next upstream sync, which brings it in.
 
 ### Handlers inside list rows
 

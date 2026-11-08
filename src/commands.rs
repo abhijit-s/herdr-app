@@ -74,7 +74,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("pane.focus", &[opt("pane"), opt("terminal")], "Focus a pane (or the pane showing a terminal)."),
     cmd("pane.refocus", &[], "Give the keyboard back to the focused pane (or the agent shown) without changing what it shows: for a mod that took the keyboard for a moment, as the tab bar does while dragging a tab (Esc cancels)."),
     cmd("pane.go", &[req("direction")], "Focus the pane or focusable mod to the \"left\", \"right\", \"up\" or \"down\"."),
-    cmd("pane.swap", &[req("direction")], "Swap the focused pane with its neighbor in a direction."),
+    cmd("pane.swap", &[opt("direction"), opt("pane"), opt("target")], "Swap a pane (default: the focused one) with its neighbor in a direction, or with another pane of its tab (target). Give exactly one of direction or target."),
     cmd("pane.arrange", &[req("mode"), opt("tab")],
         "Rearrange a tab's panes (default: the shown tab) evenly: \"tiled\" (a grid), \"bsp\" (each pane takes half of what's left, right then down), \"master\" (the focused pane on the left half, the rest stacked on the right), \"columns\", \"rows\", \"next\" (the mode after the tab's last one, from tiled), or \"off\". Panes keep their terminals and go in reading order (top to bottom, then left to right); a zoomed pane unzooms. The tab keeps its mode: a pane split into it or closed in it arranges it again, a new pane right after the one it split. In \"bsp\" the tree stays instead, as in tuios and bspwm: a split halves the pane it splits in the direction asked, and a closed pane's space goes back to the pane it was split with. \"off\" clears the mode and leaves the panes where they are."),
     cmd("focus.toggle_follows_mouse", &[], "Turn focus follows mouse on or off (settings.json's focus_follows_mouse): the pointer resting on a terminal pane focuses it."),
@@ -157,7 +157,7 @@ pub fn validate_args(c: &Command, args: &Value) -> Result<(), String> {
                 return Err(format!("{}: unknown argument(s): {}; valid arguments: {valid}", c.name, unknown.join(", ")));
             }
             for (key, value) in args {
-                if matches!(key.as_str(), "id" | "pane" | "space" | "tab" | "terminal") && !value.is_string() && !value.is_null() {
+                if matches!(key.as_str(), "id" | "pane" | "space" | "tab" | "terminal" | "target") && !value.is_string() && !value.is_null() {
                     return Err(format!("{}: argument {key} must be a string (or null to omit it)", c.name));
                 }
             }
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn malformed_targets_cannot_fall_back_to_the_current_work() {
-        for (name, arg) in [("tab.close", "id"), ("pane.close", "pane"), ("pane.rename", "pane"), ("pane.set_icon", "pane"), ("tab.set_icon", "id"), ("space.close", "id"), ("tab.new", "space"), ("terminal.show", "terminal")] {
+        for (name, arg) in [("tab.close", "id"), ("pane.close", "pane"), ("pane.rename", "pane"), ("pane.set_icon", "pane"), ("tab.set_icon", "id"), ("space.close", "id"), ("tab.new", "space"), ("terminal.show", "terminal"), ("pane.swap", "pane"), ("pane.swap", "target")] {
             let c = find(name).unwrap();
             for value in [json!(123), json!(false), json!([]), json!({"id": "target"})] {
                 let error = validate_args(c, &json!({arg: value})).unwrap_err();
