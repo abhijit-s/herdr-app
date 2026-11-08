@@ -839,6 +839,15 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Files: `src/header_info.rs`, `src/window.rs` (`publish`, `tick_header_info`, `folder_info`), `src/model.rs` (`FolderInfo`), `src/settings.rs`, `src/mods.rs` (`fitHeaderInfo`, `headerInfoPreview`), `defaults/mods/{pane,agents,menu}/main.js`, `defaults/frame/settings/main.js`, `defaults/herdr.d.ts`, `defaults/AGENTS.md`.
 - Upstream: none yet
 
+### Unknown document fields kept
+
+`fix/doc-keep-unknown-fields` (branched from `master`; offered upstream as `up/doc-keep-unknown-fields`, cut from `upstream/master`): a machine's layout document is shared by every screen of that machine, and those screens may run different builds. `SharedSpace` and `SharedTab` dropped fields they didn't know, so an older build's next write erased whatever a newer build had added, such as the per-tab floating layer proposed in herdrdev/herdr-app#718. Unknown space and tab fields are now read into `Space::rest` and `Tab::rest` (`#[serde(flatten)]`) and written back as read, the way focus history keeps its document's unknown fields.
+
+- Three questions: yes, yes, yes. The app reads and writes the document, only the app sees its unknown fields, and no mod can keep them. Verdict A: upstream as is, before floats ship.
+- Tests: `mirror::tests::unknown_space_and_tab_fields_survive_a_read_and_write` (a document with an unknown space field and a `floating` tab field, read and written on this and another machine, after a rename and a split, keeps both; read alone, written byte for byte; a document without them writes no extra field).
+- Files: `src/mirror.rs`, `src/model.rs`
+- Upstream: up/doc-keep-unknown-fields (PR pending)
+
 ### Rejected text experiments
 
 Two text-quality experiments measured against the shipped thicken, contrast and weight settings, and not kept. The numbers are here so neither is tried again without a new reason.
