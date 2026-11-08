@@ -1624,17 +1624,31 @@ fn pane_header_fits_its_info_beside_the_name_and_buttons(cx: &mut TestAppContext
     };
     let title = r#"div .flex_none .truncate .max_w[Number(260.0)] .font_medium"#;
     // The name ("Pi", 14 px), the ring (12), padding and gaps take 66 px; the
-    // segments 130, 202 or 295; the four buttons 112.
+    // segments 130, 210 or 297 (a separator 15: its mark and 4 px either side); the four buttons 112.
     let all = header(400.0, false, cx);
-    assert_eq!(shown(&all), ["approve Bash: make", " · ", "main↑2●", " · ", "blocked 3m"], "room for all: {all}");
-    assert!(all.contains(":tooltip[Str(\"approve Bash: make · main↑2● · blocked 3m\")]"), "the whole line in the tooltip: {all}");
+    assert_eq!(shown(&all), ["approve Bash: make", "·", "main ↑2 *", "·", "blocked 3m"], "room for all: {all}");
+    assert!(all.contains(":tooltip[Str(\"approve Bash: make · main ↑2 * · blocked 3m\")]"), "the whole line in the tooltip: {all}");
+    // Even gaps: each separator is its mark alone, padded the same either side,
+    // in the folder's colour and size (it sets neither size nor font).
+    let dim = crate::settings::theme()["dim"].clone();
+    // The padding fit measures (Rust's SEP_PAD) is the padding the mod draws.
+    let sep = format!("div .flex_none .px[Number({:?})] .text_color[Str({dim:?})]", crate::header_info::SEP_PAD as f64);
+    let seps: Vec<&str> = all.lines().filter(|l| l.trim() == sep).collect();
+    assert_eq!(seps.len(), 2, "both separators padded alike: {all}");
+    let folder = format!("div .flex_1 .truncate .text_color[Str({dim:?})]");
+    assert!(all.contains(&folder), "the folder in the same colour: {all}");
+    let mut from_info = all.lines().skip_while(|l| !l.contains("pane-info-p1"));
+    let head = from_info.next().unwrap();
+    let depth = head.len() - head.trim_start().len();
+    let info_lines: Vec<&str> = std::iter::once(head).chain(from_info.take_while(|l| l.len() - l.trim_start().len() > depth)).collect();
+    assert!(!info_lines.iter().any(|l| l.contains(".text_size[") || l.contains(".font_family[")), "the info takes the header's size and font, as the folder does: {all}");
     assert!(all.contains(&format!(".text_color[Str({:?})]", crate::settings::theme()["blocked"].clone())), "the ask in the blocked colour: {all}");
     assert!(all.contains(title) && all.contains("text \"Pi\""), "the name as without info: {all}");
     assert!(all.contains(":on_size_change(fn)"), "it watches its width only with info: {all}");
 
     let hovered = header(400.0, true, cx);
     assert_eq!(hovered.matches("svg \"mods/pane/").count(), 4, "the buttons: {hovered}");
-    assert_eq!(shown(&hovered), ["approve Bash: make", " · ", "main↑2●"], "hovered: a segment goes, from the right: {hovered}");
+    assert_eq!(shown(&hovered), ["approve Bash: make", "·", "main ↑2 *"], "hovered: a segment goes, from the right: {hovered}");
     assert!(hovered.contains(title) && hovered.contains("text \"Pi\""), "the name stays: {hovered}");
 
     let lone = header(220.0, true, cx);

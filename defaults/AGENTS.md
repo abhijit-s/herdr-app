@@ -873,10 +873,13 @@ What's about the user, never a look:
   Keys: `{ask}` what the agent needs from you while it waits ("approve
   Bash: make", else "permission", "question"), `{state}` and `{elapsed}`
   (`<1m`, `3m`, `1h2m`, changing on the minute), and `{branch}`, `{ahead}`
-  (`↑2`), `{behind}` (`↓1`) and `{dirty}` (`●`) from the folder's cached
+  (`↑2`), `{behind}` (`↓1`) and `{dirty}` (`*`) from the folder's cached
   git status, and `{subagents}` the agent's live sub-agents (`⧉ 3`, `⧉ 3 (1 blocked)`,
   `⧉ 2 blocked`); each is empty when unknown or zero, and other text is drawn
-  as written. `·` or `|` split it into segments: one whose keys are all
+  as written. Keys side by side (`{branch}{dirty}`) are drawn a space
+  apart ("main ↑2 *"). `fitHeaderInfo` measures each separator as
+  `sep.trim()` with 4 px either side, so draw it that way, as the shipped
+  `pane` header does (`segments[i].sep` keeps it as written, for a tooltip). `·` or `|` split it into segments: one whose keys are all
   empty is left out, and where the header is short of room whole segments
   go from the right, `{subagents}` first and a waiting `{ask}` or blocked
   `{subagents}` last. Suggested:
