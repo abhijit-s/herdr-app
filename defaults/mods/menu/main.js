@@ -208,7 +208,7 @@ export default class Menu extends View {
   }
 
   // The items above a trailing Close, scrolled when they don't fit in the
-  // popup's height (props.height): Close stays pinned below them, and the
+  // room inside the popup (props.height): Close stays pinned below them, and the
   // keyboard's selection is scrolled into view.
   body(list, t) {
     const pin = list.length > 1 && list[list.length - 1][1].endsWith(".close") ? 1 : 0;

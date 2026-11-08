@@ -125,3 +125,40 @@ test("a menu that fits doesn't scroll, and one without a height never does", () 
     expect(find(view.render({}), "menu-body")).toBeUndefined();
   }
 });
+
+// Nothing to pin (the app menu ends with themes): every item scrolls, in all the room.
+test("an overflowing menu with no Close at the end scrolls all of it", () => {
+  menuProps = { tab: "global", target: {}, height: 100, overlay: "o1" };
+  items = [];
+  const cx = { focus_handle: () => ({ focus() {} }), spawn() {}, notify() {} };
+  const view = new Menu();
+  view.init(menuProps, cx);
+  let tree = view.render({});
+  const body = find(tree, "menu-body");
+  expect(body.calls.h[0]).toBe(100 - 10);
+  const count = Array.from({ length: 40 }, (_, i) => find(tree, `mi-${i}`)).filter(Boolean).length;
+  expect(count).toBe(6);
+  expect(Array.from({ length: count }, (_, i) => find(body, `mi-${i}`)).every(Boolean)).toBe(true);
+  // Up from the first item wraps to the last, scrolled to the bottom of the list.
+  tree.calls.on_key_down[0]({ key: "up" }, cx);
+  tree = view.render({});
+  expect(view.at).toBe(count - 1);
+  // Six rows and two rules (before Keybinds and the themes), less the room.
+  expect(view.scroll).toBe(6 * 31 + 2 * 9 - 90);
+  expect(find(tree, "menu-body").nodes[0].calls.top[0]).toBe(-view.scroll);
+});
+
+test("up from the first item wraps to the pinned Close pane without scrolling", () => {
+  menuProps = { tab: "pane", target: { ...target, selected: true, last_output: true }, height: 420, overlay: "o1" };
+  items = Array.from({ length: 6 }, (_, i) => ({ mod: `m${i % 2}`, title: `Item ${i}`, command: "pane.zoom", args: {}, when: null, icon: null, fill: ["pane"] }));
+  const cx = { focus_handle: () => ({ focus() {} }), spawn() {}, notify() {} };
+  const view = new Menu();
+  view.init(menuProps, cx);
+  let tree = view.render({});
+  const last = Array.from({ length: 40 }, (_, i) => find(tree, `mi-${i}`)).filter(Boolean).length - 1;
+  tree.calls.on_key_down[0]({ key: "up" }, cx);
+  tree = view.render({});
+  expect(view.at).toBe(last);
+  expect(find(find(tree, "menu-body"), `mi-${last}`)).toBeUndefined();
+  expect(view.scroll).toBe(0);
+});

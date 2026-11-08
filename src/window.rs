@@ -4618,7 +4618,7 @@ impl AppWindow {
             "menu"
         };
         let defaults = self.folders.get(name).map(|f| mod_overlay(&f.dir)).unwrap_or_else(|| json!({}));
-        let spec = terminal_menu_spec(name, &defaults, tab, target);
+        let spec = terminal_menu_spec(name, &defaults, tab, target, f32::from(window.viewport_size().height), settings::ui_scale());
         self.open_overlay(mods::new_overlay_id(), spec, window, cx);
     }
 
@@ -5957,10 +5957,13 @@ fn nearest(cur: Bounds<Pixels>, dir: &str, candidates: impl IntoIterator<Item = 
         .map(|(_, _, _, id)| id)
 }
 
+/// How close a popup comes to the window's edges, px.
+const POPUP_MARGIN: f32 = 8.0;
+
 fn position_popup(at: Point<Pixels>, body: Stateful<Div>) -> Anchored {
     anchored()
-        .position(point(at.x.max(px(8.0)), at.y.max(px(8.0))))
-        .snap_to_window_with_margin(px(8.0))
+        .position(point(at.x.max(px(POPUP_MARGIN)), at.y.max(px(POPUP_MARGIN))))
+        .snap_to_window_with_margin(px(POPUP_MARGIN))
         .child(body)
 }
 
@@ -6159,18 +6162,22 @@ fn thousands(n: usize) -> String {
     out
 }
 
-fn terminal_menu_spec(name: &str, defaults: &Value, tab: &str, target: Value) -> Value {
+/// `viewport` is the window's height in px and `scale` the panels' zoom
+/// (`settings::ui_scale`): the menu gets `props.height`, the room inside the
+/// popup it can scroll its items in, in its own px.
+fn terminal_menu_spec(name: &str, defaults: &Value, tab: &str, target: Value, viewport: f32, scale: f32) -> Value {
     // The most: a menu is as tall as its items.
     let height = defaults.get("height").and_then(Value::as_f64).unwrap_or(420.0);
-    let mut props = json!({ "tab": tab, "target": target });
-    // In px (not a fraction of the window), the menu scrolls its items within it.
-    if height > 1.0 {
-        props["height"] = json!(height);
-    }
+    let (viewport, scale) = (f64::from(viewport), f64::from(scale.max(0.01)));
+    // Up to 1: a share of the window, as overlays size it.
+    let most = if height > 1.0 { height } else { height * viewport / scale };
+    // The popup snaps inside the window's margins and draws a 1 px border inside its height.
+    let fits = (viewport - 2.0 * f64::from(POPUP_MARGIN)) / scale;
+    let room = most.min(fits) - 2.0 / scale;
     json!({ "mod": name, "kind": "popup",
         "width": defaults.get("width").and_then(Value::as_f64).unwrap_or(220.0),
         "height": height,
-        "props": props })
+        "props": { "tab": tab, "target": target, "height": room.max(0.0) } })
 }
 
 fn num_in(v: &Value, k: &str) -> f32 {
@@ -10377,21 +10384,28 @@ export default class Probe extends View {
     fn terminal_menu_preserves_clicked_target_and_uses_mod_dimensions() {
         use serde_json::json;
         let target = json!({ "pane": "p2", "terminal": "t8" });
-        let stock = super::terminal_menu_spec("menu", &json!({}), "pane", target.clone());
-        assert_eq!(stock["width"], 220.0);
-        assert_eq!(stock["height"], 420.0);
-        let custom = super::terminal_menu_spec("personal-menu", &json!({"kind": "dialog", "width": 310, "height": 120}), "pane", target.clone());
-        assert_eq!(custom["mod"], "personal-menu");
-        assert_eq!(custom["kind"], "popup");
-        assert_eq!(custom["width"], 310.0);
-        assert_eq!(custom["height"], 120.0);
-        assert_eq!(custom["props"], json!({"tab": "pane", "target": target, "height": 120.0}), "the menu knows the height it scrolls within");
-        assert_eq!(stock["props"]["height"], 420.0);
-        let partial = super::terminal_menu_spec("personal-menu", &json!({"width": 0.4}), "pane", json!({}));
-        assert_eq!(partial["width"], 0.4);
-        assert_eq!(partial["height"], 420.0);
-        let fraction = super::terminal_menu_spec("personal-menu", &json!({"height": 0.5}), "pane", json!({}));
-        assert!(fraction["props"].get("height").is_none(), "a fraction of the window isn't px");
+        let spec = |defaults: serde_json::Value, viewport: f32, scale: f32| super::terminal_menu_spec("personal-menu", &defaults, "pane", target.clone(), viewport, scale);
+        let stock = super::terminal_menu_spec("menu", &json!({}), "pane", target.clone(), 900.0, 1.0);
+        assert_eq!((stock["width"].clone(), stock["height"].clone()), (json!(220.0), json!(420.0)));
+        let custom = spec(json!({"kind": "dialog", "width": 310, "height": 120}), 900.0, 1.0);
+        assert_eq!((custom["mod"].clone(), custom["kind"].clone(), custom["width"].clone(), custom["height"].clone()), (json!("personal-menu"), json!("popup"), json!(310.0), json!(120.0)));
+        // The room inside the popup's 1 px border: the menu scrolls its items within it.
+        assert_eq!(custom["props"], json!({"tab": "pane", "target": target, "height": 118.0}));
+        assert_eq!(stock["props"]["height"], 418.0);
+        let partial = spec(json!({"width": 0.4}), 900.0, 1.0);
+        assert_eq!((partial["width"].clone(), partial["height"].clone()), (json!(0.4), json!(420.0)));
+        // A short window: what fits between the 8 px margins, less the border.
+        assert_eq!(stock_height(300.0, 1.0), 300.0 - 16.0 - 2.0);
+        // Zoomed panels: the window holds fewer of the menu's px, and the border is 1 px of the window's.
+        assert_eq!(stock_height(600.0, 2.0), (600.0 - 16.0) / 2.0 - 1.0);
+        assert_eq!(stock_height(900.0, 2.0), 419.0, "420 still fits: only the border shrinks it");
+        // A share of the window, in the menu's px.
+        assert_eq!(spec(json!({"height": 0.5}), 800.0, 2.0)["props"]["height"], 800.0 * 0.5 / 2.0 - 1.0);
+        assert_eq!(stock_height(10.0, 1.0), 0.0, "never below nothing");
+
+        fn stock_height(viewport: f32, scale: f32) -> f64 {
+            super::terminal_menu_spec("menu", &serde_json::json!({}), "pane", serde_json::json!({}), viewport, scale)["props"]["height"].as_f64().unwrap()
+        }
     }
 
     #[test]

@@ -351,7 +351,8 @@ export function recentPlaces(): Place[];
 /** The shown layout (layouts/<name>.json) with its clicks on it. Its name is shared("layout").
  *  Root `terminal_menu?: string` chooses a terminal right-click menu mod (default: "menu").
  *  Unknown names warn and fall back to "menu". This replaces the menu, not its items.
- *  Opens a pointer popup with mod.json overlay width/height (default 220×260). */
+ *  Opens a pointer popup with mod.json overlay width/height (default 220 wide, at most 420 tall: it fits
+ *  its items). Its props().height is the room inside it, within the window, for scrolling a long list. */
 export function layout(): unknown;
 
 /** The shown layout's spacing, as layout.spacing sets it (with its clicks), or null when no

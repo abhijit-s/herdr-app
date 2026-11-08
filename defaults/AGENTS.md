@@ -322,7 +322,7 @@ Create `mods/my-menu/main.js` and `mod.json` (e.g.
 `{"place":"none","overlay":{"width":280,"height":100}}`), then set the layout root's
 `"terminal_menu": "my-menu"`. It opens as a pointer popup, default 220 px wide and at most 420 px tall (it fits its items);
 its `mod.json` overlay width/height override those defaults. It gets
-`props()` = `{tab: "pane", target: {pane, terminal, selected, cwd, last_output}, height, overlay}`: `height` is the popup's most in px (absent when it's a fraction of the window), the room to scroll a long list in (the shipped menu scrolls its items and keeps Close pane pinned below them); `selected` is whether the terminal had a text selection when right-clicked (the right-click leaves it in place), `cwd` its folder or null, `last_output` whether `terminal.copy_last_output` has a finished command's output to copy. Always use
+`props()` = `{tab: "pane", target: {pane, terminal, selected, cwd, last_output}, height, overlay}`: `height` is the room inside the popup in px (its most, or what fits in the window, less its border), to scroll a long list in (the shipped menu scrolls its items and keeps Close pane pinned below them); `selected` is whether the terminal had a text selection when right-clicked (the right-click leaves it in place), `cwd` its folder or null, `last_output` whether `terminal.copy_last_output` has a finished command's output to copy. Always use
 `target.terminal` or `target.pane` in actions, not the focused terminal:
 right-clicking a different terminal must act on the one clicked. A terminal
 shown outside a tab (a layout terminal block, a window) has no pane:
