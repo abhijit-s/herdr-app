@@ -404,6 +404,14 @@ mod tests {
         let before = order(&m);
         assert!(m.focus_pane_raising(&before[0], false));
         assert_eq!((order(&m), m.focused_pane()), (before.clone(), Some(before[0].clone())));
+        // Closing a zoomed float unzooms the tab and goes back to the pane before it.
+        zoom(&mut m, &before[0]);
+        m.focus_pane("a");
+        zoom(&mut m, &before[1]);
+        m.focus_pane(&before[1]);
+        m.remove_pane(&before[1]);
+        let t = m.tab("t").unwrap();
+        assert_eq!((t.zoomed.as_deref(), t.focused.as_deref()), (None, Some("a")));
     }
 
     /// A newer build may float a split (several panes): this build counts

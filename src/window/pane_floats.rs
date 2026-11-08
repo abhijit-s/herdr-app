@@ -174,7 +174,7 @@ impl AppWindow {
     }
 
     /// `cells` (default `STEP`) columns and rows as fractions of `pane`'s tab area.
-    fn float_step(&self, pane: &str, a: &Value, window: &Window) -> Result<(f64, f64), String> {
+    pub(super) fn float_step(&self, pane: &str, a: &Value, window: &Window) -> Result<(f64, f64), String> {
         let (cols, rows) = match a.get("cells").filter(|c| !c.is_null()) {
             Some(c) => {
                 let n = c.as_f64().filter(|n| *n > 0.0).ok_or_else(|| format!("cells is a number above 0, not {c}"))?;

@@ -2519,16 +2519,16 @@ impl AppWindow {
             let Some(slot) = self.documents.get_mut(&machine) else { continue };
             let first = slot.document.is_none();
             slot.read_attempted = true;
-            let (document, version, replace, conflict) = match result {
+            let (document, version, replace, conflict, written) = match result {
                 Outcome::Read(d, v) => {
                     let replace = !slot.available || slot.version != v || slot.document.is_none();
                     let projection = crate::mirror::Document::capture(&self.model, (!machine.is_empty()).then_some(machine.as_str()));
                     let unsent = slot.document.as_ref().is_some_and(|old| old != &projection);
                     let conflict = replace && unsent && projection != d;
-                    (d, v, replace, conflict)
+                    (d, v, replace, conflict, false)
                 }
-                Outcome::Written(d, v) => (d, v, false, false),
-                Outcome::Conflict(d, v) => (d, v, true, true),
+                Outcome::Written(d, v) => (d, v, false, false, true),
+                Outcome::Conflict(d, v) => (d, v, true, true, false),
                 error @ (Outcome::Unavailable(_) | Outcome::Undecodable(_) | Outcome::Blocked(_)) => {
                     let blocked = !matches!(&error, Outcome::Unavailable(_));
                     let error = match error {
@@ -2551,7 +2551,12 @@ impl AppWindow {
             slot.available = slot.connected;
             slot.blocked = false;
             if slot.connected { slot.error = None; slot.notified_error = None; }
-            slot.document = Some(document.clone());
+            // A read at the version already held is the document already held
+            // (writes are compare-and-swap): keep this build's capture of it, or
+            // the raw read would bring back what reading tidied and write it again.
+            if written {
+                slot.document = Some(document.clone());
+            }
             if replace {
                 let on = (!machine.is_empty()).then_some(machine.as_str());
                 document.replace(&mut self.model, on);
@@ -3966,7 +3971,15 @@ impl AppWindow {
                     && let Some(c) = self.model.tab_mut(&ctx)
                     && c.panes().len() > 1
                 {
-                    c.zoomed = if c.zoomed.as_deref() == Some(pane.as_str()) { None } else { Some(pane) };
+                    if c.zoomed.as_deref() == Some(pane.as_str()) {
+                        c.zoomed = None;
+                    } else {
+                        // The pane shown is the one the keys go to.
+                        c.focus(&pane);
+                        c.zoomed = Some(pane);
+                        self.focused_block = None;
+                        self.focused_pane = None;
+                    }
                 }
             }
             "pane.focus" => {
@@ -8286,10 +8299,11 @@ export default class Recent extends View {
         view.update(cx, |this, _| assert_eq!(this.model.focused_pane().as_deref(), Some(stacked[0].as_str())));
         run(cx, "pane.focus", json!({ "pane": "c" }));
 
-        // Zoom: a float fills the tab; a zoomed tiled pane keeps the floats above it.
+        // Zoom: a float fills the tab, and takes the keys; a zoomed tiled pane keeps the floats above it.
         run(cx, "pane.zoom", json!({ "pane": "b" }));
         cx.run_until_parked();
         view.update(cx, |this, _| {
+            assert_eq!(this.model.focused_pane().as_deref(), Some("b"), "zooming an unfocused pane focuses it");
             let bounds = this.bounds.borrow();
             // Inside its 1 px border (no pane frame in this layout).
             let (b, w) = (f32::from(bounds["b"].size.width), f32::from(area.size.width));
@@ -8299,6 +8313,21 @@ export default class Recent extends View {
         run(cx, "pane.zoom", json!({ "pane": "a" }));
         view.update(cx, |this, _| assert_eq!(this.model.tab("t").unwrap().shown_floats().count(), 3));
         run(cx, "pane.zoom", json!({ "pane": "a" }));
+        run(cx, "pane.focus", json!({ "pane": "c" }));
+
+        // Keyboard steps are cells of the float's own tab, shown or not.
+        view.update_in(cx, |this, window, _| {
+            use gpui::{Bounds, point, px, size};
+            this.model.add_tab("s", Tab::new("u", "", "f", "tf"));
+            this.model.float_pane("f", [0.1, 0.1, 0.5, 0.5]).unwrap();
+            this.model.select_tab("t");
+            let area = |w: f32, h: f32| Bounds::new(point(px(0.0), px(0.0)), size(px(w), px(h)));
+            this.bounds.borrow_mut().insert("float-layer:t".into(), area(1000.0, 600.0));
+            this.bounds.borrow_mut().insert("float-layer:u".into(), area(500.0, 300.0));
+            let (shown, other) = (this.float_step("b", &json!({}), window).unwrap(), this.float_step("f", &json!({}), window).unwrap());
+            assert!((other.0 - 2.0 * shown.0).abs() < 1e-9 && (other.1 - 2.0 * shown.1).abs() < 1e-9, "{shown:?} {other:?}");
+            this.model.remove_tab("u");
+        });
 
         // Moves stay inside; resizes keep the corner.
         run(cx, "pane.float_move", json!({ "pane": "b", "to": "bottom-right" }));
@@ -8342,10 +8371,14 @@ export default class Recent extends View {
             let slot = this.documents.entry(String::new()).or_default();
             (slot.connected, slot.available, slot.dirty, slot.version) = (true, true, false, 1);
             this.documents_watching = true;
-            this.documents_updated(None, vec![(String::new(), crate::mirror_sync::Outcome::Read(doc, 2))], window, cx);
+            this.documents_updated(None, vec![(String::new(), crate::mirror_sync::Outcome::Read(doc.clone(), 2))], window, cx);
             assert!(this.model.tab("t").unwrap().find("old").is_none(), "the tiled copy is gone");
             this.flush_documents(false, window, cx);
             assert!(this.documents[""].pending.is_none(), "a read alone writes nothing");
+            // Read again at the same version (any document event refreshes): still nothing to write.
+            this.documents_updated(None, vec![(String::new(), crate::mirror_sync::Outcome::Read(doc, 2))], window, cx);
+            this.flush_documents(false, window, cx);
+            assert!(this.documents[""].pending.is_none(), "a re-read at the same version writes nothing either");
         });
     }
 
