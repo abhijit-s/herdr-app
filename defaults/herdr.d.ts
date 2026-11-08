@@ -67,6 +67,10 @@ export function playSound(sound: string): null;
  *   pane.arrange {mode: "tiled" | "bsp" | "master" | "columns" | "rows" | "next" | "off", tab?} rebuilds a tab's panes evenly in that shape
  *   (next: the one after the tab's last, from tiled); terminals, mod panes and focus stay, a zoomed pane unzooms. The tab keeps
  *   the mode: each split or close in it arranges it again (the new pane right after the one split); off clears it.
+ *   pane.float {pane?, rect?} (above the tab's tiled panes; rect [x, y, w, h], fractions of the tab area),
+ *   pane.dock {pane?, target?, edge?} (back where it floated from, else beside target), pane.float_toggle {pane?},
+ *   pane.float_move {pane?, direction? | rect? | to?, cells?}, pane.float_resize {direction, cells?, pane?},
+ *   pane.raise {to?: "front", pane?}, pane.lower {to?: "back", pane?}, pane.float_cycle {reverse?}.
  * Terminals: terminal.open {argv?, folder?, place?: "tab" | "right" | "down"}, terminal.kill {terminal},
  *   terminal.keep {terminal, place?} (a running one without a pane, e.g. a sub-agent, gets one),
  *   terminal.park {terminal} (its pane goes, it keeps running; the menu's "Send back"),
@@ -229,7 +233,7 @@ export function agents(): AgentInfo[];
 export interface PaneInfo {
   pane: string;
   /** null for a mod pane (`pane.split {mod}`): then `mod` names it, and only
-   *  pane, mod, tab, title, name, auto_name (null), label, session (null), icon, own_icon, focused, zoomed and movable are set. */
+   *  pane, mod, tab, title, name, auto_name (null), label, session (null), icon, own_icon, focused, zoomed, floating and movable are set. */
   terminal: string | null;
   mod?: string;
   tab: string;
@@ -274,6 +278,10 @@ export interface PaneInfo {
   text_size?: number | null;
   /** The app's top-center grip can rearrange this pane. False when zoomed or alone. */
   movable: boolean;
+  /** For a floating pane (`pane.float`): its rect `[x, y, w, h]` as fractions of the tab
+   *  area, its place in the tab's stacking order (`z`, 0 at the back) and whether this
+   *  screen hides it (always false until floats can be hidden). null for a tiled pane. */
+  floating: { rect: [number, number, number, number]; z: number; hidden: boolean } | null;
   /** An agent pane's `pane_header_info`, resolved when what it shows changes (and on the
    *  minute for `{elapsed}`); null when unset, for shells, and when every segment is empty.
    *  Draw what `fitHeaderInfo` keeps for your width; `text` is the whole line, for a tooltip. */

@@ -200,7 +200,15 @@ impl AppWindow {
                 None => return,
             }
         };
+        self.hover_focus(args, window, cx);
+    }
+
+    /// `pane.focus` as the pointer resting does it: a floating pane isn't
+    /// brought to the front (the design's hover focuses, a press raises).
+    pub(super) fn hover_focus(&mut self, args: Value, window: &mut Window, cx: &mut Context<Self>) {
+        self.hover_focus = true;
         self.run_as("pane.focus", args, false, window, cx);
+        self.hover_focus = false;
     }
 
     pub(super) fn follow_gate(&self, button_held: bool, window: &Window) -> Gate {
@@ -221,6 +229,10 @@ impl AppWindow {
     pub(super) fn terminal_pane_at(&self, at: Point<Pixels>) -> Option<String> {
         let bounds = self.bounds.borrow();
         let holds = |slot: &str| bounds.get(slot).is_some_and(|b| b.contains(&at));
+        if let Some(float) = self.float_at(at).filter(|_| self.shows_tab()) {
+            let terminal = self.model.active_tab().and_then(|t| t.find(&float)).is_some_and(|n| n.terminal().is_some());
+            return terminal.then_some(float);
+        }
         let tab = self.model.active_tab().filter(|_| self.shows_tab()).map(|t| t.shown());
         let pane = tab.into_iter().flat_map(|t| t.visible_blocks()).chain(self.chrome.visible_blocks()).filter(|n| n.terminal().is_some()).find(|n| holds(&n.id))?;
         let mut over = tab.into_iter().chain([&self.chrome]).flat_map(visible_nodes).flat_map(|n| n.floating.iter().filter(|f| !f.hidden));

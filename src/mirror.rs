@@ -1,6 +1,7 @@
 //! Machine-owned layout documents and this screen's private view.
 use crate::{
     layout::{Content, Kind, Node},
+    float_pane::FloatPane,
     model::{Agent, Model, Recent, Space, Tab},
 };
 use serde::{Deserialize, Serialize};
@@ -38,6 +39,9 @@ struct SharedTab {
     name: String,
     #[serde(default = "empty_root")]
     root: Node,
+    /// Panes floating above `root`, back to front (`Tab::floating`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    floating: Vec<FloatPane>,
     /// Fields this build doesn't read, kept so a newer build's survive this one's write.
     #[serde(flatten)]
     rest: serde_json::Map<String, serde_json::Value>,
@@ -105,10 +109,40 @@ fn map_node(node: &mut Node, map: &impl Fn(&str) -> String) {
     }
 }
 
+/// A tab's floating panes with their ids (and the ones each docks beside)
+/// mapped, as `map_node` maps the tree; read ones' rects are kept inside the tab.
+fn map_floats(floating: &[FloatPane], map: &impl Fn(&str) -> String) -> Vec<FloatPane> {
+    floating
+        .iter()
+        .map(|f| {
+            let mut f = f.clone();
+            map_node(&mut f.pane, map);
+            if let Some(dock) = f.dock.as_mut() {
+                for id in [&mut dock.beside, &mut dock.split].into_iter().flatten() {
+                    *id = map(id);
+                }
+            }
+            f.rect = crate::float_pane::clamp(f.rect);
+            f
+        })
+        .collect()
+}
+
+/// A build without floats keeps a tab's `floating` (unknown to it) but sees
+/// no pane for a float's terminal, so its orphan scan adopts the terminal
+/// into the tiled tree too. Read back, the float wins: the tiled copy goes.
+fn drop_tiled_copies(root: &mut Node, floating: &[FloatPane]) {
+    let floated: Vec<&str> = floating.iter().flat_map(|f| f.pane.terminals()).filter_map(Node::terminal).collect();
+    let copies: Vec<String> = root.terminals().iter().filter(|n| n.terminal().is_some_and(|a| floated.contains(&a))).map(|n| n.id.clone()).collect();
+    for id in copies {
+        root.remove(&id);
+    }
+}
+
 /// Every tab and pane id of a machine's spaces.
 fn ids_on(model: &Model, machine: Option<&str>) -> std::collections::HashSet<String> {
     let tabs = model.spaces.iter().filter(|s| s.machine.as_deref() == machine).flat_map(|s| &s.tabs);
-    tabs.flat_map(|t| std::iter::once(t.id.clone()).chain(t.root.panes().into_iter().map(|p| p.id.clone()))).collect()
+    tabs.flat_map(|t| std::iter::once(t.id.clone()).chain(t.panes().into_iter().map(|p| p.id.clone()))).collect()
 }
 
 /// A pane's or tab's icon entry in its document: as read while nobody changed
@@ -137,7 +171,7 @@ impl Document {
                         .map(|t| {
                             let mut root = t.root.clone();
                             map_node(&mut root, &map);
-                            SharedTab { id: map(&t.id), name: t.name.clone(), root, rest: t.rest.clone() }
+                            SharedTab { id: map(&t.id), name: t.name.clone(), root, floating: map_floats(&t.floating, &map), rest: t.rest.clone() }
                         })
                         .collect(),
                     rest: s.rest.clone(),
@@ -166,7 +200,9 @@ impl Document {
                 .map(|t| {
                     let mut root = t.root.clone();
                     map_node(&mut root, &map);
-                    Tab { id: map(&t.id), name: t.name.clone(), root, focused: None, before: vec![], zoomed: None, settled: None, arrange: None, rest: t.rest.clone() }
+                    let floating = map_floats(&t.floating, &map);
+                    drop_tiled_copies(&mut root, &floating);
+                    Tab { id: map(&t.id), name: t.name.clone(), root, floating, focused: None, before: vec![], zoomed: None, settled: None, arrange: None, rest: t.rest.clone() }
                 })
                 .collect(),
             rest: s.rest.clone(),
@@ -248,14 +284,14 @@ impl View {
             s.active = self.spaces.get(&s.id).cloned().flatten().filter(|id| s.tab(id).is_some()).or_else(|| s.tabs.first().map(|t| t.id.clone()));
             for t in &mut s.tabs {
                 if let Some(v) = self.tabs.get(&t.id) {
-                    t.focused = v.focused.clone().filter(|id| t.root.find(id).is_some());
-                    t.zoomed = v.zoomed.clone().filter(|id| t.root.find(id).is_some());
-                    t.before = v.before.iter().filter(|id| t.root.find(id).is_some()).cloned().collect();
+                    t.focused = v.focused.clone().filter(|id| t.find(id).is_some());
+                    t.zoomed = v.zoomed.clone().filter(|id| t.find(id).is_some());
+                    t.before = v.before.iter().filter(|id| t.find(id).is_some()).cloned().collect();
                     t.settled = v.settled;
                     t.arrange = v.arrange.as_deref().and_then(crate::arrange::Mode::parse);
                 }
                 if t.focused.is_none() {
-                    t.focused = t.root.panes().first().map(|n| n.id.clone());
+                    t.focused = t.panes().first().map(|n| n.id.clone());
                 }
             }
         }
@@ -500,6 +536,76 @@ mod tests {
         read.replace(&mut m, None);
         assert_eq!(serde_json::to_value(Document::capture(&m, None)).unwrap(), text);
         assert!(!serde_json::to_string(&Document::capture(&model(), None)).unwrap().contains("rest"), "nothing extra: no field");
+    }
+
+    /// Floats are structure: in the machine's document with their ids (and
+    /// the pane each docks beside) qualified like the tree's, their order and
+    /// rects shared; focus and zoom on a float stay this screen's. A document
+    /// from before floats has none.
+    #[test]
+    fn floats_go_in_the_machines_document_and_focus_stays_on_the_screen() {
+        use crate::pane_icons::{Choice, Kind};
+        let mut m = model();
+        m.split("p", Axis::Row, "q", "t2");
+        m.split("q", Axis::Row, "r", "t3");
+        m.float_pane("q", [0.1, 0.2, 0.5, 0.5]).unwrap();
+        m.float_pane("r", [0.4, 0.4, 0.3, 0.3]).unwrap();
+        assert!(m.set_icon("q", Some(Choice { kind: Kind::Letter, value: None })));
+        let doc = Document::capture(&m, None);
+        let text = serde_json::to_value(&doc).unwrap();
+        let floating = &text["spaces"][0]["tabs"][0]["floating"];
+        assert_eq!(floating[0]["pane"]["id"], "q");
+        assert_eq!(floating[0]["rect"], serde_json::json!([0.1, 0.2, 0.5, 0.5]));
+        assert_eq!(floating[0]["dock"]["beside"], "p");
+        assert_eq!(text["icons"]["q"]["kind"], "letter", "a float keeps its icon");
+        m.tab_mut("t").unwrap().zoomed = Some("r".into());
+        let view = View::capture(&m);
+        let mut other = Model::default();
+        doc.replace(&mut other, Some("mac"));
+        let t = other.tab("mac/t").unwrap();
+        assert_eq!(t.floating.iter().map(|f| f.pane.id.as_str()).collect::<Vec<_>>(), ["mac/q", "mac/r"]);
+        assert_eq!(t.float("mac/q").unwrap().dock.as_ref().unwrap().beside.as_deref(), Some("mac/p"));
+        assert_eq!(other.address_of("mac/r").as_deref(), Some("mac/t3"));
+        assert_eq!(other.pane_of("mac/t2").as_deref(), Some("mac/q"));
+        assert_eq!(t.zoomed, None, "zoom is this screen's");
+        assert_eq!(Document::capture(&other, Some("mac")), doc, "written back as read");
+        // This screen's view, restarted: focus and zoom on a float come back,
+        // and ones on a float gone since are dropped.
+        let mut restarted = Model::default();
+        doc.replace(&mut restarted, None);
+        view.apply(&mut restarted);
+        assert_eq!((restarted.tab("t").unwrap().zoomed.as_deref(), restarted.focused_pane().as_deref()), (Some("r"), Some("r")));
+        let mut gone = Model::default();
+        doc.replace(&mut gone, None);
+        gone.remove_pane("r");
+        Document::capture(&gone, None).replace(&mut restarted, None);
+        view.apply(&mut restarted);
+        assert_eq!(restarted.tab("t").unwrap().zoomed, None);
+        assert_eq!(restarted.focused_pane().as_deref(), Some("p"), "the first pane, as for a tiled pane gone since");
+        // A rect from a bigger screen (or a bad hand edit) is kept inside the tab.
+        let mut odd = text.clone();
+        odd["spaces"][0]["tabs"][0]["floating"][0]["rect"] = serde_json::json!([0.9, 0.9, 0.5, 0.5]);
+        serde_json::from_value::<Document>(odd).unwrap().replace(&mut restarted, None);
+        assert_eq!(restarted.tab("t").unwrap().float("q").unwrap().rect, [0.5, 0.5, 0.5, 0.5]);
+        // Before floats: no field read, none written.
+        assert!(!serde_json::to_string(&Document::capture(&model(), None)).unwrap().contains("floating"));
+    }
+
+    /// An older build kept the tab's `floating` and adopted the float's
+    /// terminal as a tiled pane too (a new id): read back, it floats once.
+    #[test]
+    fn a_floats_terminal_adopted_as_a_tiled_pane_by_an_older_build_floats_once() {
+        let doc: Document = serde_json::from_value(serde_json::json!({"spaces":[{"id":"s","tabs":[{"id":"t","root":
+            {"id":"t","type":"row","children":[{"id":"p","type":"block","content":{"terminal":"t1"}},{"id":"adopted","type":"block","content":{"terminal":"t2"}}]},
+            "floating":[{"pane":{"id":"q","type":"block","content":{"terminal":"t2"}},"rect":[0.2,0.2,0.6,0.6]}]}]}]})).unwrap();
+        for machine in [None, Some("mac")] {
+            let id = |s: &str| qualify(s, machine);
+            let mut m = Model::default();
+            doc.replace(&mut m, machine);
+            let t = m.tab(&id("t")).unwrap();
+            assert_eq!(t.panes().iter().map(|n| n.id.clone()).collect::<Vec<_>>(), [id("p"), id("q")], "{machine:?}");
+            assert_eq!(m.pane_of(&id("t2")), Some(id("q")));
+        }
     }
 
     #[test]

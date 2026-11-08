@@ -10,6 +10,7 @@ mod control;
 mod core_bin;
 mod dock_badge;
 mod files;
+mod float_pane;
 mod focus_history;
 mod fork_build;
 mod git_status;
