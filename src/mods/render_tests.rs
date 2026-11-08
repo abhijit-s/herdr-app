@@ -1519,9 +1519,41 @@ fn pane_header_right_click_opens_the_pane_menu_with_rename(cx: &mut TestAppConte
     assert!(head.contains("pane-head-p1") && head.contains(":on_mouse_down_right(fn)"), "the header takes right-clicks: {head}");
 }
 
+/// This thread's CPU time. A test thread on a loaded machine waits for a core
+/// for as long as the load lasts; this counts only the work it did.
+fn thread_cpu() -> Duration {
+    #[cfg(unix)]
+    {
+        let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: clock_gettime only writes the timespec it is given.
+        assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) }, 0);
+        Duration::new(t.tv_sec as u64, t.tv_nsec as u32)
+    }
+    #[cfg(not(unix))]
+    {
+        static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        START.get_or_init(Instant::now).elapsed()
+    }
+}
+
+/// What the picker's limits stand on: thread_cpu counts work and not waiting.
+#[cfg(unix)]
+#[test]
+fn thread_cpu_counts_work_and_not_waiting() {
+    let start = thread_cpu();
+    std::thread::sleep(Duration::from_millis(100));
+    let asleep = thread_cpu() - start;
+    assert!(asleep < Duration::from_millis(20), "asleep {asleep:?}");
+    let (start, wall) = (thread_cpu(), Instant::now());
+    while thread_cpu() - start < Duration::from_millis(30) {
+        assert!(wall.elapsed() < Duration::from_secs(10), "30 ms of work never counted");
+        std::hint::black_box(0u64);
+    }
+}
+
 /// Describes a shipped mod, lets its async work (reading files) finish, and
-/// describes it again: the first description and its time, the time to settle,
-/// and the settled description and its time.
+/// describes it again: the first description and the CPU time it took, the
+/// time to settle, and the settled description and the CPU time it took.
 fn describe_settled(cx: &mut TestAppContext, staged: &Staged, entry: &str, values: BTreeMap<String, Value>, setup: Option<&str>) -> (String, Duration, Duration, String, Duration) {
     let calls = Rc::new(RefCell::new(Calls::default()));
     let policy = Policy::new()
@@ -1532,19 +1564,19 @@ fn describe_settled(cx: &mut TestAppContext, staged: &Staged, entry: &str, value
     let runtime = ShellRuntime::new_isolated().unwrap();
     let root = setup.map(|s| staged.wrapper(entry, s)).unwrap_or_else(|| staged.0.join(entry));
     let window = cx.add_window(|_, _| Empty);
-    let start = Instant::now();
+    let start = thread_cpu();
     let (mut session, first) = window.update(cx, |_, window, cx| {
         let mut session = DescriptionSession::load(runtime, root, policy, window, cx).unwrap();
         let first = session.describe(window, cx).unwrap();
         (session, first)
     }).unwrap();
-    let open = start.elapsed();
+    let open = thread_cpu() - start;
     let start = Instant::now();
     cx.run_until_parked();
     let settle = start.elapsed();
-    let start = Instant::now();
+    let start = thread_cpu();
     let settled = window.update(cx, |_, window, cx| session.describe(window, cx).unwrap()).unwrap();
-    let redraw = start.elapsed();
+    let redraw = thread_cpu() - start;
     window.update(cx, |_, window, _| window.remove_window()).unwrap();
     cx.run_until_parked();
     assert!(calls.borrow().unexpected.is_empty(), "{entry}: {:?}", calls.borrow().unexpected);
@@ -1553,7 +1585,8 @@ fn describe_settled(cx: &mut TestAppContext, staged: &Staged, entry: &str, value
 
 /// The names are read when the picker opens and every glyph and emoji is a
 /// virtual grid's row: the page builds none of them. Opening and a keystroke's
-/// search stay inside a frame or so, timed as the Settings themes are.
+/// search stay inside a frame or so, counted in CPU time so a loaded machine's
+/// wait for a core doesn't count as the picker's own.
 #[gpui::test]
 fn icon_picker_reads_every_name_and_searches_them_quickly(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
@@ -1579,9 +1612,9 @@ fn icon_picker_reads_every_name_and_searches_them_quickly(cx: &mut TestAppContex
         }
     }
     let worst = keystrokes.iter().max().unwrap();
-    eprintln!("icon picker: open {open:?}, names read and parsed {settle:?}, search + describe per keystroke worst {worst:?} (all {keystrokes:?})");
-    assert!(open < Duration::from_millis(500), "open {open:?}");
-    assert!(*worst < Duration::from_millis(250), "a keystroke {worst:?}");
+    eprintln!("icon picker CPU time: open {open:?}, search + describe per keystroke worst {worst:?} (all {keystrokes:?}); names read and parsed in {settle:?}");
+    assert!(open < Duration::from_millis(500), "open took {open:?} of CPU");
+    assert!(*worst < Duration::from_millis(250), "a keystroke took {worst:?} of CPU");
 }
 
 /// The picker's name files are the bundled font's: every glyph is in its cmap,
