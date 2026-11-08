@@ -30,6 +30,13 @@ function infoRoom(width, items, hovered) {
   return width - 20 - taken.reduce((a, w) => a + w + GAP, GAP) - (hovered ? BUTTONS : 0);
 }
 
+// A separator as its mark alone (` · ` as ·), the same padding either side
+// whatever spaces the template wrote, in the info's colour: even gaps.
+const SEP_PAD = 4;
+function separator(t, sep) {
+  return div().flex_none().px(SEP_PAD).text_color(t.dim).child(sep.trim() || sep);
+}
+
 // The info that fits beside everything else: the name keeps its width, the
 // buttons theirs while hovered; segments go from the right (Herdr's
 // fitHeaderInfo), the last one left ends in an ellipsis.
@@ -44,7 +51,7 @@ function info(t, p, room) {
     .overflow_hidden()
     .tooltip(p.header_info.text)
     .children(shown.flatMap((s, i) => [
-      ...(s.sep ? [div().flex_none().whitespace_nowrap().text_color(t.dim).child(s.sep)] : []),
+      ...(s.sep ? [separator(t, s.sep)] : []),
       div().when(i === last, (el) => el.min_w(0).truncate()).when(i !== last, (el) => el.flex_none().whitespace_nowrap()).text_color(s.ask ? t.blocked : t.dim).child(s.text),
     ]));
 }

@@ -1601,7 +1601,8 @@ export default class Settings extends View {
           .when(Boolean(preview), (el) =>
             el.tooltip(preview.text).overflow_hidden().children(
               preview.segments.flatMap((s, i) => [
-                ...(s.sep ? [div().flex_none().whitespace_nowrap().text_color(t.dim).child(s.sep)] : []),
+                // As the pane header draws it: the mark alone, padded evenly.
+                ...(s.sep ? [div().flex_none().px(4).text_color(t.dim).child(s.sep.trim() || s.sep)] : []),
                 div().when(i === preview.segments.length - 1, (d) => d.min_w(0).truncate()).when(i < preview.segments.length - 1, (d) => d.flex_none().whitespace_nowrap()).text_color(s.ask ? t.blocked : t.dim).child(s.text),
               ]),
             ),

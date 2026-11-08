@@ -11,6 +11,10 @@
 //!   written, with the spaces around it, between two segments that show.
 //! - A segment with keys shows only when one of them is not empty; one with no
 //!   keys always shows. Spaces left over by empty keys collapse into one.
+//! - Keys written side by side (`{branch}{dirty}`) are drawn a space apart
+//!   when both show, so markers never glue to the word before them.
+//! - Header mods draw a separator as its mark alone with even padding either
+//!   side (`sep` keeps it as written, spaces included, for the tooltip).
 
 use serde::Serialize;
 
@@ -123,17 +127,28 @@ impl Template {
         for s in &self.0 {
             let mut text = String::new();
             let (mut keys, mut filled, mut ask) = (0, 0, false);
+            // The last thing written was a key that showed: the next one that
+            // shows goes a space after it.
+            let mut after_key = false;
             for p in &s.pieces {
                 match p {
-                    Piece::Text(t) => text.push_str(t),
+                    Piece::Text(t) => {
+                        text.push_str(t);
+                        after_key = false;
+                    }
                     Piece::Key(k) => {
                         keys += 1;
                         let value = v.get(*k);
-                        if !value.is_empty() {
-                            filled += 1;
-                            ask |= *k == Key::Ask && v.blocked;
+                        if value.is_empty() {
+                            continue;
+                        }
+                        filled += 1;
+                        ask |= *k == Key::Ask && v.blocked;
+                        if after_key {
+                            text.push(' ');
                         }
                         text.push_str(&value);
+                        after_key = true;
                     }
                 }
             }
@@ -186,7 +201,9 @@ impl Values {
             Key::Branch => self.branch.clone(),
             Key::Ahead => if self.ahead > 0 { format!("↑{}", self.ahead) } else { String::new() },
             Key::Behind => if self.behind > 0 { format!("↓{}", self.behind) } else { String::new() },
-            Key::Dirty => if self.dirty { "●".into() } else { String::new() },
+            // A bullet sits on the text's own line in a UI font; a black circle
+            // comes from a fallback font, larger and off the baseline.
+            Key::Dirty => if self.dirty { "•".into() } else { String::new() },
         }
     }
 
@@ -325,7 +342,7 @@ mod tests {
     #[test]
     fn templates_split_on_separators_and_drop_empty_segments() {
         let v = Values { state: "working".into(), elapsed: "3m".into(), branch: "main".into(), ahead: 2, dirty: true, ..Values::default() };
-        assert_eq!(shown(SUGGESTED, &v), vec![("".into(), "main↑2●".into(), false), (" · ".into(), "working 3m".into(), false)], "no ask: no dangling separator");
+        assert_eq!(shown(SUGGESTED, &v), vec![("".into(), "main ↑2 •".into(), false), (" · ".into(), "working 3m".into(), false)], "no ask: no dangling separator");
         assert_eq!(shown("{state}|{branch}", &v), vec![("".into(), "working".into(), false), ("|".into(), "main".into(), false)], "separators as written");
         assert_eq!(shown("{state} {elapsed}", &Values { state: "idle".into(), ..Values::default() }), vec![("".into(), "idle".into(), false)], "leftover spaces collapse");
         assert_eq!(shown("on {branch} · hi", &Values::default()), vec![("".into(), "hi".into(), false)], "a segment of empty keys goes; plain text stays");
@@ -335,14 +352,25 @@ mod tests {
         assert!(Template::parse(SUGGESTED).uses_git_counts() && !Template::parse("{branch} · {state}").uses_git_counts());
         assert!(counts_git(Some(SUGGESTED)) && !counts_git(Some("{branch}")) && !counts_git(None));
         let info = Template::parse(SUGGESTED).resolve(&Values::sample()).unwrap();
-        assert_eq!(info.text, "approve Bash: make · main↑2● · blocked 3m", "the whole line, for the tooltip");
+        assert_eq!(info.text, "approve Bash: make · main ↑2 • · blocked 3m", "the whole line, for the tooltip");
+    }
+
+    #[test]
+    fn keys_side_by_side_are_drawn_a_space_apart() {
+        let v = Values { branch: "main".into(), ahead: 2, behind: 1, dirty: true, state: "idle".into(), elapsed: "3m".into(), ..Values::default() };
+        assert_eq!(shown("{branch}{ahead}{behind}{dirty}", &v)[0].1, "main ↑2 ↓1 •");
+        assert_eq!(shown("{branch}{dirty}", &Values { dirty: false, ..v.clone() })[0].1, "main", "no trailing space for an empty key");
+        assert_eq!(shown("{dirty}{branch}", &Values { branch: String::new(), ..v.clone() })[0].1, "•", "nor a leading one");
+        assert_eq!(shown("{branch}/{state}", &v)[0].1, "main/idle", "text written between keys is the person's own");
+        assert_eq!(shown("{state}{elapsed}", &v)[0].1, "idle 3m", "any keys, not only git's");
+        assert_eq!(Values { dirty: true, ..Values::default() }.get(Key::Dirty), "•", "a bullet in the text's own font, not a fallback circle");
     }
 
     #[test]
     fn git_and_ask_keys_render_empty_when_unknown_or_zero() {
         assert_eq!(shown("{branch}{ahead}{behind}{dirty}", &Values::default()), vec![]);
         let v = Values { branch: "dev".into(), ahead: 0, behind: 3, ..Values::default() };
-        assert_eq!(shown("{branch}{ahead}{behind}{dirty}", &v), vec![("".into(), "dev↓3".into(), false)]);
+        assert_eq!(shown("{branch}{ahead}{behind}{dirty}", &v), vec![("".into(), "dev ↓3".into(), false)], "an empty key between two leaves one space");
         let said = |kind: &str, msg: &str| crate::alert::Said { kind: kind.into(), title: String::new(), message: msg.into() };
         assert_eq!(ask(true, &said("permission", "approve Bash: make")), "approve Bash: make", "its own words first");
         assert_eq!(ask(true, &said("question", " ")), "question", "else the kind");
