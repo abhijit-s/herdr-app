@@ -310,12 +310,12 @@ pub fn toast_problems_for(name: &str, t: &Theme, look: impl Into<ToastLook>) -> 
     checks.extend(TOAST_LEVELS.map(|(key, _)| (key, contrast(rgb(key), surface), f.mark)));
     // The outline's text and levels over its see-through backing, whatever shows behind it.
     if look.design == ToastDesign::Outline {
-        let ghost = &t["toast_ghost"];
+        let ghost = t["toast_ghost"].as_str();
         let text = [("title", "toast_foreground", f.text), ("body", "toast_muted", f.text)];
         let levels = TOAST_LEVELS.map(|(key, _)| (key, key, f.mark));
         for (what, key, floor) in text.into_iter().chain(levels) {
-            let ratio = over_anything(drawn_over(&t[key], surface).unwrap(), ghost);
-            checks.push((what, ratio, floor));
+            let c = drawn_over(&t[key], surface).unwrap();
+            checks.push((what, over_anything(c, ghost), floor));
         }
     }
     checks.into_iter().filter(|(_, ratio, floor)| ratio < floor).map(|(what, ratio, floor)| format!("{name}: toast {what} {ratio:.2} under {floor}")).collect()
@@ -612,13 +612,15 @@ fn toast_colors(t: &Theme, own_panels: bool, look: ToastLook) -> Vec<(&'static s
     if look.design == ToastDesign::Outline {
         // The most see-through backing (the surface at the least opacity, in
         // steps of 5/255) under which the title, body and levels hold their
-        // floors over black and over white behind it, so over anything, each
-        // stepped at most halfway toward the text so the levels keep their
-        // hue; opaque, it's the surface they already hold on.
-        let held = |c: u32, floor: f32, ghost: &str| (0..=50).map(|i| mix(c, text, i as f32 / 100.0)).find(|c| over_anything(*c, ghost) >= floor);
+        // floors with `TOAST_FIT_MARGIN` to spare over black and over white
+        // behind it, so over anything, each stepped at most halfway toward
+        // the text so the levels keep their hue; opaque, it's the surface
+        // they already hold on. The toast mod paints no hover fill on it,
+        // which would lighten what shows through.
+        let held = |c: u32, floor: f32, ghost: &str| (0..=50).map(|i| mix(c, text, i as f32 / 100.0)).find(|c| over_anything(*c, ghost) >= floor + TOAST_FIT_MARGIN);
         let fit = (0..=255).step_by(5).find_map(|a| {
             let ghost = format!("{}{a:02x}", hex(surface));
-            if over_anything(text, &ghost) < f.text {
+            if over_anything(text, &ghost) < f.text + TOAST_FIT_MARGIN {
                 return None;
             }
             let muted = held(muted, f.text, &ghost)?;
@@ -635,6 +637,10 @@ fn toast_colors(t: &Theme, own_panels: bool, look: ToastLook) -> Vec<(&'static s
     }
     out
 }
+
+/// How much more than its floor the outline's colours are fitted to: the
+/// renderer's colour conversion can move a channel by about 1/255.
+const TOAST_FIT_MARGIN: f32 = 0.1;
 
 /// The least contrast `text` keeps over the translucent `backing`, whatever
 /// shows through it: the backing over black and over white bound every
@@ -957,7 +963,7 @@ mod derivation_tests {
                 }
             }
             for key in ["toast_foreground", "toast_muted", "toast_info", "toast_success", "toast_warning", "toast_error"] {
-                assert!(over_anything(rgb(&outline, key), ghost) >= TOAST_TEXT, "{name}: outline {key} over {ghost}");
+                assert!(over_anything(rgb(&outline, key), ghost) >= TOAST_TEXT + TOAST_FIT_MARGIN, "{name}: outline {key} over {ghost}, with room to spare");
             }
             for design in [ToastDesign::Card, ToastDesign::Pill] {
                 let t: Theme = look(design).into_iter().filter(|(k, _)| k.starts_with("toast")).collect();
@@ -1866,6 +1872,8 @@ pub enum ToastMark {
 }
 
 impl ToastMark {
+    pub const ALL: [ToastMark; 3] = [ToastMark::Stripe, ToastMark::Dot, ToastMark::None];
+
     fn is_stripe(&self) -> bool {
         *self == ToastMark::Stripe
     }
@@ -1928,6 +1936,13 @@ impl ToastDesign {
             ToastDesign::Pill if mark == ToastMark::Stripe => ToastMark::Dot,
             _ => mark,
         }
+    }
+
+    /// Whether the person's `toast_corners` changes it, and their `toast_mark`.
+    pub fn takes(self) -> (bool, bool) {
+        let corners = ToastCorners::ALL.map(|c| self.radius(c));
+        let marks = ToastMark::ALL.map(|m| self.mark(m));
+        (corners.iter().any(|r| *r != corners[0]), marks.iter().any(|m| *m != marks[0]))
     }
 
     /// Its level colours carry text (the terminal's `[WARN]`, the outline's
@@ -3065,7 +3080,11 @@ impl Settings {
         let styles: serde_json::Map<String, serde_json::Value> = ToastStyle::ALL.iter().map(|style| (style.name().to_owned(), colors(ToastLook { style: *style, design: self.toast_design }))).collect();
         let designs: serde_json::Map<String, serde_json::Value> = ToastDesign::ALL.iter().map(|design| (design.name().to_owned(), colors(ToastLook { style: self.toast_style, design: *design }))).collect();
         let radius: serde_json::Map<String, serde_json::Value> = ToastCorners::ALL.iter().map(|c| (serde_json::to_value(c).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default(), c.radius().into())).collect();
-        serde_json::json!({ "styles": styles, "designs": designs, "radius": radius, "font_family": self.font_family })
+        let takes: serde_json::Map<String, serde_json::Value> = ToastDesign::ALL.iter().map(|d| {
+            let (corners, mark) = d.takes();
+            (d.name().to_owned(), serde_json::json!({ "corners": corners, "mark": mark }))
+        }).collect();
+        serde_json::json!({ "styles": styles, "designs": designs, "takes": takes, "radius": radius, "font_family": self.font_family })
     }
 
     /// The toast colours' inputs besides the theme.
@@ -4131,6 +4150,7 @@ mod tests {
         let marks = ToastDesign::ALL.map(|d| d.mark(ToastMark::Stripe));
         assert_eq!(marks, [ToastMark::Stripe, ToastMark::Dot, ToastMark::None, ToastMark::None, ToastMark::Stripe, ToastMark::Stripe]);
         assert_eq!(ToastDesign::Pill.mark(ToastMark::None), ToastMark::None);
+        assert_eq!(ToastDesign::ALL.map(ToastDesign::takes), [(true, true), (false, true), (false, false), (true, false), (true, true), (false, true)]);
         assert_eq!(ToastDuration::ALL_SCALES, [Some(0.6), Some(1.0), Some(2.0), None]);
         assert_eq!([ToastCorners::Square, ToastCorners::Slight, ToastCorners::Rounded].map(ToastCorners::radius), [0.0, 4.0, 8.0]);
         // Each style's toast colors and each radius reach the Settings window
@@ -4147,6 +4167,7 @@ mod tests {
         }
         assert!(looks["designs"]["outline"]["toast_ghost"].is_string() && looks["designs"]["card"].get("toast_ghost").is_none(), "only the outline has a backing");
         assert_eq!(looks["font_family"], json!(unset.font_family));
+        assert_eq!((looks["takes"]["pill"].clone(), looks["takes"]["terminal"].clone()), (json!({ "corners": false, "mark": true }), json!({ "corners": false, "mark": false })));
     }
 
     /// The guide agents read (written to the home folder) explains every

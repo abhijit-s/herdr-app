@@ -121,12 +121,13 @@ impl AlertToast {
     }
 }
 
-/// A toast's props with the person's `toast_mark` and `toast_design` (and
-/// the terminal design's font), which the toast mod draws: carried in the
-/// props so a toast's render reads no settings.
+/// A toast's props with the level mark it draws (the person's `toast_mark`
+/// as its design takes it, `ToastDesign::mark`) and `toast_design` (and the
+/// terminal design's font), which the toast mod draws: carried in the props
+/// so a toast's render reads no settings.
 fn with_toast_look(props: &mut Value) {
     let s = settings::get();
-    props["toast_mark"] = serde_json::to_value(s.toast_mark).unwrap_or(Value::Null);
+    props["toast_mark"] = serde_json::to_value(s.toast_design.mark(s.toast_mark)).unwrap_or(Value::Null);
     props["toast_design"] = json!(s.toast_design.name());
     match props.as_object_mut() {
         Some(p) if s.toast_design == settings::ToastDesign::Terminal => p.insert("toast_font".into(), json!(s.font_family)),
@@ -678,6 +679,8 @@ pub struct AppWindow {
     header_tick: Option<(u64, Task<()>)>,
     /// The time-left bars' step timer, while a toast counting down shows one (`tick_progress`).
     progress_tick: Option<Task<()>>,
+    /// The banner shown when `count_banners` last looked, to restart one coming forward.
+    banner_shown: Option<String>,
     /// Agents with a system notification up (alert.rs), taken down once old
     /// news (`Notified::withdraw`).
     notified: crate::alert::Notified,
@@ -767,6 +770,7 @@ impl AppWindow {
             dock_badge: Default::default(),
             header_tick: None,
             progress_tick: None,
+            banner_shown: None,
             resume: crate::resume::Tracker::load(&resume_path()),
             resume_offer: Some(Instant::now()),
             cwds: HashMap::new(),
@@ -3107,14 +3111,45 @@ impl AppWindow {
         self.count_banners(cx);
     }
 
-    /// Banners show one at a time, the newest, which says how many more are
-    /// open (`toast_more`); other designs show them all and say nothing.
+    /// The banner that shows, when toasts are banners: the newest error or
+    /// warning, else the newest. An error waits behind no routine banner, as
+    /// the toast cap closes routine toasts first.
+    fn shown_banner(&self) -> Option<&Overlay> {
+        if settings::get().toast_design != settings::ToastDesign::Banner {
+            return None;
+        }
+        let toasts = || self.overlays.iter().rev().filter(|o| o.kind == OverlayKind::Toast);
+        toasts().find(|o| o.urgent).or_else(|| toasts().next())
+    }
+
+    /// Whether a toast is a banner waiting behind the one shown: it's drawn
+    /// nowhere, and its time doesn't run.
+    fn waiting_banner(&self, o: &Overlay) -> bool {
+        o.kind == OverlayKind::Toast && self.shown_banner().is_some_and(|shown| shown.id != o.id)
+    }
+
+    /// Banners show one at a time (`shown_banner`), which says how many more
+    /// are open (`toast_more`); other designs show them all and say nothing.
+    /// A toast that stops waiting (it comes forward, or toasts stop being
+    /// banners) gets its whole time from then: its clock didn't run while it waited.
     fn count_banners(&mut self, cx: &mut Context<Self>) {
+        let shown = self.shown_banner().map(|o| o.id.clone());
+        if shown != self.banner_shown {
+            let now = Instant::now();
+            let (was, is) = (self.banner_shown.take(), shown.clone());
+            let waiting = |front: &Option<String>, id: &str| front.as_deref().is_some_and(|f| f != id);
+            for o in self.overlays.iter_mut().filter(|o| o.kind == OverlayKind::Toast && waiting(&was, &o.id) && !waiting(&is, &o.id)) {
+                if let Some(expires) = o.expires {
+                    o.expires = Some(now + expires.saturating_duration_since(o.opened));
+                    o.opened = now;
+                }
+            }
+            self.banner_shown = shown.clone();
+        }
         let toasts = self.toast_props();
-        let banner = settings::get().toast_design == settings::ToastDesign::Banner;
         let more = toasts.len().saturating_sub(1);
-        for (i, (id, mut props)) in toasts.into_iter().enumerate() {
-            let want = (banner && more > 0 && i == more).then(|| json!(more));
+        for (id, mut props) in toasts {
+            let want = (more > 0 && shown.as_ref() == Some(&id)).then(|| json!(more));
             if props.get("toast_more") == want.as_ref() {
                 continue;
             }
@@ -5341,7 +5376,7 @@ impl AppWindow {
             self.sync_folders(window, cx);
         }
         let now = Instant::now();
-        let expired: Vec<String> = self.overlays.iter().filter(|o| o.expires.is_some_and(|e| e <= now)).map(|o| o.id.clone()).collect();
+        let expired: Vec<String> = self.overlays.iter().filter(|o| o.expires.is_some_and(|e| e <= now) && !self.waiting_banner(o)).map(|o| o.id.clone()).collect();
         for id in expired {
             self.close_overlay(&id, window, cx);
         }
@@ -5825,7 +5860,7 @@ impl AppWindow {
         let start = if banner { banner_start(chrome, s.toast_offset.y, pill.is_some() && !top) } else { toast_start(chrome, s.toast_offset.y, pill.is_some() && !top && s.toast_position.side() != settings::ToastSide::Left) };
         let toasts: Vec<&Overlay> = self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).collect();
         // Banners show one at a time: the newest, which counts the rest.
-        let shown_banner = toasts.last().map(|o| o.id.clone()).filter(|_| banner);
+        let shown_banner = self.shown_banner().map(|o| o.id.clone());
         let heights: Vec<f32> = toasts.iter().filter(|o| shown_banner.as_ref().is_none_or(|id| *id == o.id)).map(|o| o.size.height).collect();
         let (spots, past) = if banner { (vec![start; heights.len()], start + heights.first().map_or(0.0, |h| h + TOAST_GAP)) } else { toast_stack(&heights, start, top) };
         let mut spots = spots.into_iter();
@@ -5864,10 +5899,12 @@ impl AppWindow {
                 .occlude()
                 .when(o.kind != OverlayKind::Window, |d| d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()))
                 .child(content)
-                .when_some(self.time_left(o).filter(|_| o.kind == OverlayKind::Toast && s.toast_progress), |d, left| {
+                .when_some((s.toast_progress && o.kind == OverlayKind::Toast).then(|| self.time_left(o)).flatten(), |d, left| {
+                    // Inset from the sides by the corner radius, so the frame's rounded clip never cuts it.
+                    let inset = settings::z(design.radius(s.toast_corners).min(o.size.height / 2.0));
                     d.child(
-                        div().absolute().left_0().bottom_0().h(settings::z(PROGRESS_HEIGHT)).w(relative(left)).bg(c(o.level))
-                            .debug_selector(|| format!("progress-{id}")),
+                        div().absolute().left(inset).right(inset).bottom_0().h(settings::z(PROGRESS_HEIGHT))
+                            .child(div().h_full().w(relative(left)).bg(c(o.level)).debug_selector(|| format!("progress-{id}"))),
                     )
                 });
             match o.kind {
@@ -7299,6 +7336,76 @@ mod tests {
     }
 
     #[test]
+    fn a_waiting_banner_gets_its_whole_time_once_shown() {
+        in_own_process("banner_waits");
+    }
+
+    /// Banners show the newest error or warning before any routine one; one
+    /// waiting behind doesn't expire (the poll skips it) and gets its whole
+    /// time when it comes forward, as does every one when toasts stop being banners.
+    #[gpui::test]
+    fn banner_waits(cx: &mut gpui::TestAppContext) {
+        use crate::settings::ToastDesign;
+        use serde_json::json;
+        use std::time::{Duration, Instant};
+        if !running_alone("banner_waits") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "toast", include_str!("../defaults/mods/toast/main.js"), json!({"id": "root", "type": "block"}));
+        cx.run_until_parked();
+        let design = |d: ToastDesign, cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| {
+                this.person.toast_design = d;
+                this.apply_look(window, cx);
+            });
+            cx.run_until_parked();
+        };
+        let open = |id: &str, level: &str, cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| this.open_overlay(id.into(), json!({ "kind": "toast", "notification": { "title": id, "level": level } }), window, cx));
+            cx.run_until_parked();
+        };
+        let shown = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.shown_banner().map(|o| o.id.clone()));
+        let open_ids = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>());
+        let left = |id: &str, cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.overlays.iter().find(|o| o.id == id).and_then(|o| o.expires).map(|e| e.saturating_duration_since(Instant::now())));
+        // Its time ran out long ago: the poll would close it if it were counting.
+        let age = |id: &str, cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| {
+            let o = this.overlays.iter_mut().find(|o| o.id == id).unwrap();
+            let total = o.expires.unwrap().saturating_duration_since(o.opened);
+            o.opened = Instant::now() - total - Duration::from_secs(1);
+            o.expires = Some(Instant::now() - Duration::from_secs(1));
+        });
+        let poll = |cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| this.poll(window, cx));
+            cx.run_until_parked();
+        };
+        design(ToastDesign::Banner, cx);
+        open("error", "error", cx);
+        open("info", "info", cx);
+        assert_eq!(shown(cx).as_deref(), Some("error"), "an error before a newer routine banner");
+        age("info", cx);
+        poll(cx);
+        assert!(open_ids(cx).contains(&"info".to_owned()), "a waiting banner doesn't expire");
+        view.update_in(cx, |this, window, cx| this.close_overlay("error", window, cx));
+        cx.run_until_parked();
+        assert_eq!(shown(cx).as_deref(), Some("info"));
+        assert!(left("info", cx).is_some_and(|d| d > Duration::from_millis(4500)), "its whole 5 s from now: {:?}", left("info", cx));
+        // Two routine ones: the older waits, then gets its whole time.
+        open("newer", "info", cx);
+        assert_eq!(shown(cx).as_deref(), Some("newer"));
+        age("info", cx);
+        poll(cx);
+        view.update_in(cx, |this, window, cx| this.close_overlay("newer", window, cx));
+        cx.run_until_parked();
+        assert!(left("info", cx).is_some_and(|d| d > Duration::from_millis(4500)));
+        // Leaving banners: what waited counts from then.
+        open("last", "info", cx);
+        age("info", cx);
+        design(ToastDesign::Card, cx);
+        poll(cx);
+        assert!(open_ids(cx).contains(&"info".to_owned()) && left("info", cx).is_some_and(|d| d > Duration::from_millis(4500)), "{:?}", left("info", cx));
+    }
+
+    #[test]
     fn the_time_left_bar_counts_down_and_stops() {
         in_own_process("toast_progress");
     }
@@ -7340,10 +7447,11 @@ mod tests {
         let toast = cx.debug_bounds("overlay-off").unwrap();
         let full = bar("off", cx).expect("on: an open toast shows its bar");
         assert!(ticking(cx));
-        // Along the bottom inside the border.
+        // Along the bottom inside the border, in from the sides by the corner radius (8 px rounded), so the clip never cuts it.
         let inside = toast.inset(px(1.0));
-        assert!((full.bottom() - inside.bottom()).abs() <= px(1.0) && (full.left() - inside.left()).abs() <= px(1.0) && full.size.height == px(2.0), "{full:?} in {toast:?}");
-        assert!(full.size.width > toast.size.width * 0.9, "nearly all its time left: {full:?} of {toast:?}");
+        let track = inside.size.width - px(16.0);
+        assert!((full.bottom() - inside.bottom()).abs() <= px(1.0) && (full.left() - (inside.left() + px(8.0))).abs() <= px(1.0) && full.size.height == px(2.0), "{full:?} in {toast:?}");
+        assert!(full.size.width > track * 0.9 && full.size.width <= track, "nearly all its time left: {full:?} of {toast:?}");
         // Half its time gone: half as wide.
         view.update(cx, |this, _| {
             let o = this.overlays.iter_mut().find(|o| o.id == "off").unwrap();
@@ -7352,7 +7460,7 @@ mod tests {
         });
         step(cx);
         let half = bar("off", cx).unwrap();
-        assert!((half.size.width - toast.size.width * 0.5).abs() < px(6.0), "{half:?} of {toast:?}");
+        assert!((half.size.width - track * 0.5).abs() < px(6.0), "{half:?} of {toast:?}");
         // Gone with its toast; the timer stops at its next step.
         view.update_in(cx, |this, window, cx| this.close_overlay("off", window, cx));
         step(cx);

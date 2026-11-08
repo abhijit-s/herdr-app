@@ -79,15 +79,23 @@ test("an icon takes the dot's place under every mark", () => {
 const designs = ["card", "pill", "terminal", "outline", "icon-card", "banner"];
 const all = (root: Element): Element[] => [root, ...(root?.nodes ?? []).flatMap((n) => (n instanceof Object && "calls" in n ? all(n) : []))];
 
-test("a toast without a design is the card, as it was", () => {
-  const card = draw({}, { title: "Saved", level: "error", toast_design: "card" });
-  const unset = draw({}, { title: "Saved", level: "error" });
-  expect(JSON.stringify(unset)).toBe(JSON.stringify(card));
-  expect(unset.calls.bg).toEqual(["#toast"]);
+// master's card, as its toast mod drew it before designs (tests/fixtures/master-toast-card.json,
+// rendered through these same stand-ins): every mark, level, body and icon.
+test("a toast without a design draws master's card, call for call", async () => {
+  const tree = (e: any): any => (e instanceof Element ? { calls: Object.fromEntries(Object.entries(e.calls).map(([k, v]) => [k, v.map((a) => (typeof a === "function" ? "fn" : a))])), nodes: e.nodes.map(tree) } : e);
+  const master = JSON.parse(await readFile(new URL("../tests/fixtures/master-toast-card.json", import.meta.url), "utf8"));
+  expect(master.length).toBe(80);
+  for (const { props, tree: want } of master) {
+    for (const design of [{}, { toast_design: "card" }]) {
+      propsNow = { ...props, ...design };
+      expect(tree(new Toast().render({}))).toEqual(want);
+    }
+  }
 });
 
 test("pill: one line, the dot for a stripe, the body only as its tooltip", () => {
-  const root = draw({ toast_design: "pill" }, { title: "Copied", body: "to the clipboard", level: "success" });
+  // Herdr sends the mark the pill takes: a dot for the person's stripe (ToastDesign::mark).
+  const root = draw({ toast_design: "pill", toast_mark: "dot" }, { title: "Copied", body: "to the clipboard", level: "success" });
   expect(root.calls.border_l).toBeUndefined();
   expect(find(root, "toast-dot")?.calls.bg).toEqual(["#toast_success"]);
   expect(root.calls.tooltip).toEqual(["to the clipboard"]);
@@ -95,7 +103,7 @@ test("pill: one line, the dot for a stripe, the body only as its tooltip", () =>
   expect(find(draw({ toast_design: "pill", toast_mark: "none" }), "toast-dot")).toBeUndefined();
 });
 
-test("terminal: the terminal's font, the level bracketed in its colour, no stripe or dot", () => {
+test("terminal: the terminal's font, the level bracketed in its colour, no stripe or dot whatever the mark", () => {
   for (const [level, tag] of [["warning", "[WARN]"], ["success", "[DONE]"], ["error", "[ERR]"], ["info", "[INFO]"], [undefined, "[INFO]"]]) {
     const root = draw({ toast_design: "terminal", toast_font: "Iosevka" }, { title: "Build", level });
     expect(root.calls.font_family).toEqual(["Iosevka"]);
@@ -108,11 +116,14 @@ test("terminal: the terminal's font, the level bracketed in its colour, no strip
 });
 
 test("outline: see-through, its title in the level's colour, no stripe or dot", () => {
-  const root = draw({ toast_design: "outline" }, { title: "Failed", level: "error" });
+  const root = draw({ toast_design: "outline", toast_mark: "none" }, { title: "Failed", level: "error" });
   expect(root.calls.bg).toBeUndefined();
   expect(root.calls.border_l).toBeUndefined();
   expect(find(root, "toast-dot")).toBeUndefined();
   expect(all(root).some((e) => e.calls.text_color?.[0] === "#toast_error" && e.nodes[0] === "Failed")).toBe(true);
+  // No hover fill: it would lighten what shows through the backing the text is fitted to.
+  expect(root.calls.hover).toBeUndefined();
+  expect(draw({}, { title: "Saved" }).calls.hover).toBeDefined();
 });
 
 test("icon card: a big level icon, and Show and Dismiss only for a toast with an action", () => {

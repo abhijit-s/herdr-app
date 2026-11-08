@@ -254,11 +254,11 @@ const TOAST_DESIGNS = [
   ["icon-card", "Icon card"],
   ["banner", "Banner"],
 ];
-// The designs that take toast_corners and toast_mark: a pill's ends are round and
-// a terminal's and banner's corners square; the terminal's [WARN] and the outline's
-// border are their marks (settings.rs, ToastDesign::radius and ::mark).
-const TOAST_CORNERED = ["card", "outline", "icon-card"];
-const TOAST_MARKED = ["card", "pill", "icon-card", "banner"];
+// Whether a design takes toast_corners and toast_mark (toastLooks().takes, from
+// settings.rs's ToastDesign): a pill's ends are always round, a terminal's and a
+// banner's corners square, and the terminal's [WARN] and the outline's border are
+// their marks. Both, when Herdr doesn't say.
+const toastTakes = (design) => toastLooks()?.takes?.[design ?? "card"] ?? { corners: true, mark: true };
 // The level mark down a toast's left (toast_mark); Stripe is the default.
 const TOAST_MARKS = [
   ["stripe", "Stripe"],
@@ -1577,10 +1577,10 @@ export default class Settings extends View {
       .child(this.row(t, "Notification time", "How long toasts stay up: errors and warnings stay longer than the rest. Until clicked keeps them until you click one. A toast that sets its own time, such as Copied, keeps it.", this.choicePicker(t, "st-td", "toast_duration", TOAST_DURATIONS, { now: this.person.toast_duration ?? "normal", write: writeOrDrop("toast_duration", "normal") }), "toast_duration"))
       .child(this.row(t, "Notification design", "A toast's shape: a card, a one-line pill, terminal text, an outline over the window, a card with a big icon and buttons, or a banner across the window's top or bottom edge (the half of the position it's in), one at a time.", this.toastDesignPicker(t), "toast_design"))
       .child(this.row(t, "Notification style", "How toasts stand off the window: Subtle sits closer to the panels, High contrast has a stronger border and text, Accent takes the theme's accent. A theme's own toast colours still win.", this.toastStylePicker(t), "toast_style"))
-      .when(TOAST_CORNERED.includes(this.person.toast_design ?? "card"), (el) =>
+      .when(toastTakes(this.person.toast_design).corners, (el) =>
         el.child(this.row(t, "Notification corners", "Square, slightly rounded or rounded toasts.", this.choicePicker(t, "st-tr", "toast_corners", TOAST_CORNERS, { now: this.person.toast_corners ?? "rounded", write: writeOrDrop("toast_corners", "rounded") }), "toast_corners")),
       )
-      .when(TOAST_MARKED.includes(this.person.toast_design ?? "card"), (el) =>
+      .when(toastTakes(this.person.toast_design).mark, (el) =>
         el.child(this.row(t, "Notification level mark", "What shows a toast's level: a stripe down its left side with a dot, the dot alone, or neither. A pill draws a dot for the stripe.", this.choicePicker(t, "st-tm", "toast_mark", TOAST_MARKS), "toast_mark")),
       )
       .child(

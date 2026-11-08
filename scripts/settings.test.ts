@@ -482,6 +482,12 @@ test("notification design: six designs, card left out; corners and mark only whe
   expect(design({ toast_design: "banner", toast_style: "subtle" }, "card")).toEqual({ toast_style: "subtle" });
   const shown = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker", "shown?"], "window") !== undefined;
   const rows = (toast_design?: string) => [shown({ toast_design }, "st-tr-Square"), shown({ toast_design }, "st-tm-Dot")];
+  // Without Herdr's word, both rows show.
+  looksNow = {};
+  expect(rows("terminal")).toEqual([true, true]);
+  // Herdr says which designs take corners and marks (toastLooks().takes, from ToastDesign::takes).
+  const takes = (corners: boolean, mark: boolean) => ({ corners, mark });
+  looksNow = { takes: { card: takes(true, true), pill: takes(false, true), terminal: takes(false, false), outline: takes(true, false), "icon-card": takes(true, true), banner: takes(false, true) } };
   expect(rows()).toEqual([true, true]);
   expect(rows("card")).toEqual([true, true]);
   expect(rows("pill")).toEqual([false, true]);
@@ -489,6 +495,7 @@ test("notification design: six designs, card left out; corners and mark only whe
   expect(rows("outline")).toEqual([true, false]);
   expect(rows("icon-card")).toEqual([true, true]);
   expect(rows("banner")).toEqual([false, true]);
+  looksNow = {};
 });
 
 test("each design's preview is a small toast in that design's colours, from toastLooks()", () => {

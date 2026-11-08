@@ -21,11 +21,6 @@ const ICON = { error: "error", warning: "warning", success: "check", info: "info
 // Blank text is no body; window.rs's toast_height decides the same way.
 const hasBody = (body) => (typeof body === "string" ? body.trim() !== "" : Boolean(body));
 
-// The mark a design draws for the person's toast_mark (settings.rs, ToastDesign::mark):
-// the outline's border is its mark; a pill's round ends take a dot. (The terminal
-// design draws its bracketed level instead and never reads it.)
-const markFor = (design, mark) => (design === "outline" ? "none" : design === "pill" && mark === "stripe" ? "dot" : mark);
-
 export default class Toast extends View {
   render(cx) {
     const t = theme();
@@ -33,11 +28,12 @@ export default class Toast extends View {
     const levelName = LEVEL[p.level] ? p.level : "info";
     const level = t[LEVEL[levelName]];
     const design = p.toast_design ?? "card";
-    // The person's toast_mark, which Herdr puts in the props: "stripe" (the
-    // default) is a stripe in the level's color down the left, its width taken
-    // from the padding, and the dot; "dot": the dot alone; "none": neither (an
-    // icon still shows).
-    const mark = markFor(design, p.toast_mark ?? "stripe");
+    // The level mark, which Herdr puts in the props as the design takes the
+    // person's toast_mark (a pill's stripe is a dot; the outline's border is
+    // its mark): "stripe" (the default) is a stripe in the level's color down
+    // the left, its width taken from the padding, and the dot; "dot": the dot
+    // alone; "none": neither (an icon still shows).
+    const mark = p.toast_mark ?? "stripe";
     const act = () => {
       if (p.action?.name) run(p.action.name, p.action.args ?? {});
       closeOverlay(p.overlay);
@@ -48,12 +44,14 @@ export default class Toast extends View {
       el
         .when(Boolean(p.icon), (el) => el.child(image(p.icon).w(18).h(18).flex_none()))
         .when(!p.icon && mark !== "none", (el) => el.child(div().id("toast-dot").size(8).rounded(4).flex_none().bg(level)));
+    // The outline paints no hover fill: it would lighten what shows through its backing,
+    // which settings.rs fits the text to (toast_colors, toast_ghost).
     const root = h_flex()
       .id("toast")
       .size_full()
       .items_center()
       .cursor_pointer()
-      .hover((s) => s.bg(t.hover))
+      .when(design !== "outline", (el) => el.hover((s) => s.bg(t.hover)))
       .on_click(act);
     // Show runs the action, filled in the level's colour; Dismiss only closes.
     const button = (id, label, onClick, filled) =>
@@ -133,8 +131,8 @@ export default class Toast extends View {
       // Across the window: the title, then the place or body, how many more wait behind it, and its buttons.
       return lead(root.pl(mark === "stripe" ? 13 : 16).pr(10).gap(10).bg(t.toast))
         .when(mark === "stripe", (el) => el.border_l(3).border_color(level))
-        .child(title(t.toast_foreground).flex_none())
-        .child(hasBody(p.body) ? body().flex_1() : div().flex_1())
+        .child(title(t.toast_foreground).min_w(0))
+        .child(hasBody(p.body) ? body().flex_1().min_w(0) : div().flex_1())
         .when(Number(p.toast_more) > 0, (el) => el.child(div().id("toast-more").flex_none().text_size(12).text_color(t.toast_muted).child(`+${p.toast_more} more`)))
         .when(Boolean(p.action?.name), (el) => el.child(show()))
         .child(dismiss());

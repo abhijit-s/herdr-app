@@ -484,8 +484,9 @@ export function settings(): Record<string, unknown>;
  *  drawn for the chosen `toast_design`; `designs` is `{ card, pill, terminal, outline, "icon-card",
  *  banner }`, each design's toast colors in the chosen style (the outline's adds `toast_ghost`, its
  *  see-through backing; the terminal's levels come from the terminal's colors), and `font_family` is
- *  the terminal's font, which the terminal design draws in. Built when settings change, not per call. */
-export function toastLooks(): { styles: Record<string, Record<string, string>>; designs: Record<string, Record<string, string>>; radius: Record<string, number>; font_family: string };
+ *  the terminal's font, which the terminal design draws in. `takes` is `{ [design]: { corners, mark } }`, whether
+ *  each design takes `toast_corners` and `toast_mark`. Built when settings change, not per call. */
+export function toastLooks(): { styles: Record<string, Record<string, string>>; designs: Record<string, Record<string, string>>; takes: Record<string, { corners: boolean; mark: boolean }>; radius: Record<string, number>; font_family: string };
 
 /** Every key binding: { section, keys, action }. */
 export function keys(): { section: string; keys: string; action: string }[];
@@ -535,7 +536,7 @@ export function notify(n: {
   body?: string;
   level?: "info" | "success" | "warning" | "error";
   /** ms; given, it wins over the person's `toast_duration`. Else 5 s (8 s for errors and warnings),
-   *  scaled by `toast_duration`, or until clicked. The `toast` mod gets the person's `toast_mark`
+   *  scaled by `toast_duration`, or until clicked. The `toast` mod gets the level mark to draw, the person's `toast_mark` as the design takes it
    *  (`"stripe"`, `"dot"` or `"none"`) and `toast_design` (`"card"`, `"pill"`, `"terminal"`,
    *  `"outline"`, `"icon-card"` or `"banner"`) in its props, beside these; the terminal design also
    *  gets `toast_font` (the terminal's font) and the shown banner `toast_more` (how many others are open). */
