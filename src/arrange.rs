@@ -64,6 +64,14 @@ pub fn reading_order(root: &Node) -> Vec<&Node> {
 
 type Rect = (f32, f32, f32, f32);
 
+/// Each pane's rect in the tab, as fractions `[x, y, w, h]`.
+#[cfg(test)]
+pub fn rects(root: &Node) -> Vec<(String, [f32; 4])> {
+    let mut placed = Vec::new();
+    place(root, (0.0, 0.0, 1.0, 1.0), &mut placed);
+    placed.into_iter().map(|(n, (x, y, w, h))| (n.id.clone(), [x, y, w, h])).collect()
+}
+
 fn place<'a>(node: &'a Node, rect: Rect, out: &mut Vec<(&'a Node, Rect)>) {
     if node.is_pane() {
         out.push((node, rect));

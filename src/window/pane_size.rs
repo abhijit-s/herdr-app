@@ -153,8 +153,8 @@ impl AppWindow {
     /// The area `pane` gets when `tab` is the one shown (its terminal sizes
     /// its grid in it at its own text size).
     pub(super) fn shown_area(&self, tab: &Tab, pane: &str) -> Option<Size<Pixels>> {
-        let focused = tab.focused_pane().and_then(|f| tab.root.path_to(&f)).unwrap_or_default().into_iter().collect();
-        self.displayed_area(tab.shown(), tab.root.panes().len(), pane, &focused)
+        let focused = tab.focused_pane().and_then(|f| tab.path_to(&f)).unwrap_or_default().into_iter().collect();
+        self.displayed_area(tab.shown(), tab.panes().len(), pane, &focused)
     }
 
     /// `shown`: the tree on screen; `panes`: how many the tab has (its frame needs more than one, or `lone`).

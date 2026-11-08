@@ -221,6 +221,10 @@ impl AppWindow {
     pub(super) fn terminal_pane_at(&self, at: Point<Pixels>) -> Option<String> {
         let bounds = self.bounds.borrow();
         let holds = |slot: &str| bounds.get(slot).is_some_and(|b| b.contains(&at));
+        if let Some(float) = self.float_at(at).filter(|_| self.shows_tab()) {
+            let terminal = self.model.active_tab().and_then(|t| t.find(&float)).is_some_and(|n| n.terminal().is_some());
+            return terminal.then_some(float);
+        }
         let tab = self.model.active_tab().filter(|_| self.shows_tab()).map(|t| t.shown());
         let pane = tab.into_iter().flat_map(|t| t.visible_blocks()).chain(self.chrome.visible_blocks()).filter(|n| n.terminal().is_some()).find(|n| holds(&n.id))?;
         let mut over = tab.into_iter().chain([&self.chrome]).flat_map(visible_nodes).flat_map(|n| n.floating.iter().filter(|f| !f.hidden));

@@ -40,7 +40,9 @@ function items(p, git) {
       const inTab = panes().some((pane) => pane.pane === tg.pane);
       // The window says whether the clicked terminal had a selection and where it is.
       const on = term && { terminal: term.address };
-      const own = inTab && panes().find((pane) => pane.pane === tg.pane)?.own_icon;
+      const info = inTab && panes().find((pane) => pane.pane === tg.pane);
+      const own = info?.own_icon;
+      const floating = info?.floating;
       return [
         ...(term
           ? [
@@ -58,6 +60,8 @@ function items(p, git) {
               ["Split right", "pane.split", { direction: "right", pane: tg.pane }],
               ["Split down", "pane.split", { direction: "down", pane: tg.pane }],
               ["Zoom", "pane.zoom", { pane: tg.pane }],
+              floating ? ["Dock pane", "pane.dock", { pane: tg.pane }] : ["Float pane", "pane.float", { pane: tg.pane }],
+              ...(floating ? [["Bring to front", "pane.raise", { pane: tg.pane, to: "front" }]] : []),
               ["Change icon…", "icon", { pane: tg.pane }],
               ...(own ? [["Clear icon", "pane.set_icon", { pane: tg.pane, icon: null }]] : []),
             ]

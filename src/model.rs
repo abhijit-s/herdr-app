@@ -3,7 +3,8 @@
 //! how they're split. Plus which pane has focus and agent attention (done vs
 //! seen) with Herdr's rollup. Pure data; the window drives it.
 
-use crate::layout::{Axis, Content, Node};
+use crate::float_pane::{DockHint, FloatPane, Rect};
+use crate::layout::{Axis, Content, Edge, Node};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
@@ -14,7 +15,10 @@ pub struct Tab {
     pub id: String,
     pub name: String,
     /// The arrangement: a row/column tree of terminal blocks. Its id is the tab's.
+    /// Its panes are only the tiled ones: `Tab::panes` and `Tab::find` cover both layers.
     pub root: Node,
+    /// Panes floating above `root`, back to front.
+    pub floating: Vec<FloatPane>,
     pub focused: Option<String>,
     /// Panes focused before, most recent last: closing the focused pane goes back.
     pub before: Vec<String>,
@@ -138,6 +142,7 @@ impl Tab {
             focused: Some(pane.id.clone()),
             before: Vec::new(),
             root: Node::container(id, Axis::Row, vec![pane]),
+            floating: Vec::new(),
             zoomed: None,
             settled: None,
             arrange: None,
@@ -145,9 +150,115 @@ impl Tab {
         }
     }
 
+    /// Its panes: the tiled ones in tree order, then the floating ones back to front.
+    pub fn panes(&self) -> Vec<&Node> {
+        let mut panes = self.root.panes();
+        panes.extend(self.floating.iter().map(|f| &f.pane));
+        panes
+    }
+
+    /// Its terminal panes, in `panes` order.
+    pub fn terminals(&self) -> Vec<&Node> {
+        self.panes().into_iter().filter(|n| n.terminal().is_some()).collect()
+    }
+
+    /// Its terminals' addresses, in `panes` order.
+    pub fn addresses(&self) -> Vec<String> {
+        self.terminals().iter().filter_map(|n| n.terminal().map(str::to_owned)).collect()
+    }
+
+    /// A node by id: a split or pane of the tiled tree, or a floating pane.
+    pub fn find(&self, id: &str) -> Option<&Node> {
+        self.root.find(id).or_else(|| self.float(id).map(|f| &f.pane))
+    }
+
+    pub fn find_mut(&mut self, id: &str) -> Option<&mut Node> {
+        if self.root.find(id).is_some() {
+            return self.root.find_mut(id);
+        }
+        self.floating.iter_mut().find(|f| f.pane.id == id).map(|f| &mut f.pane)
+    }
+
+    /// A pane by id, in either layer.
+    pub fn pane(&self, id: &str) -> Option<&Node> {
+        self.find(id).filter(|n| n.is_pane())
+    }
+
+    /// A pane of the tiled tree.
+    pub fn tiled_pane(&self, id: &str) -> Option<&Node> {
+        self.root.find(id).filter(|n| n.is_pane())
+    }
+
+    /// How many tiled panes it has.
+    pub fn tiled_count(&self) -> usize {
+        self.root.panes().len()
+    }
+
+    /// A floating pane.
+    pub fn float(&self, pane: &str) -> Option<&FloatPane> {
+        self.floating.iter().find(|f| f.pane.id == pane)
+    }
+
+    /// The floating panes drawn, back to front: only a zoomed one, when one is.
+    pub fn shown_floats(&self) -> impl DoubleEndedIterator<Item = &FloatPane> {
+        let zoomed = self.zoomed.as_deref().filter(|z| self.float(z).is_some());
+        self.floating.iter().filter(move |f| zoomed.is_none_or(|z| z == f.pane.id))
+    }
+
+    /// The ids from the root down to a node: a floating pane's is itself alone.
+    pub fn path_to(&self, id: &str) -> Option<Vec<String>> {
+        self.root.path_to(id).or_else(|| self.float(id).map(|_| vec![id.to_owned()]))
+    }
+
+    /// The tiled pane focused last (a floating pane's way back when its own
+    /// neighbour is gone), else the last tiled pane.
+    pub fn last_tiled(&self) -> Option<String> {
+        let tiled = |p: &&String| self.tiled_pane(p).is_some();
+        self.focused.iter().chain(self.before.iter().rev()).find(tiled).cloned().or_else(|| self.root.panes().last().map(|n| n.id.clone()))
+    }
+
+    /// Where a split of `pane` goes: a floating pane holds one pane, so beside
+    /// the tiled pane it would dock by, else `last_tiled`.
+    fn split_target(&self, pane: &str) -> Option<String> {
+        let Some(f) = self.float(pane) else { return Some(pane.to_owned()) };
+        f.dock.as_ref().and_then(|h| h.anchor(&self.root)).map(str::to_owned).or_else(|| self.last_tiled())
+    }
+
+    /// Trades the places of two panes, a floating one among them: each takes
+    /// the other's slot (a tiled one's size, a floating one's rect).
+    fn trade(&mut self, a: &str, b: &str) {
+        let (Some(na), Some(nb)) = (self.pane(a).cloned(), self.pane(b).cloned()) else { return };
+        let mut put = |id: &str, mut node: Node| {
+            if let Some(f) = self.floating.iter_mut().find(|f| f.pane.id == id) {
+                node.size = None;
+                f.pane = node;
+            } else if let Some(n) = self.root.find_mut(id) {
+                node.size = n.size;
+                *n = node;
+            }
+        };
+        let hold = format!("\u{0}trade-{a}");
+        put(a, Node { id: hold.clone(), ..nb });
+        put(b, na);
+        if let Some(n) = self.find_mut(&hold) {
+            n.id = b.to_owned();
+        }
+    }
+
+    /// Moves a floating pane forward (`step` > 0) or back in z-order, at most to
+    /// the front or back. False: it doesn't float.
+    pub fn restack(&mut self, pane: &str, step: isize) -> bool {
+        let Some(from) = self.floating.iter().position(|f| f.pane.id == pane) else { return false };
+        let to = from.saturating_add_signed(step).min(self.floating.len() - 1);
+        let f = self.floating.remove(from);
+        self.floating.insert(to, f);
+        true
+    }
+
     /// Focuses a pane and remembers the one it leaves. A zoomed tab shows the
-    /// pane it focuses, never a hidden one.
+    /// pane it focuses, never a hidden one. A floating pane comes to the front.
     pub fn focus(&mut self, pane: &str) {
+        self.restack(pane, isize::MAX);
         if self.zoomed.is_some() {
             self.zoomed = Some(pane.to_owned());
         }
@@ -163,10 +274,11 @@ impl Tab {
 
     /// The focused pane, else the first one.
     pub fn focused_pane(&self) -> Option<String> {
-        self.focused.clone().filter(|p| self.root.find(p).is_some()).or_else(|| self.root.panes().first().map(|n| n.id.clone()))
+        self.focused.clone().filter(|p| self.find(p).is_some()).or_else(|| self.panes().first().map(|n| n.id.clone()))
     }
 
-    /// What's drawn: only the zoomed pane when one is zoomed.
+    /// The tiled tree drawn: only the zoomed pane when a tiled one is zoomed.
+    /// Floating panes draw above it either way.
     pub fn shown(&self) -> &Node {
         self.zoomed.as_deref().and_then(|z| self.root.find(z)).unwrap_or(&self.root)
     }
@@ -272,26 +384,26 @@ impl Model {
 
     /// The space holding a tab or a node inside one.
     pub fn space_of(&self, node: &str) -> Option<&Space> {
-        self.spaces.iter().find(|p| p.tabs.iter().any(|c| c.id == node || c.root.find(node).is_some()))
+        self.spaces.iter().find(|p| p.tabs.iter().any(|c| c.id == node || c.find(node).is_some()))
     }
 
     /// The tab holding a node (pane, container).
     pub fn tab_of(&self, node: &str) -> Option<&Tab> {
-        self.tabs().find(|c| c.root.find(node).is_some())
+        self.tabs().find(|c| c.find(node).is_some())
     }
 
     fn tab_of_mut(&mut self, node: &str) -> Option<&mut Tab> {
-        self.spaces.iter_mut().flat_map(|p| p.tabs.iter_mut()).find(|c| c.root.find(node).is_some())
+        self.spaces.iter_mut().flat_map(|p| p.tabs.iter_mut()).find(|c| c.find(node).is_some())
     }
 
     /// The name someone gave a pane (kept as its block's title); None: its program's.
     pub fn pane_name(&self, pane: &str) -> Option<&str> {
-        self.tab_of(pane).and_then(|c| c.root.find(pane)).filter(|n| n.is_pane()).and_then(|n| n.title.as_deref())
+        self.tab_of(pane).and_then(|c| c.pane(pane)).and_then(|n| n.title.as_deref())
     }
 
     /// Names a pane; an empty name goes back to its program's. False: no such pane.
     pub fn rename_pane(&mut self, pane: &str, name: &str) -> bool {
-        let Some(n) = self.tab_of_mut(pane).and_then(|c| c.root.find_mut(pane)).filter(|n| n.is_pane()) else { return false };
+        let Some(n) = self.tab_of_mut(pane).and_then(|c| c.find_mut(pane)).filter(|n| n.is_pane()) else { return false };
         let name = name.trim();
         n.title = (!name.is_empty()).then(|| name.to_owned());
         true
@@ -307,7 +419,7 @@ impl Model {
 
     /// Chooses a pane's or a tab's icon (None: its automatic one again). False: no such pane or tab.
     pub fn set_icon(&mut self, id: &str, icon: Option<crate::pane_icons::Choice>) -> bool {
-        let pane = self.tab_of(id).and_then(|c| c.root.find(id)).is_some_and(|n| n.is_pane());
+        let pane = self.tab_of(id).and_then(|c| c.pane(id)).is_some();
         if !pane && self.tab(id).is_none() {
             return false;
         }
@@ -326,7 +438,7 @@ impl Model {
         if !p.name.is_empty() {
             return p.name.clone();
         }
-        let first = p.tabs.iter().flat_map(|c| c.root.terminals()).next();
+        let first = p.tabs.iter().flat_map(|c| c.terminals()).next();
         let folder = first
             .and_then(|n| n.terminal().and_then(|a| self.folder_info.get(a)).map(|f| f.top.clone()).or_else(|| self.pane_folders.get(&n.id).cloned()))
             .unwrap_or_else(|| p.folder.clone());
@@ -387,6 +499,14 @@ impl Model {
         let mut order = pane_order(&tab.root);
         let mut root = tab.root.clone();
         let split = if tab.arrange == Some(crate::arrange::Mode::Bsp) { Node::split_pair } else { Node::split };
+        let target = match tab.split_target(target) {
+            Some(t) => t,
+            None => {
+                root.children_mut()?.push(block);
+                return Some(root);
+            }
+        };
+        let target = target.as_str();
         if !split(&mut root, target, axis, block, container) {
             return None;
         }
@@ -423,7 +543,7 @@ impl Model {
             return false;
         }
         let Some(tab) = self.tab_of(source) else { return false };
-        if !tab.root.find(source).is_some_and(Node::is_pane) || !tab.root.find(target).is_some_and(Node::is_pane) {
+        if tab.tiled_pane(source).is_none() || tab.tiled_pane(target).is_none() {
             return false;
         }
         let bsp = tab.arrange == Some(crate::arrange::Mode::Bsp);
@@ -467,7 +587,7 @@ impl Model {
     }
 
     pub fn swap_panes(&mut self, pane: &str, target: &str) -> Result<(), String> {
-        let is_pane = |m: &Model, id: &str| m.tab_of(id).and_then(|c| c.root.find(id)).is_some_and(Node::is_pane);
+        let is_pane = |m: &Model, id: &str| m.tab_of(id).and_then(|c| c.pane(id)).is_some();
         if !is_pane(self, pane) {
             return Err(format!("no pane {pane:?}"));
         }
@@ -478,10 +598,14 @@ impl Model {
             return Err("pane.swap target is the pane itself".into());
         }
         let Some(c) = self.tab_of_mut(pane) else { return Err(format!("no pane {pane:?}")) };
-        if c.root.find(target).is_none() {
+        if c.find(target).is_none() {
             return Err(format!("pane.swap target {target:?} is in another tab"));
         }
-        c.root.swap(pane, target);
+        if c.float(pane).is_some() || c.float(target).is_some() {
+            c.trade(pane, target);
+        } else {
+            c.root.swap(pane, target);
+        }
         Ok(())
     }
 
@@ -490,22 +614,25 @@ impl Model {
         let machine = self.space_of(pane_id).and_then(|s| s.machine.clone());
         let Some(c) = self.tab_of(pane_id) else { return (false, false) };
         let (id, mode) = (c.id.clone(), c.arrange);
-        let order: Vec<String> = pane_order(&c.root).into_iter().filter(|p| p != pane_id).collect();
         let mut root = c.root.clone();
-        root.remove(pane_id);
-        if !root.panes().is_empty() {
-            root = self.rearranged(root, mode, &order, machine.as_deref());
+        if c.float(pane_id).is_none() {
+            let order: Vec<String> = pane_order(&c.root).into_iter().filter(|p| p != pane_id).collect();
+            root.remove(pane_id);
+            if !root.panes().is_empty() {
+                root = self.rearranged(root, mode, &order, machine.as_deref());
+            }
         }
         let c = self.tab_mut(&id).unwrap();
         c.root = root;
+        c.floating.retain(|f| f.pane.id != pane_id);
         if c.zoomed.as_deref() == Some(pane_id) {
             c.zoomed = None;
         }
-        if !c.root.panes().is_empty() {
+        if !c.panes().is_empty() {
             c.before.retain(|p| p != pane_id);
             if c.focused.as_deref() == Some(pane_id) {
                 // Back to the pane focused before it that's still here, else the first.
-                let here: Vec<String> = c.root.panes().iter().map(|n| n.id.clone()).collect();
+                let here: Vec<String> = c.panes().iter().map(|n| n.id.clone()).collect();
                 c.before.retain(|p| here.contains(p));
                 c.focused = c.before.pop().or_else(|| here.first().cloned());
             }
@@ -514,6 +641,87 @@ impl Model {
         let id = c.id.clone();
         let (_, space_closed) = self.remove_tab(&id);
         (true, space_closed)
+    }
+
+    /// Floats a tiled pane at `rect` (fractions of the tab area), at the front
+    /// and focused, remembering where it docks back. A zoomed pane unzooms; an
+    /// arranged tab lays out the panes left.
+    pub fn float_pane(&mut self, pane: &str, rect: Rect) -> Result<(), String> {
+        let machine = self.space_of(pane).and_then(|s| s.machine.clone());
+        let tab = self.tab_of(pane).ok_or_else(|| format!("no pane {pane:?}"))?;
+        if tab.float(pane).is_some() {
+            return Err(format!("pane {pane:?} already floats"));
+        }
+        if tab.tiled_pane(pane).is_none() {
+            return Err(format!("{pane:?} is not a pane"));
+        }
+        let (id, mode) = (tab.id.clone(), tab.arrange);
+        let order: Vec<String> = pane_order(&tab.root).into_iter().filter(|p| p != pane).collect();
+        let mut root = tab.root.clone();
+        let (node, dock) = crate::float_pane::lift(&mut root, pane).ok_or_else(|| format!("pane {pane:?} can't float"))?;
+        if !root.panes().is_empty() {
+            root = self.rearranged(root, mode, &order, machine.as_deref());
+        }
+        let t = self.tab_mut(&id).unwrap();
+        t.root = root;
+        if t.zoomed.as_deref() == Some(pane) {
+            t.zoomed = None;
+        }
+        t.floating.push(FloatPane { pane: node, rect: crate::float_pane::clamp(rect), dock: Some(dock) });
+        t.focus(pane);
+        Ok(())
+    }
+
+    /// Docks a floating pane into its tab's tiled tree, focused: beside
+    /// `target` on `edge` when given, else beside the pane it floated from
+    /// (`DockHint`), else beside `Tab::last_tiled`. An arranged tab puts it
+    /// there in reading order and lays the panes out.
+    pub fn dock_pane(&mut self, pane: &str, target: Option<(&str, Edge)>) -> Result<(), String> {
+        use crate::float_pane::place;
+        let machine = self.space_of(pane).and_then(|s| s.machine.clone());
+        let tab = self.tab_of(pane).ok_or_else(|| format!("no pane {pane:?}"))?;
+        let Some(f) = tab.float(pane) else { return Err(format!("pane {pane:?} doesn't float")) };
+        let hint = match target {
+            Some((t, _)) if tab.tiled_pane(t).is_none() => return Err(format!("dock target {t:?} is not a tiled pane of the same tab")),
+            Some((t, edge)) => DockHint { beside: Some(t.to_owned()), edge: Some(edge), ..Default::default() },
+            None => f.dock.clone().unwrap_or_default(),
+        };
+        let (id, mode, node, mut root) = (tab.id.clone(), tab.arrange, f.pane.clone(), tab.root.clone());
+        let fallback = tab.last_tiled();
+        let axis = fallback.as_deref().map_or(Axis::Row, |t| self.auto_axis(t));
+        if mode.is_some_and(crate::arrange::Mode::rebuilds_on_change) && crate::arrange::check(&root).is_ok() {
+            // The mode lays it out: it only needs its place in reading order.
+            let mut order = pane_order(&root);
+            let (anchor, before) = match hint.anchor(&root) {
+                Some(a) => (Some(a.to_owned()), hint.before()),
+                None => (fallback, false),
+            };
+            let at = anchor.and_then(|a| order.iter().position(|p| *p == a)).map_or(order.len(), |i| if before { i } else { i + 1 });
+            order.insert(at, pane.to_owned());
+            root.children_mut().ok_or("the tab's tree has no room")?.push(node);
+            root = self.rearranged(root, mode, &order, machine.as_deref());
+        } else {
+            let container = self.fresh_id_on("s", machine.as_deref());
+            let bsp = mode == Some(crate::arrange::Mode::Bsp);
+            place(&mut root, node, &hint, fallback.as_deref().map(|t| (t, axis)), bsp, container);
+        }
+        let t = self.tab_mut(&id).unwrap();
+        t.root = root;
+        t.floating.retain(|f| f.pane.id != pane);
+        t.focus(pane);
+        Ok(())
+    }
+
+    /// Moves a floating pane in z-order (`Tab::restack`). False: it doesn't float.
+    pub fn restack_pane(&mut self, pane: &str, step: isize) -> bool {
+        self.tab_of_mut(pane).is_some_and(|t| t.restack(pane, step))
+    }
+
+    /// Sets a floating pane's rect, kept inside the tab area. False: it doesn't float.
+    pub fn set_float_rect(&mut self, pane: &str, rect: Rect) -> bool {
+        let Some(f) = self.tab_of_mut(pane).and_then(|t| t.floating.iter_mut().find(|f| f.pane.id == pane)) else { return false };
+        f.rect = crate::float_pane::clamp(rect);
+        true
     }
 
     /// Removes a tab. Returns its terminal addresses and whether its space closed.
@@ -531,7 +739,7 @@ impl Model {
             let id = p.id.clone();
             self.remove_space(&id);
         }
-        (addresses(&removed.root), closed)
+        (removed.addresses(), closed)
     }
 
     /// Removes a space (remembered in `recent`). Returns its terminal addresses.
@@ -545,7 +753,7 @@ impl Model {
         if was_active {
             self.active = self.spaces.get(pi).or(self.spaces.last()).map(|p| p.id.clone());
         }
-        p.tabs.iter().flat_map(|c| addresses(&c.root)).collect()
+        p.tabs.iter().flat_map(Tab::addresses).collect()
     }
 
     /// The focused pane of the selected space's selected tab.
@@ -592,16 +800,16 @@ impl Model {
 
     /// The address shown in a pane block.
     pub fn address_of(&self, pane_id: &str) -> Option<String> {
-        self.tabs().find_map(|c| c.root.find(pane_id)).and_then(|n| n.terminal()).map(str::to_owned)
+        self.tabs().find_map(|c| c.find(pane_id)).and_then(|n| n.terminal()).map(str::to_owned)
     }
 
     pub fn pane_of(&self, address: &str) -> Option<String> {
-        self.tabs().flat_map(|c| c.root.terminals()).find(|n| n.terminal() == Some(address)).map(|n| n.id.clone())
+        self.tabs().flat_map(Tab::terminals).find(|n| n.terminal() == Some(address)).map(|n| n.id.clone())
     }
 
     /// Every terminal in every tab, in space → tab → pane order.
     pub fn all_addresses(&self) -> Vec<String> {
-        self.tabs().flat_map(|c| addresses(&c.root)).collect()
+        self.tabs().flat_map(Tab::addresses).collect()
     }
 
     /// Applies a status word from core (Herdr's seen rules).
@@ -684,12 +892,12 @@ impl Model {
 
     /// When something in a tab last changed state, ms (None: nothing since the app started).
     pub fn changed_at(&self, c: &Tab) -> Option<u64> {
-        addresses(&c.root).iter().filter_map(|a| self.agents.get(a)).map(|a| a.since).filter(|t| *t > 0).max()
+        c.addresses().iter().filter_map(|a| self.agents.get(a)).map(|a| a.since).filter(|t| *t > 0).max()
     }
 
     /// Since when an agent in a tab has been working, ms (the earliest, if several).
     pub fn working_since(&self, c: &Tab) -> Option<u64> {
-        addresses(&c.root)
+        c.addresses()
             .iter()
             .filter_map(|a| self.agents.get(a))
             .filter(|a| a.word.as_deref() == Some("working") && a.since > 0)
@@ -729,14 +937,11 @@ pub fn folder_name(path: &str, home: &str) -> String {
     path.rsplit(['/', '\\']).find(|s| !s.is_empty()).unwrap_or(path).to_owned()
 }
 
-/// Terminal addresses in a subtree, in tree order.
+/// Now, in ms since the Unix epoch.
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-pub fn addresses(node: &Node) -> Vec<String> {
-    node.terminals().iter().filter_map(|n| n.terminal().map(str::to_owned)).collect()
-}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FolderInfo {
@@ -768,8 +973,8 @@ pub fn space_json(m: &Model, p: &Space, index: usize, branch: Option<&str>, home
                 "name": Model::tab_name(p, c),
                 "named": !c.name.is_empty(),
                 "active": Some(&c.id) == active.as_ref(),
-                "status": m.rollup(&addresses(&c.root)),
-                "panes": c.root.panes().len(),
+                "status": m.rollup(&c.addresses()),
+                "panes": c.panes().len(),
                 "zoomed": c.zoomed.is_some(),
                 "arrange": c.arrange.map(crate::arrange::Mode::name),
                 "settled": c.settled.is_some(),
@@ -782,7 +987,7 @@ pub fn space_json(m: &Model, p: &Space, index: usize, branch: Option<&str>, home
             })
         })
         .collect();
-    let all: Vec<String> = p.tabs.iter().flat_map(|c| addresses(&c.root)).collect();
+    let all: Vec<String> = p.tabs.iter().flat_map(Tab::addresses).collect();
     json!({
         "id": p.id,
         "index": index + 1,
@@ -1314,6 +1519,6 @@ mod tests {
         assert!(m.focus_pane("x1"));
         assert_eq!(m.active.as_deref(), Some("p1"));
         assert_eq!(m.focused_pane().as_deref(), Some("x1"));
-        assert_eq!(m.active_tab().map(|c| addresses(c.shown())).unwrap_or_default(), ["t1"]);
+        assert_eq!(m.active_tab().map(|c| c.shown().terminals().iter().filter_map(|n| n.terminal()).collect::<Vec<_>>()).unwrap_or_default(), ["t1"]);
     }
 }

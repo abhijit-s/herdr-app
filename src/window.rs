@@ -8,6 +8,7 @@ use crate::git_status;
 use crate::hc::Core;
 mod floats;
 mod follow_mouse;
+mod pane_floats;
 mod movable;
 mod pane_drag;
 mod pane_size;
@@ -534,6 +535,8 @@ pub struct AppWindow {
     /// Whether `render_node` is drawing the main layout (`chrome`), whose bars
     /// `top_chrome` measures, rather than an overlay's.
     painting_main: std::cell::Cell<bool>,
+    /// The terminal cell size, measured each frame the shown tab has floating panes.
+    float_cell: std::cell::Cell<Size<Pixels>>,
     hidden_fit: pane_size::HiddenFit,
     drag: Option<Drag>,
     written_layout: String,
@@ -688,6 +691,7 @@ impl AppWindow {
             bounds: Default::default(),
             top_chrome: Default::default(),
             painting_main: Default::default(),
+            float_cell: Default::default(),
             hidden_fit: Default::default(),
             drag: None,
             written_layout: String::new(),
@@ -1010,7 +1014,7 @@ impl AppWindow {
             agents: agents.iter().map(|a| a.app.clone()).collect(),
             spaces: m.spaces.len(),
             tabs: m.spaces.iter().map(|p| p.tabs.len()).sum(),
-            terminals: m.spaces.iter().flat_map(|p| &p.tabs).map(|c| model::addresses(&c.root).len()).sum(),
+            terminals: m.spaces.iter().flat_map(|p| &p.tabs).map(|c| c.addresses().len()).sum(),
             layout: self.layout_name.clone(),
             mods: self.visible().1.into_iter().map(|(_, i)| i.name).collect(),
             theme: settings::get().theme.clone(),
@@ -1331,7 +1335,7 @@ impl AppWindow {
     /// Live folders used for unnamed spaces; not restart state.
     fn note_pane_folders(&mut self) {
         let panes: Vec<(String, String)> =
-            self.model.tabs().flat_map(|c| c.root.terminals()).filter_map(|n| Some((n.id.clone(), n.terminal()?.to_owned()))).collect();
+            self.model.tabs().flat_map(Tab::terminals).filter_map(|n| Some((n.id.clone(), n.terminal()?.to_owned()))).collect();
         self.model.pane_folders.retain(|p, _| panes.iter().any(|(id, _)| id == p));
         for (pane, addr) in panes {
             if let Some(cwd) = self.cwds.get(&addr) {
@@ -1484,8 +1488,13 @@ impl AppWindow {
                 HeaderContent::Mod { name, props } => Some((name.clone(), props.clone())),
                 HeaderContent::Builtin(_) => None,
             });
-            for n in c.shown().visible_blocks() {
-                if let Some((name, props)) = &header
+            let float_header = self.float_frame().and_then(|f| f.header.as_ref()).and_then(|h| match &h.content {
+                HeaderContent::Mod { name, props } => Some((name.clone(), props.clone())),
+                HeaderContent::Builtin(_) => None,
+            });
+            let tiled = c.shown().visible_blocks().into_iter().map(|n| (n, &header));
+            for (n, header) in tiled.chain(c.shown_floats().map(|f| (&f.pane, &float_header))) {
+                if let Some((name, props)) = header
                     && n.is_pane()
                 {
                     mods.push(pane_header_mod(n, name, props));
@@ -1545,7 +1554,7 @@ impl AppWindow {
                 HeaderContent::Builtin(_) => None,
             });
         for c in self.model.tabs() {
-            for n in c.root.walk() {
+            for n in c.panes() {
                 if let Some(Content::Mod { name, props }) = n.content() {
                     out.insert(n.id.clone(), inst(name, props));
                 }
@@ -1677,7 +1686,7 @@ impl AppWindow {
         // Every tab's terminals stay attached (only visible ones are drawn): tab
         // switches are instant and kitty images survive, which a repaint can't bring back.
         for c in self.model.tabs() {
-            for n in c.root.terminals() {
+            for n in c.terminals() {
                 if let Some(a) = n.terminal()
                     && !terms.iter().any(|(id, _)| *id == n.id)
                 {
@@ -1758,7 +1767,7 @@ impl AppWindow {
         }
         // Mod blocks too, so `pane.go` goes back to a mod it came from.
         self.pane_history.retain(|id| {
-            self.copies.contains_key(id) || self.model.spaces.iter().any(|s| s.tabs.iter().any(|t| t.root.find(id).is_some()))
+            self.copies.contains_key(id) || self.model.tabs().any(|t| t.find(id).is_some())
         });
         if let Some(id) = self.focused_block.as_ref().or(model_pane.as_ref()) {
             remember_pane(&mut self.pane_history, id);
@@ -2090,10 +2099,12 @@ impl AppWindow {
         let mut next_tick: Option<u64> = None;
         for pr in &m.spaces {
             for (ci, ctx) in pr.tabs.iter().enumerate() {
-                let names = if auto_names_on { crate::pane_names::for_tab(ctx.root.panes().iter().map(|p| p.id.as_str())) } else { HashMap::new() };
-                for p in ctx.root.panes() {
+                let tab_panes = ctx.panes();
+                let names = if auto_names_on { crate::pane_names::for_tab(tab_panes.iter().map(|p| p.id.as_str())) } else { HashMap::new() };
+                for p in tab_panes {
                     let focused = m.active.as_deref() == Some(pr.id.as_str()) && focused_pane.as_deref() == Some(p.id.as_str());
                     let zoomed = ctx.zoomed.as_deref() == Some(p.id.as_str());
+                    let floating = ctx.floating.iter().position(|f| f.pane.id == p.id).map(|z| json!({ "rect": ctx.floating[z].rect, "z": z, "hidden": false }));
                     // A mod pane: what it shows, no terminal.
                     if let Some(Content::Mod { name, .. }) = p.content() {
                         let label = crate::pane_label::given(p.title.as_deref()).unwrap_or(name);
@@ -2101,7 +2112,7 @@ impl AppWindow {
                         let icon = crate::pane_icons::pane(own, None, label, icon_style);
                         icons.insert(&p.id, icon.clone());
                         shown_labels.insert(&p.id, label.to_owned());
-                        panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "tab": ctx.id, "title": name, "name": p.title, "auto_name": null, "label": label, "session": null, "icon": icon, "own_icon": own, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
+                        panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "tab": ctx.id, "title": name, "name": p.title, "auto_name": null, "label": label, "session": null, "icon": icon, "own_icon": own, "focused": focused, "zoomed": zoomed, "floating": floating, "movable": self.pane_movable(&p.id) }));
                         continue;
                     }
                     let Some(addr) = p.terminal() else { continue };
@@ -2152,7 +2163,7 @@ impl AppWindow {
                         "label": label, "session": session, "icon": icon, "own_icon": own,
                         "cwd": cwd, "branch": m.folder_info.get(addr).and_then(|f| f.branch.clone()),
                         "status": m.status(addr), "app": a.and_then(|a| a.app.clone()), "program": program,
-                        "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id),
+                        "focused": focused, "zoomed": zoomed, "floating": floating, "movable": self.pane_movable(&p.id),
                         "text_size": self.pane_term(&p.id).and_then(|t| t.view.read(cx).text_size()),
                         "header_info": header_info,
                     }));
@@ -2342,7 +2353,7 @@ impl AppWindow {
         for p in &m.spaces {
             let name = m.space_name(p, &home);
             for c in &p.tabs {
-                for a in model::addresses(&c.root) {
+                for a in c.addresses() {
                     want.insert(a, format!("{name} / {}", Model::tab_name(p, c)));
                 }
             }
@@ -3033,7 +3044,7 @@ impl AppWindow {
         if QUITTING.load(std::sync::atomic::Ordering::SeqCst) {
             return false;
         }
-        let missing = self.model.tabs().flat_map(|c| c.root.terminals())
+        let missing = self.model.tabs().flat_map(Tab::terminals)
             .filter_map(|n| n.terminal().filter(|a| !self.live.contains_key(*a) && !self.just_born(a)).map(|a| (n.id.clone(), a.to_owned())))
             .collect::<Vec<_>>();
         if !missing.is_empty() && !self.checking_closed {
@@ -3109,7 +3120,9 @@ impl AppWindow {
             self.model.active = active.or(Some(space.to_owned()));
             return;
         }
-        let target = self.model.tab(&ctx_id).and_then(|c| c.root.panes().last().map(|p| p.id.clone()));
+        // Its last tiled pane; a tab holding only floating panes splits one of
+        // them, which lands in its tiled tree (`Tab::panes` lists the tiled first).
+        let target = self.model.tab(&ctx_id).and_then(|c| c.panes().get(c.tiled_count().saturating_sub(1)).map(|p| p.id.clone()));
         if let Some(target) = target {
             let tab = self.model.tab_of(&target).unwrap();
             let focused = tab.focused.clone();
@@ -3525,7 +3538,7 @@ impl AppWindow {
                 }
                 if self.model.pane_of(&address).is_none() {
                     let destination = target.filter(|p| self.model.tab_of(p).is_some_and(|t| t.id == tab))
-                        .or_else(|| self.model.tab(&tab).and_then(|t| t.root.panes().first().map(|p| p.id.clone())));
+                        .or_else(|| self.model.tab(&tab).and_then(|t| t.panes().first().map(|p| p.id.clone())));
                     if let Some(target) = destination {
                         self.model.split(&target, axis, &pane, &address);
                     } else {
@@ -3704,7 +3717,9 @@ impl AppWindow {
             if !args.is_object() { args = json!({}); }
             args["machine"] = json!(machine);
         }
-        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "tab.move_left" | "tab.move_right" | "tab.set_icon" | "pane.split" | "pane.close" | "pane.rename" | "pane.set_icon" | "pane.swap" | "pane.arrange" | "terminal.keep" | "terminal.park") {
+        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "tab.move_left" | "tab.move_right" | "tab.set_icon" | "pane.split" | "pane.close" | "pane.rename" | "pane.set_icon" | "pane.swap" | "pane.arrange" | "terminal.keep" | "terminal.park")
+            || pane_floats::COMMANDS.contains(&name)
+        {
             let node = ["id", "space", "pane"].into_iter().find_map(|k| Self::arg(&args, k))
                 .or_else(|| if name == "pane.arrange" { Self::arg(&args, "tab") } else { None });
             let target = node.and_then(|id| self.model.space(id).or_else(|| self.model.space_of(id))).or_else(|| self.model.active_space());
@@ -3779,7 +3794,7 @@ impl AppWindow {
                     if !person {
                         return self.fail("space.close ends its terminals: pass confirmed: true");
                     }
-                    let panes: usize = p.tabs.iter().map(|c| c.root.panes().len()).sum();
+                    let panes: usize = p.tabs.iter().map(|c| c.panes().len()).sum();
                     let detail = format!("{} \u{2014} {} tabs, {} terminals", self.model.space_name(p, &home()), p.tabs.len(), panes);
                     self.confirm("Close space?", &detail, "space.close", json!({ "id": id, "confirmed": true }), window, cx);
                     return;
@@ -3898,10 +3913,10 @@ impl AppWindow {
             "pane.close" => {
                 let Some(pane) = Self::owned(a, "pane").or_else(|| self.model.focused_pane()) else { return self.fail("no pane to close") };
                 let Some(c) = self.model.tab_of(&pane) else { return self.fail(format!("no pane {pane:?}")) };
-                if c.root.find(&pane).is_some_and(|n| !n.closable()) {
+                if c.find(&pane).is_some_and(|n| !n.closable()) {
                     return;
                 }
-                if c.root.panes().len() == 1 {
+                if c.panes().len() == 1 {
                     let id = c.id.clone();
                     return self.dispatch("tab.close", &json!({ "id": id }), person, window, cx);
                 }
@@ -3921,7 +3936,7 @@ impl AppWindow {
                     Ok(icon) => icon,
                     Err(e) => return self.fail(format!("{name}: {e}")),
                 };
-                let found = if name == "pane.set_icon" { self.model.tab_of(&id).and_then(|c| c.root.find(&id)).is_some_and(|n| n.is_pane()) } else { self.model.tab(&id).is_some() };
+                let found = if name == "pane.set_icon" { self.model.tab_of(&id).and_then(|c| c.pane(&id)).is_some() } else { self.model.tab(&id).is_some() };
                 if !found || !self.model.set_icon(&id, icon) {
                     return self.fail(format!("no {} {id:?}", if name == "pane.set_icon" { "pane" } else { "tab" }));
                 }
@@ -3942,7 +3957,7 @@ impl AppWindow {
                 if let Some(pane) = pane
                     && let Some(ctx) = self.model.tab_of(&pane).map(|c| c.id.clone())
                     && let Some(c) = self.model.tab_mut(&ctx)
-                    && c.root.panes().len() > 1
+                    && c.panes().len() > 1
                 {
                     c.zoomed = if c.zoomed.as_deref() == Some(pane.as_str()) { None } else { Some(pane) };
                 }
@@ -4018,6 +4033,11 @@ impl AppWindow {
                 };
                 let r = self.model.arrange_tab(&tab, mode).map(|()| json!({ "ok": true, "tab": tab, "mode": mode.name() }));
                 self.answer(r);
+            }
+            name if pane_floats::COMMANDS.contains(&name) => {
+                if let Err(e) = self.float_command(name, a, window) {
+                    return self.fail(e);
+                }
             }
             // ---- terminals
             "terminal.open" => {
@@ -4529,16 +4549,18 @@ impl AppWindow {
         if self.chrome.find(id).is_some() {
             return self.chrome.find_mut(id);
         }
-        self.model.spaces.iter_mut().flat_map(|p| p.tabs.iter_mut()).find_map(|c| c.root.find_mut(id))
+        self.model.spaces.iter_mut().flat_map(|p| p.tabs.iter_mut()).find_map(|c| c.find_mut(id))
     }
 
     /// The nearest visible pane, also considering focusable mods for `pane.go`.
     fn neighbor(&self, from: &str, dir: &str, use_history: bool) -> Option<String> {
         let bounds = self.bounds.borrow();
         let cur = *bounds.get(from)?;
-        let mut candidates: Vec<String> = self.model.active_tab().into_iter()
-            .flat_map(|c| c.shown().visible_blocks().into_iter().filter(|n| n.is_pane()).map(|n| n.id.clone()))
-            .collect();
+        // Floating panes first, front to back: the frontmost wins a tie (`nearest` keeps the first).
+        let tab = self.model.active_tab();
+        let floats = tab.into_iter().filter(|_| use_history).flat_map(|c| c.shown_floats().rev().map(|f| f.pane.id.clone()));
+        let tiled = tab.into_iter().flat_map(|c| c.shown().visible_blocks().into_iter().filter(|n| n.is_pane()).map(|n| n.id.clone()));
+        let mut candidates: Vec<String> = floats.chain(tiled).collect();
         if use_history {
             candidates.extend(self.chrome.visible_blocks().into_iter().filter(|n| self.focusable(&n.id)).map(|n| n.id.clone()));
         }
@@ -5143,7 +5165,17 @@ impl AppWindow {
                     .tabs
                     .iter()
                     .map(|c| {
-                        let terms: Vec<Value> = c.root.terminals().iter().filter_map(|n| Some(terminal(&n.id, n.terminal()?))).collect();
+                        let terms: Vec<Value> = c
+                            .terminals()
+                            .iter()
+                            .filter_map(|n| {
+                                let mut t = terminal(&n.id, n.terminal()?);
+                                if let Some(f) = c.float(&n.id) {
+                                    t["floating"] = json!(f.rect);
+                                }
+                                Some(t)
+                            })
+                            .collect();
                         json!({ "id": c.id, "name": Model::tab_name(p, c), "active": Some(&c.id) == active.as_ref(), "settled": c.settled.is_some(), "arrange": c.arrange.map(crate::arrange::Mode::name), "terminals": terms })
                     })
                     .collect();
@@ -5298,7 +5330,7 @@ impl AppWindow {
                 return out;
             }
             if let Some(c) = self.model.active_tab()
-                && let Some(path) = c.root.path_to(p)
+                && let Some(path) = c.path_to(p)
             {
                 out.extend(path);
             }
@@ -5315,7 +5347,7 @@ impl AppWindow {
             _ => None,
         })?;
         let ctx = self.model.active_tab()?;
-        (frame.lone || ctx.root.panes().len() > 1).then_some(frame)
+        (frame.lone || ctx.panes().len() > 1).then_some(frame)
     }
 
     /// A pane in its frame: the look, and the header mod above or below it
@@ -5468,7 +5500,7 @@ impl AppWindow {
                     .into_any_element(),
             },
             Content::Context { .. } => match self.model.active_tab() {
-                Some(c) => self.render_node(c.shown(), focused, self.pane_frame(), cx),
+                Some(c) => self.render_tab(c, focused, cx),
                 None if self.documents.get("").is_some_and(|s| s.layout() == "loading") => div().size_full().into_any_element(),
                 None => {
                     let key = crate::keys::listing().into_iter().find(|(_, _, a)| a == "space.new").map(|(_, k, _)| format!(" ({k})"));
@@ -6032,8 +6064,11 @@ enum SwapBy<'a> {
 }
 
 fn swap_with_neighbor(model: &mut Model, from: &str, explicit: bool, neighbor: Option<String>) -> Result<(), String> {
-    if explicit && model.tab_of(from).and_then(|c| c.root.find(from)).is_none_or(|n| !n.is_pane()) {
+    if explicit && model.tab_of(from).and_then(|c| c.pane(from)).is_none() {
         return Err(format!("no pane {from:?}"));
+    }
+    if model.tab_of(from).is_some_and(|c| c.float(from).is_some()) {
+        return Err("pane.swap direction moves tiled panes: move a floating one with pane.float_move, or swap it with pane.swap target".into());
     }
     let shown = model.active_tab().is_some_and(|c| c.shown().visible_blocks().iter().any(|n| n.id == from));
     if explicit && !shown {
@@ -6064,6 +6099,7 @@ fn swap_by(args: &Value) -> Result<SwapBy<'_>, String> {
 fn needs_model_pane(name: &str, args: &Value) -> bool {
     match name {
         "pane.split" | "pane.close" | "pane.rename" | "pane.set_icon" | "pane.zoom" | "pane.swap" | "pane.menu" | "terminal.show" => AppWindow::arg(args, "pane").is_none(),
+        name if pane_floats::COMMANDS.contains(&name) => AppWindow::arg(args, "pane").is_none(),
         "pane.go" => true,
         "terminal.open" | "terminal.keep" => matches!(AppWindow::arg(args, "place"), Some("right" | "down")),
         _ => false,
@@ -6358,6 +6394,9 @@ impl Render for AppWindow {
         gpui::set_subpixel_bgr(settings::get().subpixel_order == settings::SubpixelOrder::Bgr);
         window.set_font_weight_shift(settings::get().ui_weight_shift());
         window.set_veil(inactive_veil(window.is_window_active()));
+        if self.model.active_tab().is_some_and(|t| !t.floating.is_empty()) {
+            self.float_cell.set(crate::terminal::cell_size(window));
+        }
         // A terminal the person clicked into becomes the focused pane.
         let clicked = self
             .terms
@@ -8129,6 +8168,130 @@ export default class Recent extends View {
         let off = state(cx);
         assert_eq!(off.0, None, "off: an object binding doesn't zoom either");
         assert!(off.4, "off: f6 reached a's program");
+    }
+
+    #[test]
+    fn floating_panes_draw_above_the_tab_and_take_focus_go_and_zoom() {
+        in_own_process("floating_panes");
+    }
+
+    /// Tab t: a | d tiled, b and c floating side by side over d, e floating
+    /// beside them. Floats draw where their rect says, above the tiles; a click
+    /// focuses and raises one without reaching the tile below; `pane.go` moves
+    /// between floats (the front one wins a tie); a zoomed float fills the tab;
+    /// the float commands refuse a tiled pane; and the document and view bring
+    /// it all back after a restart. A float's terminal is never adopted again.
+    #[gpui::test]
+    fn floating_panes(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Model, Tab, pane};
+        use gpui::Modifiers;
+        use serde_json::json;
+        if !running_alone("floating_panes") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        let run = |cx: &mut gpui::VisualTestContext, command: &str, args: serde_json::Value| {
+            let reply = view.update_in(cx, |this, window, cx| this.run_as(command, args, false, window, cx));
+            cx.run_until_parked();
+            reply
+        };
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                this.close_overlay(&id, window, cx);
+            }
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb"), pane("c", "tc"), pane("e", "te"), pane("d", "td")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.select_tab("t");
+            this.model.focus_pane("a");
+            for (a, labels) in [("ta", "t"), ("tb", "t"), ("tc", "t"), ("td", "t"), ("te", "t")] {
+                this.live.insert(a.into(), json!({ "address": a, "keep": true, "labels": { "herdr.space": "s", "herdr.tab": labels } }));
+            }
+        });
+        for (id, rect) in [("b", [0.76, 0.1, 0.22, 0.3]), ("c", [0.76, 0.1, 0.22, 0.3]), ("e", [0.52, 0.1, 0.2, 0.3])] {
+            assert_eq!(run(cx, "pane.float", json!({ "pane": id, "rect": rect })), json!({ "ok": true }), "{id}");
+        }
+        assert!(run(cx, "pane.float", json!({ "pane": "b" }))["error"].as_str().unwrap().contains("already floats"));
+        assert!(run(cx, "pane.float_move:right", json!({ "pane": "a" }))["error"].as_str().unwrap().contains("doesn't float"));
+        assert!(run(cx, "pane.raise", json!({ "pane": "a" }))["error"].is_string());
+        cx.run_until_parked();
+        let (area, b, e, d) = view.update(cx, |this, _| {
+            let bounds = this.bounds.borrow();
+            (bounds["float-layer:t"], bounds["b"], bounds["e"], bounds["d"])
+        });
+        let near = |a: f32, b: f32| (a - b).abs() <= 1.5;
+        assert!(near(f32::from(b.left() - area.left()), 0.76 * f32::from(area.size.width)), "b where its rect says: {b:?} in {area:?}");
+        assert!(d.contains(&b.center()), "b floats over d");
+
+        // A click on e focuses and raises it; d, below, doesn't get it.
+        assert_eq!(run(cx, "pane.lower", json!({ "pane": "e", "to": "back" })), json!({ "ok": true }));
+        run(cx, "pane.focus", json!({ "pane": "a" }));
+        view.update(cx, |this, _| assert_eq!(this.model.tab("t").unwrap().floating[0].pane.id, "e"));
+        cx.simulate_click(e.center(), Modifiers::default());
+        cx.run_until_parked();
+        view.update(cx, |this, _| {
+            assert_eq!(this.model.focused_pane().as_deref(), Some("e"), "the click focused e, not d below it");
+            assert_eq!(this.model.tab("t").unwrap().floating.last().unwrap().pane.id, "e", "and brought it to the front");
+        });
+
+        // pane.go between floats: b and c tie, c is in front of b.
+        run(cx, "pane.go", json!({ "direction": "right" }));
+        view.update(cx, |this, _| assert_eq!(this.model.focused_pane().as_deref(), Some("c")));
+        run(cx, "pane.go", json!({ "direction": "left" }));
+        view.update(cx, |this, _| assert_eq!(this.model.focused_pane().as_deref(), Some("e"), "back to e, not d around them"));
+        run(cx, "pane.float_cycle", json!({}));
+        view.update(cx, |this, _| {
+            let t = this.model.tab("t").unwrap();
+            assert_eq!((t.focused.as_deref(), t.floating.last().map(|f| f.pane.id.as_str())), (Some("b"), Some("b")), "cycling brings the back one forward");
+        });
+
+        // Zoom: a float fills the tab; a zoomed tiled pane keeps the floats above it.
+        run(cx, "pane.zoom", json!({ "pane": "b" }));
+        cx.run_until_parked();
+        view.update(cx, |this, _| {
+            let bounds = this.bounds.borrow();
+            // Inside its 1 px border (no pane frame in this layout).
+            let (b, w) = (f32::from(bounds["b"].size.width), f32::from(area.size.width));
+            assert!((w - 2.0 - b).abs() <= 0.5, "the zoomed float fills the tab: {b} in {w}");
+        });
+        run(cx, "pane.zoom", json!({ "pane": "b" }));
+        run(cx, "pane.zoom", json!({ "pane": "a" }));
+        view.update(cx, |this, _| assert_eq!(this.model.tab("t").unwrap().shown_floats().count(), 3));
+        run(cx, "pane.zoom", json!({ "pane": "a" }));
+
+        // Moves stay inside; resizes keep the corner.
+        run(cx, "pane.float_move", json!({ "pane": "b", "to": "bottom-right" }));
+        run(cx, "pane.float_resize", json!({ "pane": "b", "direction": "right" }));
+        view.update(cx, |this, _| assert_eq!(this.model.tab("t").unwrap().float("b").unwrap().rect, [0.5, 0.5, 0.5, 0.5], "already as wide as it fits"));
+
+        // The orphan scan sees the floats' terminals as placed.
+        view.update_in(cx, |this, window, cx| {
+            this.reconcile(window, cx);
+            assert!(this.changing_terminals.is_empty(), "no float terminal is adopted again: {:?}", this.changing_terminals);
+            assert_eq!(this.model.tab("t").unwrap().panes().len(), 5);
+        });
+
+        // A restart: the document and this screen's view bring back the floats, their order and the focus.
+        let (doc, saved) = view.update(cx, |this, _| (serde_json::to_string(&crate::mirror::Document::capture(&this.model, None)).unwrap(), serde_json::to_string(&crate::mirror::View::capture(&this.model)).unwrap()));
+        let mut back = Model::default();
+        serde_json::from_str::<crate::mirror::Document>(&doc).unwrap().replace(&mut back, None);
+        serde_json::from_str::<crate::mirror::View>(&saved).unwrap().apply(&mut back);
+        view.update(cx, |this, _| {
+            let (t, u) = (this.model.tab("t").unwrap(), back.tab("t").unwrap());
+            assert_eq!(u.floating, t.floating);
+            assert_eq!((u.focused.as_deref(), u.tiled_count()), (Some("b"), 2));
+        });
+
+        // Docking puts each back; the tab reads a b c e d again.
+        for id in ["e", "c", "b"] {
+            assert_eq!(run(cx, "pane.dock", json!({ "pane": id })), json!({ "ok": true }), "{id}");
+        }
+        view.update(cx, |this, _| {
+            let order: Vec<String> = crate::arrange::reading_order(&this.model.tab("t").unwrap().root).iter().map(|n| n.id.clone()).collect();
+            assert_eq!(order, ["a", "b", "c", "e", "d"]);
+        });
     }
 
     #[test]
