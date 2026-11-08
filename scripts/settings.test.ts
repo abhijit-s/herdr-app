@@ -52,8 +52,8 @@ const values: Record<string, any> = {
   // Pages search reads besides Text and Look: a build from source that checks nothing.
   updates: () => ({ app: { version: "0.1.0", updates: false }, core: { version: "0.1.17" }, checks: false }), telemetry: () => null,
   hc: async (args: string[]) => (args.join(" ") === "machine ls --json" ? { code: 0, stdout: JSON.stringify({ machines: machineDisk }) } : { code: 1, stderr: "no" }),
-  // Herdr's preview of a pane_header_info template: here, the template as one segment.
-  headerInfoPreview: (template: string) => ({ text: template, segments: [{ sep: "", text: template, ask: false }] }),
+  // Herdr's preview of a pane_header_info template: here, the template as one segment (a test may swap it).
+  headerInfoPreview: (template: string) => previewOf(template),
   appHome: () => "/home", notify: (n: any) => { disk.toasts.push(n); },
   shared: (key: string) => (key === "layout" ? layoutDisk.name : sharedDisk[key]), run: (name: string, args: any) => { layoutDisk.runs.push([name, args]); },
   layout: () => { layoutDisk.layoutReads++; return layoutDisk.shown; },
@@ -79,6 +79,8 @@ const values: Record<string, any> = {
     disk.raw = text;
   },
 };
+// What headerInfoPreview gives for a template.
+let previewOf = (template: string): any => ({ text: template, segments: [{ sep: "", text: template, ask: false }] });
 // settings.json as the mod sees it through readTextFile / writeTextFile.
 const disk: { raw: string | null; writes: number; fail?: string; readFail?: string; toasts: any[] } = { raw: null, writes: 0, toasts: [] };
 // Timers the Settings window starts, and a click's context that records them.
@@ -1320,4 +1322,22 @@ test("header info: a save keeps what the field holds; opening fills it from sett
   await finished;
   expect(JSON.parse(disk.raw!)).toEqual({ pane_header_info: "{branch}" });
   expect(input.value()).toBe("{branch}");
+});
+
+test("header info: the preview draws separators as the pane header does, the mark with 4 px either side", () => {
+  const one = previewOf;
+  previewOf = (template: string) => ({ text: template, segments: [{ sep: "", text: "approve", ask: true }, { sep: " · ", text: "main", ask: false }, { sep: "|", text: "idle", ask: false }] });
+  const view = new Settings();
+  view.person = { pane_header_info: "{ask} · {branch}|{state}" };
+  composed = {};
+  view.headerInputState();
+  const row = (template: string) => {
+    view.headerInput.set_value(template);
+    return find(view.page("activity", new Proxy({}, { get: (_t, k) => `#${String(k)}` }), {}), "st-hi-preview");
+  };
+  const seps = (n: any) => (n?.nodes ?? []).filter((c: any) => c?.calls?.px);
+  const shown = row("{ask} · {branch}|{state}");
+  expect(texts(shown)).toEqual(["approve", "\u00b7", "main", "|", "idle"]);
+  expect(seps(shown).map((c: any) => [c.calls.px, c.calls.text_color, texts(c)])).toEqual([[[4], ["#dim"], ["\u00b7"]], [[4], ["#dim"], ["|"]]]);
+  previewOf = one;
 });

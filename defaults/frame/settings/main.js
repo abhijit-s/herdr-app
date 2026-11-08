@@ -280,6 +280,12 @@ const FOCUS_WIDTHS = [
 // Theme colors offered for the active pane's border (colors.focus).
 const FOCUS_SWATCHES = ["ansi1", "ansi2", "ansi3", "ansi4", "ansi5", "ansi6", "terminal_foreground"];
 // pane_header_info's suggestion: what the agent asks, the branch, the state and for how long.
+// A header info separator as the pane header mods draw it (their separator()): the mark
+// alone with SEP_PAD (4) px either side, which is how fitHeaderInfo measures it.
+function headerSeparator(t, sep) {
+  return div().flex_none().px(4).text_color(t.dim).child(sep.trim() || sep);
+}
+
 const SUGGESTED_HEADER_INFO = "{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed}";
 
 const RESUME_AGENTS = [
@@ -1698,7 +1704,7 @@ export default class Settings extends View {
           .when(Boolean(preview), (el) =>
             el.tooltip(preview.text).overflow_hidden().children(
               preview.segments.flatMap((s, i) => [
-                ...(s.sep ? [div().flex_none().whitespace_nowrap().text_color(t.dim).child(s.sep)] : []),
+                ...(s.sep ? [headerSeparator(t, s.sep)] : []),
                 div().when(i === preview.segments.length - 1, (d) => d.min_w(0).truncate()).when(i < preview.segments.length - 1, (d) => d.flex_none().whitespace_nowrap()).text_color(s.ask ? t.blocked : t.dim).child(s.text),
               ]),
             ),
