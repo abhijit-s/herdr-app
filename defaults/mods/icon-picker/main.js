@@ -84,27 +84,48 @@ export default class IconPicker extends View {
     this.handle = cx.focus_handle();
     this.scroll = VirtualListScrollHandle.new();
     this.input = InputState.new({ placeholder: "Search every glyph and emoji…" });
-    this.input.on("change", (_e, cx) => this.find(this.input.value(), cx));
+    // Typing on the Letter tab, which has no tiles to search, searches every set.
+    this.input.on("change", (_e, cx) => {
+      const query = this.input.value();
+      const s = subject(props());
+      if (query.trim() && s && this.tabOf(s) === "letter") this.tab = "suggested";
+      this.find(query, cx);
+    });
+    // The box reports Enter as submit and also passes it on to on_key_down: pick() takes the first.
     this.input.on("submit", () => this.pickAt());
     this.input.focus();
-    this.failed = false;
+    // The name files not read yet (null), or the kinds whose file couldn't be read.
+    this.unread = null;
+    this.picked = false;
     cx.spawn(async (cx) => {
       const home = appHome();
-      try {
-        const [g, e] = await Promise.all([readTextFile(`${home}/${NAMES}/glyphs.json`), readTextFile(`${home}/${NAMES}/emoji.json`)]);
-        this.loaded(g, e);
-        this.failed = !g && !e;
-      } catch {
-        this.failed = true;
-      }
+      const read = async (file) => {
+        try {
+          return await readTextFile(`${home}/${NAMES}/${file}`);
+        } catch {
+          return null;
+        }
+      };
+      const [g, e] = await Promise.all([read("glyphs.json"), read("emoji.json")]);
+      this.loaded(g, e);
       cx.notify();
     });
   }
 
-  // The name files' text, once read.
+  // The name files' text, once read (null: it couldn't be). Each file stands
+  // alone: one that is missing or broken leaves the other's icons and names.
   loaded(glyphs, emoji) {
-    if (glyphs) this.glyphs = parseGlyphs(glyphs);
-    if (emoji) ({ groups: this.groups, entries: this.emoji } = parseEmoji(emoji));
+    this.unread = [];
+    try {
+      this.glyphs = parseGlyphs(glyphs ?? "");
+    } catch {
+      this.unread.push("glyph");
+    }
+    try {
+      ({ groups: this.groups, entries: this.emoji } = parseEmoji(emoji ?? ""));
+    } catch {
+      this.unread.push("emoji");
+    }
     for (const e of [...(this.glyphs ?? []), ...(this.emoji ?? [])]) if (!this.named.has(e.text)) this.named.set(e.text, e.name);
   }
 
@@ -116,6 +137,8 @@ export default class IconPicker extends View {
   }
 
   pick(s, choice) {
+    if (this.picked) return;
+    this.picked = true;
     if (s.kind === "pane") run("pane.set_icon", { pane: s.id, icon: choice });
     else if (s.kind === "tab") run("tab.set_icon", { id: s.id, icon: choice });
     else {
@@ -149,7 +172,8 @@ export default class IconPicker extends View {
     const entries = tab === "suggested" && !query
       ? [...GLYPHS.map((text) => this.suggested("glyph", text)), ...EMOJI.map((text) => this.suggested("emoji", text))]
       : search(all, query, chip);
-    this.cache = { key, entries, rows: rows(entries, PER_ROW, !query && !chip) };
+    const shownRows = rows(entries, PER_ROW, !query && !chip);
+    this.cache = { key, entries, rows: shownRows, heights: shownRows.map((r) => (r.cells ? ROW_H : HEAD_H)) };
     return this.cache;
   }
 
@@ -203,12 +227,13 @@ export default class IconPicker extends View {
           .child(div().text_color(t.muted).child(x.word))))
       : view.entries.length
         ? div().id("icon-grid-box").relative().flex_1().min_h(0)
-          .child(v_virtual_list("icon-grid", view.rows.length, view.rows.map((r) => (r.cells ? ROW_H : HEAD_H)),
+          .child(v_virtual_list("icon-grid", view.rows.length, view.heights,
             (i) => (view.rows[i].cells ? `r:${view.rows[i].first}` : `h:${view.rows[i].head}`),
             (range) => view.rows.slice(range.start, range.end).map((r) => (r.cells ? h_flex().h(ROW_H).gap(4).children(r.cells.map((e, k) => cell(e, r.first + k))) : head(r.head))))
             .track_scroll(this.scroll).size_full())
           .child(Scrollbar.vertical("icon-grid").absolute().inset_0())
-        : div().id("icon-none").flex_1().py(24).text_color(t.dim).child(this.glyphs || this.emoji ? "Nothing by that name." : this.failed ? "Couldn't read the icon names." : "Reading names…");
+        : div().id("icon-none").flex_1().py(24).text_color(t.dim).child(!this.unread ? "Reading names…" : this.unread.length === 2 ? "Couldn't read the icon names." : "Nothing by that name.");
+    const unread = this.unread?.length === 1 ? `Couldn't read the ${this.unread[0]} names.` : null;
     const sets = tab === "glyph" ? SETS.map(([c, word]) => [c, word]) : tab === "emoji" ? this.groups.map((g) => [g, g]) : null;
     return v_flex().id("icon-picker").track_focus(this.handle).size_full().p(14).gap(8).bg(t.popover).text_size(12.8).text_color(t.foreground)
       .on_key_down((e, cx) => {
@@ -235,6 +260,7 @@ export default class IconPicker extends View {
           .when(c !== this.chip[tab], (x) => x.text_color(t.muted).hover((h) => h.bg(t.hover)))
           .on_click((_e, cx) => { this.chip[tab] = c; this.find(this.query, cx); })
           .child(word)))))
+      .when(Boolean(unread), (el) => el.child(div().id("icon-unread").flex_none().text_size(11.5).text_color(t.dim).child(unread)))
       .child(body)
       .child(h_flex().gap(8).items_center().flex_none()
         .child(div().text_size(11.5).text_color(t.dim).child("Now: "))

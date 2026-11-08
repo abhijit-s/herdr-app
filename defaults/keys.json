@@ -39,8 +39,6 @@
     "ctrl-shift-tab": "tab.prev",
     "alt-]": "tab.next",
     "alt-[": "tab.prev",
-    "alt-shift-[": "tab.move_left",
-    "alt-shift-]": "tab.move_right",
     "ctrl-shift-pagedown": "space.next",
     "ctrl-shift-pageup": "space.prev",
     "alt-down": "agent.next",

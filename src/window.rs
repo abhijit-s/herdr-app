@@ -2556,7 +2556,7 @@ impl AppWindow {
             }
             self.documents.retain(|m, _| m.is_empty() || states.contains_key(m.as_str()));
             let before = self.model.spaces.len();
-            self.model.spaces.retain(|s| s.machine.as_deref().is_none_or(|m| states.contains_key(m)));
+            self.model.retain_machines(|m| states.contains_key(m));
             changed |= before != self.model.spaces.len();
         }
         if !listing || changed || shown(&self.documents) != was {
@@ -3923,10 +3923,7 @@ impl AppWindow {
             "pane.refocus" => {
                 // The keyboard back to what has the focus, without changing it (pane.focus
                 // would end a swapped-in sub-agent and reset the agent shown).
-                if self.overlays.iter().any(|o| o.kind.modal_keys()) { return; }
-                let agent = self.agent_block().and_then(|b| self.shown_agent().and_then(|a| self.agent_view(&b, &a)).map(|t| t.focus.clone()));
-                let pane = self.focused_pane.as_deref().filter(|_| self.focused_block.is_none()).and_then(|p| self.pane_focus(p, cx));
-                pane.or(agent).unwrap_or_else(|| self.focus.clone()).focus(window, cx);
+                self.restore_focus(window, cx);
                 return;
             }
             "pane.go" | "pane.swap" => {
@@ -8700,6 +8697,57 @@ export default class Recent extends View {
         assert_eq!(a, b, "a focused: the same grid for both");
         assert_eq!(grids(cx, "b"), (a, b, area), "b focused: nothing resized");
         view.update_in(cx, |_, window, _| assert_eq!(a, crate::terminal::grid_size(area, crate::terminal::cell_size(window)), "the grid fills the area a new terminal starts in"));
+    }
+
+    #[test]
+    fn pane_refocus_hands_a_focused_mod_block_its_keyboard_back() {
+        in_own_process("refocus_mod_block");
+    }
+
+    /// A tab drag takes the keyboard while a mod pane has the focus; the
+    /// `pane.refocus` after the drop gives it back to that mod (its `focus`
+    /// command), as closing a popup over it does.
+    #[gpui::test]
+    fn refocus_mod_block(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("refocus_mod_block") {
+            return;
+        }
+        let main_js = r#"import { View, div } from "gpui-kit";
+import { nextCommand } from "herdr";
+export default class Keeper extends View {
+  init(_props, cx) {
+    this.focuses = 0;
+    cx.spawn(async (cx) => {
+      for (;;) { if (await nextCommand() === "focus") this.focuses += 1; cx.notify(); }
+    });
+  }
+  render() {
+    return div().size_full().child(div().id("focuses").w(10 + 10 * this.focuses).h(10).flex_none());
+  }
+}"#;
+        let (view, cx) = open_window(cx, "keeper", main_js, json!({ "id": "root", "type": "row", "children": [
+            { "id": "main", "type": "block", "content": { "tab": "active" } },
+            { "id": "side", "type": "block", "size": { "px": 300 }, "content": { "mod": "keeper" } },
+        ] }));
+        view.update_in(cx, |this, window, cx| {
+            this.model.add_space("s1", "one", "", crate::model::Tab::new("a", "a", "pa", "t1"));
+            this.sync(window, cx);
+        });
+        cx.run_until_parked();
+        let focuses = |cx: &mut gpui::VisualTestContext| cx.debug_bounds("focuses").map(|b| (f32::from(b.size.width) as usize - 10) / 10);
+        view.update_in(cx, |this, window, cx| this.focus_block("side", window, cx));
+        cx.run_until_parked();
+        assert_eq!(focuses(cx), Some(1), "the mod pane has the keyboard");
+        view.update_in(cx, |this, window, cx| {
+            let strip = cx.focus_handle();
+            window.focus(&strip, cx);
+            this.run_as("pane.refocus", json!({}), false, window, cx);
+            assert!(this.focus.is_focused(window), "the window holds the keys for the mod");
+            assert_eq!(this.focused_block.as_deref(), Some("side"));
+        });
+        cx.run_until_parked();
+        assert_eq!(focuses(cx), Some(2), "pane.refocus handed the mod its keyboard back");
     }
 
     #[test]

@@ -23,8 +23,9 @@ const CHIP = new Map(SETS.flatMap(([chip, , prefixes]) => prefixes.map((p) => [p
 const ORDER = new Map(SETS.map(([chip], i) => [chip, i]));
 export const setLabel = (chip) => SETS.find(([c]) => c === chip)?.[1] ?? chip;
 
-// A query or a name as both are compared: lower case, words joined by "_".
-const fold = (s) => s.toLowerCase().trim().replace(/[\s-]+/g, "_");
+// A query, name or keyword as they are compared: lower case without accents,
+// letters and digits only, words joined by "_" ("flag: Curaçao" is flag_curacao).
+const fold = (s) => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "_").replace(/^_|_$/g, "");
 
 /**
  * names/glyphs.json's text to entries:
@@ -45,7 +46,7 @@ export function parseEmoji(text) {
   const { groups, emoji } = JSON.parse(text);
   return {
     groups,
-    entries: emoji.map(([text, name, tags, group]) => ({ kind: "emoji", text, name, set: groups[group], keys: [fold(name)], words: tags ? tags.split(" ") : [] })),
+    entries: emoji.map(([text, name, tags, group]) => ({ kind: "emoji", text, name, set: groups[group], keys: [fold(name)], words: tags ? tags.split(" ").map(fold) : [] })),
   };
 }
 
@@ -76,7 +77,8 @@ function rank(e, q) {
 export function search(entries, query, set = null) {
   const pool = set ? entries.filter((e) => e.set === set) : entries;
   const q = fold(query ?? "");
-  if (!q) return pool;
+  // Punctuation alone names nothing (it isn't the empty query).
+  if (!q) return (query ?? "").trim() ? [] : pool;
   const tiers = [[], [], []];
   for (const e of pool) {
     const r = rank(e, q);

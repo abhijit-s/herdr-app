@@ -57,9 +57,9 @@ export function playSound(sound: string): null;
  *   tab.move_left {id?}, tab.move_right {id?} (one place; nothing at the end), tab.next, tab.prev.
  * Panes: pane.split {direction: "right" | "down", pane?}, pane.close {pane?}, pane.zoom {pane?},
  *   pane.zoom_text_in|zoom_text_out|zoom_text_reset {pane?} (a terminal pane's own text size, on top of the app's zoom),
- *   pane.focus {pane | terminal}, pane.refocus (the keyboard back to the focused pane after a mod took it), pane.go {direction}, pane.swap {direction},
+ *   pane.focus {pane | terminal}, pane.refocus (the keyboard back to what has the focus, a focused mod pane included, after a mod took it), pane.go {direction}, pane.swap {direction},
  *   pane.rename {pane?, name?} ("": unnamed again), pane.set_icon {pane?, icon} and tab.set_icon {id?, icon}
- *   (icon: {kind: "glyph" | "emoji", value} or {kind: "letter"}; null: the automatic icon again),
+ *   (icon: {kind: "glyph" | "emoji", value} or {kind: "letter"}; null or absent: the automatic icon again),
  *   pane.menu {pane?} (the pane's menu at the pointer: the layout's terminal_menu mod, else menu).
  *   Pane menus get target { pane, terminal, cwd, selected? } (cwd: the terminal's folder or null;
  *   selected: whether the right-clicked terminal has a selection). focus.toggle_follows_mouse.
@@ -416,11 +416,13 @@ export function fonts(): string[];
  *  nix, mise), which the app never updates. `checked`: unix seconds of the last successful
  *  check; null before success or after a failed check.
  *  `checks`: anything is checked at all (not in a build from source); `checking`: looking now
- *  (`app.check_updates` starts a look). */
+ *  (`app.check_updates` starts a look). `build`: the fork build that made it (`fork.<sha>`, with
+ *  `.dirty` for uncommitted changes), null for a build outside a git checkout and for a core
+ *  that doesn't report one. */
 export function updates(): {
-  app: { version: string; ready: string | null; updates: boolean };
+  app: { version: string; build: string | null; ready: string | null; updates: boolean };
   notes: { version: string; date: string; items: { headline: string; detail: string; fixed: boolean; media: { path: string; width: number; height: number }[] }[]; spotlight: boolean }[];
-  core: { version: string | null; managed: string | null; ready: string | null; updating: boolean; error: string | null };
+  core: { version: string | null; build: string | null; managed: string | null; ready: string | null; updating: boolean; error: string | null };
   checked: number | null;
   checks: boolean;
   checking: boolean;

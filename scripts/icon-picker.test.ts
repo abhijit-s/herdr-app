@@ -43,8 +43,22 @@ test("search ranks exact names, then prefixes, then the rest", () => {
   // A keyword finds an emoji whose name doesn't hold it.
   expect(search(emoji.entries, "launch").map((e) => e.text)).toContain("🚀");
   expect(names("zzzz-nothing")).toEqual([]);
+  expect(names("-")).toEqual([]);
   // The empty query keeps everything, in order.
   expect(search(glyphs, "")).toBe(glyphs);
+});
+
+test("keywords and names match whatever their case, punctuation or accents", () => {
+  const texts = (q: string) => search(emoji.entries, q).map((e) => e.text);
+  // A flag's keyword is its upper-case country code.
+  expect(texts("gb")[0]).toBe("🇬🇧");
+  expect(texts("GB")[0]).toBe("🇬🇧");
+  expect(texts("us")[0]).toBe("🇺🇸");
+  // CLDR names hold colons and commas ("family: man, woman, boy") and accents ("Curaçao").
+  expect(texts("family man").length).toBeGreaterThan(0);
+  expect(search(emoji.entries, "family man").every((e) => e.name.toLowerCase().startsWith("family"))).toBe(true);
+  expect(search(emoji.entries, "curacao").map((e) => e.name)).toContain("flag: Curaçao");
+  expect(search(emoji.entries, "Curaçao").map((e) => e.name)).toContain("flag: Curaçao");
 });
 
 test("set chips keep one set: Powerline holds pl and ple", () => {
@@ -88,11 +102,12 @@ let visible = { start: 0, end: 6 };
 const effects: unknown[][] = [];
 let store: Record<string, any> = {};
 let current: Record<string, any> = {};
+let typed = "";
 const theme = new Proxy({}, { get: (_t, k) => String(k) });
 const pane = { pane: "p1", label: "Build", icon: null, own_icon: null };
 const values: Record<string, any> = {
   View: class {}, div: element, h_flex: element, v_flex: element,
-  Input: { new: element }, InputState: { new: () => ({ on() {}, focus() {}, value: () => "" }) },
+  Input: { new: element }, InputState: { new: () => { const on: Record<string, Function> = {}; return { on(k: string, f: Function) { on[k] = f; }, focus() {}, value: () => typed, handlers: on }; } },
   VirtualListScrollHandle: { new: () => ({ scroll_to_item(i: number) { effects.push(["scroll", i]); } }) },
   Scrollbar: { vertical: element },
   v_virtual_list: (id: string, count: number, sizes: number[], key: (i: number) => string, render: (r: any) => any[]) => {
@@ -208,7 +223,7 @@ test("a shared space shows the icon it wears now, and says so when the names can
   expect(find(view.render(), (e) => e?.nodes?.includes("🐙")).length).toBeGreaterThan(0);
   const broken = open({ pane: "p1" }, false);
   broken.tab = "glyph";
-  broken.failed = true;
+  broken.loaded(null, null);
   expect(find(broken.render(), (e) => e?.nodes?.includes("Couldn't read the icon names.")).length).toBe(1);
 });
 
@@ -219,6 +234,43 @@ test("a shared target's own kinds show beside its letter, and open there when ch
   expect(ids(tree, "icon-repo")).toEqual(["icon-repo"]);
   expect(ids(tree, "icon-letter").filter((i) => i !== "icon-letter-tab")).toEqual(["icon-letter"]);
   expect(find(tree, (e) => e?.calls?.id?.[0] === "icon-repo")[0].calls.border[0]).toBe(2);
+});
+
+test("one name file unread: the other's icons show, and the picker says which it couldn't read", () => {
+  for (const [g, e, unread, kind] of [[glyphText, null, "emoji", "glyph"], [glyphText, "{ not json", "emoji", "glyph"], [null, emojiText, "glyph", "emoji"]] as const) {
+    const view = open({ pane: "p1" }, false);
+    view.loaded(g, e);
+    const tree = view.render();
+    expect(find(tree, (x) => x?.nodes?.includes(`Couldn't read the ${unread} names.`)).length).toBe(1);
+    // Suggested tiles still carry the names that were read.
+    expect(view.shown({ own: null, extra: [] }).entries.find((x: any) => x.kind === kind).name).not.toBe("");
+  }
+  const whole = open({ pane: "p1" });
+  expect(find(whole.render(), (x) => x?.nodes?.some((n: any) => typeof n === "string" && n.startsWith("Couldn't read"))).length).toBe(0);
+});
+
+test("Enter picks once, though the search box also reports it", () => {
+  const view = open({ pane: "p1" });
+  const keys = view.render().calls.on_key_down[0];
+  effects.length = 0;
+  keys({ key: "enter" }, cx);
+  view.input.handlers.submit?.();
+  expect(effects.filter(([k]) => k === "run").length).toBe(1);
+});
+
+test("typing on the Letter tab searches every set", () => {
+  store = { "space.icons": { s1: { kind: "letter" } } };
+  const view = open({ shared: "space.icons", id: "s1", name: "herdr" });
+  expect(find(view.render(), (e) => e?.calls?.id?.[0] === "icon-letter-tab").length).toBe(1);
+  typed = "rocket";
+  view.input.handlers.change(null, cx);
+  typed = "";
+  const tree = view.render();
+  expect(find(tree, (e) => e?.calls?.id?.[0] === "icon-letter-tab").length).toBe(0);
+  expect(view.shown({ own: { kind: "letter" }, extra: [] }).entries.map((e: any) => e.text)).toContain("🚀");
+  // Choosing the Letter tab again, with the query still there, shows it.
+  find(tree, (e) => e?.calls?.id?.[0] === "icon-tab-letter")[0].calls.on_click[0](null, cx);
+  expect(find(view.render(), (e) => e?.calls?.id?.[0] === "icon-letter-tab").length).toBe(1);
 });
 
 test("perf: parse and per-keystroke search over everything", () => {
