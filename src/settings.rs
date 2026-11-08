@@ -1020,6 +1020,10 @@ pub struct Person {
     /// The agent's program icon on its system notifications. On unless set to false.
     #[serde(skip_serializing_if = "is_true")]
     pub notification_icons: bool,
+    /// A "needs you" system notification stays up until the agent is no longer
+    /// blocked, rather than until it is seen. On unless set to false.
+    #[serde(skip_serializing_if = "is_true")]
+    pub notification_sticky: bool,
     /// Bounce the Dock icon when an agent needs you while Herdr is in the background.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub dock_bounce: bool,
@@ -1763,6 +1767,7 @@ impl Default for Person {
             notification_sounds: None,
             notification_marks: false,
             notification_icons: true,
+            notification_sticky: true,
             dock_bounce: false,
             dock_badge: true,
             dock_bounce_on_wait: false,
@@ -1920,6 +1925,7 @@ pub struct Settings {
     pub notification_sounds_problem: Option<String>,
     pub notification_marks: bool,
     pub notification_icons: bool,
+    pub notification_sticky: bool,
     pub dock_bounce: bool,
     pub dock_badge: bool,
     pub dock_bounce_on_wait: bool,
@@ -2019,6 +2025,7 @@ impl Default for Settings {
             notification_sounds_problem: None,
             notification_marks: false,
             notification_icons: true,
+            notification_sticky: true,
             dock_bounce: false,
             dock_badge: true,
             dock_bounce_on_wait: false,
@@ -2110,6 +2117,7 @@ impl Settings {
             notification_sounds_problem,
             notification_marks: person.notification_marks,
             notification_icons: person.notification_icons,
+            notification_sticky: person.notification_sticky,
             dock_bounce: person.dock_bounce,
             dock_badge: person.dock_badge,
             dock_bounce_on_wait: person.dock_bounce_on_wait,

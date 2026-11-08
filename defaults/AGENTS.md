@@ -828,13 +828,15 @@ What's about the user, never a look:
   the toast, with "space / tab" as the body, one per agent (a newer alert
   replaces the older one). `background` sends them only while Herdr isn't
   the app in front; `always` also while it is. Never for the agent the
-  person is looking at. Clicking one brings Herdr forward on that agent;
-  it goes away once the person looks at the agent or it starts working
-  again. The toast shows either way. macOS asks permission the first
+  person is looking at. Clicking one brings Herdr forward on that agent.
+  A "needs you" one stays until the agent is no longer blocked (see
+  `notification_sticky`); the others go once the person looks at
+  the agent or it starts working again. The toast shows either way. macOS asks permission the first
   time; a build not run from an app bundle sends none.
 - `notification_sounds`: the sound each system notification plays (macOS). Absent: silent, as macOS plays none unless asked. One value for every state, or one per state: `{"done": "Glass", "blocked": "Purr", "error": "Basso"}` (a state left out is silent). Each value is `"default"` (the system's notification sound), `"none"` or `false` (silent), `true` (the system's), or a sound's name: a file in `~/Library/Sounds`, `/Library/Sounds` or `/System/Library/Sounds` without its extension (`Glass`, `Purr`, `Basso`, `Tink`, `Ping`, `Hero`, ...). Up to 64 letters, digits, spaces, `-`, `_` and `.`; anything else, or another key, leaves them silent and is reported as a settings problem. A name macOS can't find plays the default sound. These are the notification's own sounds, beside Herdr's `sounds`, which play in the app whether or not a notification goes. Settings > Alerts > Notifications has it as "Notification sound".
 - `notification_marks`: `true` puts the agent's glyph before an agent notification's title (Claude 🤖, Codex 🧠, Gemini ✨, Cursor 🖱️, Copilot 🚀, Aider 🛠️, Crush 💜, OpenCode 📂, Amp ⚡, others 🤖) and the state's mark before its body (✋ needs you, 🔴 error, ✅ finished): "🤖 Claude needs you" over "✋ approve Bash: make". Off by default; Settings > Alerts > Notifications has it as "Marks".
 - `notification_icons`: the agent's program icon (programs.json's `icon`, drawn as the agents list draws it: a one-color glyph in its `color` on its `tile`, or a picture) shows with its system notification on macOS. Drawn once per program and look into `cache/notification-icons/` in the home folder. A program without an icon, or one that can't be read, shows none. On by default; `false` leaves them off. Settings > Alerts > Notifications has it as "Agent icons".
+- `notification_sticky`: a "needs you" system notification (an agent blocked on a question, a permission or a login) stays in the notification center until the agent leaves blocked or error: it reports working, idle or done, stops reporting, or its pane closes or its terminal ends. It goes when the program exits back to its shell only once the core reports that change; until then the agents list still shows it as needing you. One still up when Herdr quits or restarts is picked up again on its next start. Looking at the agent doesn't take it down, so one seen in passing is still there to come back to. Blocked again later, the agent's new notification replaces the old one. Error and finished notifications still go once the person looks at the agent. On by default; `false` takes a "needs you" notification down once seen, as the others are. settings.json only.
 - `dock_bounce`: `true` bounces the Dock icon when an agent needs the
   person while Herdr is in the background. Off by default. Settings >
   Alerts > Notifications has it as "Bounce the Dock icon".

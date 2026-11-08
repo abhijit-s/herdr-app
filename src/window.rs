@@ -608,8 +608,9 @@ pub struct AppWindow {
     /// The next time a pane's `{elapsed}` reads differently, and the timer
     /// that publishes then (header_info.rs).
     header_tick: Option<(u64, Task<()>)>,
-    /// Agents with a system notification up (alert.rs), taken down once seen.
-    notified: HashSet<String>,
+    /// Agents with a system notification up (alert.rs), taken down once old
+    /// news (`Notified::withdraw`).
+    notified: crate::alert::Notified,
     /// Which agent each `system.notify` notification focuses when clicked.
     notify_clicks: crate::alert::NotifyClicks,
     /// Agents that don't report (OSC 7501), read off their screens (harness.rs).
@@ -726,7 +727,7 @@ impl AppWindow {
             tab_shown: true,
             pane_history: Vec::new(),
             window_active: true,
-            notified: HashSet::new(),
+            notified: Default::default(),
             notify_clicks: crate::alert::NotifyClicks::default(),
             unreported: Default::default(),
             alert_command_errors: HashSet::new(),
@@ -794,7 +795,7 @@ impl AppWindow {
                 let _ = this.update(cx, |this, cx| {
                     let addr = match crate::alert::address_of(&response.tag) {
                         Some(addr) => {
-                            this.notified.remove(addr);
+                            this.notified.forget(addr);
                             addr.to_owned()
                         }
                         None => match this.notify_clicks.clicked(&response.tag) {
@@ -2604,6 +2605,8 @@ impl AppWindow {
         // title, stripped above) is an ordinary tick, not news for the mods.
         let terminals_changed = mods::publish_terminals(list);
         self.tend_terminals(terminals_changed, window, cx);
+        // Only a listing from the core counts: a tick before it has no terminals.
+        self.listed_once = true;
         if terminals_changed {
             self.refresh_snapshot_mods(cx);
         }
@@ -2619,6 +2622,7 @@ impl AppWindow {
         let mut changed = self.reconcile(window, cx);
         let visible: HashSet<String> = self.visible_addresses().into_iter().collect();
         let mut alerts = Vec::new();
+        let sticky = settings::get().notification_sticky;
         let terms = &self.terms;
         let view = |addr: &str| terms.values().find(|t| t.address == addr).map(|t| t.view.read(cx));
         let unreported = self.unreported.update(crate::harness::registry(), &self.live, Instant::now(), |addr| view(addr).map(|v| v.writes()), |addr, lines| {
@@ -2638,10 +2642,7 @@ impl AppWindow {
             if let Some(alert) = self.model.alert_for(addr, child, prev.as_deref(), word.as_deref(), looking) {
                 alerts.push((addr.clone(), alert, prev.clone(), looking));
             }
-            // Seen, or back at work: its notification is old news.
-            if (looking || word.as_deref() == Some("working")) && self.notified.remove(addr) {
-                crate::alert::dismiss(&crate::alert::tag(addr), cx);
-            }
+            let said = word.clone();
             changed |= self.model.set_word(addr, word, app, looking);
             let turn = rec.get("turn").and_then(Value::as_u64).unwrap_or(0);
             let label = rec.pointer("/labels/herdr.seen").and_then(Value::as_str).and_then(|s| s.parse::<u64>().ok());
@@ -2650,9 +2651,23 @@ impl AppWindow {
             // seen flag does (`Model::status`).
             let seen_turn = if unreported.contains_key(addr) { None } else { label.max(self.written_seen.get(addr).copied()) };
             changed |= self.model.set_turn(addr, turn, seen_turn);
+            // A notification from before Herdr started (a quit, a crash, an
+            // update) can still be up: the core outlived it. Adopt the one the
+            // agent's state would have posted, and take any other down.
+            if !self.listed_once && !child {
+                match (said.as_deref(), self.model.status(addr)) {
+                    (Some("blocked"), _) => self.notified.posted(addr, model::Alert::Blocked),
+                    (Some("error"), _) => self.notified.posted(addr, model::Alert::Error),
+                    (_, Some("done")) => self.notified.posted(addr, model::Alert::Done),
+                    _ => crate::alert::dismiss(&crate::alert::tag(addr), cx),
+                }
+            }
+            if self.notified.withdraw(addr, said.as_deref(), looking, sticky) {
+                crate::alert::dismiss(&crate::alert::tag(addr), cx);
+            }
         }
         self.written_seen.retain(|a, _| self.live.contains_key(a));
-        for gone in self.notified.extract_if(|a| !self.live.contains_key(a)) {
+        for gone in self.notified.gone(|a| self.live.contains_key(a)) {
             crate::alert::dismiss(&crate::alert::tag(&gone), cx);
         }
         changed |= self.share_seen(cx);
@@ -2671,7 +2686,6 @@ impl AppWindow {
             }
             self.tell_term(&t.view, &t.address, cx);
         }
-        self.listed_once = true;
         if changed {
             self.sync(window, cx);
         } else if listed {
@@ -2914,10 +2928,10 @@ impl AppWindow {
         if crate::alert::should_notify(settings.system_notifications, self.window_active, looking) {
             match crate::alert::send(&note, &settings, cx) {
                 crate::alert::Sent::Posted => {
-                    self.notified.insert(addr.to_owned());
+                    self.notified.posted(addr, alert);
                 }
                 crate::alert::Sent::Fallback(why) => {
-                    self.notified.insert(addr.to_owned());
+                    self.notified.posted(addr, alert);
                     self.alert_command_failed(why, window, cx);
                 }
                 // It may have shown something before failing: the system
@@ -2927,8 +2941,15 @@ impl AppWindow {
                     cx.spawn_in(window, async move |this, cx| {
                         let Ok(why) = failed.recv().await else { return };
                         let _ = this.update_in(cx, |this, window, cx| {
-                            crate::alert::post(&note, &settings::get(), cx);
-                            this.notified.insert(note.address.clone());
+                            // Up to 30 s on: only if it is still news and the
+                            // person isn't looking at the agent now.
+                            let settings = settings::get();
+                            let looking = this.window_active && this.visible_addresses().contains(&note.address);
+                            let word = this.model.agents.get(&note.address).and_then(|a| a.word.clone());
+                            if this.live.contains_key(&note.address) && crate::alert::still_says(note.alert, word.as_deref()) && crate::alert::should_notify(settings.system_notifications, this.window_active, looking) {
+                                crate::alert::post(&note, &settings, cx);
+                                this.notified.posted(&note.address, note.alert);
+                            }
                             this.alert_command_failed(why, window, cx);
                         });
                     })
@@ -8134,6 +8155,8 @@ export default class Recent extends View {
         // The shell's exit comes back from the reaper's own thread.
         cx.executor().allow_parking();
         let (view, cx) = open_window(cx, "unused", "", json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
+        // Still running when the late notification comes: it posts only then.
+        view.update(cx, |this, _| { this.live.insert("t1".into(), json!({ "address": "t1", "state": "live" })); });
         let toasts = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.overlays.iter().filter(|o| o.kind == super::OverlayKind::Toast).count());
         let alert_with = |command: AlertCommand, cx: &mut gpui::VisualTestContext| {
             cx.update(|window, cx| view.update(cx, |this, cx| {
@@ -8451,6 +8474,108 @@ export default class Recent extends View {
         assert_eq!(shown(cx), "2", "on puts the count back");
         list(json!([agent("t1", "working"), agent("t2", "working")]), cx);
         assert_eq!(shown(cx), "", "nothing waits: no badge");
+    }
+
+    #[test]
+    fn a_needs_you_notification_stays_until_the_agent_is_unblocked() {
+        in_own_process("sticky_needs_you");
+    }
+
+    /// Through the window's own listings: a "needs you" notification outlives
+    /// the person looking at the agent, and goes once the agent unblocks or
+    /// its terminal goes; with `notification_sticky: false`, seeing it is enough.
+    #[gpui::test]
+    fn sticky_needs_you(cx: &mut gpui::TestAppContext) {
+        use crate::settings::SystemNotifications;
+        use serde_json::json;
+        if !running_alone("sticky_needs_you") {
+            return;
+        }
+        cx.update(|cx| cx.set_app_identity("dev.herdr.test", "Herdr"));
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
+        view.update(cx, |this, _| this.model.add_space("p1", "api", "/src/api", crate::model::Tab::new("c1", "one", "x1", "t1")));
+        let set = |sticky: bool, cx: &mut gpui::VisualTestContext| cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.person.sounds.enabled = false;
+            this.person.system_notifications = SystemNotifications::Always;
+            this.person.notification_sticky = sticky;
+            this.apply_look(window, cx);
+        }));
+        // The core's turn and the shared seen turn (`herdr.seen`) say whether
+        // a finish was seen, also to a window that just started.
+        let list_turns = |state: Option<&str>, turns: Option<(u64, u64)>, looking: bool, cx: &mut gpui::VisualTestContext| {
+            let terminals = match (state, turns) {
+                (Some(state), Some((turn, seen))) => json!([{ "address": "t1", "state": "live", "status": { "state": state }, "turn": turn, "labels": { "herdr.seen": seen.to_string() } }]),
+                (Some(state), None) => json!([{ "address": "t1", "state": "live", "status": { "state": state } }]),
+                (None, _) => json!([]),
+            };
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                this.window_active = looking;
+                this.terminals_listed(json!({ "terminals": terminals }), window, cx);
+            }));
+            cx.run_until_parked();
+            cx.delivered_system_notifications().iter().map(|n| n.title.to_string()).collect::<Vec<_>>()
+        };
+        let list = |state: Option<&str>, looking: bool, cx: &mut gpui::VisualTestContext| list_turns(state, None, looking, cx);
+        view.update(cx, |this, _| assert!(this.visible_addresses().contains(&"t1".to_owned()), "t1 is on screen: looking is the window being active"));
+        let none: Vec<String> = Vec::new();
+        set(true, cx);
+        list(Some("working"), false, cx);
+        assert_eq!(list(Some("blocked"), false, cx), ["An agent needs you"]);
+        assert_eq!(list(Some("blocked"), true, cx), ["An agent needs you"], "seen: it stays");
+        assert_eq!(list(Some("blocked"), false, cx), ["An agent needs you"]);
+        assert_eq!(list(Some("working"), false, cx), none, "unblocked: withdrawn");
+        assert_eq!(list(Some("blocked"), true, cx), none, "blocked while looking: nothing posted");
+        list(Some("working"), false, cx);
+        assert_eq!(list(Some("blocked"), false, cx), ["An agent needs you"], "blocked again");
+        assert_eq!(list(None, false, cx), none, "its terminal gone: withdrawn");
+        list(Some("working"), false, cx);
+        list(Some("blocked"), false, cx);
+        assert_eq!(list(Some("idle"), false, cx), ["An agent finished"], "unblocked unseen: one finished in its place");
+        list(Some("working"), false, cx);
+
+        // Herdr restarts while a notification is up: the core kept the agent,
+        // and the new window adopts what may be up from its first listing.
+        // A new window knows nothing of the terminals until the core lists them.
+        let restart = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| {
+            this.notified = Default::default();
+            this.listed_once = false;
+            this.model.agents.clear();
+            this.live.clear();
+            this.written_seen.clear();
+        });
+        assert_eq!(list(Some("blocked"), false, cx), ["An agent needs you"]);
+        restart(cx);
+        assert_eq!(list(Some("blocked"), false, cx), ["An agent needs you"], "adopted, still up");
+        assert_eq!(list(Some("blocked"), true, cx), ["An agent needs you"], "adopted as a needs-you: seen, it stays");
+        assert_eq!(list(Some("working"), false, cx), none, "adopted, then unblocked: withdrawn");
+        assert_eq!(list(Some("blocked"), false, cx), ["An agent needs you"]);
+        restart(cx);
+        assert_eq!(list(Some("working"), false, cx), none, "unblocked while Herdr was down: taken down on the first listing");
+        assert_eq!(list(Some("error"), false, cx), ["An agent hit an error"]);
+        restart(cx);
+        assert_eq!(list(Some("error"), false, cx), ["An agent hit an error"], "an error's adopted");
+        assert_eq!(list(Some("error"), true, cx), none, "adopted as an error: seen, it goes");
+        list_turns(Some("working"), Some((1, 1)), false, cx);
+        assert_eq!(list_turns(Some("idle"), Some((2, 1)), false, cx), ["An agent finished"]);
+        restart(cx);
+        assert_eq!(list_turns(Some("idle"), Some((2, 1)), false, cx), ["An agent finished"], "an unseen finish (turn 2, seen 1) is adopted");
+        assert_eq!(list_turns(Some("idle"), Some((2, 1)), true, cx), none, "adopted as a finish: seen, it goes");
+        list_turns(Some("working"), Some((2, 2)), false, cx);
+        assert_eq!(list_turns(Some("idle"), Some((3, 2)), false, cx), ["An agent finished"]);
+        restart(cx);
+        assert_eq!(list_turns(Some("idle"), Some((3, 3)), false, cx), none, "a finish seen elsewhere meanwhile goes on the first listing");
+        // A tick before the core's first listing has no terminals: it
+        // mustn't count as the first listing.
+        list(Some("working"), false, cx);
+        assert_eq!(list(Some("blocked"), false, cx), ["An agent needs you"]);
+        restart(cx);
+        cx.update(|window, cx| view.update(cx, |this, cx| this.tend_terminals(false, window, cx)));
+        assert_eq!(list(Some("working"), false, cx), none, "adoption waited for the real listing");
+
+        set(false, cx);
+        list(Some("working"), false, cx);
+        assert_eq!(list(Some("blocked"), false, cx), ["An agent needs you"]);
+        assert_eq!(list(Some("blocked"), true, cx), none, "not sticky: seen takes it down");
     }
 
     #[test]
