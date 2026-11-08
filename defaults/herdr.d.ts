@@ -373,7 +373,8 @@ export function modActions(): { mod: string; title: string; command: string; arg
 
 /** Every mod's terminal menu items (the `menu_items` in its mod.json), in folder order, as the shipped
  *  `menu` lists them after its own. Run one on the right-clicked target: set each `fill` argument from
- *  the menu's `props().target` (`pane`, `terminal`; `props` gets `{ ...args.props, target }`), and show
+ *  the menu's `props().target` (`pane`, `terminal`; `props` gets `{ ...args.props, target }`, so the
+ *  clicked target replaces an entry's own `props.target`), and show
  *  it only when `when` holds (`selected`, `cwd`, or `pane`: the target is a tab's pane) and the target
  *  has what it fills (a terminal outside a tab has no pane). `icon`: a path for `svg()`, or null.
  *  Entries the app can't run are left out and named in `herdr-app status`. Live: changes as mods do. */

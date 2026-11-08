@@ -1579,6 +1579,47 @@ fn pane_menu_lists_mods_items_in_groups(cx: &mut TestAppContext) {
     assert!(block.contains(&"Grab selection".into()) && !block.iter().any(|t| t == "Move to…" || t == "Split under"), "a terminal outside a tab has no pane: {block:?}");
 }
 
+/// A pane menu taller than its popup: the items scroll within `props.height`,
+/// Close pane stays pinned below them, and the keyboard's selection scrolls
+/// into view.
+#[gpui::test]
+fn a_long_pane_menu_scrolls_and_keeps_close_pane_in_reach(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let tree = |setup: Option<&str>, cx: &mut TestAppContext| {
+        let target = json!({"pane":"p1","terminal":"t1","selected":true,"cwd":"/fixture/project","last_output":true});
+        let mut values = fixture(true, json!({"tab":"pane","target":target,"height":420.0,"overlay":"o1"}), updates("current", "current"));
+        values.insert("menuItems".into(), json!([
+            {"mod":"mover","title":"Move to…","command":"mod.open","args":{"name":"mover"},"when":"pane","icon":null,"fill":["props"]},
+            {"mod":"grab","title":"Zoom it","command":"pane.zoom","args":{},"when":null,"icon":null,"fill":["pane"]},
+        ]));
+        describe_with_values(cx, &staged, "mods/menu", values, setup).unwrap()
+    };
+    // The scrolled part: the lines under `menu-body`, indented deeper than it.
+    let body = |tree: &str| -> (Vec<String>, Vec<String>) {
+        let lines: Vec<&str> = tree.lines().collect();
+        let at = lines.iter().position(|l| l.contains("menu-body")).unwrap_or_else(|| panic!("14 rows overflow 420 px: {tree}"));
+        let indent = |l: &str| l.len() - l.trim_start().len();
+        let end = lines[at + 1..].iter().position(|l| indent(l) <= indent(lines[at])).map_or(lines.len(), |n| at + 1 + n);
+        (lines[at..end].iter().map(|l| l.to_string()).collect(), lines[end..].iter().map(|l| l.to_string()).collect())
+    };
+    let offset = |inside: &[String]| -> f64 {
+        let l = inside.iter().find(|l| l.contains(".top[Number(")).expect("the list is placed by its scroll");
+        let n = &l[l.find(".top[Number(").unwrap() + 12..];
+        n[..n.find(')').unwrap()].parse().unwrap()
+    };
+    let first = tree(None, cx);
+    let (inside, after) = body(&first);
+    assert!(inside.iter().any(|l| l.contains("\"Zoom it\"")) && !inside.iter().any(|l| l.contains("\"Close pane\"")), "{first}");
+    assert!(after.iter().any(|l| l.contains("\"Close pane\"")), "Close pane pinned below the scrolled items: {first}");
+    assert!(inside[0].contains(".h[Number(370.0)]"), "420 less padding and the pinned row with its rule: {}", inside[0]);
+    assert_eq!(offset(&inside), 0.0);
+    // Selected by the keyboard, the last scrolled item comes into view.
+    let moved = tree(Some("this.at = 12; this.follow = true;"), cx);
+    let (inside, _) = body(&moved);
+    assert!(offset(&inside) < -50.0, "{moved}");
+}
+
 /// The picker: Suggested first, its tiles a virtual grid's rows; the chosen
 /// one shown and Clear icon only while one is chosen; a pane's or a tab's.
 #[gpui::test]

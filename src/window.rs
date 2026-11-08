@@ -6160,11 +6160,17 @@ fn thousands(n: usize) -> String {
 }
 
 fn terminal_menu_spec(name: &str, defaults: &Value, tab: &str, target: Value) -> Value {
+    // The most: a menu is as tall as its items.
+    let height = defaults.get("height").and_then(Value::as_f64).unwrap_or(420.0);
+    let mut props = json!({ "tab": tab, "target": target });
+    // In px (not a fraction of the window), the menu scrolls its items within it.
+    if height > 1.0 {
+        props["height"] = json!(height);
+    }
     json!({ "mod": name, "kind": "popup",
         "width": defaults.get("width").and_then(Value::as_f64).unwrap_or(220.0),
-        // The most: a menu is as tall as its items.
-        "height": defaults.get("height").and_then(Value::as_f64).unwrap_or(420.0),
-        "props": { "tab": tab, "target": target } })
+        "height": height,
+        "props": props })
 }
 
 fn num_in(v: &Value, k: &str) -> f32 {
@@ -10379,10 +10385,13 @@ export default class Probe extends View {
         assert_eq!(custom["kind"], "popup");
         assert_eq!(custom["width"], 310.0);
         assert_eq!(custom["height"], 120.0);
-        assert_eq!(custom["props"], json!({"tab": "pane", "target": target}));
+        assert_eq!(custom["props"], json!({"tab": "pane", "target": target, "height": 120.0}), "the menu knows the height it scrolls within");
+        assert_eq!(stock["props"]["height"], 420.0);
         let partial = super::terminal_menu_spec("personal-menu", &json!({"width": 0.4}), "pane", json!({}));
         assert_eq!(partial["width"], 0.4);
         assert_eq!(partial["height"], 420.0);
+        let fraction = super::terminal_menu_spec("personal-menu", &json!({"height": 0.5}), "pane", json!({}));
+        assert!(fraction["props"].get("height").is_none(), "a fraction of the window isn't px");
     }
 
     #[test]
