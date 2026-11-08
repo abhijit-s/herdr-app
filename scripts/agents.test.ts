@@ -4,17 +4,22 @@ import { readFile } from "node:fs/promises";
 const source = (await readFile(new URL("../defaults/mods/agents/main.js", import.meta.url), "utf8"))
   .replace(/^import .*;\n/gm, "").replace("export default class Agents", "class Agents");
 
-function harness(pins: string[], globals: Record<string, unknown> = {}) {
-  const data = new Map([["pins", JSON.stringify(pins)]]);
+function harness(pins: string[], globals: Record<string, unknown> = {}, data = new Map<string, string>()) {
+  data.set("pins", JSON.stringify(pins));
   const writes: unknown[] = [];
   const storage = { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => data.set(k, v), removeItem: (k: string) => data.delete(k) };
-  const Agents = new Function("View", "localStorage", "props", "run", ...Object.keys(globals), `${source}; return Agents;`)(
-    class {}, storage, () => ({}), (...args: unknown[]) => writes.push(args),
+  // Key commands for the mod: queued ones, then none ever again.
+  const commands: string[] = [];
+  const nextCommand = () => commands.length ? Promise.resolve(commands.shift()) : new Promise(() => {});
+  globals = { settings: () => ({ working_spinner: null }), ...globals };
+  const Agents = new Function("View", "localStorage", "props", "run", "nextCommand", ...Object.keys(globals), `${source}; return Agents;`)(
+    class {}, storage, () => ({}), (...args: unknown[]) => writes.push(args), nextCommand,
     ...Object.values(globals),
   );
   const agents = new Agents();
-  agents.init({}, { timer: { every() {} } });
-  return { agents, data, writes };
+  const spawned: ((cx: unknown) => Promise<void>)[] = [];
+  agents.init({}, { timer: { every() {} }, spawn: (f: (cx: unknown) => Promise<void>) => spawned.push(f) });
+  return { agents, data, writes, commands, spawned };
 }
 
 test("legacy pins migrate once listed, retaining offline pins until their labels arrive", () => {
@@ -175,21 +180,23 @@ for (const sort of ["priority", "grouped"]) for (const named of [false, true]) t
 });
 
 // A kept sub-agent: started by t1 (`hc run`), then given a pane (`terminal.keep`).
-function keptRender(sort: string, { width = 268, kept = [{ address: "t3", parent: "t1" }], paneless = [] as { address: string; parent: string }[], pinned = [] as string[] } = {}) {
-  const program = { name: "Claude", key: "claude", agent: true };
+type Kid = { address: string; parent: string };
+function keptRender(sort: string, { width = 268, kept = [{ address: "t3", parent: "t1" }] as Kid[], paneless = [] as Kid[], pinned = [] as string[], mode = undefined as string | undefined, records = {} as Record<string, unknown>, data = new Map<string, string>(), before = (_: any) => {} } = {}) {
+  const program = { name: "Claude", key: "claude", agent: true, icon: "claude.svg", tint: true };
   const row = (address: string, seq: number) => ({ address, pane: `p-${address}`, tab: "tab1", space: "s1", space_name: "Project", program, title: address, label: address, status: "working", seq, pinned: pinned.includes(address) });
   const list = [row("t1", 1), ...kept.map((k, i) => row(k.address, i + 2))];
   const live = (address: string, parent: string | null) => ({ address, parent, state: "live", status: "working", program, labels: {} });
   const orders: string[][] = [];
   const { agents, writes } = harness([], {
     agents: () => list,
-    terminals: () => [live("t1", null), ...paneless.map(k => live(k.address, k.parent)), ...kept.map(k => live(k.address, k.parent))],
+    terminals: () => [{ ...live("t1", null), records }, ...paneless.map(k => live(k.address, k.parent)), ...kept.map(k => live(k.address, k.parent))],
     panes: () => list.map(a => ({ tab: a.tab, terminal: a.address, program, title: a.title, label: a.label })), focused: () => null,
     spaces: () => [{ tabs: [{ id: "tab1", name: "Project", named: true }] }],
     layout: () => ({ id: "sidebar", size: { px: width } }), shared: () => sort,
-    theme: () => ({}), settings: () => ({ working_spinner: null }), setAgentOrder: (order: string[]) => orders.push(order),
+    theme: () => ({}), settings: () => ({ working_spinner: null, agents_subagents: mode }), setAgentOrder: (order: string[]) => orders.push(order),
     div: element, v_flex: element, h_flex: element, svg: element, image: element,
-  });
+  }, data);
+  before(agents);
   const ids: string[] = [];
   const clicks = new Map<string, () => void>();
   const texts = new Map<string, string>();
@@ -198,7 +205,7 @@ function keptRender(sort: string, { width = 268, kept = [{ address: "t3", parent
     (node?.children ?? []).forEach(walk);
   };
   walk(agents.render({}).node);
-  return { ids, clicks, writes, texts, order: orders[orders.length - 1] };
+  return { ids, clicks, writes, texts, order: orders[orders.length - 1], agents, data };
 }
 
 for (const sort of ["priority", "grouped"]) test(`${sort}: a kept sub-agent shows once, under its parent, and its row focuses its pane`, () => {
@@ -229,4 +236,93 @@ for (const sort of ["priority", "grouped"]) test(`${sort}: a kept sub-agent keep
   expect(pinned.texts.get("ag-t1")).toContain("t1");
   expect(pinned.texts.get("ag-t3")).toContain("t3");
   expect(keptRender(sort, { kept: [{ address: "t3", parent: "t9" }] }).ids).toContain("ag-t3"); // its parent ended
+});
+
+// agents_subagents: t1 with a sub-agent it started (t2, no pane) and a child record.
+const subs = { kept: [] as Kid[], paneless: [{ address: "t2", parent: "t1" }], records: { "agent/9/a": { title: "Explore", state: "working" } } };
+// What a click's handler gets as its event and its cx.
+const event = {};
+const cx = { notify() {}, stop_propagation() {} };
+
+for (const sort of ["priority", "grouped"]) {
+  test(`${sort}: sub-agents as a tree by default and when set to tree`, () => {
+    for (const mode of [undefined, "tree"]) {
+      const { ids, texts } = keptRender(sort, { ...subs, mode });
+      expect(ids).toContain("sub-t2");
+      expect(ids).toContain("sub-t1#agent/9/a");
+      expect(texts.get("sub-count")!.trim()).toBe("2");
+      expect(ids).toContain("fold-t1");
+    }
+  });
+
+  test(`${sort}: folded starts every agent folded, with its count, and a click opens one`, () => {
+    const { ids, texts, clicks } = keptRender(sort, { ...subs, mode: "folded" });
+    expect(ids).not.toContain("sub-t2");
+    expect(ids).not.toContain("sub-t1#agent/9/a");
+    expect(texts.get("sub-count")!.trim()).toBe("2");
+    clicks.get("fold-t1")!(event, cx);
+    const data = new Map([["folds", JSON.stringify({ t1: false })]]);
+    expect(keptRender(sort, { ...subs, mode: "folded", data }).ids).toContain("sub-t2");
+  });
+
+  test(`${sort}: off draws no sub-agent rows, count or fold, and a kept sub-agent gets its own row`, () => {
+    const off = keptRender(sort, { ...subs, mode: "off" });
+    for (const id of ["sub-t2", "sub-t1#agent/9/a", "sub-count", "fold-t1"]) expect(off.ids).not.toContain(id);
+    const kept = keptRender(sort, { mode: "off" });
+    expect(kept.ids).toContain("ag-t3");
+    expect(kept.ids).not.toContain("sub-t3");
+    expect([...kept.order].sort()).toEqual(["t1", "t3"]);
+    // A remembered open fold doesn't bring the tree back.
+    expect(keptRender(sort, { ...subs, mode: "off", data: new Map([["folds", JSON.stringify({ t1: false })]]) }).ids).not.toContain("sub-t2");
+  });
+
+  test(`${sort}: a fold the person makes is kept across restarts, over the setting`, () => {
+    const data = new Map<string, string>();
+    const first = keptRender(sort, { ...subs, data });
+    first.clicks.get("fold-t1")!(event, cx);
+    expect(JSON.parse(data.get("folds")!)).toEqual({ t1: true });
+    expect(keptRender(sort, { ...subs, data }).ids).not.toContain("sub-t2");
+    // The agent's icon folds too: open it again.
+    keptRender(sort, { ...subs, data }).clicks.get("agent-fold-t1")!(event, cx);
+    expect(JSON.parse(data.get("folds")!)).toEqual({ t1: false });
+    expect(keptRender(sort, { ...subs, mode: "folded", data }).ids).toContain("sub-t2");
+  });
+}
+
+test("folds go with their agent's entry: an agent gone and old loses its fold", () => {
+  const day = 86400000;
+  const now = Date.now();
+  const data = new Map([
+    ["changed", JSON.stringify({ t1: { s: "idle", at: now - 40 * day }, gone: { s: "idle", at: now - 40 * day }, recent: { s: "idle", at: now - day } })],
+    ["folds", JSON.stringify({ t1: true, gone: true, recent: false, never: true })],
+  ]);
+  // t1 starts working, so the entries are looked over.
+  keptRender("priority", { ...subs, data });
+  expect(JSON.parse(data.get("folds")!)).toEqual({ t1: true, recent: false });
+  expect(Object.keys(JSON.parse(data.get("changed")!)).sort()).toEqual(["recent", "t1"]);
+});
+
+for (const sort of ["priority", "grouped"]) test(`${sort}: fold all and unfold all reach every listed agent, from keys and the palette`, async () => {
+  const data = new Map<string, string>();
+  const kept = { ...subs, kept: [{ address: "t3", parent: "t9" }] }; // t3: its own row, its parent gone
+  expect(keptRender(sort, { ...kept, data, before: (a) => a.command("fold_all") }).ids).not.toContain("sub-t2");
+  expect(JSON.parse(data.get("folds")!)).toEqual({ t1: true, t3: true });
+  // Unfold all opens them, over agents_subagents folded too.
+  expect(keptRender(sort, { ...kept, mode: "folded", data, before: (a) => a.command("unfold_all") }).ids).toContain("sub-t2");
+  expect(JSON.parse(data.get("folds")!)).toEqual({ t1: false, t3: false });
+  keptRender(sort, { ...kept, data, before: (a) => a.command("something_else") });
+  expect(JSON.parse(data.get("folds")!)).toEqual({ t1: false, t3: false });
+});
+
+test("key commands reach the agents mod through nextCommand", async () => {
+  const list = [{ address: "t1" }, { address: "t2" }];
+  const { data, commands, spawned } = harness([], { agents: () => list });
+  expect(spawned).toHaveLength(1);
+  commands.push("fold_all");
+  let notified = 0;
+  spawned[0]({ notify: () => notified++ });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(JSON.parse(data.get("folds")!)).toEqual({ t1: true, t2: true });
+  expect(notified).toBe(1);
 });

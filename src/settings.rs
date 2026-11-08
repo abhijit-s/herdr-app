@@ -855,6 +855,28 @@ mod derivation_tests {
         }
     }
 
+    /// `agents_subagents`: tree unless set, out of settings.json as tree,
+    /// passed to mods as written, and anything else refused.
+    #[test]
+    fn agents_subagents_defaults_to_tree_and_reaches_mods() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.agents_subagents, AgentsSubagents::Tree);
+        assert_eq!(serde_json::to_value(&default).unwrap().get("agents_subagents"), None);
+        let compose = |p: &Person| Settings::compose(p, &crate::layout::Look::default(), true);
+        assert_eq!(compose(&default).for_mods()["agents_subagents"], "tree");
+        for (value, mode) in [("tree", AgentsSubagents::Tree), ("folded", AgentsSubagents::Folded), ("off", AgentsSubagents::Off)] {
+            let person: Person = serde_json::from_value(serde_json::json!({"agents_subagents": value})).unwrap();
+            assert_eq!(person.agents_subagents, mode);
+            assert_eq!(compose(&person).for_mods()["agents_subagents"], value);
+        }
+        for (mode, value) in [(AgentsSubagents::Folded, "folded"), (AgentsSubagents::Off, "off")] {
+            assert_eq!(serde_json::to_value(Person { agents_subagents: mode, ..Person::default() }).unwrap()["agents_subagents"], value);
+        }
+        for bad in [serde_json::json!({"agents_subagents": "list"}), serde_json::json!({"agents_subagents": false})] {
+            assert!(serde_json::from_value::<Person>(bad.clone()).is_err(), "{bad} is refused");
+        }
+    }
+
     /// Classic is the derivation Herdr shipped before tinted panels, value for
     /// value: the fixture is that build's `resolve` output for these themes.
     #[test]
@@ -1269,6 +1291,10 @@ pub struct Person {
     /// (header_info.rs); unset or empty: none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pane_header_info: Option<String>,
+    /// How the agents list shows each agent's live sub-agents: `tree`,
+    /// `folded` or `off` (drawn by the agents mods).
+    #[serde(skip_serializing_if = "AgentsSubagents::is_tree")]
+    pub agents_subagents: AgentsSubagents,
     /// What happens to recorded agents whose terminals are back to a shell
     /// after Herdr starts or the core comes back (resume.rs).
     #[serde(skip_serializing_if = "ResumeAgents::is_ask")]
@@ -1700,6 +1726,23 @@ impl SidebarShade {
 
     fn shades(self, window_active: bool) -> bool {
         self == SidebarShade::Always || (self == SidebarShade::Active && window_active)
+    }
+}
+
+/// How the agents list shows each agent's live sub-agents: as a tree under
+/// it, the same folded until clicked open, or not at all (no count, no rows).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentsSubagents {
+    #[default]
+    Tree,
+    Folded,
+    Off,
+}
+
+impl AgentsSubagents {
+    fn is_tree(&self) -> bool {
+        *self == AgentsSubagents::Tree
     }
 }
 
@@ -2249,6 +2292,7 @@ impl Default for Person {
             space_avatar: None,
             working_spinner: None,
             pane_header_info: None,
+            agents_subagents: AgentsSubagents::Tree,
             resume_agents: ResumeAgents::Ask,
             alert_command: None,
             focus_follows_mouse: false,
@@ -2425,6 +2469,8 @@ pub struct Settings {
     pub working_spinner: Option<SpinnerFrames>,
     /// `pane_header_info` when it says something; None: headers as without it.
     pub pane_header_info: Option<String>,
+    /// How the agents list shows sub-agents; mods read it.
+    pub agents_subagents: AgentsSubagents,
     /// Why settings.json's `working_spinner` fell back to the ring.
     #[serde(skip)]
     pub working_spinner_problem: Option<String>,
@@ -2527,6 +2573,7 @@ impl Default for Settings {
             alert_command: None,
             working_spinner: None,
             pane_header_info: None,
+            agents_subagents: AgentsSubagents::Tree,
             working_spinner_problem: None,
             space_avatar_problem: None,
         }
@@ -2625,6 +2672,7 @@ impl Settings {
             alert_command: person.alert_command.clone(),
             working_spinner,
             pane_header_info: person.pane_header_info.clone().filter(|t| !t.trim().is_empty()),
+            agents_subagents: person.agents_subagents,
             working_spinner_problem,
             space_avatar_problem: person.space_avatar.as_ref().filter(|v| !SPACE_AVATARS.contains(&v.as_str())).map(|v| format!("space_avatar {v:?} is not one of letter, glyph, emoji, repo: using \"{SPACE_AVATAR_DEFAULT}\"")),
             clipboard_write: person.clipboard_write,
@@ -4201,7 +4249,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

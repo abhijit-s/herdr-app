@@ -1,1 +1,8 @@
-{ "place": "none", "title": "Agents" }
+{
+  "place": "none",
+  "title": "Agents",
+  "actions": [
+    { "title": "Fold all agents", "command": "agents.fold_all", "keywords": "collapse sub-agents tree" },
+    { "title": "Unfold all agents", "command": "agents.unfold_all", "keywords": "expand sub-agents tree" }
+  ]
+}

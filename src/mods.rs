@@ -463,13 +463,34 @@ fn entries<'a>(
 }
 
 fn action(mod_id: &str, entry: &Value) -> Result<Value, String> {
-    let (title, name, args, _) = runnable(mod_id, entry, &[])?;
+    let (title, name, args) = match own_command(mod_id, entry) {
+        Some(own) => own?,
+        None => runnable(mod_id, entry, &[]).map(|(title, name, args, _)| (title, name, args))?,
+    };
     let keywords = match entry.get("keywords") {
         None | Some(Value::Null) => "",
         Some(Value::String(k)) => k,
         Some(_) => return Err("keywords: expected a string".into()),
     };
     Ok(json!({ "mod": mod_id, "title": title, "command": name, "args": args, "keywords": keywords }))
+}
+
+/// An action naming one of this mod's own commands (`<mod>.<command>`, as
+/// keys.json binds them): the palette runs it like a key, delivering it to
+/// the mod's `nextCommand()`. None for anything else, an app command too.
+fn own_command(mod_id: &str, entry: &Value) -> Option<Result<(String, String, Value), String>> {
+    let name = entry.get("command")?.as_str()?;
+    let own = name.strip_prefix(mod_id)?.strip_prefix('.')?;
+    if own.is_empty() || crate::commands::find(name).is_some() {
+        return None;
+    }
+    let title = entry.get("title").and_then(Value::as_str).filter(|s| !s.trim().is_empty());
+    Some(match (title, entry.get("args")) {
+        (None, _) => Err("needs a title".into()),
+        (Some(title), None | Some(Value::Null)) => Ok((title.to_owned(), name.to_owned(), json!({}))),
+        (Some(title), Some(Value::Object(args))) if args.is_empty() => Ok((title.to_owned(), name.to_owned(), json!({}))),
+        (Some(_), Some(_)) => Err(format!("{name}: a mod's own command takes no args")),
+    })
 }
 
 /// When a menu item shows: the terminal had a selection, its folder is known,
@@ -1730,6 +1751,43 @@ mod tests {
             assert!(set_shown_copies([2].into()).is_empty());
             assert!(!is_shown(1));
         }).join().unwrap();
+    }
+
+    /// An action can name the mod's own `<mod>.<command>`, as keys.json does:
+    /// no args, and only its own (another mod's, a cloned mod's original's or
+    /// a prefix-only one is no command).
+    #[test]
+    fn palette_actions_take_the_mods_own_commands() {
+        let found = |id: &str, hint: Value| Found { id: id.into(), dir: PathBuf::new(), hint: serde_json::from_value(hint).unwrap(), hint_error: None, stamp: SystemTime::UNIX_EPOCH };
+        let agents = found("agents", json!({ "actions": [
+            { "title": "Fold all agents", "command": "agents.fold_all", "keywords": "collapse sub-agents" },
+            { "title": "Null args", "command": "agents.unfold_all", "args": null },
+            { "title": "With args", "command": "agents.fold_all", "args": { "x": 1 } },
+            { "title": "Empty args", "command": "agents.fold_all", "args": {} },
+            { "command": "agents.fold_all" },
+            { "title": "Another mod's", "command": "ribbon.next" },
+            { "title": "Prefix only", "command": "agents." },
+            { "title": "Longer name", "command": "agentsx.fold_all" },
+        ] }));
+        let copy = found("agents-copy", json!({ "actions": [{ "title": "Original's", "command": "agents.fold_all" }] }));
+        let (list, problems) = actions([&agents, &copy]);
+        assert_eq!(list, vec![
+            json!({ "mod": "agents", "title": "Fold all agents", "command": "agents.fold_all", "args": {}, "keywords": "collapse sub-agents" }),
+            json!({ "mod": "agents", "title": "Null args", "command": "agents.unfold_all", "args": {}, "keywords": "" }),
+            json!({ "mod": "agents", "title": "Empty args", "command": "agents.fold_all", "args": {}, "keywords": "" }),
+        ]);
+        assert_eq!(problems, vec![
+            "mod agents: actions[2]: agents.fold_all: a mod's own command takes no args",
+            "mod agents: actions[4]: needs a title",
+            "mod agents: actions[5]: no command \"ribbon.next\"",
+            "mod agents: actions[6]: no command \"agents.\"",
+            "mod agents: actions[7]: no command \"agentsx.fold_all\"",
+            "mod agents-copy: actions[0]: no command \"agents.fold_all\"",
+        ]);
+        let shipped = found("agents", serde_json::from_str(include_str!("../defaults/mods/agents/mod.json")).unwrap());
+        let (list, problems) = actions([&shipped]);
+        let commands: Vec<&str> = list.iter().map(|a| a["command"].as_str().unwrap()).collect();
+        assert_eq!((commands, problems), (vec!["agents.fold_all", "agents.unfold_all"], vec![]), "the shipped agents mod's palette entries");
     }
 
     #[test]

@@ -558,6 +558,13 @@ test("resume agents after restart sits on the Activity page, writes auto or off 
   expect(pick({ resume_agents: "off", zoom: 1.1 }, "st-ra-Ask")).toEqual({ zoom: 1.1 });
 });
 
+test("sub-agents sits on the Activity page, writes folded or off and leaves tree out", () => {
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "activity");
+  expect(pick({}, "st-sa-Folded")).toEqual({ agents_subagents: "folded" });
+  expect(pick({ agents_subagents: "folded" }, "st-sa-Off")).toEqual({ agents_subagents: "off" });
+  expect(pick({ agents_subagents: "off", zoom: 1.1 }, "st-sa-Tree")).toEqual({ zoom: 1.1 });
+});
+
 // A layout like agent-deck: the tab block in a row beside a panel.
 const deck = () => ({
   id: "root", type: "row", terminal_padding: [14, 12],

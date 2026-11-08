@@ -1846,6 +1846,45 @@ fn agents_sub_agent_count_takes_the_most_urgent_colour_and_counts_child_records(
     assert!(count(&idle) == "1" && count_el(&idle).contains(&colour("dim")) && idle.contains("text \"agent/a1\""), "no title: its id: {idle}");
 }
 
+/// `agents_subagents`: tree (and unset) draws t1's sub-agents under it with
+/// their count and chevron; folded only the count and chevron until opened;
+/// off none of them. A fold the person made is read back from localStorage
+/// at start, over the setting, and fold all / unfold all reach every agent.
+#[gpui::test]
+fn agents_sub_agents_follow_the_setting_remembered_folds_and_fold_all(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let program = json!({"key":"pi", "name":"Pi", "icon":null, "tint":true, "tile":null, "color":null, "shell":false, "agent":true});
+    let draw = |mode: Option<&str>, setup: Option<&str>, cx: &mut TestAppContext| {
+        let mut values = fixture(true, props(), updates("current", "current"));
+        if let Some(mode) = mode {
+            values.get_mut("settings").unwrap()["agents_subagents"] = json!(mode);
+        }
+        let terminals = values.get_mut("terminals").unwrap().as_array_mut().unwrap();
+        terminals.iter_mut().filter(|t| t["address"] == "t1").for_each(|t| t["records"] = json!({"agent/a1":{"state":"working","title":"Explore"}}));
+        terminals.push(json!({"address":"k1","name":"k1","title":"","argv":["pi"],"parent":"t1","labels":{},"state":"live","status":"working","report":{"app":"pi"},"program":program}));
+        describe_with_values(cx, &staged, "mods/agents", values, setup).unwrap()
+    };
+    let shows = |tree: &str| (tree.contains("\"sub-k1\"") && tree.contains("\"sub-t1#agent/a1\""), tree.contains("\"sub-count\""), tree.contains("\"fold-t1\""));
+    for mode in [None, Some("tree")] {
+        let tree = draw(mode, None, cx);
+        assert_eq!(shows(&tree), (true, true, true), "{mode:?}: {tree}");
+        assert_eq!(sub_count(&tree).map(|(n, _)| n).as_deref(), Some("2"), "{tree}");
+    }
+    let folded = draw(Some("folded"), None, cx);
+    assert_eq!(shows(&folded), (false, true, true), "folded: {folded}");
+    assert!(!folded.contains("text \"Explore\""), "{folded}");
+    let off = draw(Some("off"), None, cx);
+    assert_eq!(shows(&off), (false, false, false), "off: {off}");
+    // A restart: the fold written, forgotten in memory, read back at init.
+    let restart = |folded: bool| format!("this.setFolds([\"t1\"], {folded}); this.folds = {{}}; super.init(props, cx);");
+    assert_eq!(shows(&draw(None, Some(&restart(true)), cx)), (false, true, true), "kept folded");
+    assert_eq!(shows(&draw(Some("folded"), Some(&restart(false)), cx)), (true, true, true), "kept open over folded");
+    assert_eq!(shows(&draw(Some("off"), Some(&restart(false)), cx)), (false, false, false), "off stays off");
+    assert_eq!(shows(&draw(None, Some("this.command(\"fold_all\");"), cx)), (false, true, true), "fold all");
+    assert_eq!(shows(&draw(Some("folded"), Some("this.command(\"unfold_all\");"), cx)), (true, true, true), "unfold all");
+}
+
 /// The pane menu names the pane first among the pane's own items, as the tab
 /// menu does its tab; a pane header's right-click opens that menu for its pane
 /// and terminal, with no selection to copy.
