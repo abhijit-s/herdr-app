@@ -291,8 +291,9 @@ pub fn toast_problems(name: &str, t: &Theme) -> Vec<String> {
 
 /// `toast_problems` against `style`'s floors.
 #[cfg(test)]
-pub fn toast_problems_for(name: &str, t: &Theme, style: ToastStyle) -> Vec<String> {
-    let f = style.floors();
+pub fn toast_problems_for(name: &str, t: &Theme, look: impl Into<ToastLook>) -> Vec<String> {
+    let look = look.into();
+    let f = look.floors();
     // As drawn: the toast over the background, the rest over the toast.
     let bg = drawn_over(&t["background"], 0).unwrap();
     let surface = drawn_over(&t["toast"], bg).unwrap();
@@ -307,6 +308,16 @@ pub fn toast_problems_for(name: &str, t: &Theme, style: ToastStyle) -> Vec<Strin
         checks.push(("surface on background", contrast(surface, bg), f.lift));
     }
     checks.extend(TOAST_LEVELS.map(|(key, _)| (key, contrast(rgb(key), surface), f.mark)));
+    // The outline's text and levels over its see-through backing, whatever shows behind it.
+    if look.design == ToastDesign::Outline {
+        let ghost = t["toast_ghost"].as_str();
+        let text = [("title", "toast_foreground", f.text), ("body", "toast_muted", f.text)];
+        let levels = TOAST_LEVELS.map(|(key, _)| (key, key, f.mark));
+        for (what, key, floor) in text.into_iter().chain(levels) {
+            let c = drawn_over(&t[key], surface).unwrap();
+            checks.push((what, over_anything(c, ghost), floor));
+        }
+    }
     checks.into_iter().filter(|(_, ratio, floor)| ratio < floor).map(|(what, ratio, floor)| format!("{name}: toast {what} {ratio:.2} under {floor}")).collect()
 }
 
@@ -325,7 +336,7 @@ pub fn themes() -> Vec<(String, Theme)> {
         .iter()
         .map(|n| n.to_string())
         .chain(files)
-        .filter_map(|n| palette(&n).ok().map(|(p, o)| (n, resolve(&p, &o, panels_in_use(get().panel_colors, &p, &o, get().look_paints_panels), false, get().toast_style))))
+        .filter_map(|n| palette(&n).ok().map(|(p, o)| (n, resolve(&p, &o, panels_in_use(get().panel_colors, &p, &o, get().look_paints_panels), false, get().toast_look()))))
         .collect()
 }
 
@@ -470,7 +481,7 @@ fn panels_in_use(chosen: PanelColors, p: &Palette, theme_colors: &BTreeMap<Strin
 
 /// Every color around a palette: the terminal's own, then the panels
 /// (`panel_colors`, `sidebar_shade`), then `overrides` over all of them.
-fn resolve(p: &Palette, overrides: &BTreeMap<String, String>, panels: PanelColors, shaded: bool, toasts: ToastStyle) -> Theme {
+fn resolve(p: &Palette, overrides: &BTreeMap<String, String>, panels: PanelColors, shaded: bool, toasts: impl Into<ToastLook>) -> Theme {
     let bg = p.background;
     let light = is_light(bg);
     let ink = if light { 0x1b1b1e } else { 0xeeeeef };
@@ -506,7 +517,7 @@ fn resolve(p: &Palette, overrides: &BTreeMap<String, String>, panels: PanelColor
     for (k, v) in overrides {
         t.insert(k.clone(), v.clone());
     }
-    for (k, v) in toast_colors(&t, paints_own_panels(overrides), toasts) {
+    for (k, v) in toast_colors(&t, paints_own_panels(overrides), toasts.into()) {
         t.entry(k.to_owned()).or_insert(v);
     }
     t
@@ -550,8 +561,8 @@ fn step_until(from: u32, to: u32, ok: impl Fn(u32) -> bool) -> Option<u32> {
 /// A `toast` the theme or settings set is the surface the rest are held to; a
 /// theme that paints its own panels (Win98) starts from its `popover` and
 /// `border` and keeps them where they already hold.
-fn toast_colors(t: &Theme, own_panels: bool, style: ToastStyle) -> Vec<(&'static str, String)> {
-    let f = style.floors();
+fn toast_colors(t: &Theme, own_panels: bool, look: ToastLook) -> Vec<(&'static str, String)> {
+    let (style, f) = (look.style, look.floors());
     // Translucent values count as they show: over the background, or over the toast.
     let over = |k: &str, under: u32| t.get(k).and_then(|v| drawn_over(v, under));
     let bg = over("background", 0).unwrap_or(0);
@@ -588,15 +599,65 @@ fn toast_colors(t: &Theme, own_panels: bool, style: ToastStyle) -> Vec<(&'static
     let best = if contrast(0, surface) > contrast(0xffffff, surface) { 0 } else { 0xffffff };
     let text = on_surface("foreground").filter(|c| contrast(*c, surface) >= f.text).unwrap_or(best);
     let toward_text = |c: Option<u32>, floor: f32| c.and_then(|c| step_until(c, text, |c| contrast(c, surface) >= floor)).unwrap_or(text);
+    let muted = toward_text(on_surface("muted"), f.text);
     let mut out = vec![
         ("toast", hex(surface)),
         ("toast_border", hex(border)),
         ("toast_shadow", f.shadow[usize::from(!light)].to_owned()),
         ("toast_foreground", hex(text)),
-        ("toast_muted", hex(toward_text(on_surface("muted"), f.text))),
+        ("toast_muted", hex(muted)),
     ];
-    out.extend(TOAST_LEVELS.map(|(key, from)| (key, hex(toward_text(on_surface(from), f.mark)))));
+    let levels: Vec<u32> = look.design.level_sources().iter().map(|from| toward_text(on_surface(from), f.mark)).collect();
+    out.extend(TOAST_LEVELS.iter().zip(&levels).map(|((key, _), c)| (*key, hex(*c))));
+    if look.design == ToastDesign::Outline {
+        // The most see-through backing (the surface at the least opacity, in
+        // steps of 5/255) under which the title, body and levels hold their
+        // floors with `TOAST_FIT_MARGIN` to spare over black and over white
+        // behind it, so over anything, each stepped at most halfway toward
+        // the text so the levels keep their hue; opaque, it's the surface
+        // they already hold on. Where no backing holds within halfway, it's
+        // the opaque surface, the colours stepped as far toward the text as
+        // the margin needs (else held to the floor, as on the card). The
+        // toast mod paints no hover fill on it, which would lighten what
+        // shows through.
+        let held = |c: u32, floor: f32, ghost: &str, most: u32| (0..=most).map(|i| mix(c, text, i as f32 / 100.0)).find(|c| over_anything(*c, ghost) >= floor + TOAST_FIT_MARGIN);
+        let fit = |ghost: String, most: u32| {
+            let muted = held(muted, f.text, &ghost, most)?;
+            let levels = levels.iter().map(|c| held(*c, f.mark, &ghost, most)).collect::<Option<Vec<_>>>()?;
+            Some((ghost, muted, levels))
+        };
+        let (ghost, muted, levels) = (0..=255)
+            .step_by(5)
+            .map(|a| format!("{}{a:02x}", hex(surface)))
+            .filter(|ghost| over_anything(text, ghost) >= f.text + TOAST_FIT_MARGIN)
+            .find_map(|ghost| fit(ghost, 50))
+            .or_else(|| fit(hex(surface), 100))
+            .unwrap_or_else(|| (hex(surface), muted, levels.clone()));
+        for (key, c) in std::iter::once("toast_muted").chain(TOAST_LEVELS.map(|(key, _)| key)).zip(std::iter::once(muted).chain(levels)) {
+            if let Some(slot) = out.iter_mut().find(|(k, _)| *k == key) {
+                slot.1 = hex(c);
+            }
+        }
+        out.push(("toast_ghost", ghost));
+    }
     out
+}
+
+/// How much more than its floor the outline's colours are fitted to: the
+/// renderer's colour conversion can move a channel by about 1/255.
+const TOAST_FIT_MARGIN: f32 = 0.1;
+
+/// The least contrast `text` keeps over the translucent `backing`, whatever
+/// shows through it: the backing over black and over white bound every
+/// colour that can (luminance rises with each channel), and the text must
+/// sit outside that span, else some colour behind matches it.
+fn over_anything(text: u32, backing: &str) -> f32 {
+    let (dark, light) = (drawn_over(backing, 0).unwrap_or(0), drawn_over(backing, 0xffffff).unwrap_or(0xffffff));
+    let lum = |c: u32| contrast(c, 0);
+    if (lum(text) > lum(dark)) != (lum(text) > lum(light)) {
+        return 1.0;
+    }
+    contrast(text, dark).min(contrast(text, light))
 }
 
 #[cfg(test)]
@@ -639,7 +700,7 @@ mod derivation_tests {
     }
 
     /// `drawn`, its toasts in `style`.
-    fn drawn_as(p: &Palette, own: &BTreeMap<String, String>, chosen: PanelColors, shaded: bool, style: ToastStyle) -> Theme {
+    fn drawn_as(p: &Palette, own: &BTreeMap<String, String>, chosen: PanelColors, shaded: bool, style: impl Into<ToastLook>) -> Theme {
         resolve(p, own, panels_in_use(chosen, p, own, false), shaded, style)
     }
 
@@ -818,11 +879,12 @@ mod derivation_tests {
     /// to them by `the_installed_rex_themes_all_load`).
     #[test]
     fn toasts_stand_off_every_theme() {
-        for style in ToastStyle::ALL {
+        for look in ToastStyle::ALL.into_iter().flat_map(|style| ToastDesign::ALL.map(|design| ToastLook { style, design })) {
+            let style = look.style;
             for (name, p, own) in themes() {
                 for (panels, shaded) in [(PanelColors::Tinted, false), (PanelColors::Tinted, true), (PanelColors::Classic, false)] {
-                    let t = drawn_as(&p, &own, panels, shaded, style);
-                    assert_eq!(toast_problems_for(&name, &t, style), Vec::<String>::new(), "{style:?} {panels:?}");
+                    let t = drawn_as(&p, &own, panels, shaded, look);
+                    assert_eq!(toast_problems_for(&name, &t, look), Vec::<String>::new(), "{look:?} {panels:?}");
                     // Every style keeps the standard's text and mark floors at least.
                     assert_eq!(toast_problems_for(&name, &t, ToastStyle::Standard).into_iter().filter(|p| !p.contains("border") && !p.contains("surface on")).collect::<Vec<_>>(), Vec::<String>::new(), "{style:?}");
                 }
@@ -873,6 +935,74 @@ mod derivation_tests {
         let (p, own) = parse_theme_file("win98", THEMES.iter().find(|(n, _)| *n == "win98").unwrap().1).unwrap();
         let t = drawn(&p, &own, PanelColors::Tinted, false);
         assert_eq!((t["toast"].as_str(), t["toast_border"].as_str(), t["toast_foreground"].as_str()), (t["popover"].as_str(), t["border"].as_str(), t["foreground"].as_str()));
+    }
+
+    /// The terminal design takes its levels from the terminal's own colours
+    /// and holds them as text; the outline's backing is see-through where the
+    /// theme allows and its text and levels hold over black and over white
+    /// behind it; the icon card and banner hold levels as text (their Show
+    /// label); the pill draws the card's colours, no backing.
+    #[test]
+    fn toast_designs_take_their_colours_from_the_theme() {
+        let mut see_through = 0;
+        for (name, p, own) in themes() {
+            let card = drawn(&p, &own, PanelColors::Tinted, false);
+            let look = |design| drawn_as(&p, &own, PanelColors::Tinted, false, ToastLook { style: ToastStyle::Standard, design });
+            let terminal = look(ToastDesign::Terminal);
+            let surface = rgb(&terminal, "toast");
+            for ((key, _), ansi) in TOAST_LEVELS.iter().zip(["ansi4", "ansi2", "ansi3", "ansi1"]) {
+                let c = rgb(&terminal, key);
+                assert!(contrast(c, surface) >= TOAST_TEXT, "{name}: terminal {key} as text");
+                // From the terminal's colour: no farther from it than the card's from its source.
+                let start = drawn_over(&terminal[ansi], surface).unwrap();
+                assert_eq!(Some(c), step_until(start, rgb(&terminal, "toast_foreground"), |x| contrast(x, surface) >= TOAST_TEXT), "{name}: {key} from {ansi}");
+            }
+            let outline = look(ToastDesign::Outline);
+            let ghost = &outline["toast_ghost"];
+            assert!(ghost.len() == 9 && ghost.starts_with(&outline["toast"]), "{name}: the surface, see-through: {ghost}");
+            see_through += usize::from(!ghost.ends_with("ff"));
+            for design in [ToastDesign::IconCard, ToastDesign::Banner] {
+                let t = look(design);
+                for (key, _) in TOAST_LEVELS {
+                    assert!(contrast(rgb(&t, "toast"), rgb(&t, key)) >= TOAST_TEXT, "{name} {design:?}: the Show label on {key}");
+                }
+            }
+            // With room to spare in every style, the high-contrast 7:1 included.
+            for style in ToastStyle::ALL {
+                let outline = drawn_as(&p, &own, PanelColors::Tinted, false, ToastLook { style, design: ToastDesign::Outline });
+                let (ghost, floor) = (&outline["toast_ghost"], style.floors().text + TOAST_FIT_MARGIN);
+                for key in ["toast_foreground", "toast_muted", "toast_info", "toast_success", "toast_warning", "toast_error"] {
+                    assert!(over_anything(rgb(&outline, key), ghost) >= floor, "{name} {style:?}: outline {key} over {ghost}, {floor} wanted");
+                }
+            }
+            for design in [ToastDesign::Card, ToastDesign::Pill] {
+                let t: Theme = look(design).into_iter().filter(|(k, _)| k.starts_with("toast")).collect();
+                assert_eq!(t, card.iter().filter(|(k, _)| k.starts_with("toast")).map(|(k, v)| (k.clone(), v.clone())).collect::<Theme>(), "{name} {design:?}: the card's colours");
+            }
+        }
+        assert!(see_through > 0, "some theme lets the window show through the outline");
+        // Where no backing holds within halfway, the opaque surface: the
+        // colours step past halfway for the margin. Text barely over 7:1 on a
+        // black toast, levels starting at a dark grey, under high contrast:
+        // halfway from the 7:1 floor toward the text falls short of 7.1.
+        let grey = (0..=255u32).map(|g| g * 0x010101).find(|c| (7.11..7.25).contains(&contrast(*c, 0))).unwrap();
+        let mut dim = GRAPHITE.clone();
+        dim.background = 0;
+        dim.ansi = [0x303030; 16];
+        let own: BTreeMap<String, String> = [("toast".to_owned(), "#000000".to_owned()), ("foreground".to_owned(), hex(grey))].into();
+        let t = drawn_as(&dim, &own, PanelColors::Tinted, false, ToastLook { style: ToastStyle::HighContrast, design: ToastDesign::Outline });
+        let ghost = &t["toast_ghost"];
+        assert!(ghost.len() == 7 || ghost.ends_with("ff"), "opaque: {ghost}");
+        for key in ["toast_muted", "toast_info", "toast_success", "toast_warning", "toast_error"] {
+            assert!(over_anything(rgb(&t, key), &t["toast_ghost"]) >= 7.0 + TOAST_FIT_MARGIN, "{key} {} over {}", t[key], t["toast_ghost"]);
+        }
+        // Over anything: a backing that lets black and white through can't promise text on it.
+        assert_eq!(over_anything(0xffffff, "#00000000"), 1.0);
+        // Mid grey reads 4.5:1 on black and on white, but some grey behind matches it.
+        assert!(contrast(0x767676, 0) >= 4.5 && contrast(0x767676, 0xffffff) >= 4.5);
+        assert_eq!(over_anything(0x767676, "#00000000"), 1.0);
+        assert!(over_anything(0xffffff, "#000000ff") > 20.0);
+        assert!(over_anything(0xffffff, "#000000c0") < over_anything(0xffffff, "#000000ff"));
     }
 
     /// The standard style is the derivation as it was before toast styles,
@@ -1267,6 +1397,12 @@ pub struct Person {
     /// What shows a toast's level: drawn by the toast mod.
     #[serde(skip_serializing_if = "ToastMark::is_stripe")]
     pub toast_mark: ToastMark,
+    /// A toast's design: its shape, drawn by the toast mod in a frame Herdr sizes and places.
+    #[serde(skip_serializing_if = "ToastDesign::is_card")]
+    pub toast_design: ToastDesign,
+    /// A thin bar along a toast's bottom showing the time left before it closes.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub toast_progress: bool,
     /// Px (at zoom 1) of the active pane's border in a pane frame, 1 to 3;
     /// unset, the layout's `focus` width.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1761,8 +1897,114 @@ pub enum ToastMark {
 }
 
 impl ToastMark {
+    pub const ALL: [ToastMark; 3] = [ToastMark::Stripe, ToastMark::Dot, ToastMark::None];
+
     fn is_stripe(&self) -> bool {
         *self == ToastMark::Stripe
+    }
+}
+
+/// `toast_design`: a toast's shape. The toast mod draws its inside; Herdr
+/// sizes, frames and places it. Card is the toast as it stands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToastDesign {
+    #[default]
+    Card,
+    /// One line, round ends: the mark and the title.
+    Pill,
+    /// The terminal's font, a bracketed level in the terminal's own colours, square.
+    Terminal,
+    /// A see-through backing with a level-coloured border and title.
+    Outline,
+    /// A big level icon, title and body, and buttons for the toast's action.
+    IconCard,
+    /// A strip across the window's top or bottom edge, one at a time.
+    Banner,
+}
+
+impl ToastDesign {
+    pub const ALL: [ToastDesign; 6] = [ToastDesign::Card, ToastDesign::Pill, ToastDesign::Terminal, ToastDesign::Outline, ToastDesign::IconCard, ToastDesign::Banner];
+
+    fn is_card(&self) -> bool {
+        *self == ToastDesign::Card
+    }
+
+    /// Its settings.json value.
+    pub fn name(self) -> &'static str {
+        match self {
+            ToastDesign::Card => "card",
+            ToastDesign::Pill => "pill",
+            ToastDesign::Terminal => "terminal",
+            ToastDesign::Outline => "outline",
+            ToastDesign::IconCard => "icon-card",
+            ToastDesign::Banner => "banner",
+        }
+    }
+
+    /// The corner radius it draws, px at zoom 1: the person's `toast_corners`,
+    /// except that a pill's ends are round and a terminal's and a banner's corners square.
+    pub fn radius(self, corners: ToastCorners) -> f32 {
+        match self {
+            ToastDesign::Pill => 999.0,
+            ToastDesign::Terminal | ToastDesign::Banner => 0.0,
+            _ => corners.radius(),
+        }
+    }
+
+    /// The level mark it draws for the person's `toast_mark`: a pill's round
+    /// ends take a dot for a stripe; the terminal's `[WARN]`, the outline's
+    /// border and the icon card's level icon are their marks, so they draw neither.
+    pub fn mark(self, mark: ToastMark) -> ToastMark {
+        match self {
+            ToastDesign::Terminal | ToastDesign::Outline | ToastDesign::IconCard => ToastMark::None,
+            ToastDesign::Pill if mark == ToastMark::Stripe => ToastMark::Dot,
+            _ => mark,
+        }
+    }
+
+    /// Whether the person's `toast_corners` changes it, and their `toast_mark`.
+    pub fn takes(self) -> (bool, bool) {
+        let corners = ToastCorners::ALL.map(|c| self.radius(c));
+        let marks = ToastMark::ALL.map(|m| self.mark(m));
+        (corners.iter().any(|r| *r != corners[0]), marks.iter().any(|m| *m != marks[0]))
+    }
+
+    /// Its level colours carry text (the terminal's `[WARN]`, the outline's
+    /// title, the icon card's and banner's Show label in the surface's colour
+    /// on the level's), so they're held to the text floor, not the mark's.
+    fn level_is_text(self) -> bool {
+        matches!(self, ToastDesign::Terminal | ToastDesign::Outline | ToastDesign::IconCard | ToastDesign::Banner)
+    }
+
+    /// The theme colour each level starts from, in `TOAST_LEVELS` order: the
+    /// terminal design takes the terminal's own blue, green, yellow and red.
+    fn level_sources(self) -> [&'static str; 4] {
+        match self {
+            ToastDesign::Terminal => ["ansi4", "ansi2", "ansi3", "ansi1"],
+            _ => TOAST_LEVELS.map(|(_, from)| from),
+        }
+    }
+}
+
+/// Everything a toast's colours depend on besides the theme: the style's
+/// floors, and the design's level colours and backing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ToastLook {
+    pub style: ToastStyle,
+    pub design: ToastDesign,
+}
+
+impl From<ToastStyle> for ToastLook {
+    fn from(style: ToastStyle) -> Self {
+        ToastLook { style, design: ToastDesign::Card }
+    }
+}
+
+impl ToastLook {
+    pub fn floors(self) -> ToastFloors {
+        let f = self.style.floors();
+        if self.design.level_is_text() { ToastFloors { mark: f.mark.max(f.text), ..f } } else { f }
     }
 }
 
@@ -2046,6 +2288,8 @@ impl Default for Person {
             toast_style: ToastStyle::Standard,
             toast_corners: ToastCorners::Rounded,
             toast_mark: ToastMark::Stripe,
+            toast_design: ToastDesign::Card,
+            toast_progress: false,
             focus_border_width: None,
             minimum_contrast: 1.0,
             letter_spacing: None,
@@ -2145,6 +2389,8 @@ pub struct Settings {
     pub toast_style: ToastStyle,
     pub toast_corners: ToastCorners,
     pub toast_mark: ToastMark,
+    pub toast_design: ToastDesign,
+    pub toast_progress: bool,
     /// `focus_border_width` as written (`focus_width` reads it).
     pub focus_border_width: Option<f32>,
     /// Space between a terminal's edge and its text, in px: [x, y].
@@ -2254,6 +2500,8 @@ impl Default for Settings {
             toast_style: ToastStyle::Standard,
             toast_corners: ToastCorners::Rounded,
             toast_mark: ToastMark::Stripe,
+            toast_design: ToastDesign::Card,
+            toast_progress: false,
             focus_border_width: None,
             terminal_padding: [10.0, 6.0],
             terminal_opacity: 1.0,
@@ -2357,6 +2605,8 @@ impl Settings {
             toast_style: person.toast_style,
             toast_corners: person.toast_corners,
             toast_mark: person.toast_mark,
+            toast_design: person.toast_design,
+            toast_progress: person.toast_progress,
             focus_border_width: person.focus_border_width,
             terminal_padding: look.terminal_padding.unwrap_or(d.terminal_padding),
             terminal_opacity: look.terminal_opacity.unwrap_or(1.0).clamp(0.0, 1.0),
@@ -2595,14 +2845,14 @@ pub fn set_window_active(active: bool) {
 }
 
 fn resolve_for(s: &Settings, p: &Palette, own: &BTreeMap<String, String>) -> Theme {
-    resolve_toasts_as(s, p, own, s.toast_style)
+    resolve_toasts_as(s, p, own, s.toast_look())
 }
 
-/// `resolve_for`, its toasts in `style`.
-fn resolve_toasts_as(s: &Settings, p: &Palette, own: &BTreeMap<String, String>, style: ToastStyle) -> Theme {
+/// `resolve_for`, its toasts in `look`.
+fn resolve_toasts_as(s: &Settings, p: &Palette, own: &BTreeMap<String, String>, look: ToastLook) -> Theme {
     let mut colors = own.clone();
     colors.extend(s.colors.clone());
-    resolve(p, &colors, panels_in_use(s.panel_colors, p, own, s.look_paints_panels), s.sidebar_shade.shades(WINDOW_ACTIVE.with(|w| w.get())), style)
+    resolve(p, &colors, panels_in_use(s.panel_colors, p, own, s.look_paints_panels), s.sidebar_shade.shades(WINDOW_ACTIVE.with(|w| w.get())), look)
 }
 
 /// Whether focus can change the theme these settings draw: only a dark
@@ -2849,15 +3099,23 @@ impl Settings {
     /// each `toast_style`'s toast colors in the current theme, and each
     /// `toast_corners` radius in px at zoom 1.
     pub fn toast_looks(&self) -> serde_json::Value {
-        let styles: serde_json::Map<String, serde_json::Value> = PALETTE.with_borrow(|(p, own)| {
-            ToastStyle::ALL.iter().map(|style| {
-                let t = resolve_toasts_as(self, p, own, *style);
-                let colors: serde_json::Map<String, serde_json::Value> = t.into_iter().filter(|(k, _)| k.starts_with("toast")).map(|(k, v)| (k, v.into())).collect();
-                (style.name().to_owned(), colors.into())
-            }).collect()
-        });
+        let colors = |look: ToastLook| -> serde_json::Value {
+            PALETTE.with_borrow(|(p, own)| resolve_toasts_as(self, p, own, look).into_iter().filter(|(k, _)| k.starts_with("toast")).map(|(k, v)| (k, v.into())).collect::<serde_json::Map<_, _>>().into())
+        };
+        let styles: serde_json::Map<String, serde_json::Value> = ToastStyle::ALL.iter().map(|style| (style.name().to_owned(), colors(ToastLook { style: *style, design: self.toast_design }))).collect();
+        let designs: serde_json::Map<String, serde_json::Value> = ToastDesign::ALL.iter().map(|design| (design.name().to_owned(), colors(ToastLook { style: self.toast_style, design: *design }))).collect();
         let radius: serde_json::Map<String, serde_json::Value> = ToastCorners::ALL.iter().map(|c| (serde_json::to_value(c).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default(), c.radius().into())).collect();
-        serde_json::json!({ "styles": styles, "radius": radius })
+        let takes: serde_json::Map<String, serde_json::Value> = ToastDesign::ALL.iter().map(|d| {
+            let (corners, mark) = d.takes();
+            // And what it draws for the person's own: their corner radius and level mark.
+            (d.name().to_owned(), serde_json::json!({ "corners": corners, "mark": mark, "radius": d.radius(self.toast_corners), "draws": d.mark(self.toast_mark) }))
+        }).collect();
+        serde_json::json!({ "styles": styles, "designs": designs, "takes": takes, "radius": radius, "font_family": self.font_family })
+    }
+
+    /// The toast colours' inputs besides the theme.
+    pub fn toast_look(&self) -> ToastLook {
+        ToastLook { style: self.toast_style, design: self.toast_design }
     }
 
     /// The active pane's border width in a pane frame (`focus_border_width`,
@@ -3891,19 +4149,34 @@ mod tests {
             ("toast_style", vec!["standard", "subtle", "high-contrast", "accent"]),
             ("toast_corners", vec!["square", "slight", "rounded"]),
             ("toast_mark", vec!["stripe", "dot", "none"]),
+            ("toast_design", vec!["card", "pill", "terminal", "outline", "icon-card", "banner"]),
         ] {
             for value in values {
                 let s = compose(json!({ key: value }));
                 assert_eq!((s.for_mods()[key].clone(), s.problems()), (json!(value), Vec::<String>::new()), "{key} {value}");
                 let person: Person = serde_json::from_value(json!({ key: value })).unwrap();
                 let written = serde_json::to_value(&person).unwrap();
-                let default = ["normal", "standard", "rounded", "stripe"].contains(&value);
+                let default = ["normal", "standard", "rounded", "stripe", "card"].contains(&value);
                 assert_eq!(written.get(key), (!default).then(|| json!(value)).as_ref(), "{key} {value}");
             }
             for bad in [json!("middle"), json!(2), json!("until_dismissed"), json!("High-Contrast")] {
                 assert!(serde_json::from_value::<Person>(json!({ key: bad.clone() })).is_err(), "{key} {bad}");
             }
         }
+        assert_eq!(ToastDesign::ALL.map(ToastDesign::name), ["card", "pill", "terminal", "outline", "icon-card", "banner"]);
+        assert!(ToastDesign::ALL.iter().all(|d| serde_json::to_value(d).unwrap() == json!(d.name())));
+        assert_eq!((unset.toast_design, unset.toast_progress), (ToastDesign::Card, false));
+        let progress = compose(json!({ "toast_progress": true }));
+        assert_eq!((progress.toast_progress, progress.for_mods()["toast_progress"].clone()), (true, json!(true)));
+        assert_eq!(serde_json::to_value(serde_json::from_value::<Person>(json!({ "toast_progress": false })).unwrap()).unwrap().get("toast_progress"), None, "off is left out");
+        assert!(serde_json::from_value::<Person>(json!({ "toast_progress": "yes" })).is_err());
+        // Corners and marks only where the design takes them.
+        let radii = ToastDesign::ALL.map(|d| d.radius(ToastCorners::Slight));
+        assert_eq!(radii, [4.0, 999.0, 0.0, 4.0, 4.0, 0.0]);
+        let marks = ToastDesign::ALL.map(|d| d.mark(ToastMark::Stripe));
+        assert_eq!(marks, [ToastMark::Stripe, ToastMark::Dot, ToastMark::None, ToastMark::None, ToastMark::None, ToastMark::Stripe]);
+        assert_eq!(ToastDesign::Pill.mark(ToastMark::None), ToastMark::None);
+        assert_eq!(ToastDesign::ALL.map(ToastDesign::takes), [(true, true), (false, true), (false, false), (true, false), (true, false), (false, true)]);
         assert_eq!(ToastDuration::ALL_SCALES, [Some(0.6), Some(1.0), Some(2.0), None]);
         assert_eq!([ToastCorners::Square, ToastCorners::Slight, ToastCorners::Rounded].map(ToastCorners::radius), [0.0, 4.0, 8.0]);
         // Each style's toast colors and each radius reach the Settings window
@@ -3915,13 +4188,20 @@ mod tests {
         }
         assert_eq!(looks["radius"], json!({ "square": 0.0, "slight": 4.0, "rounded": 8.0 }));
         assert!(unset.for_mods().get("toast_styles").is_none());
+        for design in ToastDesign::ALL {
+            assert!(looks["designs"][design.name()]["toast"].is_string(), "{design:?}: {looks}");
+        }
+        assert!(looks["designs"]["outline"]["toast_ghost"].is_string() && looks["designs"]["card"].get("toast_ghost").is_none(), "only the outline has a backing");
+        assert_eq!(looks["font_family"], json!(unset.font_family));
+        assert_eq!((looks["takes"]["pill"].clone(), looks["takes"]["terminal"].clone()), (json!({ "corners": false, "mark": true, "radius": 999.0, "draws": "dot" }), json!({ "corners": false, "mark": false, "radius": 0.0, "draws": "none" })));
+        assert_eq!(looks["takes"]["card"], json!({ "corners": true, "mark": true, "radius": 8.0, "draws": "stripe" }));
     }
 
     /// The guide agents read (written to the home folder) explains every
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

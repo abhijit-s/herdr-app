@@ -244,6 +244,21 @@ const TOAST_CORNERS = [
   ["slight", "Slight"],
   ["rounded", "Rounded"],
 ];
+// A toast's shape (toast_design), each drawn as a small toast in the current theme
+// (toastLooks().designs); Card is the default, left out of settings.json.
+const TOAST_DESIGNS = [
+  ["card", "Card"],
+  ["pill", "Pill"],
+  ["terminal", "Terminal"],
+  ["outline", "Outline"],
+  ["icon-card", "Icon card"],
+  ["banner", "Banner"],
+];
+// Whether a design takes toast_corners and toast_mark (toastLooks().takes, from
+// settings.rs's ToastDesign): a pill's ends are always round, a terminal's and a
+// banner's corners square, and the terminal's [WARN] and the outline's border are
+// their marks. Both, when Herdr doesn't say.
+const toastTakes = (design) => toastLooks()?.takes?.[design ?? "card"] ?? { corners: true, mark: true };
 // The level mark down a toast's left (toast_mark); Stripe is the default.
 const TOAST_MARKS = [
   ["stripe", "Stripe"],
@@ -1168,8 +1183,10 @@ export default class Settings extends View {
     const looks = toastLooks() ?? {};
     const styles = looks.styles ?? {};
     const sel = tonal(t, window()?.active !== false);
-    const radius = looks.radius?.[this.person.toast_corners] ?? looks.radius?.rounded ?? 8;
-    const mark = this.person.toast_mark ?? "stripe";
+    // The corners and mark the chosen design draws for the person's own (toastLooks().takes).
+    const drawn = looks.takes?.[this.person.toast_design ?? "card"];
+    const radius = drawn?.radius ?? looks.radius?.[this.person.toast_corners] ?? looks.radius?.rounded ?? 8;
+    const mark = drawn?.draws ?? this.person.toast_mark ?? "stripe";
     const cell = ([value, label]) => {
       const on = now === value;
       const c = styles[value] ?? t;
@@ -1202,6 +1219,69 @@ export default class Settings extends View {
         .child(div().text_size(11).text_color(on ? sel.text : t.dim).child(label));
     };
     return h_flex().p(2).gap(2).rounded(8).border_1().border_color(t.border).bg(t.background).children(TOAST_STYLES.map(cell));
+  }
+
+  // One small toast per design, in the current theme's colours for that design and the
+  // chosen style (toastLooks().designs), the chosen one the tonal pill. Its name underneath.
+  toastDesignPicker(t) {
+    const now = this.person.toast_design ?? "card";
+    const looks = toastLooks() ?? {};
+    const designs = looks.designs ?? {};
+    const sel = tonal(t, window()?.active !== false);
+    const radius = (looks.radius?.[this.person.toast_corners] ?? looks.radius?.rounded ?? 8) / 2;
+    const bar = (id, w, color) => div().id(id).w(w).h(3).rounded(1).flex_none().bg(color);
+    const preview = (value, c) => {
+      const box = (el) => el.id(`st-tg-${value}-toast`).items_center().overflow_hidden().border_1().border_color(c.toast_border).bg(c.toast);
+      switch (value) {
+        case "pill":
+          return box(h_flex().w(46).h(14).px(6).gap(4).rounded(7)).child(div().size(5).rounded(3).flex_none().bg(c.toast_info)).child(bar(`st-tg-${value}-text`, 22, c.toast_foreground));
+        case "terminal":
+          return box(h_flex().w(58).h(22).px(4).gap(3))
+            .font_family(looks.font_family ?? "monospace")
+            .child(div().id(`st-tg-${value}-tag`).text_size(8).text_color(c.toast_info).child("[OK]"))
+            .child(bar(`st-tg-${value}-text`, 18, c.toast_foreground));
+        case "outline":
+          return h_flex().id(`st-tg-${value}-toast`).w(58).h(22).px(6).gap(4).items_center().rounded(radius).border_1().border_color(c.toast_info).bg(c.toast_ghost ?? c.toast)
+            .child(bar(`st-tg-${value}-text`, 26, c.toast_info));
+        case "icon-card":
+          return box(h_flex().w(58).h(26).px(4).gap(4).rounded(radius))
+            .child(div().id(`st-tg-${value}-icon`).size(12).rounded(6).flex_none().bg(c.toast_info))
+            .child(v_flex().gap(3).child(bar(`st-tg-${value}-text`, 26, c.toast_foreground)).child(bar(`st-tg-${value}-button`, 10, c.toast_info)));
+        case "banner":
+          return v_flex().w(58).h(26).rounded(3).border_1().border_color(t.border).bg(t.background).overflow_hidden()
+            .child(box(h_flex().w_full().h(8).px(3).gap(3)).border_0().border_b(1).child(bar(`st-tg-${value}-text`, 20, c.toast_foreground)));
+        default:
+          return box(h_flex().w(58).h(22).gap(4).rounded(radius))
+            .child(div().w(2).h_full().flex_none().bg(c.toast_info))
+            .child(div().size(5).rounded(3).flex_none().bg(c.toast_info))
+            .child(bar(`st-tg-${value}-text`, 22, c.toast_foreground));
+      }
+    };
+    const cell = ([value, label]) => {
+      const on = now === value;
+      return v_flex()
+        .id(`st-tg-${value}`)
+        .p(4)
+        .gap(3)
+        .items_center()
+        .rounded(6)
+        .border_1()
+        .cursor_pointer()
+        .when(on, (el) => el.bg(sel.fill).border_color(sel.ring))
+        .when(!on, (el) => el.border_color(t.background).hover((s) => s.bg(hoverFill(t))))
+        .on_click((_e, cx) => this.change((p) => writeOrDrop("toast_design", "card")(p, value), cx))
+        .child(preview(value, designs[value] ?? t))
+        .child(div().text_size(11).text_color(on ? sel.text : t.dim).child(label));
+    };
+    return v_flex()
+      .p(2)
+      .gap(2)
+      .rounded(8)
+      .border_1()
+      .border_color(t.border)
+      .bg(t.background)
+      .child(h_flex().gap(2).children(TOAST_DESIGNS.slice(0, 3).map(cell)))
+      .child(h_flex().gap(2).children(TOAST_DESIGNS.slice(3).map(cell)));
   }
 
   themesPage(t) {
@@ -1503,9 +1583,28 @@ export default class Settings extends View {
       )
       .child(this.row(t, "Notification position", "Where toasts show. toast_offset in settings.json moves them in from the edges, to clear a status bar.", this.toastPositionPicker(t), ["toast_position", "toast_offset"]))
       .child(this.row(t, "Notification time", "How long toasts stay up: errors and warnings stay longer than the rest. Until clicked keeps them until you click one. A toast that sets its own time, such as Copied, keeps it.", this.choicePicker(t, "st-td", "toast_duration", TOAST_DURATIONS, { now: this.person.toast_duration ?? "normal", write: writeOrDrop("toast_duration", "normal") }), "toast_duration"))
+      .child(this.row(t, "Notification design", "A toast's shape: a card, a one-line pill, terminal text, an outline over the window, a card with a big icon and buttons, or a banner across the window's top or bottom edge (the half of the position it's in), one at a time.", this.toastDesignPicker(t), "toast_design"))
       .child(this.row(t, "Notification style", "How toasts stand off the window: Subtle sits closer to the panels, High contrast has a stronger border and text, Accent takes the theme's accent. A theme's own toast colours still win.", this.toastStylePicker(t), "toast_style"))
-      .child(this.row(t, "Notification corners", "Square, slightly rounded or rounded toasts.", this.choicePicker(t, "st-tr", "toast_corners", TOAST_CORNERS, { now: this.person.toast_corners ?? "rounded", write: writeOrDrop("toast_corners", "rounded") }), "toast_corners"))
-      .child(this.row(t, "Notification level mark", "What shows a toast's level: a stripe down its left side with a dot, the dot alone, or neither.", this.choicePicker(t, "st-tm", "toast_mark", TOAST_MARKS), "toast_mark"))
+      .when(toastTakes(this.person.toast_design).corners, (el) =>
+        el.child(this.row(t, "Notification corners", "Square, slightly rounded or rounded toasts.", this.choicePicker(t, "st-tr", "toast_corners", TOAST_CORNERS, { now: this.person.toast_corners ?? "rounded", write: writeOrDrop("toast_corners", "rounded") }), "toast_corners")),
+      )
+      .when(toastTakes(this.person.toast_design).mark, (el) =>
+        el.child(this.row(t, "Notification level mark", "What shows a toast's level: a stripe down its left side with a dot, the dot alone, or neither. A pill draws a dot for the stripe.", this.choicePicker(t, "st-tm", "toast_mark", TOAST_MARKS), "toast_mark")),
+      )
+      .child(
+        this.row(
+          t,
+          "Notification countdown",
+          "A thin bar along a toast's bottom edge showing the time left before it closes. Toasts kept until clicked have none.",
+          this.toggle(t, "st-toast_progress", this.person.toast_progress === true, (_e, cx) =>
+            this.change((p) => {
+              if (p.toast_progress) delete p.toast_progress;
+              else p.toast_progress = true;
+            }, cx),
+          ),
+          "toast_progress",
+        ),
+      )
       .child(this.plain(div().h(18)))
       .child(this.heading(t, "Inactive window"))
       .child(this.contrast(t, "unfocused_dim", "Dim when inactive", "Fades this far toward the background while Herdr isn't the active window."))
