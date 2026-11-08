@@ -63,6 +63,21 @@ while True:
     time.sleep(0.1)
 """
 
+# An agent that keeps finishing: working for `busy` s, then idle for `rest` s,
+# after `start` s, so many of them raise "finished" alerts (toasts) in waves.
+CYCLE = r"""
+import sys, time
+start, busy, rest = map(float, sys.argv[1:4])
+w = sys.stdout.write
+w("\033]7501;state=idle:app=pi\033\\"); sys.stdout.flush()
+time.sleep(start)
+while True:
+    w("\033]7501;state=working:app=pi\033\\"); sys.stdout.flush()
+    time.sleep(busy)
+    w("\033]7501;state=idle:app=pi\033\\"); sys.stdout.flush()
+    time.sleep(rest)
+"""
+
 # Agents that only report: idle, or working without a word of output (the
 # spinners are all that moves), or working with a title that animates.
 REPORTS = r"""
@@ -323,9 +338,10 @@ def main():
     ap.add_argument("--seconds", type=int, default=20)
     ap.add_argument("--sample", action="store_true")
     ap.add_argument("--zoom", type=float, default=1.0)
-    ap.add_argument("--set", choices=["all", "spinners"], default="all",
-                    help="spinners: many spaces of idle agents, one agent working on screen")
+    ap.add_argument("--set", choices=["all", "spinners", "toasts"], default="all",
+                    help="spinners: many spaces of idle agents, one agent working on screen; toasts: agents finishing in waves and in a storm, raising toasts")
     ap.add_argument("--only", help="measure only this scenario, e.g. spinners+stream")
+    ap.add_argument("--settings", default="{}", help="JSON merged into the test home's settings.json, e.g. '{\"toast_duration\": \"long\"}'")
     a = ap.parse_args()
     if a.seconds <= 0:
         ap.error("--seconds must be positive")
@@ -342,13 +358,16 @@ def main():
     with open(f"{ROOT}/home/shared.json", "w") as f:
         json.dump({"frame.welcomed": True, "layout": "main"}, f)
     with open(f"{ROOT}/home/settings.json", "w") as f:
-        json.dump({"zoom": a.zoom}, f)
+        json.dump({"zoom": a.zoom, **json.loads(a.settings)}, f)
     with open(f"{ROOT}/agent.py", "w") as f:
         f.write(AGENT)
     with open(f"{ROOT}/reports.py", "w") as f:
         f.write(REPORTS)
     with open(f"{ROOT}/tui.py", "w") as f:
         f.write(TUI)
+    with open(f"{ROOT}/cycle.py", "w") as f:
+        f.write(CYCLE)
+    cycle = lambda start, busy, rest: [sys.executable, "-u", f"{ROOT}/cycle.py", str(start), str(busy), str(rest)]
     agent = [sys.executable, "-u", f"{ROOT}/agent.py"]
     tui = [sys.executable, "-u", f"{ROOT}/tui.py"]
     reports = lambda state: [sys.executable, "-u", f"{ROOT}/reports.py", state]
@@ -389,6 +408,20 @@ def main():
             rows.append(measure("spinners+stream", app.pid, a.seconds, a.sample))
             do(bin, "tab.new", {"name": "title", "argv": reports("title")})
             rows.append(measure("spinners+title", app.pid, a.seconds, a.sample))
+            return
+        if a.set == "toasts":
+            # The window opens behind (HERDR_APP_BACKGROUND), so every finish
+            # is one nobody saw: a toast, joined while they come within 3 s.
+            do(bin, "space.new", {"name": "bench", "folder": ROOT})
+            rows.append(measure("toasts-idle", app.pid, a.seconds, a.sample))
+            # 15 agents finishing within one second, every five seconds.
+            for i in range(15):
+                do(bin, "space.new", {"name": f"wave{i}", "folder": ROOT, "argv": cycle(1 + i / 15, 4, 1)})
+            rows.append(measure("toasts-burst", app.pid, a.seconds, a.sample))
+            # And 15 more finishing about twice a second each: a storm of ~30 alerts a second.
+            for i in range(15):
+                do(bin, "space.new", {"name": f"storm{i}", "folder": ROOT, "argv": cycle(i / 30, 0.25, 0.25)})
+            rows.append(measure("toasts-storm", app.pid, a.seconds, a.sample))
             return
         do(bin, "space.new", {"name": "bench", "folder": ROOT})
         rows.append(measure("idle-shell", app.pid, a.seconds, a.sample))
