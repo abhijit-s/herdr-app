@@ -18,11 +18,10 @@ class Element {
   }
 }
 const element = () => new Element();
-let settingsNow: Record<string, any> = {};
 let propsNow: Record<string, any> = {};
 const values: Record<string, any> = {
   View: class {}, div: element, image: element, v_flex: element, h_flex: element,
-  props: () => propsNow, closeOverlay() {}, run() {}, settings: () => settingsNow,
+  props: () => propsNow, closeOverlay() {}, run() {},
   theme: () => new Proxy({}, { get: (_t, key: string) => `#${key}` }),
 };
 const source = await readFile(new URL("../defaults/mods/toast/main.js", import.meta.url), "utf8");
@@ -38,9 +37,9 @@ function find(root: Element, id: string): Element | undefined {
   }
 }
 
-const draw = (settings: Record<string, any>, props: Record<string, any> = { title: "Saved", level: "error" }) => {
-  settingsNow = settings;
-  propsNow = props;
+// The mark comes in the props, as Herdr puts the person's toast_mark there.
+const draw = (mark: Record<string, any>, props: Record<string, any> = { title: "Saved", level: "error" }) => {
+  propsNow = { ...props, ...mark };
   return new Toast().render({});
 };
 

@@ -566,7 +566,9 @@ fn toast_colors(t: &Theme, own_panels: bool, style: ToastStyle) -> Vec<(&'static
     // From `from`, the first step toward the terminal's foreground (else white) that lifts.
     let lift_from = |from: u32| step_until(from, beyond(get("terminal_foreground")), lifted).or_else(|| step_until(from, 0xffffff, lifted)).unwrap_or(0xffffff);
     let derived = || if light { 0xffffff } else { lift_from(bg) };
-    let surface = get("toast").or_else(|| own("popover", bg).filter(|c| light || lifted(*c))).unwrap_or_else(|| match style {
+    // High contrast doesn't start from a theme's own popover: a mid-grey one can't carry 7:1 text.
+    let own_surface = || own("popover", bg).filter(|c| style != ToastStyle::HighContrast && (light || lifted(*c)));
+    let surface = get("toast").or_else(own_surface).unwrap_or_else(|| match style {
         ToastStyle::Standard | ToastStyle::HighContrast => derived(),
         // The panels' own popover where it lifts (a light one always does: the border carries it).
         ToastStyle::Subtle => get("popover").filter(|c| light || lifted(*c)).unwrap_or_else(derived),
@@ -834,6 +836,14 @@ mod derivation_tests {
         let (dark_accent, own) = parse_theme_file("dark accent", &text).unwrap();
         let t = drawn_as(&dark_accent, &own, PanelColors::Tinted, false, ToastStyle::Accent);
         assert_eq!(toast_problems_for("dark accent", &t, ToastStyle::Accent), Vec::<String>::new());
+        // High contrast holds 7:1 text over a theme that paints a mid-grey
+        // popover of its own, which can't carry it: it leaves the popover.
+        let mut grey = GRAPHITE.clone();
+        grey.background = 0x202020;
+        let own: BTreeMap<String, String> = [("popover".to_owned(), "#6b6b6b".to_owned())].into();
+        let t = drawn_as(&grey, &own, PanelColors::Tinted, false, ToastStyle::HighContrast);
+        assert_eq!(toast_problems_for("grey popover", &t, ToastStyle::HighContrast), Vec::<String>::new());
+        assert_eq!(drawn(&grey, &own, PanelColors::Tinted, false)["toast"], "#6b6b6b", "standard keeps it");
         // A theme's or settings' own toast colors win, in every style.
         let p = GRAPHITE.clone();
         let own: BTreeMap<String, String> = [("toast".to_owned(), "#123456".to_owned())].into();
@@ -1722,6 +1732,8 @@ pub enum ToastCorners {
 }
 
 impl ToastCorners {
+    pub const ALL: [ToastCorners; 3] = [ToastCorners::Square, ToastCorners::Slight, ToastCorners::Rounded];
+
     fn is_rounded(&self) -> bool {
         *self == ToastCorners::Rounded
     }
@@ -2505,6 +2517,8 @@ thread_local! {
     /// `settings()` as mods read it, built once per `set`: mods call it from
     /// render, some once per element.
     static FOR_MODS: RefCell<std::sync::Arc<serde_json::Value>> = RefCell::new(std::sync::Arc::new(Settings::default().for_mods()));
+    /// `toastLooks()`, built once per `set`: only the Settings window reads it.
+    static TOAST_LOOKS: RefCell<std::sync::Arc<serde_json::Value>> = RefCell::new(std::sync::Arc::new(Settings::default().toast_looks()));
 }
 
 const ZOOM_MIN: f32 = 0.5;
@@ -2522,6 +2536,11 @@ pub fn get() -> Rc<Settings> {
 /// The settings mods read (`settings()`), as of the last `set`.
 pub fn for_mods() -> std::sync::Arc<serde_json::Value> {
     FOR_MODS.with_borrow(std::sync::Arc::clone)
+}
+
+/// The toast previews the Settings window draws (`toastLooks()`), as of the last `set`.
+pub fn toast_looks() -> std::sync::Arc<serde_json::Value> {
+    TOAST_LOOKS.with_borrow(std::sync::Arc::clone)
 }
 
 /// The resolved theme: every color by name.
@@ -2643,6 +2662,7 @@ pub fn set(s: Settings) -> bool {
         FOLLOWS_FOCUS.set(shade_follows_focus(&s, &p, &own));
         PALETTE.set((p, own));
         FOR_MODS.set(std::sync::Arc::new(s.for_mods()));
+        TOAST_LOOKS.set(std::sync::Arc::new(s.toast_looks()));
         if *c.borrow().0 == s && *c.borrow().1 == theme {
             return false;
         }
@@ -2818,21 +2838,26 @@ impl Settings {
             o.insert("ui_scale".into(), serde_json::json!(self.ui_scale()));
             let in_use = PALETTE.with_borrow(|(p, own)| panels_in_use(self.panel_colors, p, own, self.look_paints_panels));
             o.insert("panels_in_use".into(), serde_json::json!(in_use));
-            // Each style's toast in the current theme, for the Settings window's previews:
-            // resolved here, when settings change, never while drawing.
-            let styles: serde_json::Map<String, serde_json::Value> = PALETTE.with_borrow(|(p, own)| {
-                ToastStyle::ALL.iter().map(|style| {
-                    let t = resolve_toasts_as(self, p, own, *style);
-                    let colors: serde_json::Map<String, serde_json::Value> = t.into_iter().filter(|(k, _)| k.starts_with("toast")).map(|(k, v)| (k, v.into())).collect();
-                    (style.name().to_owned(), colors.into())
-                }).collect()
-            });
-            o.insert("toast_styles".into(), styles.into());
             o.insert("ui_scale_ranges".into(), serde_json::json!({ "ui_zoom": UI_ZOOM_RANGE, "ui_text_scale": UI_TEXT_SCALE_RANGE }));
             let presets: Vec<_> = SPINNER_PRESETS.iter().map(|(name, frames, ms)| serde_json::json!({ "name": name, "frames": frames, "interval_ms": ms })).collect();
             o.insert("working_spinner_presets".into(), presets.into());
         }
         v
+    }
+
+    /// What the Settings window draws its toast previews from (`toastLooks()`):
+    /// each `toast_style`'s toast colors in the current theme, and each
+    /// `toast_corners` radius in px at zoom 1.
+    pub fn toast_looks(&self) -> serde_json::Value {
+        let styles: serde_json::Map<String, serde_json::Value> = PALETTE.with_borrow(|(p, own)| {
+            ToastStyle::ALL.iter().map(|style| {
+                let t = resolve_toasts_as(self, p, own, *style);
+                let colors: serde_json::Map<String, serde_json::Value> = t.into_iter().filter(|(k, _)| k.starts_with("toast")).map(|(k, v)| (k, v.into())).collect();
+                (style.name().to_owned(), colors.into())
+            }).collect()
+        });
+        let radius: serde_json::Map<String, serde_json::Value> = ToastCorners::ALL.iter().map(|c| (serde_json::to_value(c).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default(), c.radius().into())).collect();
+        serde_json::json!({ "styles": styles, "radius": radius })
     }
 
     /// The active pane's border width in a pane frame (`focus_border_width`,
@@ -3881,12 +3906,15 @@ mod tests {
         }
         assert_eq!(ToastDuration::ALL_SCALES, [Some(0.6), Some(1.0), Some(2.0), None]);
         assert_eq!([ToastCorners::Square, ToastCorners::Slight, ToastCorners::Rounded].map(ToastCorners::radius), [0.0, 4.0, 8.0]);
-        // Each style's toast colors reach mods, the chosen one as `theme()` draws it.
-        let styles = unset.for_mods()["toast_styles"].clone();
+        // Each style's toast colors and each radius reach the Settings window
+        // through `toastLooks()`, not `settings()`, which every mod reads.
+        let looks = unset.toast_looks();
         for style in ToastStyle::ALL {
-            assert!(styles[style.name()]["toast"].as_str().is_some_and(|v| v.starts_with('#')), "{style:?}: {styles}");
-            assert!(styles[style.name()]["toast_info"].is_string(), "{style:?}");
+            assert!(looks["styles"][style.name()]["toast"].as_str().is_some_and(|v| v.starts_with('#')), "{style:?}: {looks}");
+            assert!(looks["styles"][style.name()]["toast_info"].is_string(), "{style:?}");
         }
+        assert_eq!(looks["radius"], json!({ "square": 0.0, "slight": 4.0, "rounded": 8.0 }));
+        assert!(unset.for_mods().get("toast_styles").is_none());
     }
 
     /// The guide agents read (written to the home folder) explains every

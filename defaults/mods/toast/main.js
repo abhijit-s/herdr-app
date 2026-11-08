@@ -2,11 +2,11 @@
 // level, icon, action }); replace this mod to restyle them all. Click to
 // run its action (e.g. go to the agent) and dismiss it. Herdr draws the box
 // (surface, border, corners: toast_style, toast_corners); this mod draws the
-// level mark (toast_mark) and the text.
+// level mark (props().toast_mark) and the text.
 
 import { View, div, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { props, closeOverlay, run, theme, settings } from "herdr";
+import { props, closeOverlay, run, theme } from "herdr";
 
 // Each level's color, held to 3:1 on the toast's surface (settings.rs, toast_colors).
 const LEVEL = { error: "toast_error", warning: "toast_warning", success: "toast_success", info: "toast_info" };
@@ -19,10 +19,11 @@ export default class Toast extends View {
     const t = theme();
     const p = props() ?? {};
     const level = t[LEVEL[p.level] ?? "toast_info"];
-    // "stripe" (the default): a stripe in the level's color down the left, its
-    // width taken from the padding, and the dot; "dot": the dot alone; "none":
-    // neither (an icon still shows).
-    const mark = settings()?.toast_mark ?? "stripe";
+    // The person's toast_mark, which Herdr puts in the props: "stripe" (the
+    // default) is a stripe in the level's color down the left, its width taken
+    // from the padding, and the dot; "dot": the dot alone; "none": neither (an
+    // icon still shows).
+    const mark = p.toast_mark ?? "stripe";
     return h_flex()
       .id("toast")
       .size_full()

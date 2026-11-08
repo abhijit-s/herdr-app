@@ -2,7 +2,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { hc, run, theme, themes, fonts, updates, telemetry, settings, layoutSpacing, layouts, shared, setShared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window, headerInfoPreview } from "herdr";
+import { hc, run, theme, themes, fonts, updates, telemetry, settings, layoutSpacing, layouts, shared, setShared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window, headerInfoPreview, toastLooks } from "herdr";
 
 const I = (name) => `frame/settings/${name}.svg`;
 
@@ -231,18 +231,18 @@ const TOAST_DURATIONS = [
   ["until-dismissed", "Until clicked"],
 ];
 // How toasts look (toast_style), each drawn as a small toast in the current theme
-// (settings().toast_styles); Standard is the default, left out of settings.json.
+// (toastLooks().styles); Standard is the default, left out of settings.json.
 const TOAST_STYLES = [
   ["standard", "Standard"],
   ["subtle", "Subtle"],
   ["high-contrast", "High contrast"],
   ["accent", "Accent"],
 ];
-// A toast's corners (toast_corners) and their radius in px; Rounded is the default.
+// A toast's corners (toast_corners), their radius from toastLooks().radius; Rounded is the default.
 const TOAST_CORNERS = [
-  ["square", "Square", 0],
-  ["slight", "Slight", 4],
-  ["rounded", "Rounded", 8],
+  ["square", "Square"],
+  ["slight", "Slight"],
+  ["rounded", "Rounded"],
 ];
 // The level mark down a toast's left (toast_mark); Stripe is the default.
 const TOAST_MARKS = [
@@ -1158,9 +1158,10 @@ export default class Settings extends View {
   // chosen corners and level mark, the chosen style the tonal pill. Its name underneath.
   toastStylePicker(t) {
     const now = this.person.toast_style ?? "standard";
-    const styles = settings().toast_styles ?? {};
+    const looks = toastLooks() ?? {};
+    const styles = looks.styles ?? {};
     const sel = tonal(t, window()?.active !== false);
-    const radius = (TOAST_CORNERS.find(([v]) => v === (this.person.toast_corners ?? "rounded")) ?? TOAST_CORNERS[2])[2];
+    const radius = looks.radius?.[this.person.toast_corners] ?? looks.radius?.rounded ?? 8;
     const mark = this.person.toast_mark ?? "stripe";
     const cell = ([value, label]) => {
       const on = now === value;

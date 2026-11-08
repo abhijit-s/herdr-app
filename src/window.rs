@@ -105,6 +105,12 @@ impl AlertToast {
     }
 }
 
+/// A toast's props with the person's `toast_mark`, which the toast mod draws:
+/// carried in the props so a toast's render reads no settings.
+fn with_toast_mark(props: &mut Value) {
+    props["toast_mark"] = serde_json::to_value(settings::get().toast_mark).unwrap_or(Value::Null);
+}
+
 /// One line without a body, two with one: a body as the toast mod draws one
 /// (text that isn't blank, or anything else JavaScript calls true).
 fn toast_height(notification: &Value) -> f32 {
@@ -2990,6 +2996,7 @@ impl AppWindow {
         toast.joined = now;
         let mut props = toast.notification();
         props["overlay"] = json!(o.id);
+        with_toast_mark(&mut props);
         o.expires = toast_timeout(&props, settings::get().toast_duration).map(|t| now + t);
         o.size.height = toast_height(&props);
         let slot = o.slot.clone();
@@ -4620,6 +4627,9 @@ impl AppWindow {
             props = json!({});
         }
         props["overlay"] = json!(id);
+        if kind == OverlayKind::Toast {
+            with_toast_mark(&mut props);
+        }
         let urgent = kind == OverlayKind::Toast && matches!(props.get("level").and_then(Value::as_str), Some("error" | "warning"));
         let num = |k: &str, d: f32| spec.get(k).and_then(Value::as_f64).map_or(d, |v| v as f32);
         let size = match kind {
@@ -4707,12 +4717,15 @@ impl AppWindow {
 
     /// A burst of toasts shows at most `TOAST_LIMIT`: past it, the oldest
     /// close, routine ones before errors and warnings, so a burst of
-    /// "finished" toasts can't push out an error nobody has read yet.
+    /// "finished" toasts can't push out an error nobody has read yet. The
+    /// toast just opened always shows: with five errors kept until clicked,
+    /// a new "Copied" closes the oldest error rather than itself.
     fn close_toasts_past_limit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let toasts: Vec<(String, bool)> = self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).map(|o| (o.id.clone(), o.urgent)).collect();
         let excess = toasts.len().saturating_sub(TOAST_LIMIT);
-        let routine = toasts.iter().filter(|(_, urgent)| !urgent);
-        let urgent = toasts.iter().filter(|(_, urgent)| *urgent);
+        let Some((_, older)) = toasts.split_last() else { return };
+        let routine = older.iter().filter(|(_, urgent)| !urgent);
+        let urgent = older.iter().filter(|(_, urgent)| *urgent);
         let closing: Vec<String> = routine.chain(urgent).take(excess).map(|(id, _)| id.clone()).collect();
         for id in closing {
             self.close_overlay(&id, window, cx);
@@ -6796,13 +6809,15 @@ mod tests {
     }
 
     #[test]
-    fn toast_duration_reaches_open_toasts() {
+    fn toast_duration_and_mark_reach_new_toasts() {
         in_own_process("toast_duration_open");
     }
 
     /// The person's `toast_duration` decides when a toast opened now, or an
-    /// alert joining one, goes; Copied keeps its 1.5 s. Their `toast_mark`
-    /// reaches the shipped toast mod: its dot shows for stripe and dot only.
+    /// alert joining one, goes (a toast already open keeps the time it was
+    /// given); Copied keeps its 1.5 s, and shows even past five errors kept
+    /// until clicked. Their `toast_mark` reaches the shipped toast mod in its
+    /// props: its dot shows for stripe and dot only.
     #[gpui::test]
     fn toast_duration_open(cx: &mut gpui::TestAppContext) {
         use crate::model::Alert;
@@ -6849,6 +6864,17 @@ mod tests {
         view.update_in(cx, |this, window, cx| this.show_copied(window, cx));
         let copied = view.update(cx, |this, _| this.copied_toast.clone()).unwrap();
         assert!(lasts(&copied, cx).is_some_and(|d| d <= Duration::from_millis(1500)), "Copied stays brief");
+        // Five errors kept until clicked don't starve a new toast: it shows, the oldest error goes.
+        close_all(cx);
+        let errors: Vec<String> = (0..5).map(|i| {
+            let id = crate::mods::new_overlay_id();
+            view.update_in(cx, |this, window, cx| this.open_overlay(id.clone(), json!({ "kind": "toast", "notification": { "title": format!("e{i}"), "level": "error" } }), window, cx));
+            id
+        }).collect();
+        view.update_in(cx, |this, window, cx| this.show_copied(window, cx));
+        let copied = view.update(cx, |this, _| this.copied_toast.clone()).unwrap();
+        let shown = view.update(cx, |this, _| this.overlays.iter().filter(|o| o.kind == super::OverlayKind::Toast).map(|o| o.id.clone()).collect::<Vec<_>>());
+        assert_eq!(shown, [&errors[1..], &[copied]].concat(), "Copied shows; the oldest error made room");
         // An alert joining a toast keeps it until clicked too.
         set(ToastDuration::Long, ToastMark::None, cx);
         let alert = |addr: &str, cx: &mut gpui::VisualTestContext| {

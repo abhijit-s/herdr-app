@@ -1310,6 +1310,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
             }
         })
         .function("settings", |_| Ok(HostValue::Json(crate::settings::for_mods())))
+        .function("toastLooks", |_| Ok(HostValue::Json(crate::settings::toast_looks())))
         .function("keys", |_| Ok(HostValue::Json(keys_part())))
         .function("openOverlay", |a| {
             let mut spec = from_host(a.value(0)?);

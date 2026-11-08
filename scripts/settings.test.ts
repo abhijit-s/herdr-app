@@ -24,6 +24,8 @@ const element = () => new Element();
 let propsNow: Record<string, any> = {};
 // The window: its platform, and whether it's the active one.
 let windowNow: Record<string, any> = { platform: "linux" };
+// What toastLooks() gives the Settings window's toast previews.
+let looksNow: Record<string, any> = {};
 // What themes() lists, and shared.json apart from the layout's name.
 let themeList: any[] = [];
 const sharedDisk: Record<string, any> = {};
@@ -44,6 +46,7 @@ const values: Record<string, any> = {
   // The theme grid's list: what it was given, and where its handle was asked to scroll.
   v_virtual_list: (...args: any[]) => { const list = element(); list.calls.v_virtual_list = args; return list; },
   VirtualListScrollHandle: { new: () => { const handle = { scrolls: [] as any[], scroll_to_item(i: number, how: string) { handle.scrolls.push([i, how]); } }; return handle; } },
+  toastLooks: () => looksNow,
   themes: () => themeList, layouts: () => ["win98"], setShared: (key: string, value: any) => { sharedDisk[key] = value; },
   settings: () => ({ theme_dark: "ayu-mirage", theme_light: "ayu-light", ...composed }), window: () => windowNow, props: () => propsNow,
   // Pages search reads besides Text and Look: a build from source that checks nothing.
@@ -451,7 +454,8 @@ test("each style's preview is a small toast in that style's colours, with the ch
     standard: { toast: "#202020", toast_border: "#505050", toast_foreground: "#eeeeee", toast_info: "#3b82f6" },
     subtle: { toast: "#181818", toast_border: "#303030", toast_foreground: "#dddddd", toast_info: "#2563eb" },
   };
-  const cell = (person: Record<string, any>, value: string) => click(person, { toast_styles: styles }, `st-ts-${value}`, ["shown?"], "window");
+  looksNow = { styles, radius: { square: 0, slight: 4, rounded: 8 } };
+  const cell = (person: Record<string, any>, value: string) => click(person, {}, `st-ts-${value}`, ["shown?"], "window");
   const toast = (person: Record<string, any>, value: string) => cell(person, value).nodes[0];
   expect(toast({}, "subtle").calls.bg).toEqual(["#181818"]);
   expect(toast({}, "subtle").calls.border_color).toEqual(["#303030"]);
@@ -463,8 +467,13 @@ test("each style's preview is a small toast in that style's colours, with the ch
   expect(marks({})).toEqual(["stripe", "dot"]);
   expect(marks({ toast_mark: "dot" })).toEqual(["dot"]);
   expect(marks({ toast_mark: "none" })).toEqual([]);
-  // A style Herdr didn't send (an older build) draws in the theme's own toast colours.
+  // A style Herdr didn't send draws in the theme's own toast colours.
   expect(toast({}, "accent").calls.bg).toEqual(["#000000"]);
+  // The radii are Herdr's own.
+  looksNow = { styles, radius: { square: 1, slight: 3, rounded: 10 } };
+  expect(toast({ toast_corners: "square" }, "standard").calls.rounded).toEqual([0.5]);
+  expect(toast({}, "standard").calls.rounded).toEqual([5]);
+  looksNow = {};
 });
 
 test("search finds the toast settings by their keys and words", () => {
