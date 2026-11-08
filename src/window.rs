@@ -7302,6 +7302,8 @@ mod tests {
         assert_eq!(at("a", cx).unwrap().size.height, px(TOAST_HEIGHT), "unset: the card");
         design(ToastDesign::Pill, ToastPosition::BottomRight, cx);
         assert_eq!(at("a", cx).unwrap().size.height, px(PILL_HEIGHT), "an open toast takes the new design");
+        let mark = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.toast_props()[0].1["toast_mark"].clone());
+        assert_eq!(mark(cx), json!("dot"), "the props carry the mark the pill takes for the stripe");
         open("b", json!({ "title": "Agent finished", "body": "work / api", "level": "info", "action": { "name": "agent.focus", "args": { "terminal": "t1" } } }), cx);
         assert_eq!(at("b", cx).unwrap().size.height, px(PILL_HEIGHT));
         design(ToastDesign::IconCard, ToastPosition::BottomRight, cx);

@@ -142,6 +142,8 @@ test("icon card: a big level icon, and Show and Dismiss only for a toast with an
 test("banner: title, place, how many more, Show for an action, Dismiss always", () => {
   const root = draw({ toast_design: "banner", toast_more: 2 }, { title: "claude finished", body: "work / api", level: "info", action: { name: "agent.focus" } });
   expect(find(root, "toast-more")?.nodes).toEqual(["+2 more"]);
+  // A long title truncates rather than pushing the buttons out.
+  expect(all(root).find((e) => e.nodes[0] === "claude finished")?.calls.min_w).toEqual([0]);
   expect(find(root, "toast-show")).toBeDefined();
   expect(find(root, "toast-dismiss")).toBeDefined();
   expect(root.calls.border_l).toEqual([3]);
