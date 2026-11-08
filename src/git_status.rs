@@ -306,10 +306,13 @@ impl Worker {
         }
         let rescan = event.need_rescan();
         let mut hit = Vec::new();
-        // A new folder may be one the rules ignore (a first build's `target/`).
-        let new_folder = matches!(event.kind, notify::EventKind::Create(_));
         for repo in self.repos.values_mut() {
-            if event.paths.iter().any(|p| p.starts_with(&repo.root) && (p.file_name().is_some_and(|n| n == ".gitignore" || n == "exclude") || (new_folder && p.is_dir() && repo.counts(p)))) {
+            // A folder that counts may be a new one the rules ignore (a first
+            // build's `target/`). Any event on it asks, not only its creation:
+            // under load FSEvents can deliver a new folder's extended-attribute
+            // change before the event that created it.
+            let new_folder = |p: &Path| repo.counts(p) && !repo.git_dirs.iter().any(|d| p.starts_with(d)) && p.is_dir();
+            if event.paths.iter().any(|p| p.starts_with(&repo.root) && (p.file_name().is_some_and(|n| n == ".gitignore" || n == "exclude") || new_folder(p))) {
                 // Once per burst, not per folder a checkout makes (`ignored` walks the tree).
                 if repo.ignored_at.is_none_or(|at| at.elapsed() > QUIET) {
                     repo.ignored = ignored(&repo.root);
@@ -647,6 +650,26 @@ mod tests {
 
     fn next_update(rx: &mpsc::Receiver<Update>, within: Duration) -> Option<Update> {
         rx.recv_timeout(within).ok()
+    }
+
+    /// Under load FSEvents can report a new folder's extended attributes before
+    /// its creation: that first event still finds the folder ignored.
+    #[test]
+    fn a_new_ignored_folder_does_not_count_whatever_its_first_event() {
+        let root = repo("first-event");
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let place = Place { on: None, folder: root.to_string_lossy().into_owned() };
+        let watched = Repo { places: HashSet::from([place]), root: root.clone(), git_dirs: vec![root.join(".git")], ignored: HashSet::new(), ignored_at: None };
+        let mut w = Worker { on: None, sink: Box::new(|_| {}), tx, due: HashMap::new(), last: HashMap::new(), resolved: HashMap::new(), watcher: None, repos: HashMap::from([(root.clone(), watched)]) };
+        let xattr = notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Metadata(notify::event::MetadataKind::Extended))).add_path(root.join("build"));
+        w.changed(Ok(xattr));
+        assert!(w.due.is_empty(), "an ignored folder ran git: {:?}", w.repos[&root].ignored);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        w.repos.get_mut(&root).unwrap().ignored_at = None;
+        w.changed(Ok(notify::Event::new(notify::EventKind::Create(notify::event::CreateKind::Folder)).add_path(root.join("src"))));
+        assert_eq!(w.due.len(), 1, "a folder the rules keep is a change");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
