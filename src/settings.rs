@@ -981,6 +981,21 @@ mod derivation_tests {
             }
         }
         assert!(see_through > 0, "some theme lets the window show through the outline");
+        // Where no backing holds within halfway, the opaque surface: the
+        // colours step past halfway for the margin. Text barely over 7:1 on a
+        // black toast, levels starting at a dark grey, under high contrast:
+        // halfway from the 7:1 floor toward the text falls short of 7.1.
+        let grey = (0..=255u32).map(|g| g * 0x010101).find(|c| (7.11..7.25).contains(&contrast(*c, 0))).unwrap();
+        let mut dim = GRAPHITE.clone();
+        dim.background = 0;
+        dim.ansi = [0x303030; 16];
+        let own: BTreeMap<String, String> = [("toast".to_owned(), "#000000".to_owned()), ("foreground".to_owned(), hex(grey))].into();
+        let t = drawn_as(&dim, &own, PanelColors::Tinted, false, ToastLook { style: ToastStyle::HighContrast, design: ToastDesign::Outline });
+        let ghost = &t["toast_ghost"];
+        assert!(ghost.len() == 7 || ghost.ends_with("ff"), "opaque: {ghost}");
+        for key in ["toast_muted", "toast_info", "toast_success", "toast_warning", "toast_error"] {
+            assert!(over_anything(rgb(&t, key), &t["toast_ghost"]) >= 7.0 + TOAST_FIT_MARGIN, "{key} {} over {}", t[key], t["toast_ghost"]);
+        }
         // Over anything: a backing that lets black and white through can't promise text on it.
         assert_eq!(over_anything(0xffffff, "#00000000"), 1.0);
         // Mid grey reads 4.5:1 on black and on white, but some grey behind matches it.
