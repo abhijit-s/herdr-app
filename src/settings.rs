@@ -967,6 +967,9 @@ mod derivation_tests {
         assert!(see_through > 0, "some theme lets the window show through the outline");
         // Over anything: a backing that lets black and white through can't promise text on it.
         assert_eq!(over_anything(0xffffff, "#00000000"), 1.0);
+        // Mid grey reads 4.5:1 on black and on white, but some grey behind matches it.
+        assert!(contrast(0x767676, 0) >= 4.5 && contrast(0x767676, 0xffffff) >= 4.5);
+        assert_eq!(over_anything(0x767676, "#00000000"), 1.0);
         assert!(over_anything(0xffffff, "#000000ff") > 20.0);
         assert!(over_anything(0xffffff, "#000000c0") < over_anything(0xffffff, "#000000ff"));
     }

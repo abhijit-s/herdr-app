@@ -22,8 +22,9 @@ const ICON = { error: "error", warning: "warning", success: "check", info: "info
 const hasBody = (body) => (typeof body === "string" ? body.trim() !== "" : Boolean(body));
 
 // The mark a design draws for the person's toast_mark (settings.rs, ToastDesign::mark):
-// the terminal's tag and the outline's border are their marks; a pill's round ends take a dot.
-const markFor = (design, mark) => (design === "terminal" || design === "outline" ? "none" : design === "pill" && mark === "stripe" ? "dot" : mark);
+// the outline's border is its mark; a pill's round ends take a dot. (The terminal
+// design draws its bracketed level instead and never reads it.)
+const markFor = (design, mark) => (design === "outline" ? "none" : design === "pill" && mark === "stripe" ? "dot" : mark);
 
 export default class Toast extends View {
   render(cx) {
