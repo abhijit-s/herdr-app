@@ -132,7 +132,7 @@ fn map_floats(floating: &[FloatPane], map: &impl Fn(&str) -> String) -> Vec<Floa
 /// no pane for a float's terminal, so its orphan scan adopts the terminal
 /// into the tiled tree too. Read back, the float wins: the tiled copy goes.
 fn drop_tiled_copies(root: &mut Node, floating: &[FloatPane]) {
-    let floated: Vec<&str> = floating.iter().filter_map(|f| f.pane.terminal()).collect();
+    let floated: Vec<&str> = floating.iter().flat_map(|f| f.pane.terminals()).filter_map(Node::terminal).collect();
     let copies: Vec<String> = root.terminals().iter().filter(|n| n.terminal().is_some_and(|a| floated.contains(&a))).map(|n| n.id.clone()).collect();
     for id in copies {
         root.remove(&id);

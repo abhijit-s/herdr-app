@@ -537,6 +537,8 @@ pub struct AppWindow {
     painting_main: std::cell::Cell<bool>,
     /// The terminal cell size, measured each frame the shown tab has floating panes.
     float_cell: std::cell::Cell<Size<Pixels>>,
+    /// While focus follows the pointer: `pane.focus` leaves a floating pane where it is in z-order.
+    hover_focus: bool,
     hidden_fit: pane_size::HiddenFit,
     drag: Option<Drag>,
     written_layout: String,
@@ -692,6 +694,7 @@ impl AppWindow {
             top_chrome: Default::default(),
             painting_main: Default::default(),
             float_cell: Default::default(),
+            hover_focus: false,
             hidden_fit: Default::default(),
             drag: None,
             written_layout: String::new(),
@@ -2552,6 +2555,10 @@ impl AppWindow {
             if replace {
                 let on = (!machine.is_empty()).then_some(machine.as_str());
                 document.replace(&mut self.model, on);
+                // What this build makes of it is what's there: a read alone writes
+                // nothing back, even when reading tidied it (a float's tiled copy
+                // an older build adopted), so mixed builds never rewrite each other.
+                slot.document = Some(crate::mirror::Document::capture(&self.model, on));
                 if first && let Some(view) = &self.initial_view { view.apply_machine(&mut self.model, on); }
                 changed = true;
             }
@@ -3981,7 +3988,7 @@ impl AppWindow {
                 let pane = Self::owned(a, "pane").or_else(|| Self::arg(a, "terminal").and_then(|t| self.model.pane_of(t)));
                 let Some(p) = pane.filter(|p| self.model.tab_of(p).is_some()) else { return self.fail("no such pane") };
                 self.focused_block = None;
-                self.model.focus_pane(&p);
+                self.model.focus_pane_raising(&p, !self.hover_focus);
                 self.focused_pane = None;
                 self.agent = self.model.address_of(&p);
                 self.swapped.remove(&p);
@@ -8271,6 +8278,13 @@ export default class Recent extends View {
             let t = this.model.tab("t").unwrap();
             assert_eq!((t.focused.as_deref(), t.floating.last().map(|f| f.pane.id.as_str())), (Some("c"), Some("c")), "cycling brings the back one forward");
         });
+        // Focus following the pointer onto a back float leaves the stacking as it was.
+        let stacked = order(cx);
+        view.update_in(cx, |this, window, cx| this.hover_focus(json!({ "pane": stacked[0] }), window, cx));
+        cx.run_until_parked();
+        assert_eq!(order(cx), stacked, "hover focuses without raising");
+        view.update(cx, |this, _| assert_eq!(this.model.focused_pane().as_deref(), Some(stacked[0].as_str())));
+        run(cx, "pane.focus", json!({ "pane": "c" }));
 
         // Zoom: a float fills the tab; a zoomed tiled pane keeps the floats above it.
         run(cx, "pane.zoom", json!({ "pane": "b" }));
@@ -8316,6 +8330,22 @@ export default class Recent extends View {
         view.update(cx, |this, _| {
             let order: Vec<String> = crate::arrange::reading_order(&this.model.tab("t").unwrap().root).iter().map(|n| n.id.clone()).collect();
             assert_eq!(order, ["a", "b", "c", "e", "d"]);
+        });
+
+        // An older build on the same machine adopted a float's terminal as a
+        // tiled pane too. Read here, the float wins, and that read alone
+        // writes nothing back, so the two builds don't rewrite each other.
+        let doc: crate::mirror::Document = serde_json::from_value(json!({"spaces":[{"id":"s","tabs":[{"id":"t","root":
+            {"id":"t","type":"row","children":[{"id":"a","type":"block","content":{"terminal":"ta"}},{"id":"old","type":"block","content":{"terminal":"tb"}}]},
+            "floating":[{"pane":{"id":"b","type":"block","content":{"terminal":"tb"}},"rect":[0.2,0.2,0.6,0.6]}]}]}]})).unwrap();
+        view.update_in(cx, |this, window, cx| {
+            let slot = this.documents.entry(String::new()).or_default();
+            (slot.connected, slot.available, slot.dirty, slot.version) = (true, true, false, 1);
+            this.documents_watching = true;
+            this.documents_updated(None, vec![(String::new(), crate::mirror_sync::Outcome::Read(doc, 2))], window, cx);
+            assert!(this.model.tab("t").unwrap().find("old").is_none(), "the tiled copy is gone");
+            this.flush_documents(false, window, cx);
+            assert!(this.documents[""].pending.is_none(), "a read alone writes nothing");
         });
     }
 

@@ -162,7 +162,7 @@ impl AppWindow {
             }
             _ => {
                 let rect = rect.ok_or_else(|| tiled(name))?;
-                let step = self.float_step(a, window)?;
+                let step = self.float_step(&pane, a, window)?;
                 let next = if name == "pane.float_move" { moved(rect, a, step)? } else { resized(rect, a, step)? };
                 self.model.set_float_rect(&pane, next);
                 return Ok(());
@@ -173,8 +173,8 @@ impl AppWindow {
         Ok(())
     }
 
-    /// `cells` (default `STEP`) columns and rows as fractions of the shown tab area.
-    fn float_step(&self, a: &Value, window: &Window) -> Result<(f64, f64), String> {
+    /// `cells` (default `STEP`) columns and rows as fractions of `pane`'s tab area.
+    fn float_step(&self, pane: &str, a: &Value, window: &Window) -> Result<(f64, f64), String> {
         let (cols, rows) = match a.get("cells").filter(|c| !c.is_null()) {
             Some(c) => {
                 let n = c.as_f64().filter(|n| *n > 0.0).ok_or_else(|| format!("cells is a number above 0, not {c}"))?;
@@ -182,7 +182,7 @@ impl AppWindow {
             }
             None => STEP,
         };
-        let tab = self.model.active_tab().map(|t| layer_slot(&t.id));
+        let tab = self.model.tab_of(pane).map(|t| layer_slot(&t.id));
         let area = tab.and_then(|k| self.bounds.borrow().get(&k).map(|b| b.size)).filter(|s| s.width > px(0.0) && s.height > px(0.0));
         let cell = crate::terminal::cell_size(window);
         Ok(match area {

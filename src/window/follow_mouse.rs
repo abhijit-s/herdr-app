@@ -200,7 +200,15 @@ impl AppWindow {
                 None => return,
             }
         };
+        self.hover_focus(args, window, cx);
+    }
+
+    /// `pane.focus` as the pointer resting does it: a floating pane isn't
+    /// brought to the front (the design's hover focuses, a press raises).
+    pub(super) fn hover_focus(&mut self, args: Value, window: &mut Window, cx: &mut Context<Self>) {
+        self.hover_focus = true;
         self.run_as("pane.focus", args, false, window, cx);
+        self.hover_focus = false;
     }
 
     pub(super) fn follow_gate(&self, button_held: bool, window: &Window) -> Gate {

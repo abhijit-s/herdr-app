@@ -153,7 +153,8 @@ impl Tab {
     /// Its panes: the tiled ones in tree order, then the floating ones back to front.
     pub fn panes(&self) -> Vec<&Node> {
         let mut panes = self.root.panes();
-        panes.extend(self.floating.iter().map(|f| &f.pane));
+        // A float holds one pane today; walking it keeps a newer build's split float whole.
+        panes.extend(self.floating.iter().flat_map(|f| f.pane.panes()));
         panes
     }
 
@@ -169,14 +170,14 @@ impl Tab {
 
     /// A node by id: a split or pane of the tiled tree, or a floating pane.
     pub fn find(&self, id: &str) -> Option<&Node> {
-        self.root.find(id).or_else(|| self.float(id).map(|f| &f.pane))
+        self.root.find(id).or_else(|| self.floating.iter().find_map(|f| f.pane.find(id)))
     }
 
     pub fn find_mut(&mut self, id: &str) -> Option<&mut Node> {
         if self.root.find(id).is_some() {
             return self.root.find_mut(id);
         }
-        self.floating.iter_mut().find(|f| f.pane.id == id).map(|f| &mut f.pane)
+        self.floating.iter_mut().find_map(|f| f.pane.find_mut(id))
     }
 
     /// A pane by id, in either layer.
@@ -225,13 +226,15 @@ impl Tab {
     }
 
     /// Trades the places of two panes, a floating one among them: each takes
-    /// the other's slot (a tiled one's size, a floating one's rect).
+    /// the other's slot (a tiled one's size, a floating one's rect). A float
+    /// given another pane has no way back of its own: it docks by `last_tiled`.
     fn trade(&mut self, a: &str, b: &str) {
         let (Some(na), Some(nb)) = (self.pane(a).cloned(), self.pane(b).cloned()) else { return };
         let mut put = |id: &str, mut node: Node| {
             if let Some(f) = self.floating.iter_mut().find(|f| f.pane.id == id) {
                 node.size = None;
                 f.pane = node;
+                f.dock = None;
             } else if let Some(n) = self.root.find_mut(id) {
                 node.size = n.size;
                 *n = node;
@@ -259,10 +262,19 @@ impl Tab {
     /// pane it focuses, never a hidden one. A floating pane comes to the front.
     pub fn focus(&mut self, pane: &str) {
         self.restack(pane, isize::MAX);
-        // Within its layer: focusing a float keeps a zoomed tiled pane zoomed
-        // (the floats draw over it), and the other way round.
-        if self.zoomed.as_deref().is_some_and(|z| self.float(z).is_some() == self.float(pane).is_some()) {
-            self.zoomed = Some(pane.to_owned());
+        self.focus_in_place(pane);
+    }
+
+    /// `focus` without bringing a floating pane to the front (the pointer
+    /// resting on it), so floats don't reshuffle, or write the document, as it passes.
+    pub fn focus_in_place(&mut self, pane: &str) {
+        match self.zoomed.as_deref().map(|z| self.float(z).is_some()) {
+            // A zoomed float covers the tab: a tiled pane taking the focus unzooms it.
+            Some(true) if self.float(pane).is_none() => self.zoomed = None,
+            // A zoomed tiled pane stays zoomed under a float taking the focus.
+            Some(false) if self.float(pane).is_some() => {}
+            Some(_) => self.zoomed = Some(pane.to_owned()),
+            None => {}
         }
         if let Some(old) = self.focused.take().filter(|o| o != pane) {
             self.before.retain(|p| *p != old && p != pane);
@@ -705,7 +717,7 @@ impl Model {
         } else {
             let container = self.fresh_id_on("s", machine.as_deref());
             let bsp = mode == Some(crate::arrange::Mode::Bsp);
-            place(&mut root, node, &hint, fallback.as_deref().map(|t| (t, axis)), bsp, container);
+            place(&mut root, node, &hint, fallback.as_deref().map(|t| (t, axis)), bsp, container)?;
         }
         let t = self.tab_mut(&id).unwrap();
         t.root = root;
@@ -794,8 +806,13 @@ impl Model {
 
     /// Focuses a pane anywhere: selects its space and tab.
     pub fn focus_pane(&mut self, pane_id: &str) -> bool {
+        self.focus_pane_raising(pane_id, true)
+    }
+
+    /// `focus_pane`; `raise: false` leaves a floating pane where it is in z-order.
+    pub fn focus_pane_raising(&mut self, pane_id: &str, raise: bool) -> bool {
         let Some(c) = self.tab_of_mut(pane_id) else { return false };
-        c.focus(pane_id);
+        if raise { c.focus(pane_id) } else { c.focus_in_place(pane_id) }
         let ctx = c.id.clone();
         self.select_tab(&ctx)
     }

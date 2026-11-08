@@ -104,39 +104,51 @@ impl DockHint {
 /// side at its share, else beside `fallback` along its axis, else as the
 /// root's only pane.
 /// `pair`: splits make pairs (`bsp`). `container` names a split if one is needed.
-pub fn place(root: &mut Node, pane: Node, hint: &DockHint, fallback: Option<(&str, Axis)>, pair: bool, container: String) {
+pub fn place(root: &mut Node, pane: Node, hint: &DockHint, fallback: Option<(&str, Axis)>, pair: bool, container: String) -> Result<(), String> {
     let split = hint.split.as_deref().filter(|s| root.find(s).is_some_and(|n| n.axis().is_some()));
+    let mut pane = pane;
     if let Some(beside) = split.or(hint.anchor(root)).map(str::to_owned) {
-        return beside_of(root, pane, &beside, hint.edge.unwrap_or(Edge::Right), hint.size, pair, container);
+        match beside_of(root, pane, &beside, hint.edge.unwrap_or(Edge::Right), hint.size, pair, container.clone()) {
+            Ok(()) => return Ok(()),
+            Err(back) => pane = back,
+        }
     }
     if let Some((target, axis)) = fallback.filter(|(t, _)| root.find(t).is_some_and(Node::is_pane)) {
         let edge = if axis == Axis::Row { Edge::Right } else { Edge::Bottom };
-        return beside_of(root, pane, target, edge, None, pair, container);
+        match beside_of(root, pane, target, edge, None, pair, container) {
+            Ok(()) => return Ok(()),
+            Err(back) => pane = back,
+        }
     }
-    if let Some(children) = root.children_mut() {
-        children.push(pane);
-    }
+    let id = pane.id.clone();
+    root.children_mut().ok_or_else(|| format!("no room in the tab for {id:?}"))?.push(pane);
+    Ok(())
 }
 
-/// Splits `target` (a pane or a split) with `pane` on `edge`, `pane` taking `share` of the two.
-fn beside_of(root: &mut Node, mut pane: Node, target: &str, edge: Edge, share: Option<f32>, pair: bool, container: String) {
+/// Splits `target` (a pane or a split) with `pane` on `edge`, `pane` taking
+/// `share` of the two. Err: no such target (the pane back, untouched).
+fn beside_of(root: &mut Node, mut pane: Node, target: &str, edge: Edge, share: Option<f32>, pair: bool, container: String) -> Result<(), Node> {
+    // `Node::split` fails only for a missing target, and then drops the pane: ask first.
+    if root.find(target).is_none() || target == root.id {
+        return Err(pane);
+    }
     let id = pane.id.clone();
     pane.size = None;
     let axis = if edge.vertical() { Axis::Row } else { Axis::Column };
     let split = if pair { Node::split_pair } else { Node::split };
-    if !split(root, target, axis, pane, container) {
-        return;
-    }
+    let placed = split(root, target, axis, pane, container);
+    debug_assert!(placed, "split of {target:?}, which exists");
     if matches!(edge, Edge::Left | Edge::Top) {
         root.swap(&id, target);
     }
-    let Some(share) = share.filter(|s| (0.0..=1.0).contains(s)) else { return };
+    let Some(share) = share.filter(|s| (0.0..=1.0).contains(s)) else { return Ok(()) };
     let total = [id.as_str(), target].iter().filter_map(|n| root.find(n).and_then(|n| weight(n.size))).sum::<f32>();
     for (n, part) in [(id.as_str(), share), (target, 1.0 - share)] {
         if let Some(node) = root.find_mut(n) {
             node.size = Some(Size::Weight { weight: total * part });
         }
     }
+    Ok(())
 }
 
 fn weight(size: Option<Size>) -> Option<f32> {
@@ -184,7 +196,7 @@ mod tests {
                 let mut root = tree.clone();
                 let (node, hint) = lift(&mut root, id).unwrap();
                 assert!(root.find(id).is_none());
-                place(&mut root, node, &hint, None, false, "fresh".into());
+                place(&mut root, node, &hint, None, false, "fresh".into()).unwrap();
                 assert_eq!(drawn(&root), drawn(&tree), "{id}");
             }
         }
@@ -196,11 +208,11 @@ mod tests {
         let (node, hint) = lift(&mut root, "b").unwrap();
         assert_eq!((hint.beside.as_deref(), hint.edge), (Some("a"), Some(Edge::Right)));
         let mut root = Node::container("t", Axis::Row, vec![pane("c")]);
-        place(&mut root, node.clone(), &hint, Some(("c", Axis::Column)), false, "s".into());
+        place(&mut root, node.clone(), &hint, Some(("c", Axis::Column)), false, "s".into()).unwrap();
         assert_eq!(root.children()[0].axis(), Some(Axis::Column));
         assert_eq!(root.children()[0].children().iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), ["c", "b"]);
         let mut root = Node::container("t", Axis::Row, vec![]);
-        place(&mut root, node, &hint, None, false, "s".into());
+        place(&mut root, node, &hint, None, false, "s".into()).unwrap();
         assert_eq!(root.panes().len(), 1);
     }
 
@@ -214,7 +226,7 @@ mod tests {
         let (node, hint) = lift(&mut root, "a").unwrap();
         assert_eq!((hint.beside.as_deref(), hint.edge, hint.size), (Some("b"), Some(Edge::Left), Some(0.25)));
         root.children_mut().unwrap()[0].size = Some(Size::Weight { weight: 2.0 });
-        place(&mut root, node, &hint, None, false, "s".into());
+        place(&mut root, node, &hint, None, false, "s".into()).unwrap();
         let c = root.children();
         assert_eq!(c.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), ["a", "b", "c"]);
         let w = |n: &Node| weight(n.size).unwrap();
@@ -351,6 +363,7 @@ mod tests {
         let t = m.tab("t").unwrap();
         assert!(t.tiled_pane("b").is_some() && t.float("c").is_some(), "c floats where b was, b took c's slot");
         assert_eq!(t.float("c").unwrap().rect, [0.5, 0.0, 0.5, 0.5]);
+        assert_eq!(t.float("c").unwrap().dock, None, "b's way back isn't c's");
         assert_eq!(m.pane_of("tb").as_deref(), Some("b"));
     }
 
@@ -374,7 +387,45 @@ mod tests {
         m.float_pane("d", DEFAULT_RECT).unwrap();
         let t = m.tab("t").unwrap();
         assert_eq!((t.zoomed.as_deref(), t.shown_floats().count()), (Some("a"), 3));
+        // A zoomed float covers the tab: a tiled pane taking the focus unzooms it,
+        // so the keys never go to a pane hidden under it.
+        let zoom = |m: &mut Model, id: &str| m.tab_mut("t").unwrap().zoomed = Some(id.into());
+        let zoomed = |m: &Model| m.tab("t").unwrap().zoomed.clone();
+        zoom(&mut m, "b");
+        m.focus_pane("a");
+        assert_eq!(zoomed(&m), None, "focus on a tiled pane");
+        zoom(&mut m, "b");
+        m.focus_pane("c");
+        assert_eq!(zoomed(&m).as_deref(), Some("c"), "a float taking the focus takes the zoom");
+        m.dock_pane("d", None).unwrap();
+        assert_eq!(zoomed(&m), None, "a float docked (and so focused) beside a zoomed float");
+        // The pointer resting on a float focuses it where it is in z-order.
+        let order = |m: &Model| m.tab("t").unwrap().floating.iter().map(|f| f.pane.id.clone()).collect::<Vec<_>>();
+        let before = order(&m);
+        assert!(m.focus_pane_raising(&before[0], false));
+        assert_eq!((order(&m), m.focused_pane()), (before.clone(), Some(before[0].clone())));
+    }
 
+    /// A newer build may float a split (several panes): this build counts
+    /// every pane of it, so none is adopted again as a tiled duplicate.
+    #[test]
+    fn a_floating_split_from_a_newer_build_keeps_its_panes() {
+        let mut m = model();
+        let split = Node::container("fs", Axis::Row, vec![crate::model::pane("x", "tx"), crate::model::pane("y", "ty")]);
+        m.tab_mut("t").unwrap().floating.push(FloatPane { pane: split, rect: DEFAULT_RECT, dock: None });
+        assert_eq!((m.pane_of("tx").as_deref(), m.pane_of("ty").as_deref()), (Some("x"), Some("y")));
+        assert!(m.tab("t").unwrap().find("y").is_some());
+        assert!(m.all_addresses().contains(&"ty".to_owned()));
+    }
+
+    #[test]
+    fn placing_beside_nothing_falls_back_and_a_block_root_refuses() {
+        let hint = DockHint { beside: Some("gone".into()), edge: Some(Edge::Left), ..Default::default() };
+        let mut root = Node::container("t", Axis::Row, vec![pane("a")]);
+        place(&mut root, pane("p"), &hint, Some(("gone", Axis::Row)), false, "s".into()).unwrap();
+        assert_eq!(root.panes().len(), 2, "the root takes it");
+        let mut block = pane("only");
+        assert!(place(&mut block, pane("p"), &hint, None, false, "s".into()).is_err(), "never dropped silently");
     }
 
     /// A walk of `Tab::root` alone misses floating panes: a float's terminal
