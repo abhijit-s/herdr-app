@@ -8234,6 +8234,9 @@ export default class Recent extends View {
         view.update(cx, |this, _| {
             assert_eq!(this.model.focused_pane().as_deref(), Some("e"), "the click focused e, not d below it");
             assert_eq!(this.model.tab("t").unwrap().floating.last().unwrap().pane.id, "e", "and brought it to the front");
+            assert_eq!(this.terminal_pane_at(e.center()).as_deref(), Some("e"), "focus follows mouse sees the float, not d below it");
+            // Nothing visited: only the stacking order settles the tie below.
+            this.pane_history.retain(|p| p == "e");
         });
 
         // pane.go between floats: b and c tie, c is in front of b.
@@ -8241,10 +8244,17 @@ export default class Recent extends View {
         view.update(cx, |this, _| assert_eq!(this.model.focused_pane().as_deref(), Some("c")));
         run(cx, "pane.go", json!({ "direction": "left" }));
         view.update(cx, |this, _| assert_eq!(this.model.focused_pane().as_deref(), Some("e"), "back to e, not d around them"));
+        let order = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.model.tab("t").unwrap().floating.iter().map(|f| f.pane.id.clone()).collect::<Vec<_>>());
+        assert_eq!(order(cx), ["b", "c", "e"]);
+        run(cx, "pane.raise", json!({ "pane": "b" }));
+        assert_eq!(order(cx), ["c", "b", "e"], "one step forward");
+        run(cx, "pane.lower", json!({ "pane": "e" }));
+        assert_eq!(order(cx), ["c", "e", "b"], "one step back");
+        run(cx, "pane.focus", json!({ "pane": "e" }));
         run(cx, "pane.float_cycle", json!({}));
         view.update(cx, |this, _| {
             let t = this.model.tab("t").unwrap();
-            assert_eq!((t.focused.as_deref(), t.floating.last().map(|f| f.pane.id.as_str())), (Some("b"), Some("b")), "cycling brings the back one forward");
+            assert_eq!((t.focused.as_deref(), t.floating.last().map(|f| f.pane.id.as_str())), (Some("c"), Some("c")), "cycling brings the back one forward");
         });
 
         // Zoom: a float fills the tab; a zoomed tiled pane keeps the floats above it.
@@ -8281,7 +8291,7 @@ export default class Recent extends View {
         view.update(cx, |this, _| {
             let (t, u) = (this.model.tab("t").unwrap(), back.tab("t").unwrap());
             assert_eq!(u.floating, t.floating);
-            assert_eq!((u.focused.as_deref(), u.tiled_count()), (Some("b"), 2));
+            assert_eq!((u.focused.as_deref(), u.tiled_count()), (Some("c"), 2));
         });
 
         // Docking puts each back; the tab reads a b c e d again.
