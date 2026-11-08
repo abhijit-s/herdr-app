@@ -840,6 +840,15 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Files: `src/header_info.rs`, `src/window.rs` (`publish`, `tick_header_info`, `folder_info`), `src/model.rs` (`FolderInfo`), `src/settings.rs`, `src/mods.rs` (`fitHeaderInfo`, `headerInfoPreview`), `defaults/mods/{pane,agents,menu}/main.js`, `defaults/frame/settings/main.js`, `defaults/herdr.d.ts`, `defaults/AGENTS.md`.
 - Upstream: none yet
 
+### Unknown document fields kept
+
+`fix/doc-keep-unknown-fields` (branched from `master`; offered upstream as `up/doc-keep-unknown-fields`, cut from `upstream/master`): a machine's layout document is shared by every screen of that machine, and those screens may run different builds. `SharedSpace` and `SharedTab` dropped fields they didn't know, so an older build's next write erased whatever a newer build had added, such as the per-tab floating layer proposed in herdrdev/herdr-app#718. Unknown space and tab fields are now read into `Space::rest` and `Tab::rest` (`#[serde(flatten)]`) and written back as read, the way focus history keeps its document's unknown fields.
+
+- Three questions: yes, yes, yes. The app reads and writes the document, only the app sees its unknown fields, and no mod can keep them. Verdict A: upstream as is, before floats ship.
+- Tests: `mirror::tests::unknown_space_and_tab_fields_survive_a_read_and_write` (a document with an unknown space field and a `floating` tab field, read and written on this and another machine, after a rename and a split, keeps both; read alone, written byte for byte; a document without them writes no extra field).
+- Files: `src/mirror.rs`, `src/model.rs`
+- Upstream: up/doc-keep-unknown-fields (PR pending)
+
 ### Frame mods keep a code revision
 
 `fix/frame-mod-revision` (branched from `master`, the upstream pull request's change): the code cache upstream added in `029323e` walks and hashes a mod's whole folder on each load when the file watcher has no revision for it, and only `mods/<name>` had one. The app's own frame mods (palette, settings, welcome) therefore walked their tree on every open. A code file edited under `frame/<name>` now mints that folder's revision the same way, without a reload (frame mods load fresh on each open), and an event on `frame/` itself, as when the app rewrites it at start, invalidates every revision.
