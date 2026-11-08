@@ -282,6 +282,7 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 - Files: `src/settings.rs`, `src/terminal.rs` (the grid's paint), `src/window.rs` (`AppWindow::render`), `vendor/gpui-pre/src/{scene.rs,window.rs}`, `vendor/gpui-pre-apple/{src/shaders.metal,vendor/gpui/src/scene.rs}`, `vendor/gpui-pre-wgpu/src/{shaders.wgsl,shaders_webgl.wgsl,wgpu_renderer.rs}`, `vendor/gpui-pre-windows/src/shaders.hlsl`, `tests/text_contrast.rs`, `defaults/AGENTS.md`, `defaults/frame/settings/main.js`, `scripts/settings.test.ts`
 - Upstream: fork only
 
+
 ### Pane names
 
 `feat/pane-rename` (for issue #322, pull request #384): `pane.rename {pane?, name}` names a pane like `tab.rename` and `space.rename`, asking with the shipped prompt when there's no name; an empty name goes back to the program's own. The name is the pane block's `title` in its tab's tree, so it saves and syncs with the layout document. `panes()` exposes it as `name`, and the shipped `pane` and `terminals-pane` headers show it.
