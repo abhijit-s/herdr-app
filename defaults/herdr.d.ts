@@ -471,7 +471,11 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  lists `{ name, frames, interval_ms }` for each preset besides the ring. `space_avatar` is
  *  how to draw space avatars: `"letter" | "glyph" | "emoji" | "repo"`, `"glyph"` when unset or
  *  unknown (null only from builds before that default: draw letters). `pane_header_info` is the agent pane header's template, or `null`
- *  (unset or blank); panes carry it resolved as `header_info`. */
+ *  (unset or blank); panes carry it resolved as `header_info`.
+ *  `toast_duration`, `toast_style`, `toast_corners` and `toast_mark` are the person's toast choices
+ *  (see AGENTS.md); a `toast` mod draws its level mark from `toast_mark`: `"stripe"` (a stripe and
+ *  a dot), `"dot"` or `"none"`. `toast_styles` is `{ standard, subtle, "high-contrast", accent }`,
+ *  each that style's toast colors in the current theme (the names `theme()` gives the drawn one). */
 export function settings(): Record<string, unknown>;
 
 /** Every key binding: { section, keys, action }. */
@@ -521,6 +525,8 @@ export function notify(n: {
   title: string;
   body?: string;
   level?: "info" | "success" | "warning" | "error";
+  /** ms; given, it wins over the person's `toast_duration`. Else 5 s (8 s for errors and warnings),
+   *  scaled by `toast_duration`, or until clicked. */
   timeout?: number;
   icon?: string;
   action?: { name: string; args?: Record<string, unknown> };

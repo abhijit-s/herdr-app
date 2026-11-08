@@ -429,6 +429,50 @@ test("notification position sits on the Window page: six places, bottom right le
   expect(pick({ toast_offset: { y: 24 } }, "top-center")).toEqual({ toast_offset: { y: 24 }, toast_position: "top-center" });
 });
 
+test("notification time, style, corners and level mark sit beside the position, each default left out", () => {
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "window");
+  expect(pick({}, "st-td-Short")).toEqual({ toast_duration: "short" });
+  expect(pick({}, "st-td-Long")).toEqual({ toast_duration: "long" });
+  expect(pick({}, "st-td-Until clicked")).toEqual({ toast_duration: "until-dismissed" });
+  expect(pick({ toast_duration: "long" }, "st-td-Normal")).toEqual({});
+  expect(pick({}, "st-tr-Square")).toEqual({ toast_corners: "square" });
+  expect(pick({}, "st-tr-Slight")).toEqual({ toast_corners: "slight" });
+  expect(pick({ toast_corners: "square" }, "st-tr-Rounded")).toEqual({});
+  expect(pick({}, "st-tm-Dot")).toEqual({ toast_mark: "dot" });
+  expect(pick({}, "st-tm-None")).toEqual({ toast_mark: "none" });
+  expect(pick({ toast_mark: "none" }, "st-tm-Stripe")).toEqual({});
+  const style = (person: Record<string, any>, value: string) => click(person, {}, `st-ts-${value}`, [], "window");
+  for (const value of ["subtle", "high-contrast", "accent"]) expect(style({}, value)).toEqual({ toast_style: value });
+  expect(style({ toast_style: "accent", toast_mark: "dot" }, "standard")).toEqual({ toast_mark: "dot" });
+});
+
+test("each style's preview is a small toast in that style's colours, with the chosen corners and mark", () => {
+  const styles = {
+    standard: { toast: "#202020", toast_border: "#505050", toast_foreground: "#eeeeee", toast_info: "#3b82f6" },
+    subtle: { toast: "#181818", toast_border: "#303030", toast_foreground: "#dddddd", toast_info: "#2563eb" },
+  };
+  const cell = (person: Record<string, any>, value: string) => click(person, { toast_styles: styles }, `st-ts-${value}`, ["shown?"], "window");
+  const toast = (person: Record<string, any>, value: string) => cell(person, value).nodes[0];
+  expect(toast({}, "subtle").calls.bg).toEqual(["#181818"]);
+  expect(toast({}, "subtle").calls.border_color).toEqual(["#303030"]);
+  expect(find(cell({}, "subtle"), "st-ts-subtle-stripe").calls.bg).toEqual(["#2563eb"]);
+  expect(toast({}, "standard").calls.rounded).toEqual([4]);
+  expect(toast({ toast_corners: "square" }, "standard").calls.rounded).toEqual([0]);
+  expect(toast({ toast_corners: "slight" }, "standard").calls.rounded).toEqual([2]);
+  const marks = (person: Record<string, any>) => ["stripe", "dot"].filter((m) => find(cell(person, "standard"), `st-ts-standard-${m}`));
+  expect(marks({})).toEqual(["stripe", "dot"]);
+  expect(marks({ toast_mark: "dot" })).toEqual(["dot"]);
+  expect(marks({ toast_mark: "none" })).toEqual([]);
+  // A style Herdr didn't send (an older build) draws in the theme's own toast colours.
+  expect(toast({}, "accent").calls.bg).toEqual(["#000000"]);
+});
+
+test("search finds the toast settings by their keys and words", () => {
+  for (const [q, title] of [["toast_duration", "Notification time"], ["toast style", "Notification style"], ["corners", "Notification corners"], ["toast_mark", "Notification level mark"]]) {
+    expect(texts(search(q).root).join("")).toContain(title);
+  }
+});
+
 test("subpixel order shows only while either text is subpixel, and leaves rgb out", () => {
   const shown = (person: Record<string, any>) => click(person, {}, "st-so-BGR", ["choicePicker", "shown?"]) !== undefined;
   expect(shown({})).toBe(false);
