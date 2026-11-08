@@ -7,14 +7,15 @@
 //! Grammar, all of it:
 //! - `{ask}`, `{state}`, `{elapsed}`, `{branch}`, `{ahead}`, `{behind}`,
 //!   `{dirty}` are keys; any other text, an unknown `{word}` too, is literal.
-//! - `·` and `|` split the template into segments. The separator is drawn as
-//!   written, with the spaces around it, between two segments that show.
+//! - `·` and `|` split the template into segments; a separator shows between
+//!   two segments that show.
 //! - A segment with keys shows only when one of them is not empty; one with no
 //!   keys always shows. Spaces left over by empty keys collapse into one.
 //! - Keys written side by side (`{branch}{dirty}`) are drawn a space apart
 //!   when both show, so markers never glue to the word before them.
-//! - Header mods draw a separator as its mark alone with even padding either
-//!   side (`sep` keeps it as written, spaces included, for the tooltip).
+//! - Header mods draw a separator as its mark alone with `SEP_PAD` px either
+//!   side, and `fit` measures it so; `sep` keeps it as written, spaces
+//!   included, for the tooltip.
 
 use serde::Serialize;
 
@@ -201,9 +202,10 @@ impl Values {
             Key::Branch => self.branch.clone(),
             Key::Ahead => if self.ahead > 0 { format!("↑{}", self.ahead) } else { String::new() },
             Key::Behind => if self.behind > 0 { format!("↓{}", self.behind) } else { String::new() },
-            // A bullet sits on the text's own line in a UI font; a black circle
-            // comes from a fallback font, larger and off the baseline.
-            Key::Dirty => if self.dirty { "•".into() } else { String::new() },
+            // A git prompt's own mark, from the UI font on its baseline: a black
+            // circle comes from a fallback font, larger and off it, and any dot
+            // reads as one more separator beside ` · `.
+            Key::Dirty => if self.dirty { "*".into() } else { String::new() },
         }
     }
 
@@ -275,6 +277,10 @@ pub struct Shown {
     pub ask: bool,
 }
 
+/// The padding header mods draw either side of a separator's mark, in px:
+/// even gaps whatever spaces the template wrote.
+pub const SEP_PAD: f32 = 4.0;
+
 /// Below this many characters a lone segment is hidden, not cut.
 const MIN_CHARS: f32 = 4.0;
 /// A character's width as a share of the font size: a little over a UI font's
@@ -288,8 +294,10 @@ const CHAR_EM: f32 = 0.6;
 pub fn fit(segments: &[Shown], width: f32, font_px: f32) -> Vec<Shown> {
     let char_px = font_px * CHAR_EM;
     let measure = |s: &str| self::width(s, font_px);
+    // As drawn: the mark alone, padded.
+    let separator = |s: &str| self::width(s.trim(), font_px) + 2.0 * SEP_PAD;
     let mut keep: Vec<Shown> = segments.to_vec();
-    let total = |keep: &[Shown]| keep.iter().enumerate().map(|(i, s)| measure(&s.text) + if i == 0 { 0.0 } else { measure(&s.sep) }).sum::<f32>();
+    let total = |keep: &[Shown]| keep.iter().enumerate().map(|(i, s)| measure(&s.text) + if i == 0 { 0.0 } else { separator(&s.sep) }).sum::<f32>();
     while keep.len() > 1 && total(&keep) > width {
         let i = keep.iter().rposition(|s| !s.ask).unwrap_or(keep.len() - 1);
         keep.remove(i);
@@ -342,7 +350,7 @@ mod tests {
     #[test]
     fn templates_split_on_separators_and_drop_empty_segments() {
         let v = Values { state: "working".into(), elapsed: "3m".into(), branch: "main".into(), ahead: 2, dirty: true, ..Values::default() };
-        assert_eq!(shown(SUGGESTED, &v), vec![("".into(), "main ↑2 •".into(), false), (" · ".into(), "working 3m".into(), false)], "no ask: no dangling separator");
+        assert_eq!(shown(SUGGESTED, &v), vec![("".into(), "main ↑2 *".into(), false), (" · ".into(), "working 3m".into(), false)], "no ask: no dangling separator");
         assert_eq!(shown("{state}|{branch}", &v), vec![("".into(), "working".into(), false), ("|".into(), "main".into(), false)], "separators as written");
         assert_eq!(shown("{state} {elapsed}", &Values { state: "idle".into(), ..Values::default() }), vec![("".into(), "idle".into(), false)], "leftover spaces collapse");
         assert_eq!(shown("on {branch} · hi", &Values::default()), vec![("".into(), "hi".into(), false)], "a segment of empty keys goes; plain text stays");
@@ -352,18 +360,18 @@ mod tests {
         assert!(Template::parse(SUGGESTED).uses_git_counts() && !Template::parse("{branch} · {state}").uses_git_counts());
         assert!(counts_git(Some(SUGGESTED)) && !counts_git(Some("{branch}")) && !counts_git(None));
         let info = Template::parse(SUGGESTED).resolve(&Values::sample()).unwrap();
-        assert_eq!(info.text, "approve Bash: make · main ↑2 • · blocked 3m", "the whole line, for the tooltip");
+        assert_eq!(info.text, "approve Bash: make · main ↑2 * · blocked 3m", "the whole line, for the tooltip");
     }
 
     #[test]
     fn keys_side_by_side_are_drawn_a_space_apart() {
         let v = Values { branch: "main".into(), ahead: 2, behind: 1, dirty: true, state: "idle".into(), elapsed: "3m".into(), ..Values::default() };
-        assert_eq!(shown("{branch}{ahead}{behind}{dirty}", &v)[0].1, "main ↑2 ↓1 •");
+        assert_eq!(shown("{branch}{ahead}{behind}{dirty}", &v)[0].1, "main ↑2 ↓1 *");
         assert_eq!(shown("{branch}{dirty}", &Values { dirty: false, ..v.clone() })[0].1, "main", "no trailing space for an empty key");
-        assert_eq!(shown("{dirty}{branch}", &Values { branch: String::new(), ..v.clone() })[0].1, "•", "nor a leading one");
+        assert_eq!(shown("{dirty}{branch}", &Values { branch: String::new(), ..v.clone() })[0].1, "*", "nor a leading one");
         assert_eq!(shown("{branch}/{state}", &v)[0].1, "main/idle", "text written between keys is the person's own");
         assert_eq!(shown("{state}{elapsed}", &v)[0].1, "idle 3m", "any keys, not only git's");
-        assert_eq!(Values { dirty: true, ..Values::default() }.get(Key::Dirty), "•", "a bullet in the text's own font, not a fallback circle");
+        assert_eq!(Values { dirty: true, ..Values::default() }.get(Key::Dirty), "*", "a mark in the text's own font, not a fallback circle nor a dot like the separator");
     }
 
     #[test]
@@ -400,19 +408,20 @@ mod tests {
     // At 12 px a character is estimated at 7.2 px.
     #[test]
     fn segments_drop_from_the_right_to_fit() {
+        // 28.8 px a segment, 15.2 a separator (its mark, 7.2, and 4 either side).
         let all = vec![seg("", "aaaa", false), seg(" · ", "bbbb", false), seg(" · ", "cccc", false)];
         assert_eq!(fit(&all, 1000.0, 12.0), all, "room for all");
-        let w = |chars: f32| chars * 7.2 + 0.1;
-        assert_eq!(fit(&all, w(11.0), 12.0), all[..2].to_vec(), "the last goes first");
-        assert_eq!(fit(&all, w(10.9), 12.0), all[..1].to_vec());
+        assert_eq!(fit(&all, 72.9, 12.0), all[..2].to_vec(), "the last goes first");
+        assert_eq!(fit(&all, 72.7, 12.0), all[..1].to_vec());
+        let tight = vec![seg("", "aaaa", false), seg("|", "bbbb", false)];
+        assert_eq!((fit(&tight, 72.9, 12.0).len(), fit(&tight, 72.7, 12.0).len()), (2, 1), "a separator measures as drawn, whatever spaces it was written with");
     }
 
     #[test]
     fn a_blocked_ask_is_the_last_to_go() {
         let all = vec![seg("", "main", false), seg(" · ", "approve", true), seg(" · ", "working", false)];
-        let w = |chars: f32| chars * 7.2 + 0.1;
-        assert_eq!(fit(&all, w(14.0), 12.0), all[..2].to_vec());
-        assert_eq!(fit(&all, w(10.0), 12.0), vec![seg("", "approve", true)], "the ask outlasts what came before it");
+        assert_eq!(fit(&all, 94.5, 12.0), all[..2].to_vec());
+        assert_eq!(fit(&all, 60.0, 12.0), vec![seg("", "approve", true)], "the ask outlasts what came before it");
     }
 
     #[test]

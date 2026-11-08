@@ -1624,10 +1624,10 @@ fn pane_header_fits_its_info_beside_the_name_and_buttons(cx: &mut TestAppContext
     };
     let title = r#"div .flex_none .truncate .max_w[Number(260.0)] .font_medium"#;
     // The name ("Pi", 14 px), the ring (12), padding and gaps take 66 px; the
-    // segments 130, 216 or 310 (separators estimated as written); the four buttons 112.
+    // segments 130, 210 or 297 (a separator 15: its mark and 4 px either side); the four buttons 112.
     let all = header(400.0, false, cx);
-    assert_eq!(shown(&all), ["approve Bash: make", "·", "main ↑2 •", "·", "blocked 3m"], "room for all: {all}");
-    assert!(all.contains(":tooltip[Str(\"approve Bash: make · main ↑2 • · blocked 3m\")]"), "the whole line in the tooltip: {all}");
+    assert_eq!(shown(&all), ["approve Bash: make", "·", "main ↑2 *", "·", "blocked 3m"], "room for all: {all}");
+    assert!(all.contains(":tooltip[Str(\"approve Bash: make · main ↑2 * · blocked 3m\")]"), "the whole line in the tooltip: {all}");
     // Even gaps: each separator is its mark alone, padded the same either side,
     // in the folder's colour and size (it sets neither size nor font).
     let dim = crate::settings::theme()["dim"].clone();
@@ -1647,7 +1647,7 @@ fn pane_header_fits_its_info_beside_the_name_and_buttons(cx: &mut TestAppContext
 
     let hovered = header(400.0, true, cx);
     assert_eq!(hovered.matches("svg \"mods/pane/").count(), 4, "the buttons: {hovered}");
-    assert_eq!(shown(&hovered), ["approve Bash: make", "·", "main ↑2 •"], "hovered: a segment goes, from the right: {hovered}");
+    assert_eq!(shown(&hovered), ["approve Bash: make", "·", "main ↑2 *"], "hovered: a segment goes, from the right: {hovered}");
     assert!(hovered.contains(title) && hovered.contains("text \"Pi\""), "the name stays: {hovered}");
 
     let lone = header(220.0, true, cx);
