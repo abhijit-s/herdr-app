@@ -125,6 +125,8 @@ impl Notified {
         self.0.remove(address);
     }
 
+    /// Tests check the record against what is up; the app only asks `withdraw`.
+    #[cfg(test)]
     pub fn contains(&self, address: &str) -> bool {
         self.0.contains_key(address)
     }
