@@ -23,7 +23,7 @@ const ran: any[] = [];
 const program = { key: "claude", name: "Claude Code", agent: true };
 let pane: any;
 const values: Record<string, any> = {
-  View: class {}, div: element, svg: element, image: element, h_flex: element,
+  View: class {}, div: element, svg: (...src: any[]) => { const e = element(); e.calls.src = src; return e; }, image: element, h_flex: element,
   panes: () => [pane], props: () => ({ pane: "p1" }), run: (...args: any[]) => ran.push(args), home: () => "/home/me",
   theme: () => new Proxy({}, { get: () => "#000000" }), settings: () => ({ working_spinner: null }),
   fitHeaderInfo: (segments: any[]) => segments, headerTextWidth: (text: string, font: number) => [...text].length * font * 0.6,
@@ -60,7 +60,7 @@ test("the header's float button toggles that pane's float, its tooltip saying wh
     view.hovered = true;
     const button = find(view.render({}), "ph-f-p1");
     expect(button.calls.tooltip).toEqual([tip]);
-    expect(button.nodes[0]).toBeDefined();
+    expect(button.nodes[0].calls.src).toEqual([`mods/pane/${icon}.svg`]);
     let stopped = false;
     button.calls.on_click[0]({}, { stop_propagation: () => { stopped = true; } });
     expect(stopped).toBe(true);
