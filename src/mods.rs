@@ -1156,7 +1156,10 @@ fn module(inst: Instance, copy: u64) -> HostModule {
     let feedback_from = inst.props.get("from").and_then(Value::as_str).unwrap_or("person").to_owned();
     let feedback_layout = inst.props.get("layout").and_then(Value::as_str).unwrap_or("other").to_owned();
     let (cmd_tx, commands) = async_channel::unbounded::<String>();
-    COMMANDS.with(|c| c.borrow_mut().push((copy, inst.name.clone(), cmd_tx)));
+    COMMANDS.with_borrow_mut(|commands| {
+        commands.retain(|(_, _, tx)| !tx.is_closed());
+        commands.push((copy, inst.name.clone(), cmd_tx));
+    });
     HostModule::new("herdr")
         .declarations(DECLARATIONS)
         .async_function("exec", |a| {
@@ -1507,6 +1510,18 @@ mod tests {
         assert_eq!((code, stdout.as_str()), (0, "done"));
     }
 
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn exec_returns_real_output_and_errors_under_the_test_scheduler(_cx: &mut gpui::TestAppContext) {
+        let result = exec_future("sh".into(), vec!["-c".into(), "printf out; printf err >&2; exit 7".into()], None, None, EXEC_LIMIT).await.unwrap();
+        assert!(matches!(result.get("code"), Some(HostValue::Number(7.0))));
+        assert!(matches!(result.get("stdout"), Some(HostValue::Str(s)) if s == "out"));
+        assert!(matches!(result.get("stderr"), Some(HostValue::Str(s)) if s == "err"));
+        assert!(exec_future("herdr_test_missing_command_638".into(), vec![], None, None, EXEC_LIMIT).await.is_err());
+        let error = exec_future("sh".into(), vec!["-c".into(), "sleep 0.15; printf late".into()], None, None, Duration::from_millis(30)).await.unwrap_err();
+        assert!(error.to_string().contains("0.03 s"), "{error}");
+    }
+
     #[test]
     fn live_reads_ignore_unread_inputs_and_keep_pending_changes() {
         let mut revisions = HashMap::new();
@@ -1705,6 +1720,22 @@ mod tests {
             "mod acts: actions[17]: tab.close: argument id must be a string (or null to omit it)",
             "mod odd: actions: expected a list",
         ]);
+    }
+
+    #[test]
+    fn loading_copies_reclaims_closed_command_channels_without_dispatch() {
+        std::thread::spawn(|| {
+            let inst = Instance { name: "test".into(), props: Value::Null };
+            let live = module(inst.clone(), 1);
+            for copy in 2..102 {
+                drop(module(inst.clone(), copy));
+                COMMANDS.with_borrow(|commands| assert!(commands.len() <= 2));
+            }
+            drop(live);
+            let last = module(inst, 102);
+            COMMANDS.with_borrow(|commands| assert_eq!(commands.len(), 1));
+            drop(last);
+        }).join().unwrap();
     }
 
     #[test]

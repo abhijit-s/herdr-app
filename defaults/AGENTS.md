@@ -636,7 +636,7 @@ The main ones:
 - Panes: `pane.split {direction: "right" | "down", pane?, argv? | mod?, props?}` (a new
   terminal, or a mod pane), `pane.close {pane?}`, `pane.rename {pane?, name}` ("": unnamed again),
   `pane.set_icon {pane?, icon}` and `tab.set_icon {id?, icon}` (`icon`: `{kind: "glyph" | "emoji", value}` or `{kind: "letter"}`; null or absent: the automatic icon again, so a misspelt key clears it; kept by id in the machine's layout and gone with the pane or tab; the shipped `menu` offers them as Change icon… and Clear icon, through the shipped `icon-picker`: Suggested, every Symbols Nerd Font glyph and every emoji, searchable by name and keyword. A mod keeping icons of its own opens the same picker with `openOverlay({mod: "icon-picker", kind: "dialog", width: 452, height: 392, props: {shared: "<key>", id, name, letter?, now?, extra?}})`: the pick is written to `shared(key)[id]` as `{kind, value?}` and Clear icon deletes it; `now` (`{kind, text}`) is the icon shown today, `extra` (`[{kind, text, word}]`) adds the mod's own kinds beside the letter),
-  `pane.zoom {pane?}`, `pane.menu {pane?}` (the pane's menu at the pointer, the layout's `terminal_menu` as a terminal right-click opens it, with no selection: what a pane header's right-click runs; the shipped `menu` lists Copy with a selection, Copy all, Paste, Copy path when the folder is known, then Rename, Split right and down, Zoom, Change icon… and Clear icon, then where right-clicks go, Send back for a kept sub-agent, and Close pane), `pane.focus {pane | terminal}`, `pane.refocus` (the keyboard back to what has the focus after a mod took it for a moment, as a tab drag does: a focused mod pane gets its `focus` command again, else the focused pane or the agent shown), `pane.go {direction}`, `pane.swap {direction}`.
+  `pane.zoom {pane?}`, `pane.menu {pane?}` (the pane's menu at the pointer, the layout's `terminal_menu` as a terminal right-click opens it, with no selection: what a pane header's right-click runs; the shipped `menu` lists Copy with a selection, Copy all, Paste, Copy path when the folder is known, then Rename, Split right and down, Zoom, Change icon… and Clear icon, then where right-clicks go, Send back for a kept sub-agent, and Close pane), `pane.focus {pane | terminal}`, `pane.refocus` (the keyboard back to what has the focus after a mod took it for a moment, as a tab drag does: a focused mod pane gets its `focus` command again, else the focused pane or the agent shown), `pane.go {direction}`, `pane.swap {pane?, direction | target}`.
   `pane.zoom_text_in {pane?}`, `pane.zoom_text_out {pane?}`,
   `pane.zoom_text_reset {pane?}` zoom one terminal pane's text (default:
   the terminal with the keyboard, else the focused pane) a `zoom_step` at
@@ -655,7 +655,10 @@ The main ones:
   direction; unvisited panes fall back to overlap, then top/left layout order.
   `pane.go` also reaches visible mods whose `mod.json` says `"focusable": true`, and
   starts from that mod while it holds the keyboard.
-  `pane.swap` uses geometry only. Focus history lasts until the window closes.
+  `pane.swap {direction}` uses geometry only. Focus history lasts until the window closes.
+  `pane.swap {target}` trades the places of `pane` (default: the focused one) and
+  `target`, another pane of the same tab; give `direction` or `target`, not both.
+  A swap moves panes, not focus: the focused pane stays focused in its new place.
   `pane.arrange {mode, tab?}` rebuilds a tab's panes (default: the shown tab) with
   even sizes: `tiled` (a grid row by row, `ceil(sqrt(n))` across; a short last
   row's panes widen), `bsp` (each pane takes half of what's left: right, down,
@@ -773,9 +776,10 @@ The main ones:
   never one a package manager owns), `app.welcome`, `app.whats_new`, `app.feedback {message?, from?}` (from `"person"` or `"agent"`; opens a review window, where the person can paste up to 3 screenshots; never sends until the person clicks Send), `app.reset`,
   `app.theme {name}`, `app.zoom_in`, `app.zoom_out`, `app.zoom_reset` (the whole app; a terminal pane's own text: `pane.zoom_text_*`),
   `app.update` (restart into a downloaded update).
-  Add machine lists all named ssh-config hosts in a scrollable list. Setup
-  prompts open above the picker; close the setup terminal to return to the
-  updated list and any machine-specific guidance. If a remote machine was rebuilt
+  Add machine lists all named ssh-config hosts in a scrollable list. Machines
+  that need a password, a new host key or herdr-core installed show what to run
+  in your own terminal; the picker updates once it is added. Other machines are
+  added quietly. If a remote machine was rebuilt
   or replaced and a different core answers there, its sidebar offers Connect:
   explicitly forget the old identity and pair again with the same name and target.
   Other unreachable machines don't offer this.
@@ -1090,6 +1094,8 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
   inside `programs`. Use programs or shell functions, not aliases (the launcher
   does not expand them). On macOS the menu launcher loads login profiles before
   running the agent and leaves an interactive login shell when it ends.
+  Codex starts as `codex --no-daemon`: a shared Codex daemon would make later
+  sessions use the first terminal's identity and stop with it.
   On remote Unix machines, both the installed-agent check and launcher load
   that user's login/interactive shell for sh, bash, zsh, dash, ksh and fish, so
   its PATH includes shell-configured tools. Other shells keep the sh launcher.
@@ -1231,6 +1237,9 @@ Rules:
   once; `render(cx)` describes the UI and runs again after `cx.notify()` and
   whenever Herdr's live data changes (spaces, agents, terminals, focus,
   theme, shared state). Don't poll those.
+- Module code runs once per source version and is shared by copies, even after all
+  copies close. Keep instance state and host calls in constructor/init, not module
+  scope. Each copy still gets its own instance, tasks and localStorage.
 - **Never keep a `cx` and use it later.** Every callback gets its own:
   `on_click((event, cx) => …)`, `cx.spawn(async (cx) => …)`,
   `cx.timer.every(ms, (cx) => …)`.
