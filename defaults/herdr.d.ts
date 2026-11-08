@@ -57,7 +57,8 @@ export function playSound(sound: string): null;
  *   tab.move_left {id?}, tab.move_right {id?} (one place; nothing at the end), tab.next, tab.prev.
  * Panes: pane.split {direction: "right" | "down", pane?}, pane.close {pane?}, pane.zoom {pane?},
  *   pane.zoom_text_in|zoom_text_out|zoom_text_reset {pane?} (a terminal pane's own text size, on top of the app's zoom),
- *   pane.focus {pane | terminal}, pane.refocus (the keyboard back to what has the focus, a focused mod pane included, after a mod took it), pane.go {direction}, pane.swap {direction},
+ *   pane.focus {pane | terminal}, pane.refocus (the keyboard back to what has the focus, a focused mod pane included, after a mod took it), pane.go {direction},
+ *   pane.swap {pane?, direction | target},
  *   pane.rename {pane?, name?} ("": unnamed again), pane.set_icon {pane?, icon} and tab.set_icon {id?, icon}
  *   (icon: {kind: "glyph" | "emoji", value} or {kind: "letter"}; null or absent: the automatic icon again),
  *   pane.menu {pane?} (the pane's menu at the pointer: the layout's terminal_menu mod, else menu).
