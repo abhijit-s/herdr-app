@@ -154,6 +154,7 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
     module = module.async_function("knownAgents", |_| Ok(async { Ok(HostValue::Array(vec![])) }));
     module = module.async_function("pickFolder", |_| Ok(async { Ok(HostValue::Null) }));
     module = module.function("gitStatus", |_| Ok(HostValue::Null));
+    module = module.function("toastLooks", |_| Ok(HostValue::Json(std::sync::Arc::new(crate::settings::Settings::default().toast_looks()))));
     module = module.function("fitHeaderInfo", |a| {
         crate::header_info::fit_for_mods(from_host(a.value(0)?), a.number(1)? as f32, a.number(2)? as f32).map(|v| to_host(&v)).map_err(HostError::new)
     });

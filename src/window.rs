@@ -52,13 +52,17 @@ const ALERT_NAMES: usize = 4;
 /// shells and be offered for resuming.
 const RESUME_OFFER_WINDOW: Duration = Duration::from_secs(60);
 
-/// How long a toast stays: its `timeout`, else longer for errors and warnings.
-fn toast_timeout(notification: &Value) -> Duration {
-    let ms = notification.get("timeout").and_then(Value::as_f64).unwrap_or(match notification.get("level").and_then(Value::as_str) {
+/// How long a toast stays: its `timeout`, else longer for errors and warnings,
+/// scaled by the person's `toast_duration`; none: until clicked.
+fn toast_timeout(notification: &Value, duration: settings::ToastDuration) -> Option<Duration> {
+    if let Some(ms) = notification.get("timeout").and_then(Value::as_f64) {
+        return Some(Duration::from_millis(ms as u64));
+    }
+    let ms = match notification.get("level").and_then(Value::as_str) {
         Some("error" | "warning") => 8000.0,
         _ => 5000.0,
-    });
-    Duration::from_millis(ms as u64)
+    };
+    duration.scale().map(|k| Duration::from_millis((ms * k) as u64))
 }
 
 /// An agent alert's toast, which alerts of the same kind arriving soon after
@@ -99,6 +103,12 @@ impl AlertToast {
             "action": { "name": "agent.focus", "args": { "terminal": newest.address } },
         })
     }
+}
+
+/// A toast's props with the person's `toast_mark`, which the toast mod draws:
+/// carried in the props so a toast's render reads no settings.
+fn with_toast_mark(props: &mut Value) {
+    props["toast_mark"] = serde_json::to_value(settings::get().toast_mark).unwrap_or(Value::Null);
 }
 
 /// One line without a body, two with one: a body as the toast mod draws one
@@ -2986,7 +2996,8 @@ impl AppWindow {
         toast.joined = now;
         let mut props = toast.notification();
         props["overlay"] = json!(o.id);
-        o.expires = Some(now + toast_timeout(&props));
+        with_toast_mark(&mut props);
+        o.expires = toast_timeout(&props, settings::get().toast_duration).map(|t| now + t);
         o.size.height = toast_height(&props);
         let slot = o.slot.clone();
         if let Some(copy) = self.copies.get_mut(&slot) {
@@ -4616,6 +4627,9 @@ impl AppWindow {
             props = json!({});
         }
         props["overlay"] = json!(id);
+        if kind == OverlayKind::Toast {
+            with_toast_mark(&mut props);
+        }
         let urgent = kind == OverlayKind::Toast && matches!(props.get("level").and_then(Value::as_str), Some("error" | "warning"));
         let num = |k: &str, d: f32| spec.get(k).and_then(Value::as_f64).map_or(d, |v| v as f32);
         let size = match kind {
@@ -4635,7 +4649,7 @@ impl AppWindow {
         if kind == OverlayKind::Window && place.is_none() && spec.get("at").is_some_and(|v| v.get("x").is_some()) {
             place = Some(at);
         }
-        let timeout = toast_timeout(&props);
+        let timeout = toast_timeout(&props, settings::get().toast_duration);
         let slot = format!("overlay:{id}");
         // The frame takes the keyboard first, so a mod that focuses itself while loading wins.
         let focus = cx.focus_handle();
@@ -4665,7 +4679,7 @@ impl AppWindow {
             slot,
             at,
             size,
-            expires: (kind == OverlayKind::Toast).then(|| Instant::now() + timeout),
+            expires: timeout.filter(|_| kind == OverlayKind::Toast).map(|t| Instant::now() + t),
             focus,
             layout,
             top,
@@ -4703,12 +4717,15 @@ impl AppWindow {
 
     /// A burst of toasts shows at most `TOAST_LIMIT`: past it, the oldest
     /// close, routine ones before errors and warnings, so a burst of
-    /// "finished" toasts can't push out an error nobody has read yet.
+    /// "finished" toasts can't push out an error nobody has read yet. The
+    /// toast just opened always shows: with five errors kept until clicked,
+    /// a new "Copied" closes the oldest error rather than itself.
     fn close_toasts_past_limit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let toasts: Vec<(String, bool)> = self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).map(|o| (o.id.clone(), o.urgent)).collect();
         let excess = toasts.len().saturating_sub(TOAST_LIMIT);
-        let routine = toasts.iter().filter(|(_, urgent)| !urgent);
-        let urgent = toasts.iter().filter(|(_, urgent)| *urgent);
+        let Some((_, older)) = toasts.split_last() else { return };
+        let routine = older.iter().filter(|(_, urgent)| !urgent);
+        let urgent = older.iter().filter(|(_, urgent)| *urgent);
         let closing: Vec<String> = routine.chain(urgent).take(excess).map(|(id, _)| id.clone()).collect();
         for id in closing {
             self.close_overlay(&id, window, cx);
@@ -5645,7 +5662,7 @@ impl AppWindow {
                 .debug_selector(|| format!("overlay-{id}"))
                 .when(sized(o.size.height), |d| if o.fit { d.max_h(h) } else { d.h(h) })
                 .when(!o.bare && o.kind != OverlayKind::Toast, |d| d.bg(c("popover")).border_1().border_color(c("border")).rounded(settings::z(8.0)).shadow_lg())
-                .when(!o.bare && o.kind == OverlayKind::Toast, toast_frame)
+                .when(!o.bare && o.kind == OverlayKind::Toast, |d| toast_frame(d, s.toast_corners))
                 .overflow_hidden()
                 .flex()
                 // Scroll, hover and cursor stop here, not on the pane behind.
@@ -5691,11 +5708,14 @@ impl AppWindow {
         }
         // Past the toasts, on their edge: it stays until an update goes through.
         if let Some(error) = crate::update::core().error {
-            let notice = toast_frame(div().max_w(settings::z(540.0)).flex().overflow_hidden())
+            let notice = toast_frame(div().max_w(settings::z(540.0)).flex().overflow_hidden(), s.toast_corners)
                 .text_size(settings::zt(13.0)).text_color(c("toast_foreground"))
                 .id("core-update-error").cursor_pointer()
                 .on_click(cx.listener(|this, _, w, cx| this.run("app.settings", json!({ "section": "updates" }), w, cx)))
-                .child(div().w(settings::z(TOAST_STRIPE)).flex_none().bg(c("toast_error")))
+                .when(s.toast_mark == settings::ToastMark::Stripe, |d| d.child(div().w(settings::z(TOAST_STRIPE)).flex_none().bg(c("toast_error"))))
+                .when(s.toast_mark == settings::ToastMark::Dot, |d| {
+                    d.child(div().pl(settings::z(12.0)).flex().items_center().child(div().size(settings::z(8.0)).rounded(settings::z(4.0)).bg(c("toast_error"))))
+                })
                 .child(div().p(settings::z(12.0)).child(format!("herdr-core update failed: {error} · Open Updates")));
             out.push(at_toast_spot(notice.into_any_element(), &s, past));
         }
@@ -5714,11 +5734,12 @@ const TOAST_GAP: f32 = 8.0;
 const TOAST_STRIPE: f32 = 3.0;
 
 /// A toast's box: its own lifted surface, border and shadow (`toast_colors`
-/// in settings.rs), so it stands off whatever it's over on every theme.
-fn toast_frame<E: Styled>(e: E) -> E {
+/// in settings.rs), so it stands off whatever it's over on every theme, with
+/// the person's `toast_corners`.
+fn toast_frame<E: Styled>(e: E, corners: settings::ToastCorners) -> E {
     let shadow = c("toast_shadow");
     let near = Hsla { a: shadow.a * 0.6, ..shadow };
-    e.bg(c("toast")).border_1().border_color(c("toast_border")).rounded(settings::z(8.0)).shadow(vec![
+    e.bg(c("toast")).border_1().border_color(c("toast_border")).rounded(settings::z(corners.radius())).shadow(vec![
         BoxShadow { color: shadow, offset: point(px(0.0), settings::z(8.0)), blur_radius: settings::z(24.0), spread_radius: px(0.0), inset: false },
         BoxShadow { color: near, offset: point(px(0.0), settings::z(1.0)), blur_radius: settings::z(3.0), spread_radius: px(0.0), inset: false },
     ])
@@ -6761,6 +6782,115 @@ mod tests {
                 assert_eq!(bounds.origin, point(px(100.0), px(200.0)));
             }
         }
+    }
+
+    /// A toast's own `timeout` wins (the 1.5 s Copied); else its level's 5 s
+    /// or 8 s, scaled by `toast_duration`, or none: until clicked.
+    #[test]
+    fn toast_lifetimes() {
+        use super::toast_timeout;
+        use crate::settings::ToastDuration;
+        use serde_json::json;
+        use std::time::Duration;
+        let ms = |n: u64| Some(Duration::from_millis(n));
+        let info = json!({ "title": "Saved" });
+        let error = json!({ "title": "Failed", "level": "error" });
+        let warning = json!({ "title": "Careful", "level": "warning" });
+        let copied = json!({ "title": "Copied", "level": "success", "timeout": 1500 });
+        for (duration, routine, urgent) in [
+            (ToastDuration::Normal, ms(5000), ms(8000)),
+            (ToastDuration::Short, ms(3000), ms(4800)),
+            (ToastDuration::Long, ms(10000), ms(16000)),
+            (ToastDuration::UntilDismissed, None, None),
+        ] {
+            assert_eq!([toast_timeout(&info, duration), toast_timeout(&error, duration), toast_timeout(&warning, duration)], [routine, urgent, urgent], "{duration:?}");
+            assert_eq!(toast_timeout(&copied, duration), ms(1500), "{duration:?}: a toast's own time wins");
+        }
+    }
+
+    #[test]
+    fn toast_duration_and_mark_reach_new_toasts() {
+        in_own_process("toast_duration_open");
+    }
+
+    /// The person's `toast_duration` decides when a toast opened now, or an
+    /// alert joining one, goes (a toast already open keeps the time it was
+    /// given); Copied keeps its 1.5 s, and shows even past five errors kept
+    /// until clicked. Their `toast_mark` reaches the shipped toast mod in its
+    /// props: its dot shows for stripe and dot only.
+    #[gpui::test]
+    fn toast_duration_open(cx: &mut gpui::TestAppContext) {
+        use crate::model::Alert;
+        use crate::settings::{ToastDuration, ToastMark};
+        use serde_json::json;
+        use std::time::{Duration, Instant};
+        if !running_alone("toast_duration_open") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "toast", include_str!("../defaults/mods/toast/main.js"), json!({ "id": "pane", "type": "block" }));
+        cx.run_until_parked();
+        let set = |duration: ToastDuration, mark: ToastMark, cx: &mut gpui::VisualTestContext| view.update_in(cx, |this, window, cx| {
+            this.person.toast_duration = duration;
+            this.person.toast_mark = mark;
+            this.apply_look(window, cx);
+        });
+        let lasts = |id: &str, cx: &mut gpui::VisualTestContext| {
+            view.update(cx, |this, _| this.overlays.iter().find(|o| o.id == id).map(|o| o.expires.map(|at| at.saturating_duration_since(Instant::now())))).expect("the toast is open")
+        };
+        let open = |level: &str, cx: &mut gpui::VisualTestContext| {
+            let id = crate::mods::new_overlay_id();
+            view.update_in(cx, |this, window, cx| this.open_overlay(id.clone(), json!({ "kind": "toast", "notification": { "title": "t", "level": level } }), window, cx));
+            cx.run_until_parked();
+            lasts(&id, cx)
+        };
+        let close_all = |cx: &mut gpui::VisualTestContext| view.update_in(cx, |this, window, cx| {
+            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                this.close_overlay(&id, window, cx);
+            }
+        });
+        let about = |d: Option<Duration>, s: u64| d.is_some_and(|d| d <= Duration::from_secs(s) && d > Duration::from_secs(s) - Duration::from_secs(1));
+        assert!(about(open("info", cx), 5), "unset: 5 s as ever");
+        assert!(cx.debug_bounds("toast-dot").is_some(), "unset: the stripe's dot");
+        assert!(about(open("error", cx), 8), "unset: 8 s for errors");
+        close_all(cx);
+        set(ToastDuration::Long, ToastMark::Dot, cx);
+        assert!(about(open("info", cx), 10));
+        assert!(cx.debug_bounds("toast-dot").is_some(), "dot: the dot");
+        close_all(cx);
+        cx.run_until_parked();
+        set(ToastDuration::UntilDismissed, ToastMark::None, cx);
+        assert_eq!(open("error", cx), None, "until clicked");
+        assert!(cx.debug_bounds("toast-dot").is_none(), "none: no dot");
+        view.update_in(cx, |this, window, cx| this.show_copied(window, cx));
+        let copied = view.update(cx, |this, _| this.copied_toast.clone()).unwrap();
+        assert!(lasts(&copied, cx).is_some_and(|d| d <= Duration::from_millis(1500)), "Copied stays brief");
+        // Five errors kept until clicked don't starve a new toast: it shows, the oldest error goes.
+        close_all(cx);
+        let errors: Vec<String> = (0..5).map(|i| {
+            let id = crate::mods::new_overlay_id();
+            view.update_in(cx, |this, window, cx| this.open_overlay(id.clone(), json!({ "kind": "toast", "notification": { "title": format!("e{i}"), "level": "error" } }), window, cx));
+            id
+        }).collect();
+        view.update_in(cx, |this, window, cx| this.show_copied(window, cx));
+        let copied = view.update(cx, |this, _| this.copied_toast.clone()).unwrap();
+        let shown = view.update(cx, |this, _| this.overlays.iter().filter(|o| o.kind == super::OverlayKind::Toast).map(|o| o.id.clone()).collect::<Vec<_>>());
+        assert_eq!(shown, [&errors[1..], &[copied]].concat(), "Copied shows; the oldest error made room");
+        // An alert joining a toast keeps it until clicked too.
+        set(ToastDuration::Long, ToastMark::None, cx);
+        let alert = |addr: &str, cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| {
+                this.person.sounds.enabled = false;
+                this.live.insert(addr.into(), json!({ "name": format!("agent {addr}") }));
+                this.alert(addr, Alert::Done, None, false, window, cx);
+            });
+            cx.run_until_parked();
+        };
+        alert("t1", cx);
+        let joined = view.update(cx, |this, _| this.overlays.iter().rev().find(|o| o.alert.is_some()).map(|o| o.id.clone())).unwrap();
+        assert!(about(lasts(&joined, cx), 10), "an alert toast follows the setting");
+        set(ToastDuration::UntilDismissed, ToastMark::None, cx);
+        alert("t2", cx);
+        assert_eq!(lasts(&joined, cx), None, "a joining alert keeps it until clicked");
     }
 
     #[test]
