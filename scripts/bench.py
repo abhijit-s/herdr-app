@@ -24,6 +24,7 @@ import subprocess
 import sys
 import time
 import tempfile
+import threading
 
 ROOT = None
 SESSION = None
@@ -332,14 +333,53 @@ def measure(name, app, seconds, sample):
     return row
 
 
+def floats(bin, app, a, agent):
+    """Floating panes (pane.float): what a float costs the terminals under it.
+    Each pair is the same tab with and without floats; a moving float should
+    rebuild no rows of the panes under it, and its own only when its size changes."""
+    rows = ROWS_OUT
+    do(bin, "space.new", {"name": "bench", "folder": ROOT, "argv": agent})
+    rows.append(measure("agent-alone", app, a.seconds, a.sample))
+    do(bin, "pane.split", {"direction": "right"})
+    do(bin, "pane.float", {"rect": [0.3, 0.2, 0.4, 0.5]})
+    rows.append(measure("agent-under-float", app, a.seconds, a.sample))
+    do(bin, "tab.new", {"name": "four", "argv": agent})
+    for direction in ("right", "down", "down"):
+        do(bin, "pane.split", {"direction": direction, "argv": agent})
+    rows.append(measure("four-agents", app, a.seconds, a.sample))
+    for i, rect in enumerate(([0.05, 0.05, 0.4, 0.4], [0.3, 0.3, 0.4, 0.4], [0.55, 0.5, 0.4, 0.4])):
+        do(bin, "pane.split", {"direction": "right"})
+        do(bin, "pane.float", {"rect": rect})
+    rows.append(measure("three-floats", app, a.seconds, a.sample))
+    # The front float moving ten times a second, as a drag would (by keyboard, until phase 2).
+    stop = threading.Event()
+    def move():
+        step = 0
+        while not stop.is_set():
+            do(bin, "pane.float_move", {"direction": "right" if step % 20 < 10 else "left", "cells": 3})
+            step += 1
+            stop.wait(0.1)
+    mover = threading.Thread(target=move, daemon=True)
+    mover.start()
+    try:
+        rows.append(measure("float-moving", app, a.seconds, a.sample))
+    finally:
+        stop.set()
+        mover.join()
+
+
+ROWS_OUT = []
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--bin", default=os.path.join(HERE, "..", "target", "release", "herdr-app.exe" if sys.platform == "win32" else "herdr-app"))
     ap.add_argument("--seconds", type=int, default=20)
     ap.add_argument("--sample", action="store_true")
     ap.add_argument("--zoom", type=float, default=1.0)
-    ap.add_argument("--set", choices=["all", "spinners", "toasts"], default="all",
-                    help="spinners: many spaces of idle agents, one agent working on screen; toasts: agents finishing in waves and in a storm, raising toasts")
+    ap.add_argument("--set", choices=["all", "spinners", "toasts", "floats"], default="all",
+                    help="spinners: many spaces of idle agents, one agent working on screen; toasts: agents finishing in waves and in a storm, raising toasts; "
+                         "floats: floating panes over streaming agents, still and moving")
     ap.add_argument("--only", help="measure only this scenario, e.g. spinners+stream")
     ap.add_argument("--settings", default="{}", help="JSON merged into the test home's settings.json, e.g. '{\"toast_duration\": \"long\"}'")
     a = ap.parse_args()
@@ -374,7 +414,7 @@ def main():
 
     log = open(f"{ROOT}/app.log", "w")
     app = awake = None
-    rows = []
+    rows = ROWS_OUT
     try:
         core = subprocess.run(["hc", "server", "start"], env=env(), capture_output=True, text=True)
         if core.returncode:
@@ -408,6 +448,9 @@ def main():
             rows.append(measure("spinners+stream", app.pid, a.seconds, a.sample))
             do(bin, "tab.new", {"name": "title", "argv": reports("title")})
             rows.append(measure("spinners+title", app.pid, a.seconds, a.sample))
+            return
+        if a.set == "floats":
+            floats(bin, app.pid, a, agent)
             return
         if a.set == "toasts":
             # The window opens behind (HERDR_APP_BACKGROUND), so every finish
