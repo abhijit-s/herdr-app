@@ -116,7 +116,7 @@ Move a tab (default: the shown one) one place right in its space; at the last pl
 
 ## `tab.set_icon`
 
-Choose a tab's icon (default: the selected tab): icon {"kind": "glyph" | "emoji", "value": one glyph or emoji} or {"kind": "letter"} (the first letter of its name); null or none: its focused pane's again. Kept with the tab.
+Choose a tab's icon (default: the selected tab): icon {"kind": "glyph" | "emoji", "value": one glyph or emoji} or {"kind": "letter"} (the first letter of its name); null or absent (a misspelt key too): its focused pane's again. Kept with the tab.
 
 | Argument | Required |
 |---|---|
@@ -154,7 +154,7 @@ Name a pane (default: the focused one; asks the person when no name, starting fr
 
 ## `pane.set_icon`
 
-Choose a pane's icon (default: the focused one): icon {"kind": "glyph" | "emoji", "value": one glyph or emoji} or {"kind": "letter"} (the first letter of its label); null or none: its automatic icon again. Kept with the pane.
+Choose a pane's icon (default: the focused one): icon {"kind": "glyph" | "emoji", "value": one glyph or emoji} or {"kind": "letter"} (the first letter of its label); null or absent (a misspelt key too): its automatic icon again. Kept with the pane.
 
 | Argument | Required |
 |---|---|
@@ -423,6 +423,14 @@ Copy a terminal's screen and all the history the core keeps (default: the focuse
 ## `terminal.copy_path`
 
 Copy the folder a terminal is in (default: the focused terminal).
+
+| Argument | Required |
+|---|---|
+| `terminal` | no |
+
+## `terminal.copy_last_output`
+
+Copy the output of the last command that finished in a terminal (default: the focused terminal), wrapped lines joined, without trailing blank lines. Needs a shell that marks its prompts (OSC 133); fails without marks, on a full-screen program, or when that command printed nothing.
 
 | Argument | Required |
 |---|---|

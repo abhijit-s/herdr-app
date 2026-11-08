@@ -101,6 +101,10 @@ pub struct Model {
     /// Icons someone chose (`pane.set_icon`, `tab.set_icon`), by pane or tab id;
     /// kept in each machine's layout document with its spaces.
     pub icons: BTreeMap<String, crate::pane_icons::Choice>,
+    /// Icon entries as their machine's document held them, by id, until someone
+    /// chooses or clears that icon: written back as read, so a read alone writes
+    /// nothing and entries this build can't read (a newer build's) survive.
+    pub icons_read: BTreeMap<String, serde_json::Value>,
 }
 
 /// Herdr's attention priority: blocked > done > working > idle > nothing.
@@ -286,12 +290,21 @@ impl Model {
         true
     }
 
+    /// Keeps only the spaces, and their icons, of machines `keep` names (and this machine's).
+    pub fn retain_machines(&mut self, keep: impl Fn(&str) -> bool) {
+        self.spaces.retain(|s| s.machine.as_deref().is_none_or(&keep));
+        let kept = |id: &String| crate::mirror::machine_of(id).is_none_or(&keep);
+        self.icons.retain(|id, _| kept(id));
+        self.icons_read.retain(|id, _| kept(id));
+    }
+
     /// Chooses a pane's or a tab's icon (None: its automatic one again). False: no such pane or tab.
     pub fn set_icon(&mut self, id: &str, icon: Option<crate::pane_icons::Choice>) -> bool {
         let pane = self.tab_of(id).and_then(|c| c.root.find(id)).is_some_and(|n| n.is_pane());
         if !pane && self.tab(id).is_none() {
             return false;
         }
+        self.icons_read.remove(id);
         match icon {
             Some(c) => self.icons.insert(id.to_owned(), c),
             None => self.icons.remove(id),

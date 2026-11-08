@@ -1153,6 +1153,8 @@ const CONTEXT_AND_VIEW: &str = r#"  /**
     local_position: Point;
     bounds: import("gpui-shell").ElementBounds;
     modifiers: Modifiers;
+    /** The button held while the pointer moves; null when none of these is. */
+    pressed_button: MouseButton | null;
   }
 
   /**
