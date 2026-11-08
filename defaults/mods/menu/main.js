@@ -60,10 +60,10 @@ function items(p, git) {
               ["Split right", "pane.split", { direction: "right", pane: tg.pane }],
               ["Split down", "pane.split", { direction: "down", pane: tg.pane }],
               ["Zoom", "pane.zoom", { pane: tg.pane }],
-              floating ? ["Dock pane", "pane.dock", { pane: tg.pane }] : ["Float pane", "pane.float", { pane: tg.pane }],
-              ...(floating ? [["Bring to front", "pane.raise", { pane: tg.pane, to: "front" }]] : []),
               ["Change icon…", "icon", { pane: tg.pane }],
               ...(own ? [["Clear icon", "pane.set_icon", { pane: tg.pane, icon: null }]] : []),
+              floating ? ["Dock pane", "pane.dock", { pane: tg.pane }] : ["Float pane", "pane.float", { pane: tg.pane }],
+              ...(floating ? [["Bring to front", "pane.raise", { pane: tg.pane, to: "front" }]] : []),
             ]
           : []),
         ...(term

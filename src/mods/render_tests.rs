@@ -1537,6 +1537,8 @@ fn pane_and_tab_menus_offer_change_and_clear_icon(cx: &mut TestAppContext) {
         assert_eq!(chosen[at + 1..at + 3], ["\"Change icon…\"", "\"Clear icon\""], "{chosen:?}");
     }
     assert!(items(pane.clone(), Value::Null, true, cx).iter().any(|t| t == "\"Change icon…\""), "the Shift+right-click menu has it too");
+    let tiled = items(pane.clone(), Value::Null, false, cx);
+    assert_eq!(tiled[tiled.iter().position(|t| t == "\"Change icon…\"").unwrap() + 1], "\"Float pane\"", "a tiled pane can float: {tiled:?}");
     // A terminal block outside a tab has no pane to give an icon.
     assert!(!items(json!({"tab":"pane","target":{"pane":"block","terminal":"t1"}}), Value::Null, false, cx).iter().any(|t| t.contains("icon")));
     let space = items(json!({"tab":"space","target":{"id":"s1"}}), own, false, cx);
