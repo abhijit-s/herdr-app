@@ -8500,10 +8500,13 @@ export default class Recent extends View {
             this.person.notification_sticky = sticky;
             this.apply_look(window, cx);
         }));
-        let list = |state: Option<&str>, looking: bool, cx: &mut gpui::VisualTestContext| {
-            let terminals = match state {
-                Some(state) => json!([{ "address": "t1", "state": "live", "status": { "state": state } }]),
-                None => json!([]),
+        // The core's turn and the shared seen turn (`herdr.seen`) say whether
+        // a finish was seen, also to a window that just started.
+        let list_turns = |state: Option<&str>, turns: Option<(u64, u64)>, looking: bool, cx: &mut gpui::VisualTestContext| {
+            let terminals = match (state, turns) {
+                (Some(state), Some((turn, seen))) => json!([{ "address": "t1", "state": "live", "status": { "state": state }, "turn": turn, "labels": { "herdr.seen": seen.to_string() } }]),
+                (Some(state), None) => json!([{ "address": "t1", "state": "live", "status": { "state": state } }]),
+                (None, _) => json!([]),
             };
             cx.update(|window, cx| view.update(cx, |this, cx| {
                 this.window_active = looking;
@@ -8512,6 +8515,7 @@ export default class Recent extends View {
             cx.run_until_parked();
             cx.delivered_system_notifications().iter().map(|n| n.title.to_string()).collect::<Vec<_>>()
         };
+        let list = |state: Option<&str>, looking: bool, cx: &mut gpui::VisualTestContext| list_turns(state, None, looking, cx);
         view.update(cx, |this, _| assert!(this.visible_addresses().contains(&"t1".to_owned()), "t1 is on screen: looking is the window being active"));
         let none: Vec<String> = Vec::new();
         set(true, cx);
@@ -8531,9 +8535,13 @@ export default class Recent extends View {
 
         // Herdr restarts while a notification is up: the core kept the agent,
         // and the new window adopts what may be up from its first listing.
+        // A new window knows nothing of the terminals until the core lists them.
         let restart = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| {
             this.notified = Default::default();
             this.listed_once = false;
+            this.model.agents.clear();
+            this.live.clear();
+            this.written_seen.clear();
         });
         assert_eq!(list(Some("blocked"), false, cx), ["An agent needs you"]);
         restart(cx);
@@ -8547,11 +8555,15 @@ export default class Recent extends View {
         restart(cx);
         assert_eq!(list(Some("error"), false, cx), ["An agent hit an error"], "an error's adopted");
         assert_eq!(list(Some("error"), true, cx), none, "adopted as an error: seen, it goes");
-        list(Some("working"), false, cx);
-        assert_eq!(list(Some("idle"), false, cx), ["An agent finished"]);
+        list_turns(Some("working"), Some((1, 1)), false, cx);
+        assert_eq!(list_turns(Some("idle"), Some((2, 1)), false, cx), ["An agent finished"]);
         restart(cx);
-        assert_eq!(list(Some("idle"), false, cx), ["An agent finished"], "an unseen finish is adopted");
-        assert_eq!(list(Some("idle"), true, cx), none, "adopted as a finish: seen, it goes");
+        assert_eq!(list_turns(Some("idle"), Some((2, 1)), false, cx), ["An agent finished"], "an unseen finish (turn 2, seen 1) is adopted");
+        assert_eq!(list_turns(Some("idle"), Some((2, 1)), true, cx), none, "adopted as a finish: seen, it goes");
+        list_turns(Some("working"), Some((2, 2)), false, cx);
+        assert_eq!(list_turns(Some("idle"), Some((3, 2)), false, cx), ["An agent finished"]);
+        restart(cx);
+        assert_eq!(list_turns(Some("idle"), Some((3, 3)), false, cx), none, "a finish seen elsewhere meanwhile goes on the first listing");
         // A tick before the core's first listing has no terminals: it
         // mustn't count as the first listing.
         list(Some("working"), false, cx);
