@@ -376,7 +376,9 @@ def main():
     with open(f"{ROOT}/home/shared.json", "w") as f:
         json.dump({"frame.welcomed": True, "layout": "main"}, f)
     with open(f"{ROOT}/home/settings.json", "w") as f:
-        json.dump({"zoom": a.zoom, **json.loads(a.settings)}, f)
+        # The subagents set counts them in pane headers too, unless --settings says otherwise.
+        header = {"pane_header_info": "{state} · {subagents}"} if a.set == "subagents" else {}
+        json.dump({"zoom": a.zoom, **header, **json.loads(a.settings)}, f)
     with open(f"{ROOT}/agent.py", "w") as f:
         f.write(AGENT)
     with open(f"{ROOT}/reports.py", "w") as f:

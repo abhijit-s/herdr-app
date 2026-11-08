@@ -176,7 +176,9 @@ impl Template {
                 continue;
             }
             let sep = if segments.is_empty() { String::new() } else { s.sep.clone() };
-            segments.push(Shown { sep, text, ask, minor: minor && !ask });
+            // Minor only when the count is all it shows: a segment that also
+            // holds other keys goes no sooner than any other.
+            segments.push(Shown { sep, text, ask, minor: minor && filled == 1 && !ask });
         }
         if segments.is_empty() {
             return None;
@@ -249,8 +251,9 @@ pub fn count_subagents<'a>(live: &'a HashMap<String, Value>, addr: &str, status_
         for _ in 0..32 {
             match parent(cur) {
                 Some(p) if p == addr => return true,
-                Some(p) => cur = p,
-                None => return false,
+                // A finished terminal's children are no longer in its tree, as the agents mod shows it.
+                Some(p) if live.get(p).is_some_and(|r| r["state"] == "live") => cur = p,
+                _ => return false,
             }
         }
         false
@@ -534,10 +537,11 @@ mod tests {
             ("t2", json!({ "state": "live", "status": "idle", "parent": "t1" })),
             ("t3", json!({ "state": "live", "status": "error", "parent": "t2", "records": { "job": rec("idle") } })),
             ("t4", json!({ "state": "finished", "status": "working", "parent": "t1" })),
+            ("t6", json!({ "state": "live", "status": "blocked", "parent": "t4" })),
             ("t5", json!({ "state": "live", "status": "working", "parent": "" })),
         ]);
         let none = |_: &str| None;
-        assert_eq!(count_subagents(&live, "t1", none), Subagents { live: 5, blocked: 2 }, "two records, t2, t3 below it and t3's record; not t4 (finished)");
+        assert_eq!(count_subagents(&live, "t1", none), Subagents { live: 5, blocked: 2 }, "two records, t2, t3 below it and t3's record; not t4 (finished) nor t6 below it");
         assert_eq!(count_subagents(&live, "t2", none), Subagents { live: 2, blocked: 1 }, "error counts as blocked");
         assert_eq!(count_subagents(&live, "t5", none), Subagents::default());
         assert_eq!(count_subagents(&live, "t1", |a| (a == "t2").then_some("blocked")).blocked, 3, "the app's state for a pane wins");
@@ -553,6 +557,8 @@ mod tests {
         let minor = |t: &str, v: &Values| Template::parse(t).resolve(v).unwrap().segments.iter().map(|s| s.minor).collect::<Vec<_>>();
         assert_eq!(minor("{state} · {subagents}", &Values { state: "idle".into(), ..v(3, 0) }), vec![false, true]);
         assert_eq!(minor("{state} · {subagents}", &Values { state: "idle".into(), ..v(3, 1) }), vec![false, false], "blocked is not minor");
+        assert_eq!(minor("{state} {subagents}", &Values { state: "idle".into(), ..v(3, 0) }), vec![false], "beside another key: not minor");
+        assert_eq!(minor("{branch} {subagents}", &v(3, 0)), vec![true], "the only key that shows: minor");
         assert!(Template::parse(SUGGESTED).uses_subagents() && !Template::parse("{state}").uses_subagents());
     }
 
