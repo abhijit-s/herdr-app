@@ -193,8 +193,15 @@ In the tab bar, drag a tab to reorder it: it follows the pointer and a line show
 - **Sub-agents** are terminals an agent started with `hc run`: the core
   records the starter as `parent` (see `terminals()`). They belong to their
   parent's tab without a pane; the `agents` mod shows them (a parent's
-  row counts its live ones, `⧉ 2`), `terminal.peek` opens one,
-  `terminal.keep` gives one a pane.
+  row counts its live ones, `⧉ 2`, in the colour of the most urgent:
+  blocked, working, else dim), `terminal.peek` opens one,
+  `terminal.keep` gives one a pane. A program's OSC 7501 child records
+  (reports with an `id`, in `terminals()[i].records` by id) are sub-agents
+  too, with no terminal of their own: a row each under the terminal,
+  named by the record's `title`, else its id. Claude Code runs its own
+  sub-agents (the Task tool) in its process, so it reports none by itself;
+  a SubagentStart/SubagentStop hook that writes `state=working:id=agent/<agent_id>`
+  and `state=clear:id=agent/<agent_id>` to Claude's terminal shows them.
   Ctrl-click (Cmd-click on macOS) a live terminal address in terminal text to
   peek at it. Bare addresses refer to the machine of the terminal showing them;
   use `machine/address` for another machine. Names and non-live addresses aren't links.
@@ -867,11 +874,13 @@ What's about the user, never a look:
   Bash: make", else "permission", "question"), `{state}` and `{elapsed}`
   (`<1m`, `3m`, `1h2m`, changing on the minute), and `{branch}`, `{ahead}`
   (`↑2`), `{behind}` (`↓1`) and `{dirty}` (`●`) from the folder's cached
-  git status; each is empty when unknown or zero, and other text is drawn
+  git status, and `{subagents}` the agent's live sub-agents (`⧉ 3`, `⧉ 3 (1 blocked)`,
+  `⧉ 2 blocked`); each is empty when unknown or zero, and other text is drawn
   as written. `·` or `|` split it into segments: one whose keys are all
   empty is left out, and where the header is short of room whole segments
-  go from the right, a waiting `{ask}` last. Suggested:
-  `"{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed}"`. Shells
+  go from the right, `{subagents}` first and a waiting `{ask}` or blocked
+  `{subagents}` last. Suggested:
+  `"{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed} · {subagents}"`. Shells
   show nothing. Mods read it resolved as `PaneInfo.header_info` and keep
   what fits with `fitHeaderInfo`. Settings > Agents > Activity has it as
   "Header info".

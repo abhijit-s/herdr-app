@@ -93,6 +93,24 @@ while True:
     time.sleep(0.1)
 """
 
+# An agent running sub-agents in its own process, as Claude Code does with a hook
+# reporting them: OSC 7501 child records, one started and one cleared every 0.5 s,
+# about three live at a time, one blocked now and then.
+SUBAGENTS = r"""
+import sys, time
+w = sys.stdout.write
+w("\033]7501;state=working:app=pi\033\\")
+n = 0
+while True:
+    n += 1
+    state = "blocked" if n % 7 == 0 else "working"
+    w(f"\033]7501;state={state}:id=agent/a{n}:app=pi\033\\")
+    if n > 3:
+        w(f"\033]7501;state=clear:id=agent/a{n - 3}\033\\")
+    sys.stdout.flush()
+    time.sleep(0.5)
+"""
+
 
 def env():
     e = dict(os.environ)
@@ -338,8 +356,8 @@ def main():
     ap.add_argument("--seconds", type=int, default=20)
     ap.add_argument("--sample", action="store_true")
     ap.add_argument("--zoom", type=float, default=1.0)
-    ap.add_argument("--set", choices=["all", "spinners", "toasts"], default="all",
-                    help="spinners: many spaces of idle agents, one agent working on screen; toasts: agents finishing in waves and in a storm, raising toasts")
+    ap.add_argument("--set", choices=["all", "spinners", "toasts", "subagents"], default="all",
+                    help="spinners: many spaces of idle agents, one agent working on screen; toasts: agents finishing in waves and in a storm, raising toasts; subagents: agents whose in-process sub-agents come and go (OSC 7501 child records)")
     ap.add_argument("--only", help="measure only this scenario, e.g. spinners+stream")
     ap.add_argument("--settings", default="{}", help="JSON merged into the test home's settings.json, e.g. '{\"toast_duration\": \"long\"}'")
     a = ap.parse_args()
@@ -367,6 +385,8 @@ def main():
         f.write(TUI)
     with open(f"{ROOT}/cycle.py", "w") as f:
         f.write(CYCLE)
+    with open(f"{ROOT}/subagents.py", "w") as f:
+        f.write(SUBAGENTS)
     cycle = lambda start, busy, rest: [sys.executable, "-u", f"{ROOT}/cycle.py", str(start), str(busy), str(rest)]
     agent = [sys.executable, "-u", f"{ROOT}/agent.py"]
     tui = [sys.executable, "-u", f"{ROOT}/tui.py"]
@@ -408,6 +428,15 @@ def main():
             rows.append(measure("spinners+stream", app.pid, a.seconds, a.sample))
             do(bin, "tab.new", {"name": "title", "argv": reports("title")})
             rows.append(measure("spinners+title", app.pid, a.seconds, a.sample))
+            return
+        if a.set == "subagents":
+            # Six agents, each with sub-agents coming and going twice a second; one on screen.
+            for i in range(6):
+                do(bin, "space.new", {"name": f"subs{i}", "folder": ROOT, "argv": reports("idle")})
+            rows.append(measure("subagents-idle", app.pid, a.seconds, a.sample))
+            for i in range(6):
+                do(bin, "tab.new", {"name": f"team{i}", "argv": [sys.executable, "-u", f"{ROOT}/subagents.py"]})
+            rows.append(measure("subagents-churn", app.pid, a.seconds, a.sample))
             return
         if a.set == "toasts":
             # The window opens behind (HERDR_APP_BACKGROUND), so every finish

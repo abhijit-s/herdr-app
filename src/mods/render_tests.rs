@@ -1672,6 +1672,43 @@ fn agents_rows_count_their_live_sub_agents(cx: &mut TestAppContext) {
     assert!(!narrow.contains('\u{29c9}'), "a narrow sidebar drops it: {narrow}");
 }
 
+/// The count takes its most urgent live sub-agent's colour (blocked or error:
+/// blocked; working; else dim), and a program's OSC 7501 child records (Claude
+/// Code's own sub-agents, reported by a hook) are sub-agents too: counted, a
+/// row each named by its title, coloured with the rest.
+#[gpui::test]
+fn agents_sub_agent_count_takes_the_most_urgent_colour_and_counts_child_records(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let program = json!({"key":"pi", "name":"Pi", "icon":null, "tint":true, "tile":null, "color":null, "shell":false, "agent":true});
+    let theme = crate::settings::theme();
+    let colour = |name: &str| format!(".text_color[Str({:?})]", theme[name].clone());
+    let draw = |kids: &[&str], records: Value, cx: &mut TestAppContext| {
+        let mut values = fixture(true, props(), updates("current", "current"));
+        let terminals = values.get_mut("terminals").unwrap().as_array_mut().unwrap();
+        terminals.iter_mut().filter(|t| t["address"] == "t1").for_each(|t| t["records"] = records.clone());
+        for (i, status) in kids.iter().enumerate() {
+            terminals.push(json!({"address":format!("k{i}"),"name":format!("k{i}"),"title":"","argv":["pi"],"parent":"t1","labels":{},"state":"live","status":status,"report":{"app":"pi"},"program":program}));
+        }
+        describe_with_values(cx, &staged, "mods/agents", values, None).unwrap()
+    };
+    let count = |tree: &str| tree.lines().skip_while(|l| !l.contains('\u{29c9}')).nth(0).map(str::to_owned).unwrap_or_default();
+    // The count's own element is the line above its text.
+    let count_el = |tree: &str| { let lines: Vec<&str> = tree.lines().collect(); let i = lines.iter().position(|l| l.contains('\u{29c9}')).unwrap_or_else(|| panic!("{tree}")); lines[i - 1].to_owned() };
+    for (kids, expect) in [(&["idle", "done"][..], "dim"), (&["idle", "working"][..], "working"), (&["working", "blocked"][..], "blocked"), (&["idle", "error"][..], "blocked")] {
+        let tree = draw(kids, Value::Null, cx);
+        assert!(count_el(&tree).contains(&colour(expect)), "{kids:?}: {expect}: {}", count_el(&tree));
+        assert!(count(&tree).contains("\u{29c9} 2"), "{tree}");
+    }
+    let records = json!({"agent/a1":{"state":"working","title":"Explore"},"agent/b2":{"state":"blocked","title":"Plan"}});
+    let tree = draw(&["idle"], records, cx);
+    assert!(count(&tree).contains("\u{29c9} 3"), "two records and a terminal: {tree}");
+    assert!(count_el(&tree).contains(&colour("blocked")), "a blocked record: {tree}");
+    assert!(tree.contains("\"sub-t1#agent/a1\"") && tree.contains("text \"Explore\"") && tree.contains("text \"Plan\""), "a row each, by title: {tree}");
+    let idle = draw(&[], json!({"agent/a1":{"state":"idle"}}), cx);
+    assert!(count(&idle).contains("\u{29c9} 1") && count_el(&idle).contains(&colour("dim")) && idle.contains("text \"agent/a1\""), "no title: its id: {idle}");
+}
+
 /// The pane menu names the pane first among the pane's own items, as the tab
 /// menu does its tab; a pane header's right-click opens that menu for its pane
 /// and terminal, with no selection to copy.

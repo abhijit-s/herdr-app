@@ -2145,6 +2145,7 @@ impl AppWindow {
                             ahead: folder.map_or(0, |f| f.ahead),
                             behind: folder.map_or(0, |f| f.behind),
                             dirty: folder.is_some_and(|f| f.dirty),
+                            subagents: if template.uses_subagents() { crate::header_info::count_subagents(&self.live, addr, |k| m.status(k)) } else { Default::default() },
                         })
                     });
                     panes.push(json!({
@@ -9398,6 +9399,24 @@ export default class Keeper extends View {
         minute(cx);
         assert_eq!(resolved() - before, 2, "and again a minute on");
         eprintln!("header info: {drawn} window renders beyond 30 refreshes with the template set");
+
+        // {subagents}: counted when a listing changes the agent's child records, not per frame.
+        template(Some("{state} · {subagents}"), cx);
+        let with_records = |records: Value, cx: &mut gpui::VisualTestContext| {
+            let terminals = json!({ "terminals": [{ "address": "ta", "argv": ["claude"], "status": { "state": "working" }, "records": records }, { "address": "tb", "argv": ["zsh"] }] });
+            cx.update(|window, cx| view.update(cx, |this, cx| this.terminals_listed(terminals, window, cx)));
+            cx.run_until_parked();
+        };
+        with_records(json!({ "agent/a1": { "state": "working", "title": "Explore" } }), cx);
+        assert_eq!(info("a")["segments"][1], json!({ "sep": " · ", "text": "\u{29c9} 1", "ask": false, "minor": true }));
+        let before = resolved();
+        frames(cx);
+        assert_eq!(resolved(), before, "no sub-agents counted for a frame");
+        with_records(json!({ "agent/a1": { "state": "working" }, "agent/b2": { "state": "blocked" } }), cx);
+        assert_eq!(resolved() - before, 1, "a new record publishes once");
+        assert_eq!(info("a")["segments"][1], json!({ "sep": " · ", "text": "\u{29c9} 2 (1 blocked)", "ask": true }));
+        with_records(Value::Null, cx);
+        assert_eq!(info("a")["segments"].as_array().map(Vec::len), Some(1), "none left: the segment drops");
 
         template(None, cx);
         assert_eq!((info("a"), ticking(cx)), (Value::Null, None), "cleared: the timer stops");

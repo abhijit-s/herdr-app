@@ -1232,7 +1232,7 @@ test("a fork build shows its commit beside the version", () => {
 });
 
 test("header info: Use suggested writes the template, a blank field leaves it out, the preview follows the field", () => {
-  const suggested = "{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed}";
+  const suggested = "{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed} · {subagents}";
   expect(click({ zoom: 1.1 }, {}, "st-hi-suggested", [], "activity")).toEqual({ zoom: 1.1, pane_header_info: suggested });
   expect(click({ pane_header_info: suggested }, {}, "st-hi-suggested", ["shown?"], "activity")).toBeUndefined();
   const field = (person: Record<string, any>) => {
