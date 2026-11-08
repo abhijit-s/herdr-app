@@ -839,6 +839,15 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Files: `src/header_info.rs`, `src/window.rs` (`publish`, `tick_header_info`, `folder_info`), `src/model.rs` (`FolderInfo`), `src/settings.rs`, `src/mods.rs` (`fitHeaderInfo`, `headerInfoPreview`), `defaults/mods/{pane,agents,menu}/main.js`, `defaults/frame/settings/main.js`, `defaults/herdr.d.ts`, `defaults/AGENTS.md`.
 - Upstream: none yet
 
+### Frame mods keep a code revision
+
+`fix/frame-mod-revision` (branched from `master`, the upstream pull request's change): the code cache upstream added in `029323e` walks and hashes a mod's whole folder on each load when the file watcher has no revision for it, and only `mods/<name>` had one. The app's own frame mods (palette, settings, welcome) therefore walked their tree on every open. A code file edited under `frame/<name>` now mints that folder's revision the same way, without a reload (frame mods load fresh on each open), and an event on `frame/` itself, as when the app rewrites it at start, invalidates every revision.
+
+- Measured (release, `load_app` timed, 20 opens each, two alternating runs, median): palette 156–162 → 32 µs, settings 170–192 → 32–34 µs, a `mods/` mod (picker) unchanged at about 32 µs.
+- Tests: `files::tests::frame_mods_get_revisions_without_reloading` (fails without the change).
+- Files: `src/files.rs` (`code_root`, `frame_file_counts`, `changes`, `FileEvents::revision_provider`)
+- Upstream: pull request #719 (`up/frame-mod-revision`), awaiting review
+
 ### Rejected text experiments
 
 Two text-quality experiments measured against the shipped thicken, contrast and weight settings, and not kept. The numbers are here so neither is tried again without a new reason.
