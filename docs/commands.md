@@ -383,6 +383,81 @@ Rearrange a tab's panes (default: the shown tab) evenly: "tiled" (a grid), "bsp"
 | `mode` | yes |
 | `tab` | no |
 
+## `pane.float`
+
+Float a tiled pane (default: the focused one) above its tab, in front and focused: rect is [x, y, w, h] as fractions of the tab area (default: centred at 60% × 60%). It keeps its id, terminal, name and icon; a zoomed pane unzooms. The tab's document keeps it, so every screen of the machine shows it.
+
+| Argument | Required |
+|---|---|
+| `pane` | no |
+| `rect` | no |
+
+## `pane.dock`
+
+Put a floating pane (default: the focused one) back into its tab's tiled panes: beside target (a tiled pane) on edge ("left", "right", "top" or "bottom", default "right"), else beside the pane it floated from on the same side at the same share, else beside the tiled pane focused last. An arranged tab places it in reading order there and arranges again.
+
+| Argument | Required |
+|---|---|
+| `pane` | no |
+| `target` | no |
+| `edge` | no |
+
+## `pane.float_toggle`
+
+Float a tiled pane (default: the focused one), or dock a floating one.
+
+| Argument | Required |
+|---|---|
+| `pane` | no |
+
+## `pane.float_move`
+
+Move a floating pane (default: the focused one). Give exactly one of: direction ("left", "right", "up", "down") by cells (default 2 columns or 1 row), rect ([x, y, w, h] fractions of the tab area), or to: "center", "left", "right", "top", "bottom" (halves), "top-left", "top-right", "bottom-left", "bottom-right" (quarters) or "full". It stays inside the tab.
+
+| Argument | Required |
+|---|---|
+| `direction` | no |
+| `cells` | no |
+| `rect` | no |
+| `to` | no |
+| `pane` | no |
+
+## `pane.float_resize`
+
+Resize a floating pane (default: the focused one) by cells (default 2 columns or 1 row), its top-left corner staying: "right" and "down" grow its width and height, "left" and "up" shrink them.
+
+| Argument | Required |
+|---|---|
+| `direction` | yes |
+| `cells` | no |
+| `pane` | no |
+
+## `pane.raise`
+
+Bring a floating pane (default: the focused one) one step forward, or to: "front". Floating panes are always above the tiled ones.
+
+| Argument | Required |
+|---|---|
+| `to` | no |
+| `pane` | no |
+
+## `pane.lower`
+
+Send a floating pane (default: the focused one) one step back, or to: "back"; it stays above the tiled panes.
+
+| Argument | Required |
+|---|---|
+| `to` | no |
+| `pane` | no |
+
+## `pane.float_cycle`
+
+Focus the next floating pane of the shown tab, bringing it to the front: from a tiled pane the front one, then back to front (front to back with reverse: true).
+
+| Argument | Required |
+|---|---|
+| `reverse` | no |
+
 ## `focus.toggle_follows_mouse`
 
 Turn focus follows mouse on or off (settings.json's focus_follows_mouse): the pointer resting on a terminal pane focuses it.
