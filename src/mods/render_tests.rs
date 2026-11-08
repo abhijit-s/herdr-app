@@ -1703,7 +1703,7 @@ fn pane_header_fits_its_info_beside_the_name_and_buttons(cx: &mut TestAppContext
     };
     let title = r#"div .flex_none .truncate .max_w[Number(260.0)] .font_medium"#;
     // The name ("Pi", 14 px), the ring (12), padding and gaps take 66 px; the
-    // segments 130, 210 or 297 (a separator 15: its mark and 4 px either side); the four buttons 112.
+    // segments 130, 210 or 297 (a separator 15: its mark and 4 px either side); the five buttons 140.
     let all = header(400.0, false, cx);
     assert_eq!(shown(&all), ["approve Bash: make", "·", "main ↑2 *", "·", "blocked 3m"], "room for all: {all}");
     assert!(all.contains(":tooltip[Str(\"approve Bash: make · main ↑2 * · blocked 3m\")]"), "the whole line in the tooltip: {all}");
@@ -1725,18 +1725,47 @@ fn pane_header_fits_its_info_beside_the_name_and_buttons(cx: &mut TestAppContext
     assert!(all.contains(title) && all.contains("text \"Pi\""), "the name as without info: {all}");
     assert!(all.contains(":on_size_change(fn)"), "it watches its width only with info: {all}");
 
-    let hovered = header(400.0, true, cx);
-    assert_eq!(hovered.matches("svg \"mods/pane/").count(), 4, "the buttons: {hovered}");
+    let hovered = header(428.0, true, cx);
+    assert_eq!(hovered.matches("svg \"mods/pane/").count(), 5, "the buttons: {hovered}");
+    assert_eq!(shown(&header(410.0, true, cx)), ["approve Bash: make"], "the buttons' room is all five's (four would leave two segments room)");
     assert_eq!(shown(&hovered), ["approve Bash: make", "·", "main ↑2 *"], "hovered: a segment goes, from the right: {hovered}");
     assert!(hovered.contains(title) && hovered.contains("text \"Pi\""), "the name stays: {hovered}");
 
-    let lone = header(220.0, true, cx);
+    let lone = header(248.0, true, cx);
     assert_eq!(shown(&lone), ["approve Bash: make"], "the ask goes last: {lone}");
     let last = lone.lines().skip_while(|l| !l.contains("pane-info-p1")).nth(1).unwrap();
     assert!(last.contains(".min_w[Number(0.0)] .truncate"), "the lone segment ends in an ellipsis: {last}");
 
     let gone = header(150.0, true, cx);
-    assert!(!gone.contains("pane-info-p1") && gone.contains("text \"Pi\"") && gone.matches("svg \"mods/pane/").count() == 4, "too narrow: no info, name and buttons stay: {gone}");
+    assert!(!gone.contains("pane-info-p1") && gone.contains("text \"Pi\"") && gone.matches("svg \"mods/pane/").count() == 5, "too narrow: no info, name and buttons stay: {gone}");
+}
+
+/// The pane header's float button: Float on a tiled pane, Dock on a floating
+/// one, each its own icon and tooltip, beside split and before zoom.
+#[gpui::test]
+fn pane_header_floats_and_docks_its_pane(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let header = |floating: Value, cx: &mut TestAppContext| {
+        let mut values = fixture(true, json!({"pane":"p1","terminal":"t1"}), updates("current", "current"));
+        for p in values.get_mut("panes").unwrap().as_array_mut().unwrap() {
+            p["floating"] = floating.clone();
+        }
+        describe_with_values(cx, &staged, "mods/pane", values, Some("this.hovered = true;")).unwrap()
+    };
+    let button = |tree: &str| -> Vec<String> {
+        let mut lines = tree.lines().skip_while(|l| !l.contains("ph-f-p1"));
+        let head = lines.next().unwrap_or_else(|| panic!("no float button: {tree}")).trim().to_owned();
+        vec![head, lines.next().unwrap().trim().to_owned()]
+    };
+    let tiled = header(Value::Null, cx);
+    let [head, icon] = button(&tiled).try_into().unwrap();
+    assert!(head.contains(":tooltip[Str(\"Float\")]") && icon.contains("svg \"mods/pane/float.svg\""), "{head} {icon}");
+    let floating = header(json!({"rect":[0.2,0.2,0.6,0.6],"z":0,"hidden":false}), cx);
+    let [head, icon] = button(&floating).try_into().unwrap();
+    assert!(head.contains(":tooltip[Str(\"Dock\")]") && icon.contains("svg \"mods/pane/dock.svg\""), "{head} {icon}");
+    let order: Vec<&str> = tiled.lines().filter_map(|l| l.trim().strip_prefix("svg \"mods/pane/")?.split('"').next()).collect();
+    assert_eq!(order, ["split-right.svg", "split-down.svg", "float.svg", "zoom.svg", "close.svg"], "{tiled}");
 }
 
 /// The agents mod's sub-agent count: its number, and its element's line.

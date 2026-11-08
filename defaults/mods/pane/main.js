@@ -6,7 +6,7 @@
 // in AGENTS.md), where an agent or a bare shell unnamed shows its program's name, the folder,
 // the pane's own text size while pane.zoom_text_* sets it, the agent's
 // `pane_header_info` (Herdr's `header_info`: as many segments as fit, the
-// whole line in its tooltip) and its status; buttons split, zoom and close this pane.
+// whole line in its tooltip) and its status; buttons split, float or dock, zoom and close this pane.
 // Props from the app: { pane, terminal }. Click: focus the pane; right-click: its menu.
 
 import { View, div, svg, image } from "gpui-kit";
@@ -15,8 +15,9 @@ import { panes, props, run, theme, home, settings, fitHeaderInfo, headerTextWidt
 
 const TEXT = 12;
 const GAP = 8;
-// What the header's other items take, in px, for what's left to the info.
-const BUTTONS = 4 * (14 + 6 + GAP);
+// What the header's other items take, in px, for what's left to the info:
+// each hover button (split right, split down, float or dock, zoom, close).
+const BUTTONS = 5 * (14 + 6 + GAP);
 const STATUS = { working: 12, blocked: 70, done: 7 };
 
 // About the width `text` takes at the header's text size, as fitHeaderInfo estimates it.
@@ -90,9 +91,10 @@ export default class Pane extends View {
     return panes().find((p) => p.pane === props()?.pane);
   }
 
-  button(t, id, icon, command, args) {
+  button(t, id, icon, command, args, tip) {
     return div()
       .id(id)
+      .when(Boolean(tip), (el) => el.tooltip(tip))
       .p(3)
       .rounded(4)
       .text_color(t.dim)
@@ -142,6 +144,9 @@ export default class Pane extends View {
       .when(this.hovered, el => el
         .child(this.button(t, `ph-r-${pane}`, "split-right", "pane.split", { direction: "right", pane }))
         .child(this.button(t, `ph-d-${pane}`, "split-down", "pane.split", { direction: "down", pane }))
+        .child(p.floating
+          ? this.button(t, `ph-f-${pane}`, "dock", "pane.float_toggle", { pane }, "Dock")
+          : this.button(t, `ph-f-${pane}`, "float", "pane.float_toggle", { pane }, "Float"))
         .child(this.button(t, `ph-z-${pane}`, p.zoomed ? "unzoom" : "zoom", "pane.zoom", { pane }))
         .child(this.button(t, `ph-x-${pane}`, "close", "pane.close", { pane })));
   }

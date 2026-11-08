@@ -8919,6 +8919,15 @@ export default class Recent extends View {
             let order: Vec<String> = crate::arrange::reading_order(&this.model.tab("t").unwrap().root).iter().map(|n| n.id.clone()).collect();
             assert_eq!(order, ["a", "b", "c", "e", "d"]);
         });
+        // The header's float button runs pane.float_toggle for its pane: a click floats, the next docks.
+        for floats in [true, false] {
+            assert_eq!(run(cx, "pane.float_toggle", json!({ "pane": "b" })), json!({ "ok": true }));
+            view.update(cx, |this, _| assert_eq!(this.model.tab("t").unwrap().float("b").is_some(), floats));
+        }
+        view.update(cx, |this, _| {
+            let order: Vec<String> = crate::arrange::reading_order(&this.model.tab("t").unwrap().root).iter().map(|n| n.id.clone()).collect();
+            assert_eq!(order, ["a", "b", "c", "e", "d"], "back where it was");
+        });
 
         // An older build on the same machine adopted a float's terminal as a
         // tiled pane too. Read here, the float wins, and that read alone
