@@ -1631,7 +1631,8 @@ fn pane_header_fits_its_info_beside_the_name_and_buttons(cx: &mut TestAppContext
     // Even gaps: each separator is its mark alone, padded the same either side,
     // in the folder's colour and size (it sets neither size nor font).
     let dim = crate::settings::theme()["dim"].clone();
-    let sep = format!("div .flex_none .px[Number(4.0)] .text_color[Str({dim:?})]");
+    // The padding fit measures (Rust's SEP_PAD) is the padding the mod draws.
+    let sep = format!("div .flex_none .px[Number({:?})] .text_color[Str({dim:?})]", crate::header_info::SEP_PAD as f64);
     let seps: Vec<&str> = all.lines().filter(|l| l.trim() == sep).collect();
     assert_eq!(seps.len(), 2, "both separators padded alike: {all}");
     let folder = format!("div .flex_1 .truncate .text_color[Str({dim:?})]");
