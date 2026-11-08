@@ -363,7 +363,8 @@ fn kill(child: &mut std::process::Child) {
     let _ = child.kill();
     #[cfg(unix)]
     if let Ok(group) = libc::pid_t::try_from(child.id()) {
-        // SAFETY: killpg takes plain integers; a group already gone is ESRCH.
+        // SAFETY: killpg takes plain integers. Its errors are ignored: ESRCH when
+        // the group is gone, EPERM on Darwin when only the zombie leader is left.
         unsafe { libc::killpg(group, libc::SIGKILL) };
     }
 }

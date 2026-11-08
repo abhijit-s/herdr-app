@@ -311,7 +311,7 @@ impl Worker {
             // build's `target/`). Any event on it asks, not only its creation:
             // under load FSEvents can deliver a new folder's extended-attribute
             // change before the event that created it.
-            let new_folder = |p: &Path| p.is_dir() && repo.counts(p) && !repo.git_dirs.iter().any(|d| p.starts_with(d));
+            let new_folder = |p: &Path| repo.counts(p) && !repo.git_dirs.iter().any(|d| p.starts_with(d)) && p.is_dir();
             if event.paths.iter().any(|p| p.starts_with(&repo.root) && (p.file_name().is_some_and(|n| n == ".gitignore" || n == "exclude") || new_folder(p))) {
                 // Once per burst, not per folder a checkout makes (`ignored` walks the tree).
                 if repo.ignored_at.is_none_or(|at| at.elapsed() > QUIET) {
