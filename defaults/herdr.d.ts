@@ -286,7 +286,8 @@ export interface HeaderInfo {
   segments: HeaderSegment[];
 }
 
-/** One segment: its text, the separator before it as written ("" for the first one shown),
+/** One segment: its text, the separator before it as written ("" for the first one shown;
+ *  draw it as `sep.trim()` with 4 px either side, as `fitHeaderInfo` measures it),
  *  and whether it holds the request of an agent that needs the person (draw it in
  *  `theme().blocked`; it is the last to go). */
 export interface HeaderSegment {
@@ -624,7 +625,8 @@ export function gitStatus(folder: string, options?: { on?: string | null; files?
 /** The segments of `header_info` that fit in `width` px of `fontPx` text, as Herdr
  *  estimates them: whole segments go from the right, a blocked `ask` last; a lone one that
  *  still doesn't fit stays (draw it with `.truncate()`), and none when fewer than about four
- *  characters would show. The first kept segment's `sep` is "". */
+ *  characters would show. The first kept segment's `sep` is "". Each separator is measured
+ *  as `sep.trim()` with 4 px either side: draw it that way (the shipped `pane` header does). */
 export function fitHeaderInfo(segments: HeaderSegment[], width: number, fontPx: number): HeaderSegment[];
 
 /** A `pane_header_info` template resolved with sample values (an agent blocked on
