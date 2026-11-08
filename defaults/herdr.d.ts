@@ -472,16 +472,19 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  how to draw space avatars: `"letter" | "glyph" | "emoji" | "repo"`, `"glyph"` when unset or
  *  unknown (null only from builds before that default: draw letters). `pane_header_info` is the agent pane header's template, or `null`
  *  (unset or blank); panes carry it resolved as `header_info`.
- *  `toast_duration`, `toast_style`, `toast_corners` and `toast_mark` are the person's toast choices
+ *  `toast_duration`, `toast_style`, `toast_corners`, `toast_mark`, `toast_design` and `toast_progress` are the person's toast choices
  *  (see AGENTS.md). */
 export function settings(): Record<string, unknown>;
 
 /** The toast previews the Settings window draws: `styles` is `{ standard, subtle, "high-contrast",
  *  accent }`, each that `toast_style`'s toast colors in the current theme (the names `theme()` gives
  *  the drawn one: toast, toast_border, toast_foreground, toast_info and the rest), and `radius` is
- *  `{ square, slight, rounded }`, each `toast_corners` value's radius in px at zoom 1. Built when
- *  settings change, not per call. */
-export function toastLooks(): { styles: Record<string, Record<string, string>>; radius: Record<string, number> };
+ *  `{ square, slight, rounded }`, each `toast_corners` value's radius in px at zoom 1. `styles` are
+ *  drawn for the chosen `toast_design`; `designs` is `{ card, pill, terminal, outline, "icon-card",
+ *  banner }`, each design's toast colors in the chosen style (the outline's adds `toast_ghost`, its
+ *  see-through backing; the terminal's levels come from the terminal's colors), and `font_family` is
+ *  the terminal's font, which the terminal design draws in. Built when settings change, not per call. */
+export function toastLooks(): { styles: Record<string, Record<string, string>>; designs: Record<string, Record<string, string>>; radius: Record<string, number>; font_family: string };
 
 /** Every key binding: { section, keys, action }. */
 export function keys(): { section: string; keys: string; action: string }[];
@@ -532,10 +535,13 @@ export function notify(n: {
   level?: "info" | "success" | "warning" | "error";
   /** ms; given, it wins over the person's `toast_duration`. Else 5 s (8 s for errors and warnings),
    *  scaled by `toast_duration`, or until clicked. The `toast` mod gets the person's `toast_mark`
-   *  (`"stripe"`, `"dot"` or `"none"`) in its props, beside these. */
+   *  (`"stripe"`, `"dot"` or `"none"`) and `toast_design` (`"card"`, `"pill"`, `"terminal"`,
+   *  `"outline"`, `"icon-card"` or `"banner"`) in its props, beside these; the terminal design also
+   *  gets `toast_font` (the terminal's font) and the shown banner `toast_more` (how many others are open). */
   timeout?: number;
   icon?: string;
-  action?: { name: string; args?: Record<string, unknown> };
+  /** `label`: the icon card's and banner's button for it ("Show" when unset). */
+  action?: { name: string; args?: Record<string, unknown>; label?: string };
 }): string;
 
 /** The props this copy of the mod was given in the layout (or overlay).
