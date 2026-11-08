@@ -193,7 +193,7 @@ In the tab bar, drag a tab to reorder it: it follows the pointer and a line show
 - **Sub-agents** are terminals an agent started with `hc run`: the core
   records the starter as `parent` (see `terminals()`). They belong to their
   parent's tab without a pane; the `agents` mod shows them (a parent's
-  row counts its live ones, `⧉ 2`, in the colour of the most urgent:
+  row counts its live ones, a copy icon and 2, in the colour of the most urgent:
   blocked, working, else dim), `terminal.peek` opens one,
   `terminal.keep` gives one a pane. A program's OSC 7501 child records
   (reports with an `id`, in `terminals()[i].records` by id) are sub-agents
@@ -874,8 +874,8 @@ What's about the user, never a look:
   Bash: make", else "permission", "question"), `{state}` and `{elapsed}`
   (`<1m`, `3m`, `1h2m`, changing on the minute), and `{branch}`, `{ahead}`
   (`↑2`), `{behind}` (`↓1`) and `{dirty}` (`*`) from the folder's cached
-  git status, and `{subagents}` the agent's live sub-agents (`⧉ 3`, `⧉ 3 (1 blocked)`,
-  `⧉ 2 blocked`); each is empty when unknown or zero, and other text is drawn
+  git status, and `{subagents}` the agent's live sub-agents (`3 sub-agents`, `3 sub-agents, 1 blocked`,
+  `2 sub-agents blocked`); each is empty when unknown or zero, and other text is drawn
   as written. Keys side by side (`{branch}{dirty}`) are drawn a space
   apart ("main ↑2 *"). `fitHeaderInfo` measures each separator as
   `sep.trim()` with 4 px either side, so draw it that way, as the shipped

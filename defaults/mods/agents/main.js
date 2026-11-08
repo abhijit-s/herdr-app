@@ -28,11 +28,14 @@ const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
 const SUB_COUNT_MIN = 220;
 const roomForSubCount = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) >= SUB_COUNT_MIN;
 
-// A parent's live sub-agents (the rows its tree shows), as "⧉ N" in its most
-// urgent one's colour: blocked, working, else muted.
+// A parent's live sub-agents (the rows its tree shows), as a copy icon and N, in its
+// most urgent one's colour: blocked, working, else muted. The icon is drawn, not ⧉,
+// which the UI font lacks (a fallback font draws it smaller and thinner).
 function subCount(t, n, top) {
   const color = top === "blocked" || top === "working" ? t[top] : t.dim;
-  return div().flex_none().whitespace_nowrap().text_size(11).text_color(color).child(`\u29c9 ${n}`);
+  return h_flex().id("sub-count").flex_none().gap(3).items_center().whitespace_nowrap().text_size(11).text_color(color)
+    .child(svg("mods/workspace-chrome/copy.svg").size(11).flex_none().text_color(color))
+    .child(String(n));
 }
 
 // To the rail (on macOS wide enough for the traffic lights), or back to the width it had.

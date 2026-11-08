@@ -9408,13 +9408,13 @@ export default class Keeper extends View {
             cx.run_until_parked();
         };
         with_records(json!({ "agent/a1": { "state": "working", "title": "Explore" } }), cx);
-        assert_eq!(info("a")["segments"][1], json!({ "sep": " · ", "text": "\u{29c9} 1", "ask": false, "minor": true }));
+        assert_eq!(info("a")["segments"][1], json!({ "sep": " · ", "text": "1 sub-agent", "ask": false, "minor": true }));
         let before = resolved();
         frames(cx);
         assert_eq!(resolved(), before, "no sub-agents counted for a frame");
         with_records(json!({ "agent/a1": { "state": "working" }, "agent/b2": { "state": "blocked" } }), cx);
         assert_eq!(resolved() - before, 1, "a new record publishes once");
-        assert_eq!(info("a")["segments"][1], json!({ "sep": " · ", "text": "\u{29c9} 2 (1 blocked)", "ask": true }));
+        assert_eq!(info("a")["segments"][1], json!({ "sep": " · ", "text": "2 sub-agents, 1 blocked", "ask": true }));
         with_records(Value::Null, cx);
         assert_eq!(info("a")["segments"].as_array().map(Vec::len), Some(1), "none left: the segment drops");
 

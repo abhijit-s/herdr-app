@@ -229,13 +229,17 @@ impl Subagents {
         }
     }
 
-    /// `⧉ 3`, `⧉ 3 (1 blocked)`, or `⧉ 2 blocked` when all are; empty for none.
+    /// `3 sub-agents`, `3 sub-agents, 1 blocked`, or `2 sub-agents blocked` when
+    /// all are; empty for none. Words, not a mark such as ⧉: the person's UI font
+    /// may lack it, and a fallback font draws it smaller and thinner.
     fn text(&self) -> String {
-        match (self.live, self.blocked) {
-            (0, _) => String::new(),
-            (n, 0) => format!("⧉ {n}"),
-            (n, b) if b == n => format!("⧉ {n} blocked"),
-            (n, b) => format!("⧉ {n} ({b} blocked)"),
+        let n = self.live;
+        let noun = if n == 1 { "sub-agent" } else { "sub-agents" };
+        match self.blocked {
+            _ if n == 0 => String::new(),
+            0 => format!("{n} {noun}"),
+            b if b == n => format!("{n} {noun} blocked"),
+            b => format!("{n} {noun}, {b} blocked"),
         }
     }
 }
@@ -446,7 +450,7 @@ mod tests {
         assert!(Template::parse(SUGGESTED).uses_git_counts() && !Template::parse("{branch} · {state}").uses_git_counts());
         assert!(counts_git(Some(SUGGESTED)) && !counts_git(Some("{branch}")) && !counts_git(None));
         let info = Template::parse(SUGGESTED).resolve(&Values::sample()).unwrap();
-        assert_eq!(info.text, "approve Bash: make · main ↑2 * · blocked 3m · ⧉ 2", "the whole line, for the tooltip");
+        assert_eq!(info.text, "approve Bash: make · main ↑2 * · blocked 3m · 2 sub-agents", "the whole line, for the tooltip");
     }
 
     #[test]
@@ -551,9 +555,11 @@ mod tests {
     fn sub_agents_render_their_count_and_how_many_are_blocked() {
         let v = |live, blocked| Values { subagents: Subagents { live, blocked }, ..Values::default() };
         assert_eq!(shown("{subagents}", &v(0, 0)), vec![], "none: the segment drops");
-        assert_eq!(shown("x · {subagents}", &v(3, 0)), vec![("".into(), "x".into(), false), (" · ".into(), "⧉ 3".into(), false)]);
-        assert_eq!(shown("{subagents}", &v(3, 1)), vec![("".into(), "⧉ 3 (1 blocked)".into(), true)], "blocked: drawn as the ask is");
-        assert_eq!(shown("{subagents}", &v(2, 2)), vec![("".into(), "⧉ 2 blocked".into(), true)]);
+        assert_eq!(shown("x · {subagents}", &v(3, 0)), vec![("".into(), "x".into(), false), (" · ".into(), "3 sub-agents".into(), false)]);
+        assert_eq!(shown("{subagents}", &v(1, 0))[0].1, "1 sub-agent");
+        assert_eq!(shown("{subagents}", &v(3, 1)), vec![("".into(), "3 sub-agents, 1 blocked".into(), true)], "blocked: drawn as the ask is");
+        assert_eq!(shown("{subagents}", &v(2, 2)), vec![("".into(), "2 sub-agents blocked".into(), true)]);
+        assert!(v(3, 1).get(Key::Subagents).is_ascii(), "plain text the UI font has");
         let minor = |t: &str, v: &Values| Template::parse(t).resolve(v).unwrap().segments.iter().map(|s| s.minor).collect::<Vec<_>>();
         assert_eq!(minor("{state} · {subagents}", &Values { state: "idle".into(), ..v(3, 0) }), vec![false, true]);
         assert_eq!(minor("{state} · {subagents}", &Values { state: "idle".into(), ..v(3, 1) }), vec![false, false], "blocked is not minor");
@@ -564,13 +570,13 @@ mod tests {
 
     #[test]
     fn sub_agents_go_first_unless_blocked() {
-        let sub = Shown { sep: " · ".into(), text: "⧉ 3".into(), ask: false, minor: true };
+        let sub = Shown { sep: " · ".into(), text: "3 sub-agents".into(), ask: false, minor: true };
         let all = vec![seg("", "main", false), sub.clone(), seg(" · ", "idle 3m", false)];
         let w = |chars: f32| chars * 7.2 + 0.1;
         assert_eq!(fit(&all, w(14.0), 12.0), vec![all[0].clone(), all[2].clone()], "the count goes before the segment right of it");
         assert_eq!(fit(&all, w(4.0), 12.0), vec![all[0].clone()]);
-        let blocked = vec![seg("", "main", false), seg(" · ", "⧉ 3 (1 blocked)", true), seg(" · ", "idle", false)];
-        assert_eq!(fit(&blocked, w(15.0), 12.0), vec![seg("", "⧉ 3 (1 blocked)", true)], "blocked outlasts the rest");
+        let blocked = vec![seg("", "main", false), seg(" · ", "3 sub-agents, 1 blocked", true), seg(" · ", "idle", false)];
+        assert_eq!(fit(&blocked, w(23.0), 12.0), vec![seg("", "3 sub-agents, 1 blocked", true)], "blocked outlasts the rest");
         let from_js: Vec<Shown> = serde_json::from_value(serde_json::json!([{ "sep": "", "text": "a", "ask": false }])).unwrap();
         assert!(!from_js[0].minor, "segments from an older mod read as not minor");
     }
