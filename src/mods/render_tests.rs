@@ -82,6 +82,7 @@ fn fixture(populated: bool, props: Value, update: Value) -> BTreeMap<String, Val
         ("layoutSpacing".into(), crate::layout_sync::spacing_fields(&serde_json::from_str(include_str!("../../defaults/layouts/main.json")).unwrap())),
         ("layouts".into(), json!(crate::window::shipped_layouts())),
         ("modActions".into(), json!([])),
+        ("menuItems".into(), json!([])),
         ("theme".into(), serde_json::to_value(&*crate::settings::theme()).unwrap()),
         ("settings".into(), crate::settings::Settings::default().for_mods()),
         ("themes".into(), json!([{"name":"graphite", "colors": &*crate::settings::theme()}])),  ("fonts".into(), json!(["Monospace", "Sans"])),
@@ -1545,6 +1546,82 @@ fn pane_and_tab_menus_offer_change_and_clear_icon(cx: &mut TestAppContext) {
     assert!(!space.iter().any(|t| t.contains("icon")), "spaces have their own: {space:?}");
 }
 
+/// Mods' terminal menu items: after Herdr's own, before Close pane, one group
+/// per mod under a divider, each with its `when` and its target.
+#[gpui::test]
+fn pane_menu_lists_mods_items_in_groups(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let tree = |target: Value, cx: &mut TestAppContext| {
+        let mut values = fixture(true, json!({"tab":"pane","target":target}), updates("current", "current"));
+        values.insert("menuItems".into(), json!([
+            {"mod":"mover","title":"Move to…","command":"mod.open","args":{"name":"mover"},"when":"pane","icon":"mods/mover/move.svg","fill":["props"]},
+            {"mod":"mover","title":"Split under","command":"pane.split","args":{"direction":"down"},"when":null,"icon":null,"fill":["pane"]},
+            {"mod":"grab","title":"Grab selection","command":"terminal.copy","args":{},"when":"selected","icon":null,"fill":["terminal"]},
+            {"mod":"grab","title":"Open folder","command":"terminal.copy_path","args":{},"when":"cwd","icon":null,"fill":["terminal"]},
+            {"mod":"grab","title":"Zoom it","command":"pane.zoom","args":{},"when":"cwd","icon":null,"fill":["pane"]},
+        ]));
+        describe_with_values(cx, &staged, "mods/menu", values, None).unwrap()
+    };
+    let labels = |tree: &str| {
+        let lines: Vec<&str> = tree.lines().collect();
+        lines.windows(2).filter(|w| w[0].trim() == "div .flex_1").filter_map(|w| w[1].trim().strip_prefix("text ")).map(|t| t.trim_matches('"').to_owned()).collect::<Vec<_>>()
+    };
+    let all = tree(json!({"pane":"p1","terminal":"t1","selected":true,"cwd":"/fixture/project"}), cx);
+    let items = labels(&all);
+    let at = items.iter().position(|t| t == "Move to…").unwrap_or_else(|| panic!("{items:?}"));
+    assert_eq!(items[at..], ["Move to…", "Split under", "Grab selection", "Open folder", "Zoom it", "Close pane"], "{items:?}");
+    assert!(all.contains("mods/mover/move.svg"), "a mod's own icon: {all}");
+    // A divider (a 1 px rule) before each mod's group and before Close pane.
+    let rules = all.matches(".h[Number(1.0)]").count();
+    let bare = tree(json!({"pane":"p1","terminal":"t1"}), cx);
+    assert_eq!(labels(&bare)[labels(&bare).len() - 3..], ["Move to…", "Split under", "Close pane"], "no selection, no folder: {bare}");
+    assert_eq!(rules, bare.matches(".h[Number(1.0)]").count() + 1, "one group fewer, one divider fewer");
+    let block = labels(&tree(json!({"pane":"block","terminal":"t1","selected":true}), cx));
+    assert!(block.contains(&"Grab selection".into()) && !block.iter().any(|t| t == "Move to…" || t == "Split under"), "a terminal outside a tab has no pane: {block:?}");
+}
+
+/// A pane menu taller than its popup: the items scroll within `props.height`,
+/// Close pane stays pinned below them, and the keyboard's selection scrolls
+/// into view.
+#[gpui::test]
+fn a_long_pane_menu_scrolls_and_keeps_close_pane_in_reach(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let tree = |setup: Option<&str>, cx: &mut TestAppContext| {
+        let target = json!({"pane":"p1","terminal":"t1","selected":true,"cwd":"/fixture/project","last_output":true});
+        let mut values = fixture(true, json!({"tab":"pane","target":target,"height":420.0,"overlay":"o1"}), updates("current", "current"));
+        values.insert("menuItems".into(), json!([
+            {"mod":"mover","title":"Move to…","command":"mod.open","args":{"name":"mover"},"when":"pane","icon":null,"fill":["props"]},
+            {"mod":"grab","title":"Zoom it","command":"pane.zoom","args":{},"when":null,"icon":null,"fill":["pane"]},
+        ]));
+        describe_with_values(cx, &staged, "mods/menu", values, setup).unwrap()
+    };
+    // The scrolled part: the lines under `menu-body`, indented deeper than it.
+    let body = |tree: &str| -> (Vec<String>, Vec<String>) {
+        let lines: Vec<&str> = tree.lines().collect();
+        let at = lines.iter().position(|l| l.contains("menu-body")).unwrap_or_else(|| panic!("14 rows overflow 420 px: {tree}"));
+        let indent = |l: &str| l.len() - l.trim_start().len();
+        let end = lines[at + 1..].iter().position(|l| indent(l) <= indent(lines[at])).map_or(lines.len(), |n| at + 1 + n);
+        (lines[at..end].iter().map(|l| l.to_string()).collect(), lines[end..].iter().map(|l| l.to_string()).collect())
+    };
+    let offset = |inside: &[String]| -> f64 {
+        let l = inside.iter().find(|l| l.contains(".top[Number(")).expect("the list is placed by its scroll");
+        let n = &l[l.find(".top[Number(").unwrap() + 12..];
+        n[..n.find(')').unwrap()].parse().unwrap()
+    };
+    let first = tree(None, cx);
+    let (inside, after) = body(&first);
+    assert!(inside.iter().any(|l| l.contains("\"Zoom it\"")) && !inside.iter().any(|l| l.contains("\"Close pane\"")), "{first}");
+    assert!(after.iter().any(|l| l.contains("\"Close pane\"")), "Close pane pinned below the scrolled items: {first}");
+    assert!(inside[0].contains(".h[Number(370.0)]"), "420 less padding and the pinned row with its rule: {}", inside[0]);
+    assert_eq!(offset(&inside), 0.0);
+    // Selected by the keyboard, the last scrolled item comes into view.
+    let moved = tree(Some("this.at = 12; this.follow = true;"), cx);
+    let (inside, _) = body(&moved);
+    assert!(offset(&inside) < -50.0, "{moved}");
+}
+
 /// The picker: Suggested first, its tiles a virtual grid's rows; the chosen
 /// one shown and Clear icon only while one is chosen; a pane's or a tab's.
 #[gpui::test]
@@ -1626,17 +1703,31 @@ fn pane_header_fits_its_info_beside_the_name_and_buttons(cx: &mut TestAppContext
     };
     let title = r#"div .flex_none .truncate .max_w[Number(260.0)] .font_medium"#;
     // The name ("Pi", 14 px), the ring (12), padding and gaps take 66 px; the
-    // segments 130, 202 or 295; the four buttons 112.
+    // segments 130, 210 or 297 (a separator 15: its mark and 4 px either side); the four buttons 112.
     let all = header(400.0, false, cx);
-    assert_eq!(shown(&all), ["approve Bash: make", " · ", "main↑2●", " · ", "blocked 3m"], "room for all: {all}");
-    assert!(all.contains(":tooltip[Str(\"approve Bash: make · main↑2● · blocked 3m\")]"), "the whole line in the tooltip: {all}");
+    assert_eq!(shown(&all), ["approve Bash: make", "·", "main ↑2 *", "·", "blocked 3m"], "room for all: {all}");
+    assert!(all.contains(":tooltip[Str(\"approve Bash: make · main ↑2 * · blocked 3m\")]"), "the whole line in the tooltip: {all}");
+    // Even gaps: each separator is its mark alone, padded the same either side,
+    // in the folder's colour and size (it sets neither size nor font).
+    let dim = crate::settings::theme()["dim"].clone();
+    // The padding fit measures (Rust's SEP_PAD) is the padding the mod draws.
+    let sep = format!("div .flex_none .px[Number({:?})] .text_color[Str({dim:?})]", crate::header_info::SEP_PAD as f64);
+    let seps: Vec<&str> = all.lines().filter(|l| l.trim() == sep).collect();
+    assert_eq!(seps.len(), 2, "both separators padded alike: {all}");
+    let folder = format!("div .flex_1 .truncate .text_color[Str({dim:?})]");
+    assert!(all.contains(&folder), "the folder in the same colour: {all}");
+    let mut from_info = all.lines().skip_while(|l| !l.contains("pane-info-p1"));
+    let head = from_info.next().unwrap();
+    let depth = head.len() - head.trim_start().len();
+    let info_lines: Vec<&str> = std::iter::once(head).chain(from_info.take_while(|l| l.len() - l.trim_start().len() > depth)).collect();
+    assert!(!info_lines.iter().any(|l| l.contains(".text_size[") || l.contains(".font_family[")), "the info takes the header's size and font, as the folder does: {all}");
     assert!(all.contains(&format!(".text_color[Str({:?})]", crate::settings::theme()["blocked"].clone())), "the ask in the blocked colour: {all}");
     assert!(all.contains(title) && all.contains("text \"Pi\""), "the name as without info: {all}");
     assert!(all.contains(":on_size_change(fn)"), "it watches its width only with info: {all}");
 
     let hovered = header(400.0, true, cx);
     assert_eq!(hovered.matches("svg \"mods/pane/").count(), 4, "the buttons: {hovered}");
-    assert_eq!(shown(&hovered), ["approve Bash: make", " · ", "main↑2●"], "hovered: a segment goes, from the right: {hovered}");
+    assert_eq!(shown(&hovered), ["approve Bash: make", "·", "main ↑2 *"], "hovered: a segment goes, from the right: {hovered}");
     assert!(hovered.contains(title) && hovered.contains("text \"Pi\""), "the name stays: {hovered}");
 
     let lone = header(220.0, true, cx);

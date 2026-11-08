@@ -294,7 +294,8 @@ export interface HeaderInfo {
   segments: HeaderSegment[];
 }
 
-/** One segment: its text, the separator before it as written ("" for the first one shown),
+/** One segment: its text, the separator before it as written ("" for the first one shown;
+ *  draw it as `sep.trim()` with 4 px either side, as `fitHeaderInfo` measures it),
  *  and whether it holds the request of an agent that needs the person (draw it in
  *  `theme().blocked`; it is the last to go). */
 export interface HeaderSegment {
@@ -358,7 +359,8 @@ export function recentPlaces(): Place[];
 /** The shown layout (layouts/<name>.json) with its clicks on it. Its name is shared("layout").
  *  Root `terminal_menu?: string` chooses a terminal right-click menu mod (default: "menu").
  *  Unknown names warn and fall back to "menu". This replaces the menu, not its items.
- *  Opens a pointer popup with mod.json overlay width/height (default 220×260). */
+ *  Opens a pointer popup with mod.json overlay width/height (default 220 wide, at most 420 tall: it fits
+ *  its items). Its props().height is the room inside it, within the window, for scrolling a long list. */
 export function layout(): unknown;
 
 /** The shown layout's spacing, as layout.spacing sets it (with its clicks), or null when no
@@ -378,6 +380,23 @@ export function commands(): { name: string; args: { name: string; required: bool
  *  `mod` is the folder, `args` the command's arguments (`mod.open` without a name gets the mod's own).
  *  Entries the app can't run are left out and named in `herdr-app status`. Live: changes as mods do. */
 export function modActions(): { mod: string; title: string; command: string; args: Record<string, unknown>; keywords: string }[];
+
+/** Every mod's terminal menu items (the `menu_items` in its mod.json), in folder order, as the shipped
+ *  `menu` lists them after its own. Run one on the right-clicked target: set each `fill` argument from
+ *  the menu's `props().target` (`pane`, `terminal`; `props` gets `{ ...args.props, target }`, so the
+ *  clicked target replaces an entry's own `props.target`), and show
+ *  it only when `when` holds (`selected`, `cwd`, or `pane`: the target is a tab's pane) and the target
+ *  has what it fills (a terminal outside a tab has no pane). `icon`: a path for `svg()`, or null.
+ *  Entries the app can't run are left out and named in `herdr-app status`. Live: changes as mods do. */
+export function menuItems(): {
+  mod: string;
+  title: string;
+  command: string;
+  args: Record<string, unknown>;
+  when: "selected" | "cwd" | "pane" | null;
+  icon: string | null;
+  fill: ("pane" | "terminal" | "props")[];
+}[];
 
 /** The window, for layouts that draw their own title bar (`"titlebar": "none"`). `buttons`:
  *  the system draws no window buttons, so draw them (`window.minimize`, `window.maximize`,
@@ -632,7 +651,8 @@ export function gitStatus(folder: string, options?: { on?: string | null; files?
 /** The segments of `header_info` that fit in `width` px of `fontPx` text, as Herdr
  *  estimates them: whole segments go from the right, a blocked `ask` last; a lone one that
  *  still doesn't fit stays (draw it with `.truncate()`), and none when fewer than about four
- *  characters would show. The first kept segment's `sep` is "". */
+ *  characters would show. The first kept segment's `sep` is "". Each separator is measured
+ *  as `sep.trim()` with 4 px either side: draw it that way (the shipped `pane` header does). */
 export function fitHeaderInfo(segments: HeaderSegment[], width: number, fontPx: number): HeaderSegment[];
 
 /** A `pane_header_info` template resolved with sample values (an agent blocked on
