@@ -346,6 +346,9 @@ pub struct Hint {
     /// Its command palette entries, as written: `actions` reads them.
     #[serde(default)]
     pub actions: Value,
+    /// Its terminal menu entries, as written: `menu_items` reads them.
+    #[serde(default)]
+    pub menu_items: Value,
 }
 
 #[derive(Clone)]
@@ -399,38 +402,60 @@ fn read_hint(dir: &Path) -> (Hint, Option<String>) {
     }
 }
 
-/// What is wrong with `dir`'s palette actions, or with a mod.json that costs
-/// it them (`herdr-app check`).
-pub fn action_problems(dir: &Path) -> Vec<String> {
+/// What is wrong with `dir`'s palette actions and terminal menu items, or with
+/// a mod.json that costs it them (`herdr-app check`).
+pub fn mod_json_problems(dir: &Path) -> Vec<String> {
     let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_owned());
     let id = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
     let (hint, hint_error) = read_hint(&dir);
-    actions([&Found { id, dir, hint, hint_error, stamp: SystemTime::UNIX_EPOCH }]).1
+    let found = Found { id, dir, hint, hint_error, stamp: SystemTime::UNIX_EPOCH };
+    let mut problems = actions([&found]).1;
+    problems.extend(menu_items([&found]).1);
+    problems
 }
 
 /// Every mod's palette actions (`modActions()`), in folder order, and what is
-/// wrong with the ones left out. An action is `{ title, command, args?, keywords? }`
-/// naming an app command; `mod.open` without a `name` opens the mod itself.
-pub fn actions<'a>(folders: impl IntoIterator<Item = &'a Found>) -> (Vec<Value>, Vec<String>) {
+/// wrong with the ones left out, or with a mod.json Herdr can't read. An
+/// action is `{ title, command, args?, keywords? }` naming an app command;
+/// `mod.open` without a `name` opens the mod itself.
+pub fn actions<'a>(folders: impl IntoIterator<Item = &'a Found> + Clone) -> (Vec<Value>, Vec<String>) {
+    let unreadable = folders.clone().into_iter().filter_map(|f| Some(format!("mod {}: mod.json: {}", f.id, f.hint_error.as_ref()?)));
+    let mut problems: Vec<String> = unreadable.collect();
+    let (list, more) = entries(folders, "actions", |h| &h.actions, action);
+    problems.extend(more);
+    (list, problems)
+}
+
+/// Every mod's terminal menu items (`menuItems()`), in folder order, and what
+/// is wrong with the ones left out. An item is `{ title, command, args?, when?,
+/// icon? }`; the menu runs it on the right-clicked terminal (`fill`).
+pub fn menu_items<'a>(folders: impl IntoIterator<Item = &'a Found>) -> (Vec<Value>, Vec<String>) {
+    entries(folders, "menu_items", |h| &h.menu_items, menu_item)
+}
+
+/// One mod.json list, checked entry by entry; a mod.json that couldn't be read
+/// is `actions`' to report.
+fn entries<'a>(
+    folders: impl IntoIterator<Item = &'a Found>,
+    field: &str,
+    of: fn(&Hint) -> &Value,
+    check: fn(&str, &Value) -> Result<Value, String>,
+) -> (Vec<Value>, Vec<String>) {
     let mut list = Vec::new();
     let mut problems = Vec::new();
-    for f in folders {
-        if let Some(e) = &f.hint_error {
-            problems.push(format!("mod {}: mod.json: {e}", f.id));
-            continue;
-        }
-        let entries = match &f.hint.actions {
+    for f in folders.into_iter().filter(|f| f.hint_error.is_none()) {
+        let entries = match of(&f.hint) {
             Value::Null => continue,
             Value::Array(entries) => entries,
             _ => {
-                problems.push(format!("mod {}: actions: expected a list", f.id));
+                problems.push(format!("mod {}: {field}: expected a list", f.id));
                 continue;
             }
         };
         for (i, entry) in entries.iter().enumerate() {
-            match action(&f.id, entry) {
+            match check(&f.id, entry) {
                 Ok(a) => list.push(a),
-                Err(why) => problems.push(format!("mod {}: actions[{i}]: {why}", f.id)),
+                Err(why) => problems.push(format!("mod {}: {field}[{i}]: {why}", f.id)),
             }
         }
     }
@@ -438,6 +463,42 @@ pub fn actions<'a>(folders: impl IntoIterator<Item = &'a Found>) -> (Vec<Value>,
 }
 
 fn action(mod_id: &str, entry: &Value) -> Result<Value, String> {
+    let (title, name, args, _) = runnable(mod_id, entry, &[])?;
+    let keywords = match entry.get("keywords") {
+        None | Some(Value::Null) => "",
+        Some(Value::String(k)) => k,
+        Some(_) => return Err("keywords: expected a string".into()),
+    };
+    Ok(json!({ "mod": mod_id, "title": title, "command": name, "args": args, "keywords": keywords }))
+}
+
+/// When a menu item shows: the terminal had a selection, its folder is known,
+/// or it is a tab's pane (not a layout terminal block).
+const MENU_WHEN: [&str; 3] = ["selected", "cwd", "pane"];
+
+fn menu_item(mod_id: &str, entry: &Value) -> Result<Value, String> {
+    let (title, name, args, mut fill) = runnable(mod_id, entry, &["pane", "terminal"])?;
+    let when = match entry.get("when") {
+        None | Some(Value::Null) => Value::Null,
+        Some(Value::String(w)) if MENU_WHEN.contains(&w.as_str()) => json!(w),
+        Some(_) => return Err(format!("when: expected one of {}", MENU_WHEN.map(|w| format!("{w:?}")).join(", "))),
+    };
+    let icon = match entry.get("icon") {
+        None | Some(Value::Null) => Value::Null,
+        Some(Value::String(f)) if f.ends_with(".svg") && !f.contains(['/', '\\']) => json!(format!("mods/{mod_id}/{f}")),
+        Some(_) => return Err("icon: expected an .svg file in the mod's folder".into()),
+    };
+    // mod.open's props get the clicked target whole.
+    if name == "mod.open" {
+        fill.push("props");
+    }
+    Ok(json!({ "mod": mod_id, "title": title, "command": name, "args": args, "when": when, "icon": icon, "fill": fill }))
+}
+
+/// A mod.json entry's title, app command and checked args, and which of
+/// `fillable` the command takes but the entry leaves open, for the caller to
+/// fill when it runs (so they count as given).
+fn runnable(mod_id: &str, entry: &Value, fillable: &[&'static str]) -> Result<(String, String, Value, Vec<&'static str>), String> {
     let text = |k: &str| entry.get(k).and_then(Value::as_str).filter(|s| !s.trim().is_empty());
     let title = text("title").ok_or("needs a title")?;
     let name = text("command").ok_or("needs a command")?;
@@ -454,18 +515,22 @@ fn action(mod_id: &str, entry: &Value) -> Result<Value, String> {
         return Err("mod.open: name: expected a mod's folder name".into());
     }
     crate::commands::validate_args(command, &args)?;
-    if let Some(missing) = crate::commands::missing(command, &args) {
+    let fill: Vec<&'static str> = fillable
+        .iter()
+        .copied()
+        .filter(|k| command.args.iter().any(|a| a.name == *k) && args.get(*k).is_none_or(Value::is_null))
+        .collect();
+    let mut given = args.clone();
+    for k in &fill {
+        given[*k] = json!("filled");
+    }
+    if let Some(missing) = crate::commands::missing(command, &given) {
         return Err(format!("{name}: needs {missing}"));
     }
     if args.get("props").is_some_and(|p| !p.is_object() && !p.is_null()) {
         return Err(format!("{name}: props: expected an object"));
     }
-    let keywords = match entry.get("keywords") {
-        None | Some(Value::Null) => "",
-        Some(Value::String(k)) => k,
-        Some(_) => return Err("keywords: expected a string".into()),
-    };
-    Ok(json!({ "mod": mod_id, "title": title, "command": name, "args": args, "keywords": keywords }))
+    Ok((title.to_owned(), name.to_owned(), args, fill))
 }
 
 /// What mods ask of the window.
@@ -681,12 +746,14 @@ pub struct Snapshot {
     pub spacing: Value,
     /// Every mod's palette actions (`actions`).
     pub actions: Value,
+    /// Every mod's terminal menu items (`menu_items`).
+    pub menu_items: Value,
 }
 
 impl Default for Snapshot {
     /// Lists start empty, never null, so mods can map over them right away.
     fn default() -> Self {
-        Snapshot { layout: Value::Null, spaces: json!([]), machines: json!([]), agents: json!([]), panes: json!([]), terminals: json!([]), focused: Value::Null, places: json!([]), floats: json!({}), window: Value::Null, spacing: Value::Null, actions: json!([]) }
+        Snapshot { layout: Value::Null, spaces: json!([]), machines: json!([]), agents: json!([]), panes: json!([]), terminals: json!([]), focused: Value::Null, places: json!([]), floats: json!({}), window: Value::Null, spacing: Value::Null, actions: json!([]), menu_items: json!([]) }
     }
 }
 
@@ -773,6 +840,9 @@ pub fn publish_places(v: Value) -> bool {
 }
 pub fn publish_actions(v: Value) -> bool {
     publish("actions", |s| (std::mem::replace(&mut s.actions, v.clone()), v))
+}
+pub fn publish_menu_items(v: Value) -> bool {
+    publish("menu_items", |s| (std::mem::replace(&mut s.menu_items, v.clone()), v))
 }
 
 #[derive(Default)]
@@ -1294,6 +1364,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
         .function("layoutSpacing", reader(reads.clone(), "spacing", |s| &s.spacing))
         .function("layouts", |_| Ok(to_host(&json!(crate::window::layout_names()))))
         .function("modActions", reader(reads.clone(), "actions", |s| &s.actions))
+        .function("menuItems", reader(reads.clone(), "menu_items", |s| &s.menu_items))
         .function("commands", |_| {
             let list: Vec<Value> = crate::commands::COMMANDS
                 .iter()
@@ -1688,11 +1759,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("herdr-action-check-{}", std::process::id())).join("checked");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("mod.json"), r#"{ "actions": [{ "title": "Go", "command": "mod.open" }, { "title": "Bad" }] }"#).unwrap();
-        assert_eq!(action_problems(&dir), vec!["mod checked: actions[1]: needs a command"], "herdr-app check reads the folder's own mod.json");
+        assert_eq!(mod_json_problems(&dir), vec!["mod checked: actions[1]: needs a command"], "herdr-app check reads the folder's own mod.json");
         std::fs::create_dir_all(dir.join("sub")).unwrap();
-        assert_eq!(action_problems(&dir.join("sub/..")), vec!["mod checked: actions[1]: needs a command"], "named by its folder however it's written");
+        assert_eq!(mod_json_problems(&dir.join("sub/..")), vec!["mod checked: actions[1]: needs a command"], "named by its folder however it's written");
         std::fs::write(dir.join("mod.json"), r#"{ "focusable": "yes", "actions": [] }"#).unwrap();
-        assert!(action_problems(&dir)[0].starts_with("mod checked: mod.json: invalid type"), "a mod.json Herdr can't read costs the mod its actions: check says so");
+        assert!(mod_json_problems(&dir)[0].starts_with("mod checked: mod.json: invalid type"), "a mod.json Herdr can't read costs the mod its actions: check says so");
         std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
         let none = found("none", json!({ "place": "right" }));
         let odd = found("odd", json!({ "actions": { "title": "x" } }));
@@ -1720,6 +1791,72 @@ mod tests {
             "mod acts: actions[17]: tab.close: argument id must be a string (or null to omit it)",
             "mod odd: actions: expected a list",
         ]);
+    }
+
+    #[test]
+    fn terminal_menu_items_are_checked_and_say_what_the_click_fills() {
+        let found = |id: &str, hint: Value| Found { id: id.into(), dir: PathBuf::new(), hint: serde_json::from_value(hint).unwrap(), hint_error: None, stamp: SystemTime::UNIX_EPOCH };
+        let mover = found("mover", json!({ "actions": [{ "title": "Palette", "command": "tab.new" }], "menu_items": [
+            { "title": "Move to…", "command": "mod.open", "when": "pane", "icon": "move.svg" },
+            { "title": "Split here", "command": "pane.split", "args": { "direction": "down" } },
+            { "title": "Copy it", "command": "terminal.copy", "when": "selected" },
+            { "title": "Focus it", "command": "pane.focus" },
+            { "title": "That pane", "command": "pane.zoom", "args": { "pane": "p9" } },
+            { "title": "Send back", "command": "terminal.park" },
+            { "title": "Other mod", "command": "mod.open", "args": { "name": "other", "props": { "mode": "x" } }, "when": "cwd" },
+            { "title": "Bad when", "command": "pane.zoom", "when": "agent" },
+            { "title": "Listed when", "command": "pane.zoom", "when": ["pane"] },
+            { "title": "Bad icon", "command": "pane.zoom", "icon": "../x.svg" },
+            { "title": "Png icon", "command": "pane.zoom", "icon": "x.png" },
+            { "title": "Still needs", "command": "pane.split" },
+            { "command": "pane.zoom" },
+        ] }));
+        let plain = found("plain", json!({ "place": "right" }));
+        let odd = found("odd", json!({ "menu_items": "x" }));
+        let (list, problems) = menu_items([&mover, &plain, &odd]);
+        assert_eq!(list, vec![
+            json!({ "mod": "mover", "title": "Move to…", "command": "mod.open", "args": { "name": "mover" }, "when": "pane", "icon": "mods/mover/move.svg", "fill": ["props"] }),
+            json!({ "mod": "mover", "title": "Split here", "command": "pane.split", "args": { "direction": "down" }, "when": null, "icon": null, "fill": ["pane"] }),
+            json!({ "mod": "mover", "title": "Copy it", "command": "terminal.copy", "args": {}, "when": "selected", "icon": null, "fill": ["terminal"] }),
+            json!({ "mod": "mover", "title": "Focus it", "command": "pane.focus", "args": {}, "when": null, "icon": null, "fill": ["pane", "terminal"] }),
+            json!({ "mod": "mover", "title": "That pane", "command": "pane.zoom", "args": { "pane": "p9" }, "when": null, "icon": null, "fill": [] }),
+            json!({ "mod": "mover", "title": "Send back", "command": "terminal.park", "args": {}, "when": null, "icon": null, "fill": ["terminal"] }),
+            json!({ "mod": "mover", "title": "Other mod", "command": "mod.open", "args": { "name": "other", "props": { "mode": "x" } }, "when": "cwd", "icon": null, "fill": ["props"] }),
+        ]);
+        assert_eq!(problems, vec![
+            "mod mover: menu_items[7]: when: expected one of \"selected\", \"cwd\", \"pane\"",
+            "mod mover: menu_items[8]: when: expected one of \"selected\", \"cwd\", \"pane\"",
+            "mod mover: menu_items[9]: icon: expected an .svg file in the mod's folder",
+            "mod mover: menu_items[10]: icon: expected an .svg file in the mod's folder",
+            "mod mover: menu_items[11]: pane.split: needs direction",
+            "mod mover: menu_items[12]: needs a title",
+            "mod odd: menu_items: expected a list",
+        ]);
+        assert_eq!(actions([&mover]).0.len(), 1, "a mod's palette actions and menu items are apart");
+        let palette = found("p", json!({ "actions": [{ "title": "Send back", "command": "terminal.park" }] }));
+        assert_eq!(actions([&palette]).1, vec!["mod p: actions[0]: terminal.park: needs terminal"], "only a menu item has a terminal to fill");
+        assert!(actions([&mover]).1.is_empty() && menu_items([&found("x", json!({ "actions": [{ "title": "Go", "command": "tab.new" }] }))]).0.is_empty());
+
+        let dir = std::env::temp_dir().join(format!("herdr-menu-check-{}", std::process::id())).join("checked");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("mod.json"), r#"{ "actions": [{ "title": "Bad" }], "menu_items": [{ "title": "Go", "command": "tab.fly" }] }"#).unwrap();
+        assert_eq!(mod_json_problems(&dir), vec!["mod checked: actions[0]: needs a command", "mod checked: menu_items[0]: no command \"tab.fly\""], "herdr-app check names both");
+        std::fs::write(dir.join("mod.json"), r#"{ "place": 3, "menu_items": [{ "title": "Go", "command": "tab.fly" }] }"#).unwrap();
+        let unreadable = mod_json_problems(&dir);
+        assert!(unreadable.len() == 1 && unreadable[0].starts_with("mod checked: mod.json: invalid type"), "an unreadable mod.json is named once: {unreadable:?}");
+        std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+    }
+
+    /// A mod.json written for a later Herdr (a field this one doesn't know)
+    /// keeps its place, actions and menu items.
+    #[test]
+    fn unknown_mod_json_fields_are_ignored() {
+        let hint: Hint = serde_json::from_value(json!({ "place": "left", "someday": [1],
+            "actions": [{ "title": "Go", "command": "tab.new" }], "menu_items": [{ "title": "Go", "command": "tab.new" }] })).unwrap();
+        assert_eq!(hint.place.as_deref(), Some("left"));
+        let found = Found { id: "later".into(), dir: PathBuf::new(), hint, hint_error: None, stamp: SystemTime::UNIX_EPOCH };
+        let ((acts, act_problems), (items, item_problems)) = (actions([&found]), menu_items([&found]));
+        assert!(acts.len() == 1 && items.len() == 1 && act_problems.is_empty() && item_problems.is_empty());
     }
 
     #[test]

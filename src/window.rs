@@ -5086,6 +5086,7 @@ impl AppWindow {
                 .filter_map(|w| std::fs::read_to_string(file(&format!("{w}.error"))).ok())
                 .chain(self.copies.values().filter_map(|c| Some(format!("mod {}: {}", c.inst.name, c.error.as_ref()?))))
                 .chain(mods::actions(self.folders.values()).1)
+                .chain(mods::menu_items(self.folders.values()).1)
                 .chain(self.documents.iter().filter_map(|(m, s)| s.error.as_ref().map(|e| format!("layout {}: {e}", if m.is_empty() { "local" } else { m }))))
                 .collect();
             return json!({
@@ -6109,12 +6110,13 @@ fn home() -> String {
     mods::home().to_string_lossy().into_owned()
 }
 
-/// Every mod folder by id, with their palette actions published for
-/// `modActions()`; and whether those actions changed.
+/// Every mod folder by id, with their palette actions and terminal menu items
+/// published for `modActions()` and `menuItems()`; and whether either changed.
 fn scan_folders() -> (BTreeMap<String, Found>, bool) {
     let found: BTreeMap<String, Found> = mods::scan().into_iter().map(|f| (f.id.clone(), f)).collect();
-    let changed = mods::publish_actions(Value::Array(mods::actions(found.values()).0));
-    (found, changed)
+    let actions = mods::publish_actions(Value::Array(mods::actions(found.values()).0));
+    let items = mods::publish_menu_items(Value::Array(mods::menu_items(found.values()).0));
+    (found, actions || items)
 }
 
 fn mod_overlay(dir: &std::path::Path) -> Value {
@@ -6158,11 +6160,17 @@ fn thousands(n: usize) -> String {
 }
 
 fn terminal_menu_spec(name: &str, defaults: &Value, tab: &str, target: Value) -> Value {
+    // The most: a menu is as tall as its items.
+    let height = defaults.get("height").and_then(Value::as_f64).unwrap_or(420.0);
+    let mut props = json!({ "tab": tab, "target": target });
+    // In px (not a fraction of the window), the menu scrolls its items within it.
+    if height > 1.0 {
+        props["height"] = json!(height);
+    }
     json!({ "mod": name, "kind": "popup",
         "width": defaults.get("width").and_then(Value::as_f64).unwrap_or(220.0),
-        // The most: a menu is as tall as its items.
-        "height": defaults.get("height").and_then(Value::as_f64).unwrap_or(420.0),
-        "props": { "tab": tab, "target": target } })
+        "height": height,
+        "props": props })
 }
 
 fn num_in(v: &Value, k: &str) -> f32 {
@@ -10377,10 +10385,13 @@ export default class Probe extends View {
         assert_eq!(custom["kind"], "popup");
         assert_eq!(custom["width"], 310.0);
         assert_eq!(custom["height"], 120.0);
-        assert_eq!(custom["props"], json!({"tab": "pane", "target": target}));
+        assert_eq!(custom["props"], json!({"tab": "pane", "target": target, "height": 120.0}), "the menu knows the height it scrolls within");
+        assert_eq!(stock["props"]["height"], 420.0);
         let partial = super::terminal_menu_spec("personal-menu", &json!({"width": 0.4}), "pane", json!({}));
         assert_eq!(partial["width"], 0.4);
         assert_eq!(partial["height"], 420.0);
+        let fraction = super::terminal_menu_spec("personal-menu", &json!({"height": 0.5}), "pane", json!({}));
+        assert!(fraction["props"].get("height").is_none(), "a fraction of the window isn't px");
     }
 
     #[test]
