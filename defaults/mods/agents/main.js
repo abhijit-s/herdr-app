@@ -28,9 +28,14 @@ const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
 const SUB_COUNT_MIN = 220;
 const roomForSubCount = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) >= SUB_COUNT_MIN;
 
-// A parent's live sub-agents (the rows its tree shows), as "⧉ N".
-function subCount(n, color) {
-  return div().flex_none().whitespace_nowrap().text_size(11).text_color(color).child(`\u29c9 ${n}`);
+// A parent's live sub-agents (the rows its tree shows), as a copy icon and N, in its
+// most urgent one's colour: blocked, working, else muted. The icon is drawn, not ⧉,
+// which the UI font lacks (a fallback font draws it smaller and thinner).
+function subCount(t, n, top) {
+  const color = top === "blocked" || top === "working" ? t[top] : t.dim;
+  return h_flex().id("sub-count").flex_none().gap(3).items_center().whitespace_nowrap().text_size(11).text_color(color)
+    .child(svg("mods/workspace-chrome/copy.svg").size(11).flex_none().text_color(color))
+    .child(String(n));
 }
 
 // To the rail (on macOS wide enough for the traffic lights), or back to the width it had.
@@ -67,6 +72,11 @@ const kidStatus = (k, listed) => {
   const s = listed.get(k.address) ?? k.status;
   return s === "error" ? "blocked" : s === "done" ? "idle" : s;
 };
+// The most urgent of some sub-agents' states, null for none.
+const topStatus = (subs, listed) => subs.map((s) => kidStatus(s.t, listed)).reduce((m, s) => ((RANK[s] ?? 0) > (RANK[m] ?? 0) ? s : m), null);
+// A program's OSC 7501 child records (`id=`), such as Claude Code's own
+// sub-agents: rows under its terminal, with no terminal of their own.
+const records = (t) => Object.entries(t?.records ?? {}).map(([id, r]) => ({ address: `${t.address}#${id}`, owner: t.address, name: r.title || id, status: r.state }));
 const SORTS = [
   { id: "priority", label: "Priority", icon: "clock" },
   { id: "grouped", label: "Grouped by space", icon: "layers" },
@@ -186,9 +196,10 @@ export default class Agents extends View {
     run("terminal.peek", { terminal: addr });
   }
 
-  // Live sub-agents of `addr`, depth first, each with the tree lines in front of it.
+  // Live sub-agents of `addr`, depth first, each with the tree lines in front of it:
+  // its child records, then the terminals it started.
   tree(all, addr, lead = []) {
-    const kids = all.filter((k) => k.parent === addr && k.state === "live");
+    const kids = [...records(all.find((k) => k.address === addr)), ...all.filter((k) => k.parent === addr && k.state === "live")];
     return kids.flatMap((k, i) => {
       const last = i === kids.length - 1;
       return [
@@ -215,7 +226,10 @@ export default class Agents extends View {
       .text_size(12.5)
       .when(on, (el) => el.bg(t.raised))
       .hover((s) => s.bg(t.hover))
-      .on_click(() => (this.listed.has(k.address) ? run("pane.focus", { terminal: k.address }) : this.peek(k.address)))
+      .on_click(() => {
+        const at = k.owner ?? k.address;
+        this.listed.has(at) ? run("pane.focus", { terminal: at }) : this.peek(at);
+      })
       .children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()
         .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))
         .when(l === "└" || l === "├", el => el.border_b(1.5).rounded_bl(6))))
@@ -274,8 +288,7 @@ export default class Agents extends View {
     // their count when the row has no room for it.
     const counted = roomForSubCount();
     const fold = (a, subs) => {
-      const sts = subs.map((s) => kidStatus(s.t, this.listed));
-      const top = sts.reduce((m, s) => ((RANK[s] ?? 0) > (RANK[m] ?? 0) ? s : m), null);
+      const top = topStatus(subs, this.listed);
       const open = !this.folded.has(a.address);
       return div()
         .id(`fold-${a.address}`)
@@ -386,7 +399,7 @@ export default class Agents extends View {
           .child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().text_color(idle ? t.muted : t.foreground).child(name))
           .when(full && Boolean(more), el => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`\u00b7 ${more}`))))
         .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
-        .when(subs.length > 0 && counted, el => el.child(subCount(subs.length, t.dim)))
+        .when(subs.length > 0 && counted, el => el.child(subCount(t, subs.length, topStatus(subs, this.listed))))
         .when(subs.length > 0, el => el.child(fold(a, subs)))
         .when(this.hovered === a.address, el => el.child(pin))
         .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when))))

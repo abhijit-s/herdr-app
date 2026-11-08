@@ -475,11 +475,68 @@ test("each style's preview is a small toast in that style's colours, with the ch
   looksNow = { styles, radius: { square: 1, slight: 3, rounded: 10 } };
   expect(toast({ toast_corners: "square" }, "standard").calls.rounded).toEqual([0.5]);
   expect(toast({}, "standard").calls.rounded).toEqual([5]);
+  // The chosen design's own corners and mark, as Herdr says it draws them.
+  looksNow = { styles, radius: { square: 0, slight: 4, rounded: 8 }, takes: { terminal: { corners: false, mark: false, radius: 0, draws: "none" }, pill: { corners: false, mark: true, radius: 999, draws: "dot" } } };
+  expect(toast({ toast_design: "terminal" }, "standard").calls.rounded).toEqual([0]);
+  expect(marks({ toast_design: "terminal" })).toEqual([]);
+  expect(marks({ toast_design: "pill" })).toEqual(["dot"]);
   looksNow = {};
 });
 
+test("notification design: six designs, card left out; corners and mark only where the design takes them", () => {
+  const design = (person: Record<string, any>, value: string) => click(person, {}, `st-tg-${value}`, [], "window");
+  for (const value of ["pill", "terminal", "outline", "icon-card", "banner"]) expect(design({}, value)).toEqual({ toast_design: value });
+  expect(design({ toast_design: "banner", toast_style: "subtle" }, "card")).toEqual({ toast_style: "subtle" });
+  const shown = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker", "shown?"], "window") !== undefined;
+  const rows = (toast_design?: string) => [shown({ toast_design }, "st-tr-Square"), shown({ toast_design }, "st-tm-Dot")];
+  // Without Herdr's word, both rows show.
+  looksNow = {};
+  expect(rows("terminal")).toEqual([true, true]);
+  // Herdr says which designs take corners and marks (toastLooks().takes, from ToastDesign::takes).
+  const takes = (corners: boolean, mark: boolean) => ({ corners, mark });
+  looksNow = { takes: { card: takes(true, true), pill: takes(false, true), terminal: takes(false, false), outline: takes(true, false), "icon-card": takes(true, false), banner: takes(false, true) } };
+  expect(rows()).toEqual([true, true]);
+  expect(rows("card")).toEqual([true, true]);
+  expect(rows("pill")).toEqual([false, true]);
+  expect(rows("terminal")).toEqual([false, false]);
+  expect(rows("outline")).toEqual([true, false]);
+  expect(rows("icon-card")).toEqual([true, false]);
+  expect(rows("banner")).toEqual([false, true]);
+  looksNow = {};
+});
+
+test("each design's preview is a small toast in that design's colours, from toastLooks()", () => {
+  const card = { toast: "#202020", toast_border: "#505050", toast_foreground: "#eeeeee", toast_info: "#3b82f6" };
+  looksNow = {
+    designs: { card, pill: card, terminal: { ...card, toast_info: "#5599ff" }, outline: { ...card, toast_ghost: "#202020b3" }, "icon-card": card, banner: card },
+    radius: { square: 0, slight: 4, rounded: 8 },
+    font_family: "Iosevka",
+  };
+  const cell = (person: Record<string, any>, value: string) => click(person, {}, `st-tg-${value}`, ["shown?"], "window");
+  const toast = (value: string, person: Record<string, any> = {}) => find(cell(person, value), `st-tg-${value}-toast`);
+  expect(toast("card").calls.bg).toEqual(["#202020"]);
+  expect(toast("card").calls.rounded).toEqual([4]);
+  expect(toast("card", { toast_corners: "square" }).calls.rounded).toEqual([0]);
+  expect(toast("pill").calls.rounded).toEqual([7]);
+  expect(toast("terminal").calls.font_family).toEqual(["Iosevka"]);
+  expect(find(cell({}, "terminal"), "st-tg-terminal-tag").calls.text_color).toEqual(["#5599ff"]);
+  expect(toast("terminal").calls.rounded).toBeUndefined();
+  expect([toast("outline").calls.bg, toast("outline").calls.border_color]).toEqual([["#202020b3"], ["#3b82f6"]]);
+  expect(find(cell({}, "icon-card"), "st-tg-icon-card-icon").calls.bg).toEqual(["#3b82f6"]);
+  expect(toast("banner").calls.w_full).toEqual([]);
+  // A design Herdr didn't send draws in the theme's own toast colours.
+  looksNow = {};
+  expect(toast("pill").calls.bg).toEqual(["#000000"]);
+});
+
+test("notification countdown toggles toast_progress, off left out", () => {
+  const toggle = (person: Record<string, any>) => click(person, {}, "st-toast_progress", [], "window");
+  expect(toggle({})).toEqual({ toast_progress: true });
+  expect(toggle({ toast_progress: true, toast_style: "accent" })).toEqual({ toast_style: "accent" });
+});
+
 test("search finds the toast settings by their keys and words", () => {
-  for (const [q, title] of [["toast_duration", "Notification time"], ["toast style", "Notification style"], ["corners", "Notification corners"], ["toast_mark", "Notification level mark"]]) {
+  for (const [q, title] of [["toast_duration", "Notification time"], ["toast style", "Notification style"], ["corners", "Notification corners"], ["toast_mark", "Notification level mark"], ["toast_design", "Notification design"], ["banner", "Notification design"], ["toast_progress", "Notification countdown"], ["countdown", "Notification countdown"]]) {
     expect(texts(search(q).root).join("")).toContain(title);
   }
 });
@@ -1234,7 +1291,7 @@ test("a fork build shows its commit beside the version", () => {
 });
 
 test("header info: Use suggested writes the template, a blank field leaves it out, the preview follows the field", () => {
-  const suggested = "{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed}";
+  const suggested = "{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed} · {subagents}";
   expect(click({ zoom: 1.1 }, {}, "st-hi-suggested", [], "activity")).toEqual({ zoom: 1.1, pane_header_info: suggested });
   expect(click({ pane_header_info: suggested }, {}, "st-hi-suggested", ["shown?"], "activity")).toBeUndefined();
   const field = (person: Record<string, any>) => {

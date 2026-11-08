@@ -43,6 +43,22 @@ const TOAST_MIN_WIDTH: f32 = 200.0;
 const TOAST_MAX_WIDTH: f32 = 340.0;
 const TOAST_HEIGHT: f32 = 40.0;
 const TOAST_HEIGHT_WITH_BODY: f32 = 72.0;
+/// The other designs' boxes (`toast_box`), px at zoom 1.
+const PILL_MIN_WIDTH: f32 = 96.0;
+const PILL_HEIGHT: f32 = 32.0;
+const ICON_CARD_MIN_WIDTH: f32 = 300.0;
+const ICON_CARD_MAX_WIDTH: f32 = 400.0;
+const ICON_CARD_HEIGHT: f32 = 76.0;
+/// The icon card's Show and Dismiss buttons, for a toast with an action.
+const ICON_CARD_ACTIONS: f32 = 36.0;
+const BANNER_HEIGHT: f32 = 40.0;
+/// The time-left bar along a toast's bottom (`toast_progress`), px at zoom 1.
+const PROGRESS_HEIGHT: f32 = 2.0;
+/// How often the time-left bar steps: about this many steps over the
+/// shortest toast counting down, within these bounds.
+const PROGRESS_STEPS: u32 = 48;
+const PROGRESS_STEP_MIN: Duration = Duration::from_millis(100);
+const PROGRESS_STEP_MAX: Duration = Duration::from_millis(500);
 /// The most toasts shown at once: one more closes the oldest.
 const TOAST_LIMIT: usize = 5;
 /// Agent alerts of one kind this close together share a toast.
@@ -106,10 +122,45 @@ impl AlertToast {
     }
 }
 
-/// A toast's props with the person's `toast_mark`, which the toast mod draws:
-/// carried in the props so a toast's render reads no settings.
-fn with_toast_mark(props: &mut Value) {
-    props["toast_mark"] = serde_json::to_value(settings::get().toast_mark).unwrap_or(Value::Null);
+/// A toast's props with the level mark it draws (the person's `toast_mark`
+/// as its design takes it, `ToastDesign::mark`) and `toast_design` (and the
+/// terminal design's font), which the toast mod draws: carried in the props
+/// so a toast's render reads no settings.
+fn with_toast_look(props: &mut Value) {
+    let s = settings::get();
+    props["toast_mark"] = serde_json::to_value(s.toast_design.mark(s.toast_mark)).unwrap_or(Value::Null);
+    props["toast_design"] = json!(s.toast_design.name());
+    match props.as_object_mut() {
+        Some(p) if s.toast_design == settings::ToastDesign::Terminal => p.insert("toast_font".into(), json!(s.font_family)),
+        Some(p) => p.remove("toast_font"),
+        None => None,
+    };
+}
+
+/// The theme colour of a toast's level: its mark, the outline's border and the time-left bar.
+fn toast_level(notification: &Value) -> &'static str {
+    match notification.get("level").and_then(Value::as_str) {
+        Some("error") => "toast_error",
+        Some("warning") => "toast_warning",
+        Some("success") => "toast_success",
+        _ => "toast_info",
+    }
+}
+
+/// A toast's box in `design`, px at zoom 1: its narrowest, its widest (as
+/// wide as what it says between them) and its height. A banner is as wide
+/// as the window.
+fn toast_box(design: settings::ToastDesign, notification: &Value) -> (f32, f32, f32) {
+    use settings::ToastDesign;
+    match design {
+        ToastDesign::Card | ToastDesign::Terminal | ToastDesign::Outline => (TOAST_MIN_WIDTH, TOAST_MAX_WIDTH, toast_height(notification)),
+        ToastDesign::Pill => (PILL_MIN_WIDTH, TOAST_MAX_WIDTH, PILL_HEIGHT),
+        ToastDesign::IconCard => {
+            let action = notification.pointer("/action/name").and_then(Value::as_str).is_some_and(|n| !n.is_empty());
+            (ICON_CARD_MIN_WIDTH, ICON_CARD_MAX_WIDTH, ICON_CARD_HEIGHT + if action { ICON_CARD_ACTIONS } else { 0.0 })
+        }
+        ToastDesign::Banner => (0.0, 0.0, BANNER_HEIGHT),
+    }
 }
 
 /// One line without a body, two with one: a body as the toast mod draws one
@@ -465,6 +516,14 @@ struct Overlay {
     modal: bool,
     /// An error or warning toast: the toast cap closes these last.
     urgent: bool,
+    /// A toast's level colour (`toast_level`).
+    level: &'static str,
+    /// A toast's box in its design (`toast_box`): its narrowest and widest,
+    /// and the height its poster set, which wins.
+    widths: (f32, f32),
+    asked_height: Option<f32>,
+    /// When a toast's time began (it restarts when an alert joins), for its time-left bar.
+    opened: Instant,
     /// `frame: "none"`: no border, corners, shadow or background; the mod draws its own.
     bare: bool,
     /// A window: where its top left is (None: centered) and its name (`key`).
@@ -623,6 +682,10 @@ pub struct AppWindow {
     /// The next time a pane's `{elapsed}` reads differently, and the timer
     /// that publishes then (header_info.rs).
     header_tick: Option<(u64, Task<()>)>,
+    /// The time-left bars' step timer, while a toast counting down shows one (`tick_progress`).
+    progress_tick: Option<Task<()>>,
+    /// The banner shown when `count_banners` last looked, to restart one coming forward.
+    banner_shown: Option<String>,
     /// Agents with a system notification up (alert.rs), taken down once old
     /// news (`Notified::withdraw`).
     notified: crate::alert::Notified,
@@ -713,6 +776,8 @@ impl AppWindow {
             listed_once: false,
             dock_badge: Default::default(),
             header_tick: None,
+            progress_tick: None,
+            banner_shown: None,
             resume: crate::resume::Tracker::load(&resume_path()),
             resume_offer: Some(Instant::now()),
             cwds: HashMap::new(),
@@ -1119,9 +1184,14 @@ impl AppWindow {
         let republish = s.pane_auto_names != settings::get().pane_auto_names || s.space_avatar != settings::get().space_avatar || s.pane_header_info != settings::get().pane_header_info;
         let git_counts = crate::header_info::counts_git;
         let recount = git_counts(s.pane_header_info.as_deref()) != git_counts(settings::get().pane_header_info.as_deref());
+        let redesign = s.toast_design != settings::get().toast_design || (s.toast_design == settings::ToastDesign::Terminal && s.font_family != settings::get().font_family);
         if settings::set(s) {
             self.theme_changed(window, cx);
         }
+        if redesign {
+            self.redesign_toasts(cx);
+        }
+        self.tick_progress(cx);
         // Folder info counts ahead, behind and dirty only while a template shows them.
         if recount {
             self.track_folders(cx);
@@ -2159,6 +2229,7 @@ impl AppWindow {
                             ahead: folder.map_or(0, |f| f.ahead),
                             behind: folder.map_or(0, |f| f.behind),
                             dirty: folder.is_some_and(|f| f.dirty),
+                            subagents: if template.uses_subagents() { crate::header_info::count_subagents(&self.live, addr, |k| m.status(k)) } else { Default::default() },
                         })
                     });
                     panes.push(json!({
@@ -3023,9 +3094,22 @@ impl AppWindow {
         toast.joined = now;
         let mut props = toast.notification();
         props["overlay"] = json!(o.id);
-        with_toast_mark(&mut props);
+        with_toast_look(&mut props);
         o.expires = toast_timeout(&props, settings::get().toast_duration).map(|t| now + t);
-        o.size.height = toast_height(&props);
+        o.opened = now;
+        let id = o.id.clone();
+        self.set_toast_props(&id, props, cx);
+        self.count_banners(cx);
+        self.tick_progress(cx);
+        true
+    }
+
+    /// Redraws an open toast with `props`, in its box for the design now.
+    fn set_toast_props(&mut self, id: &str, props: Value, cx: &mut Context<Self>) {
+        let Some(o) = self.overlays.iter_mut().find(|o| o.id == id) else { return };
+        let (min, max, height) = toast_box(settings::get().toast_design, &props);
+        o.widths = (min, max);
+        o.size.height = o.asked_height.unwrap_or(height);
         let slot = o.slot.clone();
         if let Some(copy) = self.copies.get_mut(&slot) {
             copy.inst.props = props.clone();
@@ -3035,7 +3119,106 @@ impl AppWindow {
             }
         }
         cx.notify();
-        true
+    }
+
+    /// The props of every open toast, in the order opened.
+    fn toast_props(&self) -> Vec<(String, Value)> {
+        self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).filter_map(|o| Some((o.id.clone(), self.copies.get(&o.slot)?.inst.props.clone()))).collect()
+    }
+
+    /// A new `toast_design` (or the terminal design's font) redraws the toasts already open in it.
+    fn redesign_toasts(&mut self, cx: &mut Context<Self>) {
+        for (id, mut props) in self.toast_props() {
+            with_toast_look(&mut props);
+            self.set_toast_props(&id, props, cx);
+        }
+        self.count_banners(cx);
+    }
+
+    /// The banner that shows, when toasts are banners: the newest error or
+    /// warning, else the newest. An error waits behind no routine banner, as
+    /// the toast cap closes routine toasts first.
+    fn shown_banner(&self) -> Option<&Overlay> {
+        if settings::get().toast_design != settings::ToastDesign::Banner {
+            return None;
+        }
+        let toasts = || self.overlays.iter().rev().filter(|o| o.kind == OverlayKind::Toast);
+        toasts().find(|o| o.urgent).or_else(|| toasts().next())
+    }
+
+    /// Whether a toast is a banner waiting behind the one shown: it's drawn
+    /// nowhere, and its time doesn't run.
+    fn waiting_banner(&self, o: &Overlay) -> bool {
+        o.kind == OverlayKind::Toast && self.shown_banner().is_some_and(|shown| shown.id != o.id)
+    }
+
+    /// Banners show one at a time (`shown_banner`), which says how many more
+    /// are open (`toast_more`); other designs show them all and say nothing.
+    /// A toast that stops waiting (it comes forward, or toasts stop being
+    /// banners) gets its whole time from then: its clock didn't run while it waited.
+    fn count_banners(&mut self, cx: &mut Context<Self>) {
+        let shown = self.shown_banner().map(|o| o.id.clone());
+        if shown != self.banner_shown {
+            let now = Instant::now();
+            let (was, is) = (self.banner_shown.take(), shown.clone());
+            let waiting = |front: &Option<String>, id: &str| front.as_deref().is_some_and(|f| f != id);
+            for o in self.overlays.iter_mut().filter(|o| o.kind == OverlayKind::Toast && waiting(&was, &o.id) && !waiting(&is, &o.id)) {
+                if let Some(expires) = o.expires {
+                    o.expires = Some(now + expires.saturating_duration_since(o.opened));
+                    o.opened = now;
+                }
+            }
+            self.banner_shown = shown.clone();
+        }
+        let toasts = self.toast_props();
+        let more = toasts.len().saturating_sub(1);
+        for (id, mut props) in toasts {
+            let want = (more > 0 && shown.as_ref() == Some(&id)).then(|| json!(more));
+            if props.get("toast_more") == want.as_ref() {
+                continue;
+            }
+            match (want, props.as_object_mut()) {
+                (Some(n), Some(p)) => p.insert("toast_more".into(), n),
+                (None, Some(p)) => p.remove("toast_more"),
+                _ => continue,
+            };
+            self.set_toast_props(&id, props, cx);
+        }
+    }
+
+    /// While a toast with a time-left bar counts down, redraws the window a
+    /// step at a time (`PROGRESS_STEPS` over the shortest such toast, 2 to
+    /// 10 a second); it stops at the first step with none left.
+    fn tick_progress(&mut self, cx: &mut Context<Self>) {
+        if self.progress_tick.is_some() || self.progress_step().is_none() {
+            return;
+        }
+        self.progress_tick = Some(cx.spawn(async move |this, cx| {
+            while let Ok(Some(step)) = this.update(cx, |this, _| this.progress_step()) {
+                cx.background_executor().timer(step).await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    return;
+                }
+            }
+            let _ = this.update(cx, |this, _| this.progress_tick = None);
+        }));
+    }
+
+    /// The share of a toast's time still left, or none: it stays until clicked.
+    fn time_left(&self, o: &Overlay) -> Option<f32> {
+        let total = o.expires?.saturating_duration_since(o.opened).as_secs_f32();
+        let left = o.expires?.saturating_duration_since(Instant::now()).as_secs_f32();
+        Some(if total > 0.0 { (left / total).clamp(0.0, 1.0) } else { 0.0 })
+    }
+
+    /// How long until the time-left bars step, or none: no toast counting down shows one.
+    fn progress_step(&self) -> Option<Duration> {
+        if !settings::get().toast_progress {
+            return None;
+        }
+        // Banners waiting behind the shown one draw no bar, and their clocks don't run.
+        let shortest = self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast && !self.waiting_banner(o)).filter_map(|o| Some(o.expires?.saturating_duration_since(o.opened))).min()?;
+        Some((shortest / PROGRESS_STEPS).clamp(PROGRESS_STEP_MIN, PROGRESS_STEP_MAX))
     }
 
     /// The error toast for an `alert_command` that didn't start or failed:
@@ -4697,13 +4880,15 @@ impl AppWindow {
         }
         props["overlay"] = json!(id);
         if kind == OverlayKind::Toast {
-            with_toast_mark(&mut props);
+            with_toast_look(&mut props);
         }
         let urgent = kind == OverlayKind::Toast && matches!(props.get("level").and_then(Value::as_str), Some("error" | "warning"));
         let num = |k: &str, d: f32| spec.get(k).and_then(Value::as_f64).map_or(d, |v| v as f32);
+        let (min_w, max_w, toast_h) = toast_box(settings::get().toast_design, &props);
+        let asked_height = spec.get("height").and_then(Value::as_f64).map(|h| h as f32).filter(|_| kind == OverlayKind::Toast);
         let size = match kind {
             // No width: as wide as its content, between the toast bounds.
-            OverlayKind::Toast => size(0.0, num("height", toast_height(&props))),
+            OverlayKind::Toast => size(0.0, asked_height.unwrap_or(toast_h)),
             // No size: as big as its content (0 = unset).
             OverlayKind::Window => size(num("width", 0.0), num("height", 0.0)),
             // No height: as tall as the content, up to most of the window.
@@ -4719,6 +4904,7 @@ impl AppWindow {
             place = Some(at);
         }
         let timeout = toast_timeout(&props, settings::get().toast_duration);
+        let level = toast_level(&props);
         let slot = format!("overlay:{id}");
         // The frame takes the keyboard first, so a mod that focuses itself while loading wins.
         let focus = cx.focus_handle();
@@ -4755,6 +4941,10 @@ impl AppWindow {
             fit,
             modal: spec.get("modal").and_then(Value::as_bool).unwrap_or(false),
             urgent,
+            level,
+            widths: (min_w, max_w),
+            asked_height,
+            opened: Instant::now(),
             bare: spec.get("frame").and_then(Value::as_str) == Some("none"),
             place,
             key: key.clone(),
@@ -4763,6 +4953,8 @@ impl AppWindow {
         });
         if kind == OverlayKind::Toast {
             self.close_toasts_past_limit(window, cx);
+            self.count_banners(cx);
+            self.tick_progress(cx);
         }
         if let Some(k) = &key {
             if spec.get("keep").and_then(Value::as_bool) == Some(true) {
@@ -5041,6 +5233,9 @@ impl AppWindow {
             if o.kind.modal_keys() {
                 self.restore_focus(window, cx);
             }
+            if o.kind == OverlayKind::Toast {
+                self.count_banners(cx);
+            }
             cx.notify();
         }
     }
@@ -5236,7 +5431,7 @@ impl AppWindow {
             self.sync_folders(window, cx);
         }
         let now = Instant::now();
-        let expired: Vec<String> = self.overlays.iter().filter(|o| o.expires.is_some_and(|e| e <= now)).map(|o| o.id.clone()).collect();
+        let expired: Vec<String> = self.overlays.iter().filter(|o| o.expires.is_some_and(|e| e <= now) && !self.waiting_banner(o)).map(|o| o.id.clone()).collect();
         for id in expired {
             self.close_overlay(&id, window, cx);
         }
@@ -5715,14 +5910,23 @@ impl AppWindow {
                 }
             }, |_, _, _, _| {}).absolute().size_0().into_any_element()
         });
-        let start = toast_start(chrome, s.toast_offset.y, pill.is_some() && !top && s.toast_position.side() != settings::ToastSide::Left);
-        let heights: Vec<f32> = self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).map(|o| o.size.height).collect();
-        let (spots, past) = toast_stack(&heights, start, top);
+        let design = s.toast_design;
+        let banner = design == settings::ToastDesign::Banner;
+        let start = if banner { banner_start(chrome, s.toast_offset.y, pill.is_some() && !top) } else { toast_start(chrome, s.toast_offset.y, pill.is_some() && !top && s.toast_position.side() != settings::ToastSide::Left) };
+        let toasts: Vec<&Overlay> = self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).collect();
+        // Banners show one at a time: the newest, which counts the rest.
+        let shown_banner = self.shown_banner().map(|o| o.id.clone());
+        let heights: Vec<f32> = toasts.iter().filter(|o| shown_banner.as_ref().is_none_or(|id| *id == o.id)).map(|o| o.size.height).collect();
+        let (spots, past) = if banner { (vec![start; heights.len()], start + heights.first().map_or(0.0, |h| h + TOAST_GAP)) } else { toast_stack(&heights, start, top) };
         let mut spots = spots.into_iter();
+        let place = |el: AnyElement, along: f32| if banner { at_banner_spot(el, top, along) } else { at_toast_spot(el, &s, along) };
         // Windows under dialogs, popups and toasts; each kind in the order opened
         // (a window pressed last is last: on top).
         let order = self.overlays.iter().filter(|o| o.kind == OverlayKind::Window).chain(self.overlays.iter().filter(|o| o.kind != OverlayKind::Window));
         for o in order {
+            if o.kind == OverlayKind::Toast && shown_banner.as_ref().is_some_and(|id| *id != o.id) {
+                continue;
+            }
             let id = o.id.clone();
             // Up to 1: a share of the window (terminals in overlays want room, not px).
             let span = |v: f32, full: Pixels| if v <= 1.0 { full * v } else { settings::z(v) };
@@ -5738,17 +5942,26 @@ impl AppWindow {
                 // Esc stays with terminals (agents use it to interrupt) and windows.
                 .when(o.layout.is_none() && o.kind.modal_keys(), |d| d.key_context("Overlay"))
                 .when(sized(o.size.width), |d| d.w(w))
-                .when(o.kind == OverlayKind::Toast, |d| d.min_w(settings::z(TOAST_MIN_WIDTH)).max_w(settings::z(TOAST_MAX_WIDTH)))
+                .when(o.kind == OverlayKind::Toast && !banner, |d| d.min_w(settings::z(o.widths.0)).max_w(settings::z(o.widths.1)))
+                .when(o.kind == OverlayKind::Toast && banner, |d| d.w_full())
                 .debug_selector(|| format!("overlay-{id}"))
                 .when(sized(o.size.height), |d| if o.fit { d.max_h(h) } else { d.h(h) })
                 .when(!o.bare && o.kind != OverlayKind::Toast, |d| d.bg(c("popover")).border_1().border_color(c("border")).rounded(settings::z(8.0)).shadow_lg())
-                .when(!o.bare && o.kind == OverlayKind::Toast, |d| toast_frame(d, s.toast_corners))
+                .when(!o.bare && o.kind == OverlayKind::Toast, |d| toast_frame(d, design, s.toast_corners, o.level, top))
                 .overflow_hidden()
                 .flex()
                 // Scroll, hover and cursor stop here, not on the pane behind.
                 .occlude()
                 .when(o.kind != OverlayKind::Window, |d| d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()))
-                .child(content);
+                .child(content)
+                .when_some((s.toast_progress && o.kind == OverlayKind::Toast).then(|| self.time_left(o)).flatten(), |d, left| {
+                    // Inset from the sides by the corner radius, so the frame's rounded clip never cuts it.
+                    let inset = settings::z(design.radius(s.toast_corners).min(o.size.height / 2.0));
+                    d.child(
+                        div().absolute().left(inset).right(inset).bottom_0().h(settings::z(PROGRESS_HEIGHT))
+                            .child(div().h_full().w(relative(left)).bg(c(o.level)).debug_selector(|| format!("progress-{id}"))),
+                    )
+                });
             match o.kind {
                 OverlayKind::Window => out.push(self.render_window(o, body, viewport, cx)),
                 OverlayKind::Dialog => out.push(
@@ -5783,21 +5996,25 @@ impl AppWindow {
                             .into_any_element(),
                     );
                 }
-                OverlayKind::Toast => out.push(at_toast_spot(body.into_any_element(), &s, spots.next().unwrap_or(past))),
+                OverlayKind::Toast => out.push(place(body.into_any_element(), spots.next().unwrap_or(past))),
             }
         }
         // Past the toasts, on their edge: it stays until an update goes through.
         if let Some(error) = crate::update::core().error {
-            let notice = toast_frame(div().max_w(settings::z(540.0)).flex().overflow_hidden(), s.toast_corners)
+            let terminal = design == settings::ToastDesign::Terminal;
+            let mark = design.mark(s.toast_mark);
+            let notice = toast_frame(div().when(banner, |d| d.w_full()).when(!banner, |d| d.max_w(settings::z(540.0))).flex().overflow_hidden(), design, s.toast_corners, "toast_error", top)
                 .text_size(settings::zt(13.0)).text_color(c("toast_foreground"))
+                .when(terminal, |d| d.font_family(s.font_family.clone()))
                 .id("core-update-error").cursor_pointer()
                 .on_click(cx.listener(|this, _, w, cx| this.run("app.settings", json!({ "section": "updates" }), w, cx)))
-                .when(s.toast_mark == settings::ToastMark::Stripe, |d| d.child(div().w(settings::z(TOAST_STRIPE)).flex_none().bg(c("toast_error"))))
-                .when(s.toast_mark == settings::ToastMark::Dot, |d| {
+                .when(mark == settings::ToastMark::Stripe, |d| d.child(div().w(settings::z(TOAST_STRIPE)).flex_none().bg(c("toast_error"))))
+                .when(mark == settings::ToastMark::Dot, |d| {
                     d.child(div().pl(settings::z(12.0)).flex().items_center().child(div().size(settings::z(8.0)).rounded(settings::z(4.0)).bg(c("toast_error"))))
                 })
+                .when(terminal, |d| d.child(div().pl(settings::z(12.0)).flex().items_center().text_color(c("toast_error")).child("[ERR]")))
                 .child(div().p(settings::z(12.0)).child(format!("herdr-core update failed: {error} · Open Updates")));
-            out.push(at_toast_spot(notice.into_any_element(), &s, past));
+            out.push(place(notice.into_any_element(), past));
         }
         out.extend(pill);
         out.extend(probe);
@@ -5813,13 +6030,32 @@ const TOAST_GAP: f32 = 8.0;
 /// The level stripe down a toast's left side, as the toast mod draws it (px at zoom 1).
 const TOAST_STRIPE: f32 = 3.0;
 
+/// The theme colours a toast's box draws in `design`, for a toast of
+/// `level` (`toast_level`): its fill, its border and its shadow, if any.
+/// All are `toast_colors`' (settings.rs), so they follow the theme.
+fn toast_frame_colors(design: settings::ToastDesign, level: &'static str) -> (&'static str, &'static str, Option<&'static str>) {
+    match design {
+        // See-through, held to its floors over anything (`toast_ghost`), edged in its level.
+        settings::ToastDesign::Outline => ("toast_ghost", level, None),
+        _ => ("toast", "toast_border", Some("toast_shadow")),
+    }
+}
+
 /// A toast's box: its own lifted surface, border and shadow (`toast_colors`
 /// in settings.rs), so it stands off whatever it's over on every theme, with
-/// the person's `toast_corners`.
-fn toast_frame<E: Styled>(e: E, corners: settings::ToastCorners) -> E {
-    let shadow = c("toast_shadow");
+/// the person's `toast_corners` where `design` takes them. A banner's border
+/// is the edge it faces the window across (`top`: its bottom).
+fn toast_frame<E: Styled>(e: E, design: settings::ToastDesign, corners: settings::ToastCorners, level: &'static str, top: bool) -> E {
+    let (fill, edge, shadow) = toast_frame_colors(design, level);
+    let e = e.bg(c(fill)).border_color(c(edge)).rounded(settings::z(design.radius(corners)));
+    let e = match design {
+        settings::ToastDesign::Banner if top => e.border_b_1(),
+        settings::ToastDesign::Banner => e.border_t_1(),
+        _ => e.border_1(),
+    };
+    let Some(shadow) = shadow.map(c) else { return e };
     let near = Hsla { a: shadow.a * 0.6, ..shadow };
-    e.bg(c("toast")).border_1().border_color(c("toast_border")).rounded(settings::z(corners.radius())).shadow(vec![
+    e.shadow(vec![
         BoxShadow { color: shadow, offset: point(px(0.0), settings::z(8.0)), blur_radius: settings::z(24.0), spread_radius: px(0.0), inset: false },
         BoxShadow { color: near, offset: point(px(0.0), settings::z(1.0)), blur_radius: settings::z(3.0), spread_radius: px(0.0), inset: false },
     ])
@@ -5852,6 +6088,22 @@ fn top_chrome(chrome: (f32, f32), b: Bounds<Pixels>, root: bool, drag: bool, vie
 fn toast_start(chrome: f32, offset_y: f32, above_pill: bool) -> f32 {
     let start = (chrome + TOAST_MARGIN + offset_y).max(0.0);
     if above_pill { (start + UPDATE_PILL_HEIGHT + TOAST_GAP).max(TOAST_MARGIN + UPDATE_PILL_HEIGHT + TOAST_GAP) } else { start }
+}
+
+/// Where a banner sits (px at zoom 1 from its edge): flush with it, past a
+/// top banner's chrome, moved in by `toast_offset.y`; above the update pill
+/// (a bottom banner spans it) whatever the offset.
+fn banner_start(chrome: f32, offset_y: f32, above_pill: bool) -> f32 {
+    let start = (chrome + offset_y).max(0.0);
+    if above_pill { start.max(TOAST_MARGIN + UPDATE_PILL_HEIGHT + TOAST_GAP) } else { start }
+}
+
+/// `el` across the window, `along` px (at zoom 1) from its top or bottom edge.
+fn at_banner_spot(el: AnyElement, top: bool, along: f32) -> AnyElement {
+    let spot = div().absolute().left_0().right_0();
+    let along = settings::z(along);
+    let spot = if top { spot.top(along) } else { spot.bottom(along) };
+    spot.child(el).into_any_element()
 }
 
 /// Each toast's distance (px at zoom 1) from its stack's edge, for `heights`
@@ -7030,6 +7282,312 @@ mod tests {
         assert_eq!(lasts(&joined, cx), None, "a joining alert keeps it until clicked");
     }
 
+    /// Every colour a toast's box and time-left bar draw, in every design
+    /// and level, is a key of the theme's derived toast colours, under a dark
+    /// and a light theme, and the two themes give it different values: a
+    /// theme switch restyles every design.
+    #[test]
+    fn toast_frames_draw_their_theme_colours() {
+        use crate::settings::{self, Settings, ToastDesign};
+        for design in ToastDesign::ALL {
+            settings::set(Settings { toast_design: design, ..Settings::default() });
+            let themes = settings::themes();
+            let [dark, light] = ["graphite", "paper"].map(|n| themes.iter().find(|(name, _)| name == n).map(|(_, t)| t.clone()).unwrap());
+            for level in ["toast_info", "toast_success", "toast_warning", "toast_error"] {
+                let (fill, edge, shadow) = super::toast_frame_colors(design, level);
+                if design == ToastDesign::Outline {
+                    assert!(dark[fill].len() == 9 && !dark[fill].ends_with("ff"), "the outline's backing lets the window through: {}", dark[fill]);
+                }
+                for key in [Some(fill), Some(edge), shadow, Some(level)].into_iter().flatten() {
+                    assert!(key.starts_with("toast"), "{design:?}: {key} isn't a toast colour");
+                    let (d, l) = (dark.get(key), light.get(key));
+                    assert!(d.is_some() && l.is_some(), "{design:?}: {key} isn't derived");
+                    assert_ne!(d, l, "{design:?}: {key} is the same on dark and light");
+                }
+            }
+        }
+        settings::set(Settings::default());
+    }
+
+    /// Each design's box: a pill one short line, an icon card taller with
+    /// buttons for an action, a banner one line; the rest as the card.
+    #[test]
+    fn toast_boxes() {
+        use super::{BANNER_HEIGHT, ICON_CARD_ACTIONS, ICON_CARD_HEIGHT, PILL_HEIGHT, TOAST_HEIGHT, TOAST_HEIGHT_WITH_BODY, TOAST_MAX_WIDTH, TOAST_MIN_WIDTH, toast_box};
+        use crate::settings::ToastDesign;
+        use serde_json::json;
+        let (plain, body, action) = (json!({ "title": "t" }), json!({ "title": "t", "body": "b" }), json!({ "title": "t", "action": { "name": "agent.focus" } }));
+        for design in [ToastDesign::Card, ToastDesign::Terminal, ToastDesign::Outline] {
+            assert_eq!(toast_box(design, &plain), (TOAST_MIN_WIDTH, TOAST_MAX_WIDTH, TOAST_HEIGHT), "{design:?}");
+            assert_eq!(toast_box(design, &body).2, TOAST_HEIGHT_WITH_BODY, "{design:?}");
+        }
+        assert_eq!(toast_box(ToastDesign::Pill, &body).2, PILL_HEIGHT, "a pill's body is its tooltip");
+        assert_eq!(toast_box(ToastDesign::IconCard, &body).2, ICON_CARD_HEIGHT);
+        assert_eq!(toast_box(ToastDesign::IconCard, &action).2, ICON_CARD_HEIGHT + ICON_CARD_ACTIONS);
+        assert_eq!(toast_box(ToastDesign::IconCard, &json!({ "title": "t", "action": { "name": "" } })).2, ICON_CARD_HEIGHT, "no action, no buttons");
+        assert_eq!(toast_box(ToastDesign::Banner, &body).2, BANNER_HEIGHT);
+    }
+
+    /// A banner sits flush on its edge, past a top banner's chrome, moved in
+    /// by the offset; a bottom one clears the update pill.
+    #[test]
+    fn banners_start_on_their_edge() {
+        use super::{TOAST_GAP, TOAST_MARGIN, UPDATE_PILL_HEIGHT, banner_start};
+        assert_eq!(banner_start(0.0, 0.0, false), 0.0);
+        assert_eq!(banner_start(40.0, 0.0, false), 40.0, "below the top chrome");
+        assert_eq!(banner_start(40.0, 10.0, false), 50.0);
+        assert_eq!(banner_start(0.0, -16.0, false), 0.0, "never past the edge");
+        assert_eq!(banner_start(0.0, 0.0, true), TOAST_MARGIN + UPDATE_PILL_HEIGHT + TOAST_GAP, "above the pill");
+        assert_eq!(banner_start(0.0, 200.0, true), 200.0);
+    }
+
+    #[test]
+    fn each_toast_design_has_its_box_and_place() {
+        in_own_process("toast_designs");
+    }
+
+    /// Switching `toast_design` redraws open toasts in their new box; banners
+    /// span the window on the vertical half of `toast_position`, one at a
+    /// time, the newest counting the rest; leaving banners shows them all again.
+    #[gpui::test]
+    fn toast_designs(cx: &mut gpui::TestAppContext) {
+        use super::{BANNER_HEIGHT, ICON_CARD_ACTIONS, ICON_CARD_HEIGHT, PILL_HEIGHT, TOAST_HEIGHT};
+        use crate::settings::{ToastDesign, ToastPosition};
+        use serde_json::json;
+        if !running_alone("toast_designs") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "toast", include_str!("../defaults/mods/toast/main.js"), json!({"id": "root", "type": "block"}));
+        cx.run_until_parked();
+        let design = |d: ToastDesign, position: ToastPosition, cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| {
+                this.person.toast_design = d;
+                this.person.toast_position = position;
+                this.apply_look(window, cx);
+            });
+            cx.run_until_parked();
+        };
+        let open = |id: &str, note: serde_json::Value, cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| this.open_overlay(id.into(), json!({ "kind": "toast", "notification": note }), window, cx));
+            cx.run_until_parked();
+        };
+        let at = |id: &str, cx: &mut gpui::VisualTestContext| cx.debug_bounds(format!("overlay-{id}").leak());
+        let more = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.toast_props().into_iter().map(|(id, p)| (id, p.get("toast_more").and_then(|n| n.as_u64()))).collect::<Vec<_>>());
+        let viewport = cx.update(|window, _| window.viewport_size());
+        open("a", json!({ "title": "Saved" }), cx);
+        assert_eq!(at("a", cx).unwrap().size.height, px(TOAST_HEIGHT), "unset: the card");
+        design(ToastDesign::Pill, ToastPosition::BottomRight, cx);
+        assert_eq!(at("a", cx).unwrap().size.height, px(PILL_HEIGHT), "an open toast takes the new design");
+        let mark = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.toast_props()[0].1["toast_mark"].clone());
+        assert_eq!(mark(cx), json!("dot"), "the props carry the mark the pill takes for the stripe");
+        open("b", json!({ "title": "Agent finished", "body": "work / api", "level": "info", "action": { "name": "agent.focus", "args": { "terminal": "t1" } } }), cx);
+        assert_eq!(at("b", cx).unwrap().size.height, px(PILL_HEIGHT));
+        design(ToastDesign::IconCard, ToastPosition::BottomRight, cx);
+        assert_eq!((at("a", cx).unwrap().size.height, at("b", cx).unwrap().size.height), (px(ICON_CARD_HEIGHT), px(ICON_CARD_HEIGHT + ICON_CARD_ACTIONS)), "buttons only for the action");
+        assert!(cx.debug_bounds("toast-show").is_some() && cx.debug_bounds("toast-dismiss").is_some());
+        assert!(cx.debug_bounds("toast-icon").is_some(), "the level icon");
+        // Banners: the newest only, across the window on its bottom edge, saying one more.
+        design(ToastDesign::Banner, ToastPosition::BottomRight, cx);
+        assert!(at("a", cx).is_none(), "one banner at a time");
+        let b = at("b", cx).unwrap();
+        assert_eq!((b.size.width, b.size.height, b.origin.x, b.bottom()), (viewport.width, px(BANNER_HEIGHT), px(0.0), viewport.height));
+        assert_eq!(more(cx), [("a".to_owned(), None), ("b".to_owned(), Some(1))]);
+        assert!(cx.debug_bounds("toast-more").is_some());
+        open("c", json!({ "title": "Copied" }), cx);
+        assert_eq!(more(cx), [("a".to_owned(), None), ("b".to_owned(), None), ("c".to_owned(), Some(2))]);
+        assert!(at("b", cx).is_none() && at("c", cx).is_some());
+        // On top, below the chrome: the vertical half of the position.
+        design(ToastDesign::Banner, ToastPosition::TopLeft, cx);
+        let chrome = px(view.update(cx, |this, _| this.top_chrome.get().1));
+        let c = at("c", cx).unwrap();
+        assert_eq!((c.size.width, c.top()), (viewport.width, chrome));
+        // Closing the shown one shows the next, which counts what's left.
+        view.update_in(cx, |this, window, cx| this.close_overlay("c", window, cx));
+        cx.run_until_parked();
+        assert!(at("b", cx).is_some());
+        assert_eq!(more(cx), [("a".to_owned(), None), ("b".to_owned(), Some(1))]);
+        // Back to cards: all show, none counts.
+        design(ToastDesign::Card, ToastPosition::BottomRight, cx);
+        assert!(at("a", cx).is_some() && at("b", cx).is_some());
+        assert_eq!(more(cx), [("a".to_owned(), None), ("b".to_owned(), None)]);
+        assert_eq!(at("a", cx).unwrap().size.height, px(TOAST_HEIGHT));
+    }
+
+    #[test]
+    fn a_waiting_banner_gets_its_whole_time_once_shown() {
+        in_own_process("banner_waits");
+    }
+
+    /// Banners show the newest error or warning before any routine one; one
+    /// waiting behind doesn't expire (the poll skips it) and gets its whole
+    /// time when it comes forward, as does every one when toasts stop being banners.
+    #[gpui::test]
+    fn banner_waits(cx: &mut gpui::TestAppContext) {
+        use crate::settings::ToastDesign;
+        use serde_json::json;
+        use std::time::{Duration, Instant};
+        if !running_alone("banner_waits") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "toast", include_str!("../defaults/mods/toast/main.js"), json!({"id": "root", "type": "block"}));
+        cx.run_until_parked();
+        let design = |d: ToastDesign, cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| {
+                this.person.toast_design = d;
+                this.apply_look(window, cx);
+            });
+            cx.run_until_parked();
+        };
+        let open = |id: &str, level: &str, cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| this.open_overlay(id.into(), json!({ "kind": "toast", "notification": { "title": id, "level": level } }), window, cx));
+            cx.run_until_parked();
+        };
+        let shown = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.shown_banner().map(|o| o.id.clone()));
+        let open_ids = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>());
+        let left = |id: &str, cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.overlays.iter().find(|o| o.id == id).and_then(|o| o.expires).map(|e| e.saturating_duration_since(Instant::now())));
+        // Its time ran out long ago: the poll would close it if it were counting.
+        let age = |id: &str, cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| {
+            let o = this.overlays.iter_mut().find(|o| o.id == id).unwrap();
+            let total = o.expires.unwrap().saturating_duration_since(o.opened);
+            o.opened = Instant::now() - total - Duration::from_secs(1);
+            o.expires = Some(Instant::now() - Duration::from_secs(1));
+        });
+        let poll = |cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| this.poll(window, cx));
+            cx.run_until_parked();
+        };
+        design(ToastDesign::Banner, cx);
+        open("error", "error", cx);
+        open("info", "info", cx);
+        assert_eq!(shown(cx).as_deref(), Some("error"), "an error before a newer routine banner");
+        age("info", cx);
+        poll(cx);
+        assert!(open_ids(cx).contains(&"info".to_owned()), "a waiting banner doesn't expire");
+        view.update_in(cx, |this, window, cx| this.close_overlay("error", window, cx));
+        cx.run_until_parked();
+        assert_eq!(shown(cx).as_deref(), Some("info"));
+        assert!(left("info", cx).is_some_and(|d| d > Duration::from_millis(4500)), "its whole 5 s from now: {:?}", left("info", cx));
+        // Two routine ones: the older waits, then gets its whole time.
+        open("newer", "info", cx);
+        assert_eq!(shown(cx).as_deref(), Some("newer"));
+        age("info", cx);
+        poll(cx);
+        view.update_in(cx, |this, window, cx| this.close_overlay("newer", window, cx));
+        cx.run_until_parked();
+        assert!(left("info", cx).is_some_and(|d| d > Duration::from_millis(4500)));
+        // Leaving banners: what waited counts from then.
+        open("last", "info", cx);
+        age("info", cx);
+        design(ToastDesign::Card, cx);
+        poll(cx);
+        assert!(open_ids(cx).contains(&"info".to_owned()) && left("info", cx).is_some_and(|d| d > Duration::from_millis(4500)), "{:?}", left("info", cx));
+    }
+
+    #[test]
+    fn the_time_left_bar_counts_down_and_stops() {
+        in_own_process("toast_progress");
+    }
+
+    /// `toast_progress`: a bar along the toast's bottom as wide as the share
+    /// of its time left, stepped by a timer that runs only while such a toast
+    /// shows; none for a toast kept until clicked, nor with the setting off.
+    #[gpui::test]
+    fn toast_progress(cx: &mut gpui::TestAppContext) {
+        use crate::settings::ToastDuration;
+        use serde_json::json;
+        use std::time::{Duration, Instant};
+        if !running_alone("toast_progress") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "toast", include_str!("../defaults/mods/toast/main.js"), json!({"id": "root", "type": "block"}));
+        cx.run_until_parked();
+        let set = |progress: bool, duration: ToastDuration, cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| {
+                this.person.toast_progress = progress;
+                this.person.toast_duration = duration;
+                this.apply_look(window, cx);
+            });
+            cx.run_until_parked();
+        };
+        let open = |id: &str, cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| this.open_overlay(id.into(), json!({ "kind": "toast", "notification": { "title": "Saved" } }), window, cx));
+            cx.run_until_parked();
+        };
+        let ticking = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.progress_tick.is_some());
+        let bar = |id: &str, cx: &mut gpui::VisualTestContext| cx.debug_bounds(format!("progress-{id}").leak());
+        let step = |cx: &mut gpui::VisualTestContext| {
+            cx.executor().advance_clock(Duration::from_millis(600));
+            cx.run_until_parked();
+        };
+        open("off", cx);
+        assert!(bar("off", cx).is_none() && !ticking(cx), "unset: no bar, no timer");
+        set(true, ToastDuration::Normal, cx);
+        let toast = cx.debug_bounds("overlay-off").unwrap();
+        let full = bar("off", cx).expect("on: an open toast shows its bar");
+        assert!(ticking(cx));
+        // Along the bottom inside the border, in from the sides by the corner radius (8 px rounded), so the clip never cuts it.
+        let inside = toast.inset(px(1.0));
+        let track = inside.size.width - px(16.0);
+        assert!((full.bottom() - inside.bottom()).abs() <= px(1.0) && (full.left() - (inside.left() + px(8.0))).abs() <= px(1.0) && full.size.height == px(2.0), "{full:?} in {toast:?}");
+        assert!(full.size.width > track * 0.9 && full.size.width <= track, "nearly all its time left: {full:?} of {toast:?}");
+        // Half its time gone: half as wide.
+        view.update(cx, |this, _| {
+            let o = this.overlays.iter_mut().find(|o| o.id == "off").unwrap();
+            o.opened = Instant::now() - Duration::from_millis(2500);
+            o.expires = Some(Instant::now() + Duration::from_millis(2500));
+        });
+        step(cx);
+        let half = bar("off", cx).unwrap();
+        assert!((half.size.width - track * 0.5).abs() < px(6.0), "{half:?} of {toast:?}");
+        // Gone with its toast; the timer stops at its next step.
+        view.update_in(cx, |this, window, cx| this.close_overlay("off", window, cx));
+        step(cx);
+        assert!(!ticking(cx), "no toast, no timer");
+        // Kept until clicked: no bar, no timer.
+        set(true, ToastDuration::UntilDismissed, cx);
+        open("kept", cx);
+        assert!(bar("kept", cx).is_none() && !ticking(cx), "until clicked: nothing to count");
+        // Off again: the timer stops with the bars.
+        set(true, ToastDuration::Normal, cx);
+        open("timed", cx);
+        assert!(ticking(cx) && bar("timed", cx).is_some());
+        set(false, ToastDuration::Normal, cx);
+        step(cx);
+        assert!(!ticking(cx) && bar("timed", cx).is_none());
+        // In from the sides by the radius the design draws: half a pill's
+        // height, none for the terminal's and the banner's square corners.
+        use crate::settings::ToastDesign;
+        let design = |d: ToastDesign, cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| {
+                for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                    this.close_overlay(&id, window, cx);
+                }
+                this.person.toast_design = d;
+                this.apply_look(window, cx);
+            });
+            cx.run_until_parked();
+        };
+        set(true, ToastDuration::Normal, cx);
+        for (d, inset, edge) in [(ToastDesign::Pill, 16.0, 1.0), (ToastDesign::Terminal, 0.0, 1.0), (ToastDesign::Banner, 0.0, 0.0)] {
+            design(d, cx);
+            open("shape", cx);
+            let (toast, bar) = (cx.debug_bounds("overlay-shape").unwrap(), bar("shape", cx).unwrap());
+            assert!((bar.left() - (toast.left() + px(edge + inset))).abs() <= px(1.0), "{d:?}: {bar:?} in {toast:?}");
+        }
+        // A banner waiting behind one kept until clicked draws no bar, so it steps nothing.
+        design(ToastDesign::Banner, cx);
+        set(true, ToastDuration::UntilDismissed, cx);
+        view.update_in(cx, |this, window, cx| {
+            this.open_overlay("kept".into(), json!({ "kind": "toast", "notification": { "title": "Failed", "level": "error" } }), window, cx);
+            this.show_copied(window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.shown_banner().map(|o| o.id.clone())).as_deref(), Some("kept"));
+        assert!(view.update(cx, |this, _| this.copied_toast.is_some()), "Copied is open, waiting");
+        step(cx);
+        assert!(!ticking(cx), "a waiting Copied runs no timer");
+    }
+
     #[test]
     fn a_toast_is_two_lines_high_only_with_a_body_the_mod_draws() {
         use super::{TOAST_HEIGHT, TOAST_HEIGHT_WITH_BODY, toast_height};
@@ -7066,8 +7624,9 @@ mod tests {
         }
         // The shipped mod, its root and text column keyed per toast so their bounds can be read.
         let shipped = include_str!("../defaults/mods/toast/main.js");
-        let keyed = shipped.replace(r#".id("toast")"#, r#".id(`toast-${p.overlay}`)"#).replace("v_flex()\n          .flex_1()", "v_flex()\n          .id(`text-${p.overlay}`)\n          .flex_1()");
-        assert_eq!(keyed.matches("${p.overlay}").count(), 2, "the toast mod changed shape: key its root and text column again");
+        let keyed = shipped.replace(r#".id("toast")"#, r#".id(`toast-${p.overlay}`)"#).replace("v_flex()\n        .flex_1()", "v_flex()\n        .id(`text-${p.overlay}`)\n        .flex_1()");
+        // Two roots (the card's, and the other designs') and the card's text column.
+        assert_eq!(keyed.matches("${p.overlay}").count(), 3, "the toast mod changed shape: key its roots and text column again");
         let (view, cx) = open_window(cx, "toast", &keyed, json!({"id": "root", "type": "block"}));
         let long = "A notification whose title goes on far longer than any toast is wide";
         let toasts = [
@@ -9649,6 +10208,24 @@ export default class Keeper extends View {
         minute(cx);
         assert_eq!(resolved() - before, 2, "and again a minute on");
         eprintln!("header info: {drawn} window renders beyond 30 refreshes with the template set");
+
+        // {subagents}: counted when a listing changes the agent's child records, not per frame.
+        template(Some("{state} · {subagents}"), cx);
+        let with_records = |records: Value, cx: &mut gpui::VisualTestContext| {
+            let terminals = json!({ "terminals": [{ "address": "ta", "argv": ["claude"], "status": { "state": "working" }, "records": records }, { "address": "tb", "argv": ["zsh"] }] });
+            cx.update(|window, cx| view.update(cx, |this, cx| this.terminals_listed(terminals, window, cx)));
+            cx.run_until_parked();
+        };
+        with_records(json!({ "agent/a1": { "state": "working", "title": "Explore" } }), cx);
+        assert_eq!(info("a")["segments"][1], json!({ "sep": " · ", "text": "1 sub-agent", "ask": false, "minor": true }));
+        let before = resolved();
+        frames(cx);
+        assert_eq!(resolved(), before, "no sub-agents counted for a frame");
+        with_records(json!({ "agent/a1": { "state": "working" }, "agent/b2": { "state": "blocked" } }), cx);
+        assert_eq!(resolved() - before, 1, "a new record publishes once");
+        assert_eq!(info("a")["segments"][1], json!({ "sep": " · ", "text": "2 sub-agents, 1 blocked", "ask": true }));
+        with_records(Value::Null, cx);
+        assert_eq!(info("a")["segments"].as_array().map(Vec::len), Some(1), "none left: the segment drops");
 
         template(None, cx);
         assert_eq!((info("a"), ticking(cx)), (Value::Null, None), "cleared: the timer stops");

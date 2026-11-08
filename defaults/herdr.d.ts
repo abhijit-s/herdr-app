@@ -296,12 +296,14 @@ export interface HeaderInfo {
 
 /** One segment: its text, the separator before it as written ("" for the first one shown;
  *  draw it as `sep.trim()` with 4 px either side, as `fitHeaderInfo` measures it),
- *  and whether it holds the request of an agent that needs the person (draw it in
- *  `theme().blocked`; it is the last to go). */
+ *  whether it holds the request of an agent that needs the person or a blocked `{subagents}`
+ *  (draw it in `theme().blocked`; it is the last to go), and whether `{subagents}` is all it
+ *  shows, none blocked (`minor`: the first to go; absent when false). */
 export interface HeaderSegment {
   sep: string;
   text: string;
   ask: boolean;
+  minor?: boolean;
 }
 
 /** Every pane in every tab. A pane header mod finds its own with
@@ -314,8 +316,10 @@ export function panes(): PaneInfo[];
 export function setAgentOrder(addresses: string[]): null;
 
 /** Every core terminal as `hc ls --json` describes it (address, argv, name, template, parent,
- *  labels, state, ...), with `status` as a plain word, the agent's report in `report`, and
- *  `program` (see Program). Live. */
+ *  labels, state, ...), with `status` as a plain word, the agent's report in `report`,
+ *  its other OSC 7501 records (reports with an `id`, such as sub-agents a program runs
+ *  in-process) in `records` by id (`{ state, title?, msg?, app?, kind?, progress? }`; absent
+ *  when none), and `program` (see Program). Live. */
 export function terminals(): any[];
 
 /** Actual terminal/pane focus. `space` and `tab` are the current window context.
@@ -500,16 +504,20 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  how to draw space avatars: `"letter" | "glyph" | "emoji" | "repo"`, `"glyph"` when unset or
  *  unknown (null only from builds before that default: draw letters). `pane_header_info` is the agent pane header's template, or `null`
  *  (unset or blank); panes carry it resolved as `header_info`.
- *  `toast_duration`, `toast_style`, `toast_corners` and `toast_mark` are the person's toast choices
+ *  `toast_duration`, `toast_style`, `toast_corners`, `toast_mark`, `toast_design` and `toast_progress` are the person's toast choices
  *  (see AGENTS.md). */
 export function settings(): Record<string, unknown>;
 
 /** The toast previews the Settings window draws: `styles` is `{ standard, subtle, "high-contrast",
  *  accent }`, each that `toast_style`'s toast colors in the current theme (the names `theme()` gives
  *  the drawn one: toast, toast_border, toast_foreground, toast_info and the rest), and `radius` is
- *  `{ square, slight, rounded }`, each `toast_corners` value's radius in px at zoom 1. Built when
- *  settings change, not per call. */
-export function toastLooks(): { styles: Record<string, Record<string, string>>; radius: Record<string, number> };
+ *  `{ square, slight, rounded }`, each `toast_corners` value's radius in px at zoom 1. `styles` are
+ *  drawn for the chosen `toast_design`; `designs` is `{ card, pill, terminal, outline, "icon-card",
+ *  banner }`, each design's toast colors in the chosen style (the outline's adds `toast_ghost`, its
+ *  see-through backing; the terminal's levels come from the terminal's colors), and `font_family` is
+ *  the terminal's font, which the terminal design draws in. `takes` is `{ [design]: { corners, mark } }`, whether
+ *  each design takes `toast_corners` and `toast_mark`. Built when settings change, not per call. */
+export function toastLooks(): { styles: Record<string, Record<string, string>>; designs: Record<string, Record<string, string>>; takes: Record<string, { corners: boolean; mark: boolean }>; radius: Record<string, number>; font_family: string };
 
 /** Every key binding: { section, keys, action }. */
 export function keys(): { section: string; keys: string; action: string }[];
@@ -559,11 +567,14 @@ export function notify(n: {
   body?: string;
   level?: "info" | "success" | "warning" | "error";
   /** ms; given, it wins over the person's `toast_duration`. Else 5 s (8 s for errors and warnings),
-   *  scaled by `toast_duration`, or until clicked. The `toast` mod gets the person's `toast_mark`
-   *  (`"stripe"`, `"dot"` or `"none"`) in its props, beside these. */
+   *  scaled by `toast_duration`, or until clicked. The `toast` mod gets the level mark to draw, the person's `toast_mark` as the design takes it
+   *  (`"stripe"`, `"dot"` or `"none"`) and `toast_design` (`"card"`, `"pill"`, `"terminal"`,
+   *  `"outline"`, `"icon-card"` or `"banner"`) in its props, beside these; the terminal design also
+   *  gets `toast_font` (the terminal's font) and the shown banner `toast_more` (how many others are open). */
   timeout?: number;
   icon?: string;
-  action?: { name: string; args?: Record<string, unknown> };
+  /** `label`: the icon card's and banner's button for it ("Show" when unset). */
+  action?: { name: string; args?: Record<string, unknown>; label?: string };
 }): string;
 
 /** The props this copy of the mod was given in the layout (or overlay).
@@ -649,7 +660,7 @@ export interface GitStatus {
 export function gitStatus(folder: string, options?: { on?: string | null; files?: boolean }): GitStatus | false | null;
 
 /** The segments of `header_info` that fit in `width` px of `fontPx` text, as Herdr
- *  estimates them: whole segments go from the right, a blocked `ask` last; a lone one that
+ *  estimates them: whole segments go from the right, a `minor` one first and a blocked `ask` last; a lone one that
  *  still doesn't fit stays (draw it with `.truncate()`), and none when fewer than about four
  *  characters would show. The first kept segment's `sep` is "". Each separator is measured
  *  as `sep.trim()` with 4 px either side: draw it that way (the shipped `pane` header does). */

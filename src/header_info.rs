@@ -6,7 +6,8 @@
 //!
 //! Grammar, all of it:
 //! - `{ask}`, `{state}`, `{elapsed}`, `{branch}`, `{ahead}`, `{behind}`,
-//!   `{dirty}` are keys; any other text, an unknown `{word}` too, is literal.
+//!   `{dirty}`, `{subagents}` are keys; any other text, an unknown `{word}`
+//!   too, is literal.
 //! - `·` and `|` split the template into segments; a separator shows between
 //!   two segments that show.
 //! - A segment with keys shows only when one of them is not empty; one with no
@@ -18,6 +19,8 @@
 //!   included, for the tooltip.
 
 use serde::Serialize;
+use serde_json::Value;
+use std::collections::HashMap;
 
 #[cfg(test)]
 thread_local! {
@@ -36,6 +39,7 @@ enum Key {
     Ahead,
     Behind,
     Dirty,
+    Subagents,
 }
 
 impl Key {
@@ -48,6 +52,7 @@ impl Key {
             "ahead" => Key::Ahead,
             "behind" => Key::Behind,
             "dirty" => Key::Dirty,
+            "subagents" => Key::Subagents,
             _ => return None,
         })
     }
@@ -117,7 +122,16 @@ impl Template {
     }
 
     pub fn uses_elapsed(&self) -> bool {
-        self.0.iter().flat_map(|s| &s.pieces).any(|p| *p == Piece::Key(Key::Elapsed))
+        self.uses(Key::Elapsed)
+    }
+
+    /// Whether it shows `{subagents}` (publish then counts them).
+    pub fn uses_subagents(&self) -> bool {
+        self.uses(Key::Subagents)
+    }
+
+    fn uses(&self, key: Key) -> bool {
+        self.0.iter().flat_map(|s| &s.pieces).any(|p| *p == Piece::Key(key))
     }
 
     /// The segments that show for these values (None: nothing does).
@@ -127,7 +141,7 @@ impl Template {
         let mut segments: Vec<Shown> = Vec::new();
         for s in &self.0 {
             let mut text = String::new();
-            let (mut keys, mut filled, mut ask) = (0, 0, false);
+            let (mut keys, mut filled, mut ask, mut minor) = (0, 0, false, false);
             // The last thing written was a key that showed: the next one that
             // shows goes a space after it.
             let mut after_key = false;
@@ -144,7 +158,8 @@ impl Template {
                             continue;
                         }
                         filled += 1;
-                        ask |= *k == Key::Ask && v.blocked;
+                        ask |= (*k == Key::Ask && v.blocked) || (*k == Key::Subagents && v.subagents.blocked > 0);
+                        minor |= *k == Key::Subagents;
                         if after_key {
                             text.push(' ');
                         }
@@ -161,7 +176,9 @@ impl Template {
                 continue;
             }
             let sep = if segments.is_empty() { String::new() } else { s.sep.clone() };
-            segments.push(Shown { sep, text, ask });
+            // Minor only when the count is all it shows: a segment that also
+            // holds other keys goes no sooner than any other.
+            segments.push(Shown { sep, text, ask, minor: minor && filled == 1 && !ask });
         }
         if segments.is_empty() {
             return None;
@@ -191,6 +208,72 @@ pub struct Values {
     pub ahead: u64,
     pub behind: u64,
     pub dirty: bool,
+    pub subagents: Subagents,
+}
+
+/// An agent's live sub-agents: child terminals below it, and the OSC 7501
+/// child records (`id=`) it and they report, such as Claude Code's own
+/// sub-agents (`count_subagents`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Subagents {
+    pub live: usize,
+    /// Blocked or in error.
+    pub blocked: usize,
+}
+
+impl Subagents {
+    fn add(&mut self, word: Option<&str>) {
+        self.live += 1;
+        if matches!(word, Some("blocked" | "error")) {
+            self.blocked += 1;
+        }
+    }
+
+    /// `3 sub-agents`, `3 sub-agents, 1 blocked`, or `2 sub-agents blocked` when
+    /// all are; empty for none. Words, not a mark such as ⧉: the person's UI font
+    /// may lack it, and a fallback font draws it smaller and thinner.
+    fn text(&self) -> String {
+        let n = self.live;
+        let noun = if n == 1 { "sub-agent" } else { "sub-agents" };
+        match self.blocked {
+            _ if n == 0 => String::new(),
+            0 => format!("{n} {noun}"),
+            b if b == n => format!("{n} {noun} blocked"),
+            b => format!("{n} {noun}, {b} blocked"),
+        }
+    }
+}
+
+/// The live sub-agents below `addr` in core's terminal records (`live`, keyed
+/// by address, `status` a word): every live terminal whose parent chain reaches
+/// it, in the state `status_of` gives (the app's, for a pane), else its own
+/// word, and every child record of `addr` and of those terminals.
+pub fn count_subagents<'a>(live: &'a HashMap<String, Value>, addr: &str, status_of: impl Fn(&str) -> Option<&'a str>) -> Subagents {
+    let parent = |a: &str| live.get(a).and_then(|r| r["parent"].as_str()).filter(|p| !p.is_empty());
+    let below = |kid: &str| {
+        let mut cur = kid;
+        for _ in 0..32 {
+            match parent(cur) {
+                Some(p) if p == addr => return true,
+                // A finished terminal's children are no longer in its tree, as the agents mod shows it.
+                Some(p) if live.get(p).is_some_and(|r| r["state"] == "live") => cur = p,
+                _ => return false,
+            }
+        }
+        false
+    };
+    let mut n = Subagents::default();
+    let records = |r: &Value, n: &mut Subagents| r["records"].as_object().into_iter().flatten().for_each(|(_, rec)| n.add(rec["state"].as_str()));
+    if let Some(r) = live.get(addr) {
+        records(r, &mut n);
+    }
+    for (kid, r) in live {
+        if r["state"] == "live" && below(kid) {
+            records(r, &mut n);
+            n.add(status_of(kid).or(r["status"].as_str()));
+        }
+    }
+    n
 }
 
 impl Values {
@@ -206,6 +289,7 @@ impl Values {
             // circle comes from a fallback font, larger and off it, and any dot
             // reads as one more separator beside ` · `.
             Key::Dirty => if self.dirty { "*".into() } else { String::new() },
+            Key::Subagents => self.subagents.text(),
         }
     }
 
@@ -220,6 +304,7 @@ impl Values {
             ahead: 2,
             behind: 0,
             dirty: true,
+            subagents: Subagents { live: 2, blocked: 0 },
         }
     }
 }
@@ -272,9 +357,14 @@ pub struct Info {
 pub struct Shown {
     pub sep: String,
     pub text: String,
-    /// It holds `{ask}` while the agent needs the person: drawn in the blocked
-    /// colour, and the last to go when space runs short.
+    /// It holds `{ask}` while the agent needs the person, or `{subagents}`
+    /// while one is blocked: drawn in the blocked colour, and the last to go
+    /// when space runs short.
     pub ask: bool,
+    /// It holds `{subagents}` (none blocked): the first to go. Left out when
+    /// false, so the segments mods already read are unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub minor: bool,
 }
 
 /// The padding header mods draw either side of a separator's mark, in px:
@@ -288,7 +378,7 @@ const MIN_CHARS: f32 = 4.0;
 const CHAR_EM: f32 = 0.6;
 
 /// The segments that fit in `width` px of `font_px` text: whole segments go
-/// from the right, a blocked `{ask}` last. A lone segment that still doesn't
+/// from the right, `{subagents}` first and a blocked `{ask}` last. A lone segment that still doesn't
 /// fit stays (its element truncates it with an ellipsis) unless fewer than
 /// about four characters would show.
 pub fn fit(segments: &[Shown], width: f32, font_px: f32) -> Vec<Shown> {
@@ -299,7 +389,7 @@ pub fn fit(segments: &[Shown], width: f32, font_px: f32) -> Vec<Shown> {
     let mut keep: Vec<Shown> = segments.to_vec();
     let total = |keep: &[Shown]| keep.iter().enumerate().map(|(i, s)| measure(&s.text) + if i == 0 { 0.0 } else { separator(&s.sep) }).sum::<f32>();
     while keep.len() > 1 && total(&keep) > width {
-        let i = keep.iter().rposition(|s| !s.ask).unwrap_or(keep.len() - 1);
+        let i = keep.iter().rposition(|s| s.minor).or_else(|| keep.iter().rposition(|s| !s.ask)).unwrap_or(keep.len() - 1);
         keep.remove(i);
     }
     if let Some(first) = keep.first_mut() {
@@ -342,15 +432,15 @@ mod tests {
     }
 
     fn seg(sep: &str, text: &str, ask: bool) -> Shown {
-        Shown { sep: sep.into(), text: text.into(), ask }
+        Shown { sep: sep.into(), text: text.into(), ask, minor: false }
     }
 
-    const SUGGESTED: &str = "{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed}";
+    const SUGGESTED: &str = "{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed} · {subagents}";
 
     #[test]
     fn templates_split_on_separators_and_drop_empty_segments() {
         let v = Values { state: "working".into(), elapsed: "3m".into(), branch: "main".into(), ahead: 2, dirty: true, ..Values::default() };
-        assert_eq!(shown(SUGGESTED, &v), vec![("".into(), "main ↑2 *".into(), false), (" · ".into(), "working 3m".into(), false)], "no ask: no dangling separator");
+        assert_eq!(shown(SUGGESTED, &v), vec![("".into(), "main ↑2 *".into(), false), (" · ".into(), "working 3m".into(), false)], "no ask or sub-agents: no dangling separator");
         assert_eq!(shown("{state}|{branch}", &v), vec![("".into(), "working".into(), false), ("|".into(), "main".into(), false)], "separators as written");
         assert_eq!(shown("{state} {elapsed}", &Values { state: "idle".into(), ..Values::default() }), vec![("".into(), "idle".into(), false)], "leftover spaces collapse");
         assert_eq!(shown("on {branch} · hi", &Values::default()), vec![("".into(), "hi".into(), false)], "a segment of empty keys goes; plain text stays");
@@ -360,7 +450,7 @@ mod tests {
         assert!(Template::parse(SUGGESTED).uses_git_counts() && !Template::parse("{branch} · {state}").uses_git_counts());
         assert!(counts_git(Some(SUGGESTED)) && !counts_git(Some("{branch}")) && !counts_git(None));
         let info = Template::parse(SUGGESTED).resolve(&Values::sample()).unwrap();
-        assert_eq!(info.text, "approve Bash: make · main ↑2 * · blocked 3m", "the whole line, for the tooltip");
+        assert_eq!(info.text, "approve Bash: make · main ↑2 * · blocked 3m · 2 sub-agents", "the whole line, for the tooltip");
     }
 
     #[test]
@@ -436,5 +526,58 @@ mod tests {
         assert!(close(width("ab", 12.0), 14.4) && close(width("日本", 12.0), 28.8) && close(width("🦊", 12.0), 14.4), "an emoji's two columns, as its two-character width");
         let wide = vec![seg("", "ab", false), seg("|", "日本", false)];
         assert_eq!(fit(&wide, w(6.5), 12.0), wide[..1].to_vec(), "wide characters count twice");
+    }
+
+    fn live(records: &[(&str, serde_json::Value)]) -> HashMap<String, Value> {
+        records.iter().map(|(a, r)| ((*a).to_owned(), r.clone())).collect()
+    }
+
+    #[test]
+    fn sub_agents_are_child_terminals_below_and_child_records() {
+        use serde_json::json;
+        let rec = |state: &str| json!({ "state": state });
+        let live = live(&[
+            ("t1", json!({ "state": "live", "status": "working", "records": { "agent/a": rec("working"), "agent/b": rec("blocked") } })),
+            ("t2", json!({ "state": "live", "status": "idle", "parent": "t1" })),
+            ("t3", json!({ "state": "live", "status": "error", "parent": "t2", "records": { "job": rec("idle") } })),
+            ("t4", json!({ "state": "finished", "status": "working", "parent": "t1" })),
+            ("t6", json!({ "state": "live", "status": "blocked", "parent": "t4" })),
+            ("t5", json!({ "state": "live", "status": "working", "parent": "" })),
+        ]);
+        let none = |_: &str| None;
+        assert_eq!(count_subagents(&live, "t1", none), Subagents { live: 5, blocked: 2 }, "two records, t2, t3 below it and t3's record; not t4 (finished) nor t6 below it");
+        assert_eq!(count_subagents(&live, "t2", none), Subagents { live: 2, blocked: 1 }, "error counts as blocked");
+        assert_eq!(count_subagents(&live, "t5", none), Subagents::default());
+        assert_eq!(count_subagents(&live, "t1", |a| (a == "t2").then_some("blocked")).blocked, 3, "the app's state for a pane wins");
+    }
+
+    #[test]
+    fn sub_agents_render_their_count_and_how_many_are_blocked() {
+        let v = |live, blocked| Values { subagents: Subagents { live, blocked }, ..Values::default() };
+        assert_eq!(shown("{subagents}", &v(0, 0)), vec![], "none: the segment drops");
+        assert_eq!(shown("x · {subagents}", &v(3, 0)), vec![("".into(), "x".into(), false), (" · ".into(), "3 sub-agents".into(), false)]);
+        assert_eq!(shown("{subagents}", &v(1, 0))[0].1, "1 sub-agent");
+        assert_eq!(shown("{subagents}", &v(3, 1)), vec![("".into(), "3 sub-agents, 1 blocked".into(), true)], "blocked: drawn as the ask is");
+        assert_eq!(shown("{subagents}", &v(2, 2)), vec![("".into(), "2 sub-agents blocked".into(), true)]);
+        assert!(v(3, 1).get(Key::Subagents).is_ascii(), "plain text the UI font has");
+        let minor = |t: &str, v: &Values| Template::parse(t).resolve(v).unwrap().segments.iter().map(|s| s.minor).collect::<Vec<_>>();
+        assert_eq!(minor("{state} · {subagents}", &Values { state: "idle".into(), ..v(3, 0) }), vec![false, true]);
+        assert_eq!(minor("{state} · {subagents}", &Values { state: "idle".into(), ..v(3, 1) }), vec![false, false], "blocked is not minor");
+        assert_eq!(minor("{state} {subagents}", &Values { state: "idle".into(), ..v(3, 0) }), vec![false], "beside another key: not minor");
+        assert_eq!(minor("{branch} {subagents}", &v(3, 0)), vec![true], "the only key that shows: minor");
+        assert!(Template::parse(SUGGESTED).uses_subagents() && !Template::parse("{state}").uses_subagents());
+    }
+
+    #[test]
+    fn sub_agents_go_first_unless_blocked() {
+        let sub = Shown { sep: " · ".into(), text: "3 sub-agents".into(), ask: false, minor: true };
+        let all = vec![seg("", "main", false), sub.clone(), seg(" · ", "idle 3m", false)];
+        let w = |chars: f32| chars * 7.2 + 0.1;
+        assert_eq!(fit(&all, w(14.0), 12.0), vec![all[0].clone(), all[2].clone()], "the count goes before the segment right of it");
+        assert_eq!(fit(&all, w(4.0), 12.0), vec![all[0].clone()]);
+        let blocked = vec![seg("", "main", false), seg(" · ", "3 sub-agents, 1 blocked", true), seg(" · ", "idle", false)];
+        assert_eq!(fit(&blocked, w(23.0), 12.0), vec![seg("", "3 sub-agents, 1 blocked", true)], "blocked outlasts the rest");
+        let from_js: Vec<Shown> = serde_json::from_value(serde_json::json!([{ "sep": "", "text": "a", "ask": false }])).unwrap();
+        assert!(!from_js[0].minor, "segments from an older mod read as not minor");
     }
 }
