@@ -395,6 +395,8 @@ Axis units are working days, rough.
 - **Clicking an already focused float** that was lowered doesn't raise it again; `pane.raise` does.
 - **Size below the drawn minimum:** a float's rect can be smaller than 20 × 4 cells (only 5% of the tab is kept); it is drawn at the minimum, so its drawn size and its rect differ until it is resized past it.
 - **Pane drag** (tiled panes) can choose a drop target that a float covers.
+- **Docking a zoomed float** keeps it zoomed, as a tiled pane.
+- **A newer build's floating split:** its panes are counted (never adopted again as tiled duplicates), but one of them can't be closed on its own.
 
 ## Open questions
 
