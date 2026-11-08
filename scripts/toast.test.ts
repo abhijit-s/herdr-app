@@ -2,14 +2,18 @@ import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 
 // The toast mod without a window: what it draws for each `toast_mark` and `toast_design`.
+// `calls` keeps each method's last arguments, for checks; `log` every call in order, for
+// comparing whole trees.
 class Element {
   nodes: Element[] = [];
   calls: Record<string, any[]> = {};
+  log: [string, any[]][] = [];
   constructor() {
     const proxy: Element = new Proxy(this, {
       get: (target, key: string) => key in target ? (target as any)[key] : (...args: any[]) => {
+        if (key === "when") { if (args[0]) args[1](proxy); return proxy; }
+        target.log.push([key, args]);
         if (key === "child") target.nodes.push(args[0]);
-        else if (key === "when") { if (args[0]) args[1](proxy); }
         else target.calls[key] = args;
         return proxy;
       },
@@ -17,6 +21,17 @@ class Element {
     return proxy;
   }
 }
+// An element as data: every call in order, each closure run against stand-ins (a hover
+// style, a click) and what it builds recorded, so a changed hover colour shows.
+const tree = (e: any): any => {
+  if (!(e instanceof Element)) return e;
+  const arg = (a: any) => {
+    if (typeof a !== "function") return tree(a);
+    const built = a(new Element(), new Element());
+    return built instanceof Element ? { closure: tree(built) } : "closure";
+  };
+  return e.log.map(([key, args]) => [key, ...args.map(arg)]);
+};
 const element = () => new Element();
 let propsNow: Record<string, any> = {};
 // Each colour named after its theme key, unless a test sets a real theme.
@@ -82,7 +97,6 @@ const all = (root: Element): Element[] => [root, ...(root?.nodes ?? []).flatMap(
 // master's card, as its toast mod drew it before designs (tests/fixtures/master-toast-card.json,
 // rendered through these same stand-ins): every mark, level, body and icon.
 test("a toast without a design draws master's card, call for call", async () => {
-  const tree = (e: any): any => (e instanceof Element ? { calls: Object.fromEntries(Object.entries(e.calls).map(([k, v]) => [k, v.map((a) => (typeof a === "function" ? "fn" : a))])), nodes: e.nodes.map(tree) } : e);
   const master = JSON.parse(await readFile(new URL("../tests/fixtures/master-toast-card.json", import.meta.url), "utf8"));
   expect(master.length).toBe(80);
   for (const { props, tree: want } of master) {

@@ -1183,8 +1183,10 @@ export default class Settings extends View {
     const looks = toastLooks() ?? {};
     const styles = looks.styles ?? {};
     const sel = tonal(t, window()?.active !== false);
-    const radius = looks.radius?.[this.person.toast_corners] ?? looks.radius?.rounded ?? 8;
-    const mark = this.person.toast_mark ?? "stripe";
+    // The corners and mark the chosen design draws for the person's own (toastLooks().takes).
+    const drawn = looks.takes?.[this.person.toast_design ?? "card"];
+    const radius = drawn?.radius ?? looks.radius?.[this.person.toast_corners] ?? looks.radius?.rounded ?? 8;
+    const mark = drawn?.draws ?? this.person.toast_mark ?? "stripe";
     const cell = ([value, label]) => {
       const on = now === value;
       const c = styles[value] ?? t;

@@ -44,14 +44,13 @@ export default class Toast extends View {
       el
         .when(Boolean(p.icon), (el) => el.child(image(p.icon).w(18).h(18).flex_none()))
         .when(!p.icon && mark !== "none", (el) => el.child(div().id("toast-dot").size(8).rounded(4).flex_none().bg(level)));
-    // The outline paints no hover fill: it would lighten what shows through its backing,
-    // which settings.rs fits the text to (toast_colors, toast_ghost).
+    // The other designs' root; the card's and outline's is below.
     const root = h_flex()
       .id("toast")
       .size_full()
       .items_center()
       .cursor_pointer()
-      .when(design !== "outline", (el) => el.hover((s) => s.bg(t.hover)))
+      .hover((s) => s.bg(t.hover))
       .on_click(act);
     // Show runs the action, filled in the level's colour; Dismiss only closes.
     const button = (id, label, onClick, filled) =>
@@ -137,16 +136,24 @@ export default class Toast extends View {
         .when(Boolean(p.action?.name), (el) => el.child(show()))
         .child(dismiss());
     }
-    // Card, and outline: the card's layout, see-through (Herdr draws the
-    // backing and the level border), its title in the level's colour.
+    // Card, and outline: the card's layout (built in the order it always was),
+    // see-through (Herdr draws the backing and the level border), its title in
+    // the level's colour, with no hover fill, which would lighten what shows
+    // through the backing settings.rs fits the text to (toast_colors, toast_ghost).
     const outline = design === "outline";
     return lead(
-      root
+      h_flex()
+        .id("toast")
+        .size_full()
         .pl(mark === "stripe" ? 15 : 18)
         .pr(18)
         .gap(12)
+        .items_center()
         .when(mark === "stripe", (el) => el.border_l(3).border_color(level))
-        .when(!outline, (el) => el.bg(t.toast)),
+        .when(!outline, (el) => el.bg(t.toast))
+        .cursor_pointer()
+        .when(!outline, (el) => el.hover((s) => s.bg(t.hover)))
+        .on_click(act),
     ).child(
       v_flex()
         .flex_1()

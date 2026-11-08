@@ -615,19 +615,24 @@ fn toast_colors(t: &Theme, own_panels: bool, look: ToastLook) -> Vec<(&'static s
         // floors with `TOAST_FIT_MARGIN` to spare over black and over white
         // behind it, so over anything, each stepped at most halfway toward
         // the text so the levels keep their hue; opaque, it's the surface
-        // they already hold on. The toast mod paints no hover fill on it,
-        // which would lighten what shows through.
-        let held = |c: u32, floor: f32, ghost: &str| (0..=50).map(|i| mix(c, text, i as f32 / 100.0)).find(|c| over_anything(*c, ghost) >= floor + TOAST_FIT_MARGIN);
-        let fit = (0..=255).step_by(5).find_map(|a| {
-            let ghost = format!("{}{a:02x}", hex(surface));
-            if over_anything(text, &ghost) < f.text + TOAST_FIT_MARGIN {
-                return None;
-            }
-            let muted = held(muted, f.text, &ghost)?;
-            let levels = levels.iter().map(|c| held(*c, f.mark, &ghost)).collect::<Option<Vec<_>>>()?;
+        // they already hold on. Where no backing holds within halfway, it's
+        // the opaque surface, the colours stepped as far toward the text as
+        // the margin needs (else held to the floor, as on the card). The
+        // toast mod paints no hover fill on it, which would lighten what
+        // shows through.
+        let held = |c: u32, floor: f32, ghost: &str, most: u32| (0..=most).map(|i| mix(c, text, i as f32 / 100.0)).find(|c| over_anything(*c, ghost) >= floor + TOAST_FIT_MARGIN);
+        let fit = |ghost: String, most: u32| {
+            let muted = held(muted, f.text, &ghost, most)?;
+            let levels = levels.iter().map(|c| held(*c, f.mark, &ghost, most)).collect::<Option<Vec<_>>>()?;
             Some((ghost, muted, levels))
-        });
-        let (ghost, muted, levels) = fit.unwrap_or_else(|| (hex(surface), muted, levels));
+        };
+        let (ghost, muted, levels) = (0..=255)
+            .step_by(5)
+            .map(|a| format!("{}{a:02x}", hex(surface)))
+            .filter(|ghost| over_anything(text, ghost) >= f.text + TOAST_FIT_MARGIN)
+            .find_map(|ghost| fit(ghost, 50))
+            .or_else(|| fit(hex(surface), 100))
+            .unwrap_or_else(|| (hex(surface), muted, levels.clone()));
         for (key, c) in std::iter::once("toast_muted").chain(TOAST_LEVELS.map(|(key, _)| key)).zip(std::iter::once(muted).chain(levels)) {
             if let Some(slot) = out.iter_mut().find(|(k, _)| *k == key) {
                 slot.1 = hex(c);
@@ -962,8 +967,13 @@ mod derivation_tests {
                     assert!(contrast(rgb(&t, "toast"), rgb(&t, key)) >= TOAST_TEXT, "{name} {design:?}: the Show label on {key}");
                 }
             }
-            for key in ["toast_foreground", "toast_muted", "toast_info", "toast_success", "toast_warning", "toast_error"] {
-                assert!(over_anything(rgb(&outline, key), ghost) >= TOAST_TEXT + TOAST_FIT_MARGIN, "{name}: outline {key} over {ghost}, with room to spare");
+            // With room to spare in every style, the high-contrast 7:1 included.
+            for style in ToastStyle::ALL {
+                let outline = drawn_as(&p, &own, PanelColors::Tinted, false, ToastLook { style, design: ToastDesign::Outline });
+                let (ghost, floor) = (&outline["toast_ghost"], style.floors().text + TOAST_FIT_MARGIN);
+                for key in ["toast_foreground", "toast_muted", "toast_info", "toast_success", "toast_warning", "toast_error"] {
+                    assert!(over_anything(rgb(&outline, key), ghost) >= floor, "{name} {style:?}: outline {key} over {ghost}, {floor} wanted");
+                }
             }
             for design in [ToastDesign::Card, ToastDesign::Pill] {
                 let t: Theme = look(design).into_iter().filter(|(k, _)| k.starts_with("toast")).collect();
@@ -1928,11 +1938,11 @@ impl ToastDesign {
     }
 
     /// The level mark it draws for the person's `toast_mark`: a pill's round
-    /// ends take a dot for a stripe; the terminal's `[WARN]` and the
-    /// outline's border are their marks, so they draw neither.
+    /// ends take a dot for a stripe; the terminal's `[WARN]`, the outline's
+    /// border and the icon card's level icon are their marks, so they draw neither.
     pub fn mark(self, mark: ToastMark) -> ToastMark {
         match self {
-            ToastDesign::Terminal | ToastDesign::Outline => ToastMark::None,
+            ToastDesign::Terminal | ToastDesign::Outline | ToastDesign::IconCard => ToastMark::None,
             ToastDesign::Pill if mark == ToastMark::Stripe => ToastMark::Dot,
             _ => mark,
         }
@@ -3082,7 +3092,8 @@ impl Settings {
         let radius: serde_json::Map<String, serde_json::Value> = ToastCorners::ALL.iter().map(|c| (serde_json::to_value(c).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default(), c.radius().into())).collect();
         let takes: serde_json::Map<String, serde_json::Value> = ToastDesign::ALL.iter().map(|d| {
             let (corners, mark) = d.takes();
-            (d.name().to_owned(), serde_json::json!({ "corners": corners, "mark": mark }))
+            // And what it draws for the person's own: their corner radius and level mark.
+            (d.name().to_owned(), serde_json::json!({ "corners": corners, "mark": mark, "radius": d.radius(self.toast_corners), "draws": d.mark(self.toast_mark) }))
         }).collect();
         serde_json::json!({ "styles": styles, "designs": designs, "takes": takes, "radius": radius, "font_family": self.font_family })
     }
@@ -4148,9 +4159,9 @@ mod tests {
         let radii = ToastDesign::ALL.map(|d| d.radius(ToastCorners::Slight));
         assert_eq!(radii, [4.0, 999.0, 0.0, 4.0, 4.0, 0.0]);
         let marks = ToastDesign::ALL.map(|d| d.mark(ToastMark::Stripe));
-        assert_eq!(marks, [ToastMark::Stripe, ToastMark::Dot, ToastMark::None, ToastMark::None, ToastMark::Stripe, ToastMark::Stripe]);
+        assert_eq!(marks, [ToastMark::Stripe, ToastMark::Dot, ToastMark::None, ToastMark::None, ToastMark::None, ToastMark::Stripe]);
         assert_eq!(ToastDesign::Pill.mark(ToastMark::None), ToastMark::None);
-        assert_eq!(ToastDesign::ALL.map(ToastDesign::takes), [(true, true), (false, true), (false, false), (true, false), (true, true), (false, true)]);
+        assert_eq!(ToastDesign::ALL.map(ToastDesign::takes), [(true, true), (false, true), (false, false), (true, false), (true, false), (false, true)]);
         assert_eq!(ToastDuration::ALL_SCALES, [Some(0.6), Some(1.0), Some(2.0), None]);
         assert_eq!([ToastCorners::Square, ToastCorners::Slight, ToastCorners::Rounded].map(ToastCorners::radius), [0.0, 4.0, 8.0]);
         // Each style's toast colors and each radius reach the Settings window
@@ -4167,7 +4178,8 @@ mod tests {
         }
         assert!(looks["designs"]["outline"]["toast_ghost"].is_string() && looks["designs"]["card"].get("toast_ghost").is_none(), "only the outline has a backing");
         assert_eq!(looks["font_family"], json!(unset.font_family));
-        assert_eq!((looks["takes"]["pill"].clone(), looks["takes"]["terminal"].clone()), (json!({ "corners": false, "mark": true }), json!({ "corners": false, "mark": false })));
+        assert_eq!((looks["takes"]["pill"].clone(), looks["takes"]["terminal"].clone()), (json!({ "corners": false, "mark": true, "radius": 999.0, "draws": "dot" }), json!({ "corners": false, "mark": false, "radius": 0.0, "draws": "none" })));
+        assert_eq!(looks["takes"]["card"], json!({ "corners": true, "mark": true, "radius": 8.0, "draws": "stripe" }));
     }
 
     /// The guide agents read (written to the home folder) explains every

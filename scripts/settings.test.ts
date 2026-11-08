@@ -475,6 +475,11 @@ test("each style's preview is a small toast in that style's colours, with the ch
   looksNow = { styles, radius: { square: 1, slight: 3, rounded: 10 } };
   expect(toast({ toast_corners: "square" }, "standard").calls.rounded).toEqual([0.5]);
   expect(toast({}, "standard").calls.rounded).toEqual([5]);
+  // The chosen design's own corners and mark, as Herdr says it draws them.
+  looksNow = { styles, radius: { square: 0, slight: 4, rounded: 8 }, takes: { terminal: { corners: false, mark: false, radius: 0, draws: "none" }, pill: { corners: false, mark: true, radius: 999, draws: "dot" } } };
+  expect(toast({ toast_design: "terminal" }, "standard").calls.rounded).toEqual([0]);
+  expect(marks({ toast_design: "terminal" })).toEqual([]);
+  expect(marks({ toast_design: "pill" })).toEqual(["dot"]);
   looksNow = {};
 });
 
@@ -489,13 +494,13 @@ test("notification design: six designs, card left out; corners and mark only whe
   expect(rows("terminal")).toEqual([true, true]);
   // Herdr says which designs take corners and marks (toastLooks().takes, from ToastDesign::takes).
   const takes = (corners: boolean, mark: boolean) => ({ corners, mark });
-  looksNow = { takes: { card: takes(true, true), pill: takes(false, true), terminal: takes(false, false), outline: takes(true, false), "icon-card": takes(true, true), banner: takes(false, true) } };
+  looksNow = { takes: { card: takes(true, true), pill: takes(false, true), terminal: takes(false, false), outline: takes(true, false), "icon-card": takes(true, false), banner: takes(false, true) } };
   expect(rows()).toEqual([true, true]);
   expect(rows("card")).toEqual([true, true]);
   expect(rows("pill")).toEqual([false, true]);
   expect(rows("terminal")).toEqual([false, false]);
   expect(rows("outline")).toEqual([true, false]);
-  expect(rows("icon-card")).toEqual([true, true]);
+  expect(rows("icon-card")).toEqual([true, false]);
   expect(rows("banner")).toEqual([false, true]);
   looksNow = {};
 });

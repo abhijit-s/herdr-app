@@ -3192,7 +3192,8 @@ impl AppWindow {
         if !settings::get().toast_progress {
             return None;
         }
-        let shortest = self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).filter_map(|o| Some(o.expires?.saturating_duration_since(o.opened))).min()?;
+        // Banners waiting behind the shown one draw no bar, and their clocks don't run.
+        let shortest = self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast && !self.waiting_banner(o)).filter_map(|o| Some(o.expires?.saturating_duration_since(o.opened))).min()?;
         Some((shortest / PROGRESS_STEPS).clamp(PROGRESS_STEP_MIN, PROGRESS_STEP_MAX))
     }
 
@@ -7486,6 +7487,38 @@ mod tests {
         set(false, ToastDuration::Normal, cx);
         step(cx);
         assert!(!ticking(cx) && bar("timed", cx).is_none());
+        // In from the sides by the radius the design draws: half a pill's
+        // height, none for the terminal's and the banner's square corners.
+        use crate::settings::ToastDesign;
+        let design = |d: ToastDesign, cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| {
+                for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                    this.close_overlay(&id, window, cx);
+                }
+                this.person.toast_design = d;
+                this.apply_look(window, cx);
+            });
+            cx.run_until_parked();
+        };
+        set(true, ToastDuration::Normal, cx);
+        for (d, inset, edge) in [(ToastDesign::Pill, 16.0, 1.0), (ToastDesign::Terminal, 0.0, 1.0), (ToastDesign::Banner, 0.0, 0.0)] {
+            design(d, cx);
+            open("shape", cx);
+            let (toast, bar) = (cx.debug_bounds("overlay-shape").unwrap(), bar("shape", cx).unwrap());
+            assert!((bar.left() - (toast.left() + px(edge + inset))).abs() <= px(1.0), "{d:?}: {bar:?} in {toast:?}");
+        }
+        // A banner waiting behind one kept until clicked draws no bar, so it steps nothing.
+        design(ToastDesign::Banner, cx);
+        set(true, ToastDuration::UntilDismissed, cx);
+        view.update_in(cx, |this, window, cx| {
+            this.open_overlay("kept".into(), json!({ "kind": "toast", "notification": { "title": "Failed", "level": "error" } }), window, cx);
+            this.show_copied(window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.shown_banner().map(|o| o.id.clone())).as_deref(), Some("kept"));
+        assert!(view.update(cx, |this, _| this.copied_toast.is_some()), "Copied is open, waiting");
+        step(cx);
+        assert!(!ticking(cx), "a waiting Copied runs no timer");
     }
 
     #[test]
@@ -7525,7 +7558,8 @@ mod tests {
         // The shipped mod, its root and text column keyed per toast so their bounds can be read.
         let shipped = include_str!("../defaults/mods/toast/main.js");
         let keyed = shipped.replace(r#".id("toast")"#, r#".id(`toast-${p.overlay}`)"#).replace("v_flex()\n        .flex_1()", "v_flex()\n        .id(`text-${p.overlay}`)\n        .flex_1()");
-        assert_eq!(keyed.matches("${p.overlay}").count(), 2, "the toast mod changed shape: key its root and text column again");
+        // Two roots (the card's, and the other designs') and the card's text column.
+        assert_eq!(keyed.matches("${p.overlay}").count(), 3, "the toast mod changed shape: key its roots and text column again");
         let (view, cx) = open_window(cx, "toast", &keyed, json!({"id": "root", "type": "block"}));
         let long = "A notification whose title goes on far longer than any toast is wide";
         let toasts = [
