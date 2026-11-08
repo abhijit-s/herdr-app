@@ -369,6 +369,12 @@ mod tests {
         assert_eq!(t.shown().id, "t", "the tiled tree stays as it is");
         m.tab_mut("t").unwrap().zoomed = Some("a".into());
         assert_eq!(m.tab("t").unwrap().shown_floats().count(), 2, "a zoomed tiled pane keeps the floats above it");
+        // Focusing a float, or floating another pane, keeps that zoom.
+        m.focus_pane("b");
+        m.float_pane("d", DEFAULT_RECT).unwrap();
+        let t = m.tab("t").unwrap();
+        assert_eq!((t.zoomed.as_deref(), t.shown_floats().count()), (Some("a"), 3));
+
     }
 
     /// A walk of `Tab::root` alone misses floating panes: a float's terminal

@@ -259,7 +259,9 @@ impl Tab {
     /// pane it focuses, never a hidden one. A floating pane comes to the front.
     pub fn focus(&mut self, pane: &str) {
         self.restack(pane, isize::MAX);
-        if self.zoomed.is_some() {
+        // Within its layer: focusing a float keeps a zoomed tiled pane zoomed
+        // (the floats draw over it), and the other way round.
+        if self.zoomed.as_deref().is_some_and(|z| self.float(z).is_some() == self.float(pane).is_some()) {
             self.zoomed = Some(pane.to_owned());
         }
         if let Some(old) = self.focused.take().filter(|o| o != pane) {

@@ -4606,7 +4606,7 @@ impl AppWindow {
     fn mod_block_shown(&self, id: &str) -> bool {
         self.copies.contains_key(id)
             && (self.chrome.visible_blocks().iter().any(|n| n.id == id && matches!(n.content(), Some(Content::Mod { .. })))
-                || self.model.active_tab().is_some_and(|t| t.shown().visible_blocks().iter().any(|n| n.id == id)))
+                || self.model.active_tab().is_some_and(|t| t.shown().visible_blocks().iter().any(|n| n.id == id) || t.shown_floats().any(|f| f.pane.id == id)))
     }
 
     /// Its mod.json says `"focusable": true` (`go` asks only of visible blocks).
