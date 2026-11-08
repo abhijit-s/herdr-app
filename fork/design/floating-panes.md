@@ -390,9 +390,11 @@ Axis units are working days, rough.
 ## Phase 1 limits
 
 - **`pane.go` and floats:** a float is a candidate like a tiled pane, by geometry. A float lying inside a tiled pane's area is not reached from beside that pane, because the tiled pane is nearer; `pane.float_cycle` reaches every float.
-- **Focus follows mouse** focuses the float under the pointer (never the tile below it), and focusing raises it. Hover-without-raise is phase 2's.
+- **Focus follows mouse** focuses the float under the pointer (never the tile below it) without raising it; a press or a keyboard focus raises.
 - **Hidden tabs:** a float's terminal keeps the size it last had on screen until its tab is shown again; tiled panes of hidden tabs are fitted as before.
 - **Clicking an already focused float** that was lowered doesn't raise it again; `pane.raise` does.
+- **Size below the drawn minimum:** a float's rect can be smaller than 20 × 4 cells (only 5% of the tab is kept); it is drawn at the minimum, so its drawn size and its rect differ until it is resized past it.
+- **Pane drag** (tiled panes) can choose a drop target that a float covers.
 
 ## Open questions
 
