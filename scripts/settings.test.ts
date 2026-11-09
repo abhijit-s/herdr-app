@@ -109,8 +109,8 @@ const body = source
   .replace(/^import .*;\n/gm, "")
   .replace(/^export function /gm, "function ")
   .replace("export default class Settings", "const Settings = class Settings")
-  + "\nreturn { Settings, scaleStep, spacingOf, spacingFieldsOf, sameSpacing, settlePending, searchWords, wordSpan, matchSetting, markRuns, pageFor, over, contrast, tonal, forkTag };";
-const { Settings, scaleStep, spacingOf, spacingFieldsOf, sameSpacing, settlePending, searchWords, wordSpan, matchSetting, markRuns, pageFor, over, contrast, tonal, forkTag } = new Function(...names, body)(...args);
+  + "\nreturn { Settings, scaleStep, spacingOf, spacingFieldsOf, sameSpacing, settlePending, searchWords, wordSpan, matchSetting, markRuns, pageFor, over, contrast, tonal, forkTag, oklch, themeTemperature, themeContrast, themeLook };";
+const { Settings, scaleStep, spacingOf, spacingFieldsOf, sameSpacing, settlePending, searchWords, wordSpan, matchSetting, markRuns, pageFor, over, contrast, tonal, forkTag, oklch, themeTemperature, themeContrast, themeLook } = new Function(...names, body)(...args);
 fieldsOf = spacingFieldsOf;
 const spacingOfTree = (tree: any) => spacingOf(spacingFieldsOf(tree));
 
@@ -1231,6 +1231,145 @@ test("the Themes page lists the shown slot's themes, by source, filtered by chip
   // A theme named like a layout belongs to that layout.
   view.themeSlot = "light";
   expect(rows()).not.toContain("win98");
+});
+
+// [name, background, foreground, temperature, contrast]: real themes' colours.
+const LOOKS: [string, string, string, string, string][] = [
+  ["melange-dark", "#292522", "#ece1d7", "warm", "standard"],
+  ["squirrelsong-dark", "#372920", "#b19b89", "warm", "soft"],
+  ["espresso-libre", "#2a211c", "#b8a898", "warm", "soft"],
+  ["gruvbox-material-dark", "#282828", "#d4be98", "neutral", "soft"],
+  ["kanagawa-dragon", "#181616", "#c5c9c5", "neutral", "standard"],
+  ["spacegray-eighties-dull", "#222222", "#c9c6bc", "neutral", "soft"],
+  ["zenburn", "#3f3f3f", "#dcdccc", "neutral", "soft"],
+  ["tomorrow-night-eighties", "#2d2d2d", "#cccccc", "neutral", "soft"],
+  ["tomorrow-night", "#1d1f21", "#c5c8c6", "neutral", "standard"],
+  ["a grey", "#1a1a1a", "#ffffff", "neutral", "high"],
+  ["ayu-mirage", "#1f2430", "#cccac2", "cool", "soft"],
+  ["nord", "#2e3440", "#d8dee9", "cool", "soft"],
+  ["tokyonight-night", "#1a1b26", "#c0caf5", "cool", "standard"],
+  ["dracula", "#282a36", "#f8f8f2", "cool", "high"],
+  ["rex-whitby-bay", "#2c2f3c", "#f7f7ee", "cool", "high"],
+  ["rose-pine-dawn", "#faf4ed", "#575279", "warm", "soft"],
+  ["gruvbox-light", "#fbf1c7", "#3c3836", "warm", "standard"],
+  ["github-light-default", "#ffffff", "#1f2328", "neutral", "high"],
+  ["catppuccin-latte", "#eff1f5", "#4c4f69", "cool", "soft"],
+];
+
+test("a theme's look is read off its background and text: temperature and contrast, light themes too", () => {
+  for (const [name, bg, fg, temperature, contrastTag] of LOOKS) {
+    expect([name, themeTemperature(bg)]).toEqual([name, temperature]);
+    expect([name, themeContrast(fg, bg)]).toEqual([name, contrastTag]);
+    expect([name, themeLook({ background: bg, terminal_foreground: fg })]).toEqual([name, { temperature, contrast: contrastTag }]);
+  }
+  // White and black sit at OKLCH's ends; a translucent colour reads by its RGB.
+  expect(oklch("#ffffff")[0]).toBeCloseTo(1, 4);
+  expect(oklch("#000000")[0]).toBeCloseTo(0, 4);
+  expect(themeTemperature("#292522cc")).toBe("warm");
+  // A colour the card can't read gives no tag rather than a guess.
+  expect(themeLook({ background: "#000000" })).toEqual({ temperature: "neutral", contrast: null });
+  expect(themeLook({ background: "nope", terminal_foreground: "#ffffff" })).toEqual({ temperature: null, contrast: null });
+  expect(themeLook(undefined)).toEqual({ temperature: null, contrast: null });
+  // Asked again on every draw: the same answer, worked out once.
+  expect(themeLook({ background: "#292522", terminal_foreground: "#ece1d7" })).toBe(themeLook({ background: "#292522", terminal_foreground: "#ece1d7" }));
+});
+
+test("tagging 200 themes the page hasn't seen takes well under a frame", () => {
+  const hex = (n: number) => `#${n.toString(16).padStart(6, "0")}`;
+  const colors = Array.from({ length: 200 }, (_, i) => ({ background: hex(0x0a0b0c + i * 0x10101), terminal_foreground: hex(0xf0f0f0 - i * 0x10101) }));
+  const start = performance.now();
+  for (const c of colors) themeLook(c);
+  expect(performance.now() - start).toBeLessThan(16);
+});
+
+test("look chips filter the grid with the source chips and the name filter, and count what each would list", () => {
+  const look = (name: string, bg: string, fg: string, isLight = false) => ({ name, light: isLight, colors: { background: bg, terminal_foreground: fg } });
+  themeList = [
+    look("melange-dark", "#292522", "#ece1d7"),
+    look("espresso-libre", "#2a211c", "#b8a898"),
+    look("ayu-mirage", "#1f2430", "#cccac2"),
+    look("dracula", "#282a36", "#f8f8f2"),
+    look("rex-ember-hollow", "#1b1614", "#e0cfc4"),
+    look("rex-roasted-umber", "#1a1511", "#d9c8b8"),
+    look("rex-silver-point-dark", "#171717", "#b4b4b4"),
+    look("rose-pine-dawn", "#faf4ed", "#575279", true),
+    look("github-light-default", "#ffffff", "#1f2328", true),
+  ];
+  const { view, t } = opened("themes");
+  const rows = () => view.themeRows(view.themeGroups(themeList)).map((r: any) => r.head ?? r.cards.map((x: any) => x.name).join(","));
+  const chipText = (id: string) => texts(find(view.themesPage(t), id));
+  const click = (id: string) => find(view.themesPage(t), id).calls.on_click[0](null, searchCx);
+  expect(chipText("st-tl-warm")).toEqual(["Warm 4"]);
+  expect(chipText("st-tl-neutral")).toEqual(["Neutral 1"]);
+  expect(chipText("st-tl-cool")).toEqual(["Cool 2"]);
+  expect(chipText("st-tl-soft")).toEqual(["Soft 3"]);
+  expect(chipText("st-tl-standard")).toEqual(["Standard contrast 3"]);
+  expect(chipText("st-tl-high")).toEqual(["High contrast 1"]);
+  // Warm, then Soft: both rows apply, and each row's counts follow the other's pick.
+  click("st-tl-warm");
+  expect(rows()).toEqual(["standard", "melange-dark,espresso-libre", "rex", "rex-ember-hollow,rex-roasted-umber"]);
+  expect(chipText("st-tl-soft")).toEqual(["Soft 1"]);
+  expect(chipText("st-tl-standard")).toEqual(["Standard contrast 3"]);
+  expect(chipText("st-tl-cool")).toEqual(["Cool 2"]);
+  click("st-tl-soft");
+  expect(rows()).toEqual(["espresso-libre"]);
+  expect(chipText("st-tl-cool")).toEqual(["Cool 1"]);
+  expect(chipText("st-tc-all")).toEqual(["All 1"]);
+  // One pick per row: Standard replaces Soft.
+  click("st-tl-standard");
+  expect(view.themeLooks).toEqual({ temperature: "warm", contrast: "standard" });
+  expect(rows()).toEqual(["standard", "melange-dark", "rex", "rex-ember-hollow,rex-roasted-umber"]);
+  // The source chip narrows the look counts; the name filter narrows both.
+  click("st-tc-rex");
+  expect(rows()).toEqual(["rex-ember-hollow,rex-roasted-umber"]);
+  expect(chipText("st-tl-neutral")).toEqual(["Neutral 0"]);
+  view.themeFilter = "ember";
+  expect(rows()).toEqual(["rex-ember-hollow"]);
+  expect(chipText("st-tl-warm")).toEqual(["Warm 1"]);
+  view.themeFilter = "";
+  // A look that empties the picked source keeps its chip, at 0, to be left.
+  view.themeLooks = { temperature: "cool", contrast: "high" };
+  expect(rows()).toEqual([]);
+  expect(chipText("st-tc-rex")).toEqual(["Rex 0"]);
+  expect(chipText("st-tc-standard")).toEqual(["Standard 1"]);
+  view.themeSource = "standard";
+  expect(find(view.themesPage(t), "st-tc-rex")).toBeUndefined();
+  view.themeLooks = { temperature: "warm", contrast: "standard" };
+  view.themeSource = null;
+  // A second click on the picked chip clears its row.
+  click("st-tl-standard");
+  expect(view.themeLooks).toEqual({ temperature: "warm", contrast: null });
+  // Closing a source still works under a look.
+  view.themesClosed.add("standard");
+  expect(rows()).toEqual(["standard", "rex", "rex-ember-hollow,rex-roasted-umber"]);
+  view.themesClosed.clear();
+  // A look the shown slot has none of lists nothing, and its chip stays to be cleared.
+  click("st-tl-neutral");
+  click("st-tl-high");
+  expect(rows()).toEqual([]);
+  expect(find(view.themesPage(t), "st-themes-none")).toBeDefined();
+  expect(chipText("st-tl-high")).toEqual(["High contrast 0"]);
+  // Light themes carry the same tags.
+  view.themeLooks = { temperature: null, contrast: null };
+  view.themeSlot = "light";
+  click("st-tl-warm");
+  expect(rows()).toEqual(["rose-pine-dawn"]);
+  view.themeLooks = { temperature: null, contrast: "high" };
+  expect(rows()).toEqual(["github-light-default"]);
+});
+
+test("picking a look chip scrolls the grid again", () => {
+  themeList = Array.from({ length: 12 }, (_, i) => ({ name: `theme-${String(i).padStart(2, "0")}`, light: false, colors: { background: i % 2 ? "#292522" : "#1f2430", terminal_foreground: "#cccac2" } }));
+  composed = { theme_dark: "theme-11" };
+  const { view, t } = opened("themes");
+  composed = { theme_dark: "theme-11" };
+  view.themesPage(t);
+  const before = view.themeScroll.scrolls.length;
+  find(view.themesPage(t), "st-tl-cool").calls.on_click[0](null, searchCx);
+  view.themesPage(t);
+  // theme-11 is warm: filtered out, the list starts at the top.
+  expect(view.themeScroll.scrolls.length).toBe(before + 1);
+  expect(view.themeScroll.scrolls.at(-1)).toEqual([0, "top"]);
 });
 
 test("the theme grid scrolls to the picked theme when it opens and when what it lists changes, not on every draw", () => {

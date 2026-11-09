@@ -132,6 +132,34 @@ const THEME_SOURCES = [
   ["standard", "Standard"],
   ["rex", "Rex"],
 ];
+const themeSourceOf = (x) => (x.name.startsWith(REX_PREFIX) ? "rex" : "standard");
+// Look tags, read off a theme's own colours in OKLCH (perceptual lightness,
+// chroma, hue). Temperature is the background's: below NEUTRAL_CHROMA it is
+// grey whatever its hue (dark greys carry a trace of tint that isn't seen);
+// above, reds, oranges, yellows and browns (hue WARM_FROM° round to WARM_TO°)
+// are warm and greens, teals, blues and purples cool.
+const THEME_TEMPERATURES = [
+  ["warm", "Warm"],
+  ["neutral", "Neutral"],
+  ["cool", "Cool"],
+];
+const NEUTRAL_CHROMA = 0.005;
+const WARM_FROM = 330;
+const WARM_TO = 115;
+// Contrast is the OKLCH lightness gap between text and background, so a
+// light theme reads like a dark one: under SOFT_GAP it's soft (greyish text
+// such as #cccac2 on #1f2430, a gap of 0.58), from HIGH_GAP high. Text
+// within NEAR_EXTREME of white is high whatever the background (#f7f7ee on a
+// lifted #2c2f3c is still glaring); near-black text on a light theme already
+// clears HIGH_GAP. The cut-offs split the author's 173 themes 63 : 77 : 33.
+const THEME_CONTRASTS = [
+  ["soft", "Soft"],
+  ["standard", "Standard contrast"],
+  ["high", "High contrast"],
+];
+const SOFT_GAP = 0.59;
+const HIGH_GAP = 0.68;
+const NEAR_EXTREME = 0.05;
 // The theme grid: cards to a row and their size, so the list knows each row's height.
 const THEME_COLUMNS = 5;
 const THEME_CARD_W = 112;
@@ -456,6 +484,50 @@ export function contrast(a, b) {
   return (hi + 0.05) / (lo + 0.05);
 }
 
+/** A color in OKLCH: [lightness 0..1, chroma, hue in degrees]. */
+export function oklch(hex) {
+  const [r, g, b] = rgbOf(hex).map((v) => (v /= 255) <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  const [L, A, B] = [0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s, 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s, 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s];
+  return [L, Math.hypot(A, B), ((Math.atan2(B, A) * 180) / Math.PI + 360) % 360];
+}
+
+/** "warm", "neutral" or "cool": how a theme's background reads. */
+export function themeTemperature(background) {
+  const [, chroma, hue] = oklch(background);
+  if (chroma < NEUTRAL_CHROMA) return "neutral";
+  return hue >= WARM_FROM || hue < WARM_TO ? "warm" : "cool";
+}
+
+/** "soft", "standard" or "high": how hard a theme's text stands off its background. */
+export function themeContrast(foreground, background) {
+  const [fg, bg] = [oklch(foreground)[0], oklch(background)[0]];
+  const gap = Math.abs(fg - bg);
+  if (gap >= HIGH_GAP || fg >= 1 - NEAR_EXTREME) return "high";
+  return gap < SOFT_GAP ? "soft" : "standard";
+}
+
+const HEX_COLOR = /^#[0-9a-f]{6}([0-9a-f]{2})?$/i;
+const lookMemo = new Map();
+/**
+ * A theme's look tags from its card colours: { temperature, contrast }, each
+ * null when the colour it reads is missing. Kept per colour pair, since the
+ * Themes page asks again on every draw.
+ */
+export function themeLook(colors) {
+  const [bg, fg] = [colors?.background, colors?.terminal_foreground];
+  const key = `${bg}|${fg}`;
+  let look = lookMemo.get(key);
+  if (!look) {
+    const ok = (c) => typeof c === "string" && HEX_COLOR.test(c);
+    look = { temperature: ok(bg) ? themeTemperature(bg) : null, contrast: ok(bg) && ok(fg) ? themeContrast(fg, bg) : null };
+    lookMemo.set(key, Object.freeze(look));
+  }
+  return look;
+}
+
 /**
  * How a selected row, tab, chip or card draws: `fill` the accent (or ring) at
  * a sixth over the dialog, `text` the accent moved toward the foreground until
@@ -485,6 +557,8 @@ export default class Settings extends View {
     const s = settings();
     this.themeSlot = s.theme === s.theme_light && s.theme !== s.theme_dark ? "light" : "dark";
     this.themeSource = null;
+    // Look chips: one temperature and one contrast at most, null for any.
+    this.themeLooks = { temperature: null, contrast: null };
     this.themeFilter = "";
     this.themesClosed = new Set();
     this.themeScroll = VirtualListScrollHandle.new();
@@ -1395,18 +1469,43 @@ export default class Settings extends View {
       .when(!this.words.length, (el) => el.child(this.themeGrid(t, all, sel)));
   }
 
-  // The themes the shown slot can take that match the filter, by source:
-  // [[source, title, themes]], sources with none left out.
-  themeGroups(all) {
+  // The themes the shown slot can take that match the filter.
+  themeCandidates(all) {
     const words = searchWords(this.themeFilter);
     const light = this.themeSlot === "light";
     const [layout, others] = [shared("layout"), layouts()];
-    const shown = all.filter(
+    return all.filter(
       // A theme named like a layout (themes/win98.json) is that layout's own.
       (x) => Boolean(x.light) === light && (x.name === layout || !others.includes(x.name)) && words.every((w) => fold(x.name).includes(w)),
     );
-    const sourceOf = (x) => (x.name.startsWith(REX_PREFIX) ? "rex" : "standard");
-    return THEME_SOURCES.map(([id, title]) => [id, title, shown.filter((x) => sourceOf(x) === id)]).filter(([, , list]) => list.length);
+  }
+
+  // Whether a theme has the picked look chips, leaving out the `except` row's.
+  themeHasLooks(x, except) {
+    const look = themeLook(x.colors);
+    return Object.entries(this.themeLooks).every(([row, id]) => row === except || !id || look[row] === id);
+  }
+
+  // The candidates with the picked looks, by source: [[source, title, themes]],
+  // sources with none left out.
+  themeGroups(all) {
+    const shown = this.themeCandidates(all).filter((x) => this.themeHasLooks(x));
+    return THEME_SOURCES.map(([id, title]) => [id, title, shown.filter((x) => themeSourceOf(x) === id)]).filter(([, , list]) => list.length);
+  }
+
+  // How many themes each look chip would list, with the source and the other row's pick.
+  themeLookCounts(all) {
+    const base = this.themeCandidates(all).filter((x) => !this.themeSource || themeSourceOf(x) === this.themeSource);
+    const counts = {};
+    for (const row of Object.keys(this.themeLooks)) {
+      counts[row] = {};
+      for (const x of base) {
+        if (!this.themeHasLooks(x, row)) continue;
+        const id = themeLook(x.colors)[row];
+        if (id) counts[row][id] = (counts[row][id] ?? 0) + 1;
+      }
+    }
+    return counts;
   }
 
   // The grid's rows for `groups`: a heading per source while more than one
@@ -1429,17 +1528,16 @@ export default class Settings extends View {
     const current = this.themeSlot === "light" ? s.theme_light : s.theme_dark;
     const groups = this.themeGroups(all);
     const rows = this.themeRows(groups);
-    const listed = `${this.themeSlot}|${this.themeSource}|${this.themeFilter}|${[...this.themesClosed]}`;
+    const listed = `${this.themeSlot}|${this.themeSource}|${this.themeLooks.temperature}|${this.themeLooks.contrast}|${this.themeFilter}|${[...this.themesClosed]}`;
     if (listed !== this.themeScrolledFor) {
       this.themeScrolledFor = listed;
       const at = rows.findIndex((r) => r.cards?.some((x) => x.name === current));
       // Listed: the picked theme; filtered out: the top, not wherever the last listing was.
       if (rows.length) this.themeScroll.scroll_to_item(Math.max(at, 0), at >= 0 ? "center" : "top");
     }
-    const chip = (id, label, count) => {
-      const on = this.themeSource === id;
-      return div()
-        .id(`st-tc-${id ?? "all"}`)
+    const pill = (key, on, label, count, pick) =>
+      div()
+        .id(key)
         .px(10)
         .py(3)
         .rounded(12)
@@ -1450,11 +1548,18 @@ export default class Settings extends View {
         .when(on, (el) => el.bg(sel.fill).text_color(sel.text).font_semibold())
         .when(!on, (el) => el.text_color(t.muted).hover((st) => st.bg(hoverFill(t))))
         .on_click((_e, cx) => {
-          this.themeSource = id;
+          pick();
           cx.notify();
         })
         .child(`${label} ${count}`);
-    };
+    const chip = (id, label, count) => pill(`st-tc-${id ?? "all"}`, this.themeSource === id, label, count, () => (this.themeSource = id));
+    // A look chip toggles: a second click on the picked one shows every look again.
+    const counts = this.themeLookCounts(all);
+    const lookChips = (row, chips) =>
+      chips.map(([id, label]) => {
+        const pick = () => (this.themeLooks[row] = this.themeLooks[row] === id ? null : id);
+        return pill(`st-tl-${id}`, this.themeLooks[row] === id, label, counts[row][id] ?? 0, pick);
+      });
     const total = groups.reduce((n, [, , list]) => n + list.length, 0);
     const head = (r) =>
       h_flex()
@@ -1480,9 +1585,19 @@ export default class Settings extends View {
           .gap(6)
           .items_center()
           .child(chip(null, "All", total))
-          .children(groups.map(([id, title, list]) => chip(id, title, list.length)))
+          // The picked source keeps its chip when a look or the filter empties it.
+          .children(THEME_SOURCES.map(([id, title]) => [id, title, groups.find(([g]) => g === id)?.[2].length ?? 0]).filter(([id, , n]) => n || id === this.themeSource).map(([id, title, n]) => chip(id, title, n)))
           .child(div().flex_1())
           .child(h_flex().w(160).h(26).px(8).items_center().rounded(7).border_1().border_color(this.themeInputFocused ? t.accent : t.border).bg(t.background).text_size(12).child(Input.new(this.themeInput).flex_1().h(24).text_color(t.foreground))),
+      )
+      .child(
+        h_flex()
+          .w_full()
+          .gap(6)
+          .items_center()
+          .children(lookChips("temperature", THEME_TEMPERATURES))
+          .child(div().w(1).h(16).mx(4).bg(t.border))
+          .children(lookChips("contrast", THEME_CONTRASTS)),
       )
       .child(
         rows.length
