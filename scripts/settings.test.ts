@@ -1216,6 +1216,7 @@ const LOOKS: [string, string, string, string, string][] = [
   ["spacegray-eighties-dull", "#222222", "#c9c6bc", "neutral", "soft"],
   ["zenburn", "#3f3f3f", "#dcdccc", "neutral", "soft"],
   ["tomorrow-night-eighties", "#2d2d2d", "#cccccc", "neutral", "soft"],
+  ["tomorrow-night", "#1d1f21", "#c5c8c6", "neutral", "standard"],
   ["a grey", "#1a1a1a", "#ffffff", "neutral", "high"],
   ["ayu-mirage", "#1f2430", "#cccac2", "cool", "soft"],
   ["nord", "#2e3440", "#d8dee9", "cool", "soft"],
@@ -1299,6 +1300,14 @@ test("look chips filter the grid with the source chips and the name filter, and 
   expect(rows()).toEqual(["rex-ember-hollow"]);
   expect(chipText("st-tl-warm")).toEqual(["Warm 1"]);
   view.themeFilter = "";
+  // A look that empties the picked source keeps its chip, at 0, to be left.
+  view.themeLooks = { temperature: "cool", contrast: "high" };
+  expect(rows()).toEqual([]);
+  expect(chipText("st-tc-rex")).toEqual(["Rex 0"]);
+  expect(chipText("st-tc-standard")).toEqual(["Standard 1"]);
+  view.themeSource = "standard";
+  expect(find(view.themesPage(t), "st-tc-rex")).toBeUndefined();
+  view.themeLooks = { temperature: "warm", contrast: "standard" };
   view.themeSource = null;
   // A second click on the picked chip clears its row.
   click("st-tl-standard");

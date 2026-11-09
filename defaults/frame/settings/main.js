@@ -149,9 +149,9 @@ const WARM_TO = 115;
 // Contrast is the OKLCH lightness gap between text and background, so a
 // light theme reads like a dark one: under SOFT_GAP it's soft (greyish text
 // such as #cccac2 on #1f2430, a gap of 0.58), from HIGH_GAP high. Text
-// within NEAR_EXTREME of white (or of black on a light theme) is high
-// whatever the background. The cut-offs split ~170 popular themes roughly
-// 3 : 4 : 2.
+// within NEAR_EXTREME of white is high whatever the background (#f7f7ee on a
+// lifted #2c2f3c is still glaring); near-black text on a light theme already
+// clears HIGH_GAP. The cut-offs split the author's 173 themes 63 : 77 : 33.
 const THEME_CONTRASTS = [
   ["soft", "Soft"],
   ["standard", "Standard contrast"],
@@ -484,7 +484,7 @@ export function themeTemperature(background) {
 export function themeContrast(foreground, background) {
   const [fg, bg] = [oklch(foreground)[0], oklch(background)[0]];
   const gap = Math.abs(fg - bg);
-  if (gap >= HIGH_GAP || (bg < 0.5 ? fg >= 1 - NEAR_EXTREME : fg <= NEAR_EXTREME)) return "high";
+  if (gap >= HIGH_GAP || fg >= 1 - NEAR_EXTREME) return "high";
   return gap < SOFT_GAP ? "soft" : "standard";
 }
 
@@ -502,7 +502,7 @@ export function themeLook(colors) {
   if (!look) {
     const ok = (c) => typeof c === "string" && HEX_COLOR.test(c);
     look = { temperature: ok(bg) ? themeTemperature(bg) : null, contrast: ok(bg) && ok(fg) ? themeContrast(fg, bg) : null };
-    lookMemo.set(key, look);
+    lookMemo.set(key, Object.freeze(look));
   }
   return look;
 }
@@ -1535,8 +1535,8 @@ export default class Settings extends View {
     const counts = this.themeLookCounts(all);
     const lookChips = (row, chips) =>
       chips.map(([id, label]) => {
-        const on = this.themeLooks[row] === id;
-        return pill(`st-tl-${id}`, on, label, counts[row][id] ?? 0, () => (this.themeLooks[row] = on ? null : id));
+        const pick = () => (this.themeLooks[row] = this.themeLooks[row] === id ? null : id);
+        return pill(`st-tl-${id}`, this.themeLooks[row] === id, label, counts[row][id] ?? 0, pick);
       });
     const total = groups.reduce((n, [, , list]) => n + list.length, 0);
     const head = (r) =>
@@ -1563,7 +1563,8 @@ export default class Settings extends View {
           .gap(6)
           .items_center()
           .child(chip(null, "All", total))
-          .children(groups.map(([id, title, list]) => chip(id, title, list.length)))
+          // The picked source keeps its chip when a look or the filter empties it.
+          .children(THEME_SOURCES.map(([id, title]) => [id, title, groups.find(([g]) => g === id)?.[2].length ?? 0]).filter(([id, , n]) => n || id === this.themeSource).map(([id, title, n]) => chip(id, title, n)))
           .child(div().flex_1())
           .child(h_flex().w(160).h(26).px(8).items_center().rounded(7).border_1().border_color(this.themeInputFocused ? t.accent : t.border).bg(t.background).text_size(12).child(Input.new(this.themeInput).flex_1().h(24).text_color(t.foreground))),
       )
