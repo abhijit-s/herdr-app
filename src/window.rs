@@ -8861,7 +8861,8 @@ export default class Recent extends View {
         // Through the window's own settings, which a later look resolve keeps.
         let set = |cx: &mut gpui::VisualTestContext, trail: CursorTrail| {
             view.update_in(cx, |this, window, cx| {
-                (this.person.cursor_trail, this.person.cursor_arrival, this.person.cursor_trail_duration_ms) = (trail, Arrival::Ripple, 1000);
+                // 80 ms, so the test's 16 ms burst stays within it.
+                (this.person.cursor_trail, this.person.cursor_arrival, this.person.cursor_trail_duration_ms, this.person.cursor_trail_settle_ms) = (trail, Arrival::Ripple, 1000, 80);
                 this.apply_look(window, cx);
             });
         };

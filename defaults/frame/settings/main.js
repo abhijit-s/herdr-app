@@ -328,8 +328,8 @@ const ARRIVALS = [
 ];
 // cursor_trail_settle_ms and cursor_trail_min_cells: the app's SETTLE_MS and MIN_CELLS ranges and defaults (settings.rs).
 const SETTLE_MS = [0, 500];
-const SETTLE_MS_DEFAULT = 80;
-const MIN_CELLS = [1, 50];
+const SETTLE_MS_DEFAULT = 10;
+const MIN_CELLS = [0, 50];
 const MIN_CELLS_DEFAULT = 2;
 // cursor_trail_duration_ms: the app's TRAIL_MS range and TRAIL_MS_DEFAULT (settings.rs).
 const TRAIL_MS = [50, 1000];
@@ -1819,7 +1819,7 @@ export default class Settings extends View {
   // Cursor effects: the trail (Off, Between panes, or that and the focused pane's cursor
   // jumps), its style while it's on, the arrival pulse, how long they take (20 ms steps)
   // while either is on, and, for jumps, how still the cursor must be (10 ms steps) and
-  // how far it must move. Off, Comet, Off, 120 ms, 80 ms and 2 cells are the defaults,
+  // how small a move it ignores. Off, Comet, Off, 120 ms, 10 ms and 2 cells are the defaults,
   // left out of settings.json.
   cursorPage(t) {
     const on = (this.person.cursor_trail ?? "off") !== "off";
@@ -1854,7 +1854,7 @@ export default class Settings extends View {
       .when(jumps, (el) =>
         el
           .child(this.row(t, "Settle time", "How long the cursor stays still before a jump counts, so streaming output draws nothing until it stops.", this.stepper(t, "st-cursor_trail_settle_ms", `${settle} ms`, settleLess, settleMore), "cursor_trail_settle_ms"))
-          .child(this.row(t, "Jump distance", "How far the cursor must move from where it last settled, in cells.", this.stepper(t, "st-cursor_trail_min_cells", `${cells} ${cells === 1 ? "cell" : "cells"}`, cellsLess, cellsMore), "cursor_trail_min_cells")),
+          .child(this.row(t, "Ignore moves up to", "Moves of this many cells or fewer from where the cursor last settled draw nothing, so typing never does, as in kitty. 0 draws every move.", this.stepper(t, "st-cursor_trail_min_cells", `${cells} ${cells === 1 ? "cell" : "cells"}`, cellsLess, cellsMore), "cursor_trail_min_cells")),
       )
       .child(this.row(t, "Arrival effect", "A pulse at the cursor as the focus lands in another pane, with the trail or without it; with Panes and jumps, also after a jump or a cursor shape change.", this.choicePicker(t, "st-ca", "cursor_arrival", ARRIVALS), "cursor_arrival"))
       .when(on || pulse, (el) =>
