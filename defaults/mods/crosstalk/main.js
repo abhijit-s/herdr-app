@@ -273,7 +273,7 @@ export default class Crosstalk extends View {
       .when(Boolean(goes), (el) => el.child(div().text_size(11).text_color(t.blocked).child(goes)))
       .child(h_flex().gap(6)
         .child(button("ack", "Done", (_e, cx) => this.act("ack", { id: e.id }, cx)))
-        .child(button("snooze", "Snooze 10 min", (_e, cx) => this.act("nack", { id: e.id, delay_s: SNOOZE_S }, cx)))
+        .child(button("snooze", "Snooze 10 min", (_e, cx) => this.act("nack", { id: e.id, delay: SNOOZE_S }, cx)))
         .when(Boolean(term), (el) => el.child(button("pane", "Open sender's pane", () => run("pane.focus", { terminal: term })))))
       .child(div().h(30).px(10).flex().items_center().rounded(8).border_1().border_color(t.border).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.input).h_full().text_size(12)));
   }

@@ -166,13 +166,13 @@ test("actions are one call each with the pinned params", async () => {
   const sent = (m: string) => h.calls.filter((c) => c.args[0] === "rpc" && c.args[1] === m).map((c) => JSON.parse(c.args[2]));
   h.view.open = "01A";
   h.view.act("ack", { id: "01A" }, h.cx);
-  h.view.act("nack", { id: "01A", delay_s: 600 }, h.cx);
+  h.view.act("nack", { id: "01A", delay: 600 }, h.cx);
   h.view.act("task.claim", { id: "T1", expect_status: "open", expect_version: 3 }, h.cx);
   h.input.set_value("  thanks  ");
   h.view.reply(h.cx);
   await h.settle();
   expect(sent("ack")).toEqual([{ id: "01A" }]);
-  expect(sent("nack")).toEqual([{ id: "01A", delay_s: 600 }]);
+  expect(sent("nack")).toEqual([{ id: "01A", delay: 600 }]);
   expect(sent("task.claim")).toEqual([{ id: "T1", expect_status: "open", expect_version: 3 }]);
   const [pub] = sent("publish");
   expect(pub.envelope).toMatchObject({ to: ["data.agent.mbp.review"], in_reply_to: "01A", body: { text: "thanks" } });
