@@ -1488,7 +1488,7 @@ pub struct Person {
     /// unset, the layout's `focus` width.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focus_border_width: Option<f32>,
-    /// A comet drawn from one pane's cursor to the next as the focus moves
+    /// A glowing streak from one pane's cursor to the next as the focus moves
     /// between panes (window/cursor_trail.rs): `off` or `panes`.
     #[serde(skip_serializing_if = "CursorTrail::is_off")]
     pub cursor_trail: CursorTrail,
@@ -1773,7 +1773,7 @@ impl CursorTrail {
     }
 }
 
-pub const TRAIL_MS_DEFAULT: u32 = 150;
+pub const TRAIL_MS_DEFAULT: u32 = 120;
 /// Long enough to see, short enough that a trail never outstays the next keypress.
 pub const TRAIL_MS: std::ops::RangeInclusive<u32> = 50..=1000;
 

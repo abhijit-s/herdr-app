@@ -367,17 +367,17 @@ test("cursor trail sits on the Panes page, writes panes and leaves off out", () 
   expect(shown).toContain("Appearance › Panes|PANES|Cursor");
 });
 
-test("trail time shows only while the trail is on, and steps by 25 ms within 50 to 1000, leaving 150 out", () => {
+test("trail time shows only while the trail is on, and steps by 20 ms within 50 to 1000, leaving 120 out", () => {
   const step = (person: Record<string, any>, id: string) => click(person, {}, id, [], "panes");
   expect(() => step({}, "st-cursor_trail_duration_ms-plus")).toThrow();
   expect(() => step({ cursor_trail: "off" }, "st-cursor_trail_duration_ms-plus")).toThrow();
   const on = { cursor_trail: "panes" };
-  expect(step(on, "st-cursor_trail_duration_ms-plus")).toEqual({ ...on, cursor_trail_duration_ms: 175 });
-  expect(step(on, "st-cursor_trail_duration_ms-minus")).toEqual({ ...on, cursor_trail_duration_ms: 125 });
+  expect(step(on, "st-cursor_trail_duration_ms-plus")).toEqual({ ...on, cursor_trail_duration_ms: 140 });
+  expect(step(on, "st-cursor_trail_duration_ms-minus")).toEqual({ ...on, cursor_trail_duration_ms: 100 });
   expect(step({ ...on, cursor_trail_duration_ms: 50 }, "st-cursor_trail_duration_ms-minus")).toEqual({ ...on, cursor_trail_duration_ms: 50 });
   expect(step({ ...on, cursor_trail_duration_ms: 1000 }, "st-cursor_trail_duration_ms-plus")).toEqual({ ...on, cursor_trail_duration_ms: 1000 });
-  expect(step({ ...on, cursor_trail_duration_ms: 5000 }, "st-cursor_trail_duration_ms-minus")).toEqual({ ...on, cursor_trail_duration_ms: 975 });
-  expect(step({ ...on, cursor_trail_duration_ms: 175 }, "st-cursor_trail_duration_ms-minus")).toEqual(on);
+  expect(step({ ...on, cursor_trail_duration_ms: 5000 }, "st-cursor_trail_duration_ms-minus")).toEqual({ ...on, cursor_trail_duration_ms: 980 });
+  expect(step({ ...on, cursor_trail_duration_ms: 140 }, "st-cursor_trail_duration_ms-minus")).toEqual(on);
 });
 
 test("focus border picks a theme color into colors.focus and from theme takes it out", () => {

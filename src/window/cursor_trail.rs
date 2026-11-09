@@ -1,11 +1,14 @@
 //! Cursor trail (`cursor_trail` in settings.json): as the focus moves from one
-//! pane of the shown tab to another, a cursor-sized quad stretches from the old
-//! pane's cursor to the new one's and its tail chases the cursor, as kitty's
-//! `cursor_trail` does. The head is on the new cursor from the first frame;
-//! the tail's corners decay toward it exponentially, those facing the move
-//! faster than those behind, and the whole trail is gone within
-//! `cursor_trail_duration_ms`. It is drawn above the tiled and floating panes,
-//! below dialogs.
+//! pane of the shown tab to another, a glowing streak runs from the new pane's
+//! cursor back toward the old one's and retracts into the cursor, as Rex's
+//! and kitty's cursor trails do. Its head is on the new cursor from the first
+//! frame, about a cell high; it tapers to a point at its tail, which decays
+//! toward the head and is gone within `cursor_trail_duration_ms`. It is drawn
+//! above the tiled and floating panes, below dialogs.
+//!
+//! GPUI has no blur, so the glow is the same tapered outline drawn wider and
+//! fainter behind a paler core: `LAYERS`, four paths a frame while it runs.
+//! Every color is the theme's cursor color (or `cursor_trail_color`).
 //!
 //! Each end is the terminal's `trail_anchor`: its cursor cell, shown or
 //! hidden, else its middle cell. A pane that isn't a painted terminal (never
@@ -20,17 +23,26 @@
 
 use super::*;
 
-/// The slowest corner's decay time constant, as a share of the trail's
-/// duration (`settle` lands it exactly at the end).
-const SLOW: f32 = 1.0 / 3.0;
-/// A corner square to the move decays this much faster, as kitty's default
-/// `cursor_trail_decay 0.1 0.4`.
-const FAST: f32 = SLOW / 4.0;
-/// The trail's opacity as it starts, on top of the cursor color's own: the
-/// cursor's; it eases out to nothing at its end.
-const OPACITY: f32 = 1.0;
-/// Below this many px left to go, the tail has reached the cursor.
+/// The tail's decay time constant, as a share of the trail's duration
+/// (`settle` lands it exactly on the head at the end).
+const TAIL: f32 = 1.0 / 3.0;
+/// Below this many px long, the streak has gone into the cursor.
 const CAUGHT_UP: f32 = 0.5;
+/// Samples along each side of the streak, head to tail.
+const SIDE: usize = 6;
+/// How fast the width falls off toward the tail: under 1, a spindle that
+/// stays full near the head and narrows to a needle point.
+const TAPER: f32 = 0.6;
+/// The layers drawn, back to front: (width against the cell's height, opacity,
+/// paler core). The wide faint ones are the glow.
+const LAYERS: [(f32, f32, bool); 4] = [
+    (2.4, 0.06, false),
+    (1.7, 0.15, false),
+    (1.0, 0.35, false),
+    (0.45, 1.0, true),
+];
+/// How far the core's color is mixed toward white.
+const CORE_WHITE: f32 = 0.45;
 
 /// A trail being drawn, toward the terminal `pane` shows.
 pub(super) struct Trail {
@@ -55,71 +67,78 @@ pub(super) fn progress(elapsed: Duration, duration: Duration) -> Option<f32> {
     (elapsed < duration).then(|| elapsed.as_secs_f32() / duration.as_secs_f32())
 }
 
-/// A cell's corners, clockwise from the top left.
-fn corners(cell: Bounds<Pixels>) -> [(f32, f32); 4] {
-    let (x, y) = (f32::from(cell.origin.x), f32::from(cell.origin.y));
-    let (w, h) = (f32::from(cell.size.width), f32::from(cell.size.height));
-    [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+/// How much of its way the tail has left at progress `t`: exponential decay,
+/// scaled so it is exactly none at the end.
+fn settle(t: f32) -> f32 {
+    let end = (-1.0 / TAIL).exp();
+    ((-t / TAIL).exp() - end) / (1.0 - end)
 }
 
-/// A corner's decay time constant, as a share of the trail's duration, from
-/// how far it faces the move (`facing`, -1 behind to 1 ahead): those ahead of
-/// the cell's middle are the head and sit on the cursor at once (0), one
-/// square to the move takes `FAST`, the one straight behind `SLOW`.
-fn decay(facing: f32) -> f32 {
-    if facing > 1e-3 {
-        0.0
-    } else {
-        SLOW + (FAST - SLOW) * (1.0 + facing.max(-1.0))
-    }
-}
-
-/// How much of its way a corner with decay time `tau` has left at progress
-/// `t`: exponential decay, scaled so it is exactly none at the end.
-fn settle(t: f32, tau: f32) -> f32 {
-    let end = (-1.0 / tau).exp();
-    ((-t / tau).exp() - end) / (1.0 - end)
-}
-
-/// The trail at progress `t` from the cell `from` to the cell `to`: each of
-/// the quad's corners starts at `from`'s and decays toward `to`'s, so it is
-/// cursor-sized at both ends and stretched between. None once every corner is
-/// within `CAUGHT_UP` of the cursor (or for the same cell).
-pub(super) fn comet(
+/// The streak at progress `t` from the cell `from` to the cell `to`, `widen`
+/// times the cell's height across at the head: a closed outline from the tail
+/// point along one side to the head, round the head's nose and back along the
+/// other side. The head is `to`'s middle throughout; the tail starts at
+/// `from`'s and decays toward it. None once it is shorter than `CAUGHT_UP`
+/// (or for the same cell).
+pub(super) fn streak(
     from: Bounds<Pixels>,
     to: Bounds<Pixels>,
     t: f32,
-) -> Option<[Point<Pixels>; 4]> {
-    let t = t.clamp(0.0, 1.0);
+    widen: f32,
+) -> Option<Vec<Point<Pixels>>> {
     let (a, b) = (from.center(), to.center());
-    let (dx, dy) = (
-        f32::from(b.x) - f32::from(a.x),
-        f32::from(b.y) - f32::from(a.y),
-    );
+    let head = (f32::from(b.x), f32::from(b.y));
+    let k = settle(t.clamp(0.0, 1.0));
+    let (dx, dy) = ((f32::from(a.x) - head.0) * k, (f32::from(a.y) - head.1) * k);
     let len = dx.hypot(dy);
     if len.is_nan() || len < CAUGHT_UP {
         return None;
     }
-    let (ux, uy) = (dx / len, dy / len);
-    let (start, end) = (corners(from), corners(to));
-    let mut left = 0.0f32;
-    let mut quad = [point(px(0.0), px(0.0)); 4];
-    for (i, (s, e)) in start.into_iter().zip(end).enumerate() {
-        // The corner's direction from the cell's middle, unit length.
-        let (cx, cy) = ([-1.0, 1.0, 1.0, -1.0][i], [-1.0, -1.0, 1.0, 1.0][i]);
-        let tau = decay((cx * ux + cy * uy) / std::f32::consts::SQRT_2);
-        let k = if tau == 0.0 { 0.0 } else { settle(t, tau) };
-        let (x, y) = (e.0 + (s.0 - e.0) * k, e.1 + (s.1 - e.1) * k);
-        left = left.max((x - e.0).hypot(y - e.1));
-        quad[i] = point(px(x), px(y));
-    }
-    (left >= CAUGHT_UP).then_some(quad)
+    // u points from the head back to the tail; n across it.
+    let (u, n) = ((dx / len, dy / len), (-dy / len, dx / len));
+    let half = f32::from(to.size.height) * widen / 2.0;
+    let at = |along: f32, across: f32| {
+        point(
+            px(head.0 + u.0 * along + n.0 * across),
+            px(head.1 + u.1 * along + n.1 * across),
+        )
+    };
+    let width = |s: f32| half * (1.0 - s).powf(TAPER);
+    let mut outline = Vec::with_capacity(2 * SIDE + 4);
+    outline.push(at(len, 0.0));
+    outline.extend(
+        (1..SIDE)
+            .rev()
+            .map(|i| i as f32 / SIDE as f32)
+            .map(|s| at(s * len, width(s))),
+    );
+    // The nose: a half circle's worth of points ahead of the head.
+    outline.extend(
+        [0.0f32, 0.5, 0.85, 1.0, 0.85, 0.5, 0.0]
+            .iter()
+            .zip([1.0f32, 0.87, 0.5, 0.0, -0.5, -0.87, -1.0])
+            .map(|(ahead, side)| at(-half * ahead, half * side)),
+    );
+    outline.extend(
+        (1..SIDE)
+            .map(|i| i as f32 / SIDE as f32)
+            .map(|s| at(s * len, -width(s))),
+    );
+    Some(outline)
 }
 
-/// The trail's opacity at progress `t`: full as it starts, easing out with
-/// the slowest corner's distance, to nothing at the end.
+/// The trail's opacity at progress `t`: full as it starts, easing out as the
+/// streak shortens, to nothing at the end.
 pub(super) fn opacity(t: f32) -> f32 {
-    OPACITY * settle(t.clamp(0.0, 1.0), SLOW).clamp(0.0, 1.0)
+    settle(t.clamp(0.0, 1.0)).clamp(0.0, 1.0)
+}
+
+/// The core's color: the trail's mixed `CORE_WHITE` toward white.
+fn paler(c: Hsla) -> Hsla {
+    Hsla {
+        l: c.l + (1.0 - c.l) * CORE_WHITE,
+        ..c
+    }
 }
 
 impl AppWindow {
@@ -191,17 +210,20 @@ impl AppWindow {
                         return;
                     };
                     window.request_animation_frame();
-                    let Some(quad) = to
-                        .read(cx)
-                        .trail_anchor()
-                        .and_then(|head| comet(from, head, t))
-                    else {
+                    let Some(head) = to.read(cx).trail_anchor() else {
                         return;
                     };
-                    let mut path = PathBuilder::fill();
-                    path.add_polygon(&quad, true);
-                    if let Ok(path) = path.build() {
-                        window.paint_path(path, color.opacity(opacity(t)));
+                    let fade = opacity(t);
+                    for (widen, alpha, core) in LAYERS {
+                        let Some(outline) = streak(from, head, t, widen) else {
+                            return;
+                        };
+                        let mut path = PathBuilder::fill();
+                        path.add_polygon(&outline, true);
+                        if let Ok(path) = path.build() {
+                            let tint = if core { paler(color) } else { color };
+                            window.paint_path(path, tint.opacity(alpha * fade));
+                        }
                     }
                 },
             )
@@ -214,12 +236,20 @@ impl AppWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::{comet, opacity, progress};
-    use gpui::{Bounds, Pixels, point, px, size};
+    use super::{CAUGHT_UP, opacity, paler, progress, streak};
+    use gpui::{Bounds, Pixels, Point, point, px, size};
     use std::time::Duration;
 
     fn cell(x: f32, y: f32) -> Bounds<Pixels> {
         Bounds::new(point(px(x), px(y)), size(px(8.0), px(16.0)))
+    }
+
+    fn xy(p: Point<Pixels>) -> (f32, f32) {
+        (f32::from(p.x), f32::from(p.y))
+    }
+
+    fn dist(a: (f32, f32), b: (f32, f32)) -> f32 {
+        (a.0 - b.0).hypot(a.1 - b.1)
     }
 
     #[test]
@@ -241,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn the_trail_fades_out() {
+    fn the_trail_fades_as_it_shortens() {
         assert!((opacity(0.0) - 1.0).abs() < 1e-6);
         assert!(opacity(0.5) < opacity(0.25) && opacity(0.25) < opacity(0.1));
         assert!(opacity(0.1) < 0.8, "it eases out from the start");
@@ -249,113 +279,107 @@ mod tests {
         assert_eq!(opacity(2.0), 0.0);
     }
 
-    fn x(p: gpui::Point<Pixels>) -> f32 {
-        f32::from(p.x)
-    }
-
-    fn y(p: gpui::Point<Pixels>) -> f32 {
-        f32::from(p.y)
-    }
-
     #[test]
-    fn the_head_is_on_the_cursor_at_once_and_the_tail_chases_it() {
+    fn the_head_is_on_the_cursor_a_cell_high_and_the_tail_a_point() {
         let (from, to) = (cell(0.0, 0.0), cell(400.0, 0.0));
-        // Corners: top left, top right, bottom right, bottom left.
-        let first = comet(from, to, 0.0).unwrap();
+        let head = (404.0, 8.0);
+        let first = streak(from, to, 0.0, 1.0).unwrap();
         assert_eq!(
-            (x(first[1]), x(first[2])),
-            (408.0, 408.0),
-            "the head is on the cursor's far side from the first frame"
+            xy(first[0]),
+            (4.0, 8.0),
+            "the tail starts on the old cursor's middle, a single point"
         );
-        assert_eq!(
-            (x(first[0]), x(first[3])),
-            (0.0, 0.0),
-            "the tail starts on the old cursor"
-        );
-        // The tail decays toward the cursor: quickly at first, slower as it nears.
-        let tail = |t: f32| x(comet(from, to, t).unwrap()[0]);
-        let (a, b, c) = (tail(0.1), tail(0.2), tail(0.3));
-        assert!(0.0 < a && a < b && b < c && c < 400.0, "{a} {b} {c}");
-        assert!(b - a < a, "it slows: {a} {b}");
-        // The trail is the cursor's height all along.
-        for t in [0.0, 0.1, 0.4] {
-            let q = comet(from, to, t).unwrap();
-            assert_eq!((y(q[2]) - y(q[1]), y(q[3]) - y(q[0])), (16.0, 16.0), "{t}");
-        }
-    }
-
-    #[test]
-    fn corners_square_to_the_move_catch_up_faster_than_the_one_behind() {
-        // Down and to the right: the bottom right corner leads, the top left trails.
-        let (from, to) = (cell(0.0, 0.0), cell(300.0, 300.0));
-        let q = comet(from, to, 0.15).unwrap();
-        let end = [
-            (300.0, 300.0),
-            (308.0, 300.0),
-            (308.0, 316.0),
-            (300.0, 316.0),
-        ];
-        let left: Vec<f32> = q
+        // The widest pair of points straddles the head, a cell high (16 px) apart.
+        let widest = first
             .iter()
-            .zip(end)
-            .map(|(p, (ex, ey))| (x(*p) - ex).hypot(y(*p) - ey))
-            .collect();
-        assert_eq!(left[2], 0.0, "the leading corner is on the cursor");
+            .map(|p| xy(*p))
+            .filter(|p| (p.0 - head.0).abs() < 0.01)
+            .map(|p| p.1)
+            .fold((f32::MAX, f32::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
+        assert!((widest.1 - widest.0 - 16.0).abs() < 0.01, "{widest:?}");
+        // Narrower toward the tail: the width at each sample falls off.
+        let side: Vec<f32> = first[1..6].iter().map(|p| (xy(*p).1 - 8.0).abs()).collect();
+        assert!(side.windows(2).all(|w| w[0] < w[1]), "{side:?}");
+        // Nothing reaches past the head's nose (half a cell height ahead).
+        assert!(first.iter().all(|p| xy(*p).0 <= head.0 + 8.0 + 0.01));
+    }
+
+    #[test]
+    fn the_tail_retracts_into_the_head() {
+        let (from, to) = (cell(0.0, 0.0), cell(400.0, 0.0));
+        let tail = |t: f32| xy(streak(from, to, t, 1.0).unwrap()[0]).0;
+        let (a, b, c) = (tail(0.1), tail(0.2), tail(0.3));
+        assert!(4.0 < a && a < b && b < c && c < 404.0, "{a} {b} {c}");
+        assert!(b - a < a - 4.0, "fast at first, then slower: {a} {b}");
+        let last = streak(from, to, 0.99, 1.0).unwrap();
         assert!(
-            left[1] < left[0] && left[3] < left[0],
-            "the side corners lead the one behind: {left:?}"
+            dist(xy(last[0]), (404.0, 8.0)) < 2.0,
+            "the last frame is all but in the cursor: {last:?}"
+        );
+        assert_eq!(streak(from, to, 1.0, 1.0), None, "and gone at the end");
+    }
+
+    #[test]
+    fn the_glow_layers_share_the_tail_and_widen() {
+        let (from, to) = (cell(0.0, 0.0), cell(-200.0, 150.0));
+        let core = streak(from, to, 0.2, 0.45).unwrap();
+        let glow = streak(from, to, 0.2, 2.4).unwrap();
+        assert_eq!(core[0], glow[0], "one tail point");
+        // How far the outline reaches from the line through head and tail.
+        let (head, tail) = ((-196.0f32, 158.0f32), xy(core[0]));
+        let len = dist(head, tail);
+        let across = |o: &Vec<Point<Pixels>>| {
+            o.iter()
+                .map(|p| {
+                    let (x, y) = xy(*p);
+                    ((tail.0 - head.0) * (y - head.1) - (tail.1 - head.1) * (x - head.0)).abs()
+                        / len
+                })
+                .fold(0.0f32, f32::max)
+        };
+        assert!(
+            (across(&core) - 16.0 * 0.45 / 2.0).abs() < 0.01,
+            "the core is 0.45 of a cell high"
+        );
+        assert!(
+            (across(&glow) - 16.0 * 2.4 / 2.0).abs() < 0.01,
+            "the outer glow 2.4"
         );
     }
 
     #[test]
-    fn the_trail_ends_on_the_cursor() {
-        let (from, to) = (cell(0.0, 0.0), cell(0.0, 600.0));
-        assert!(comet(from, to, 0.5).is_some());
-        // The last frame drawn (progress just short of 1) is within a px, even across 600 px.
-        let last = comet(from, to, 0.99).unwrap();
-        assert!((y(last[0]) - 600.0).abs() < 1.0, "{last:?}");
-        assert_eq!(comet(from, to, 1.0), None, "and on it at the end");
-    }
-
-    #[test]
-    fn the_trail_points_any_way() {
+    fn the_streak_points_any_way_and_is_finite() {
         for to in [
             cell(0.0, -300.0),
             cell(-300.0, 0.0),
             cell(0.0, 300.0),
-            cell(-200.0, 150.0),
+            cell(37.0, 211.0),
         ] {
-            let q = comet(cell(0.0, 0.0), to, 0.2).unwrap();
-            let end = super::corners(to);
-            let on = q
-                .iter()
-                .zip(end)
-                .filter(|(p, e)| x(**p) == e.0 && y(**p) == e.1)
-                .count();
-            assert!(
-                (1..=2).contains(&on),
-                "{to:?}: the leading corners are on the cursor: {q:?}"
-            );
+            for t in [-1.0, 0.0, 0.01, 0.5, 0.99, f32::NAN] {
+                if let Some(o) = streak(cell(0.0, 0.0), to, t, 2.4) {
+                    assert!(
+                        o.iter()
+                            .all(|p| xy(*p).0.is_finite() && xy(*p).1.is_finite()),
+                        "{to:?} {t}: {o:?}"
+                    );
+                    assert!(dist(xy(o[0]), xy(to.center())) >= CAUGHT_UP);
+                }
+            }
         }
     }
 
     #[test]
     fn nothing_is_drawn_for_the_same_cell() {
         for t in [0.0, 0.3, 0.99] {
-            assert_eq!(comet(cell(10.0, 10.0), cell(10.0, 10.0), t), None);
+            assert_eq!(streak(cell(10.0, 10.0), cell(10.0, 10.0), t, 1.0), None);
         }
     }
 
     #[test]
-    fn the_quad_is_always_finite() {
-        for t in [-1.0, 0.0, 0.01, 0.5, 1.0, 5.0, f32::NAN] {
-            if let Some(q) = comet(cell(0.0, 0.0), cell(37.0, 211.0), t) {
-                assert!(
-                    q.iter()
-                        .all(|p| f32::from(p.x).is_finite() && f32::from(p.y).is_finite()),
-                    "{t}: {q:?}"
-                );
-            }
-        }
+    fn the_core_is_the_cursor_color_paler() {
+        let yellow = gpui::hsla(0.11, 1.0, 0.7, 1.0);
+        let core = paler(yellow);
+        assert_eq!((core.h, core.s, core.a), (yellow.h, yellow.s, yellow.a));
+        assert!((core.l - (0.7 + 0.3 * 0.45)).abs() < 1e-6);
     }
 }

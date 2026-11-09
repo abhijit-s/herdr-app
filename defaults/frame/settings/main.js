@@ -284,7 +284,7 @@ const CURSOR_TRAILS = [
 ];
 // cursor_trail_duration_ms: the app's TRAIL_MS range and TRAIL_MS_DEFAULT (settings.rs).
 const TRAIL_MS = [50, 1000];
-const TRAIL_MS_DEFAULT = 150;
+const TRAIL_MS_DEFAULT = 120;
 // Theme colors offered for the active pane's border (colors.focus).
 const FOCUS_SWATCHES = ["ansi1", "ansi2", "ansi3", "ansi4", "ansi5", "ansi6", "terminal_foreground"];
 // pane_header_info's suggestion: what the agent asks, the branch, the state and for how long, its live sub-agents.
@@ -1680,23 +1680,23 @@ export default class Settings extends View {
       .child(this.cursorTrail(t));
   }
 
-  // Cursor trail: Off or Between panes, then how long its tail takes (25 ms steps)
-  // while it's on. Off and 150 ms are the defaults, left out of settings.json.
+  // Cursor trail: Off or Between panes, then how long its tail takes (20 ms steps)
+  // while it's on. Off and 120 ms are the defaults, left out of settings.json.
   cursorTrail(t) {
     const on = (this.person.cursor_trail ?? "off") !== "off";
     const clamp = (ms) => Math.max(TRAIL_MS[0], Math.min(TRAIL_MS[1], ms));
     const ms = clamp(this.person.cursor_trail_duration_ms ?? TRAIL_MS_DEFAULT);
     const step = (d, cx) =>
       this.change((q) => {
-        const next = clamp(Math.round((clamp(q.cursor_trail_duration_ms ?? TRAIL_MS_DEFAULT) + d) / 25) * 25);
+        const next = clamp(Math.round((clamp(q.cursor_trail_duration_ms ?? TRAIL_MS_DEFAULT) + d) / 20) * 20);
         if (next === TRAIL_MS_DEFAULT) delete q.cursor_trail_duration_ms;
         else q.cursor_trail_duration_ms = next;
       }, cx);
     return v_flex()
       .w_full()
-      .child(this.row(t, "Cursor trail", "The cursor stretches from one pane to the next as the focus moves between panes, and its tail catches up.", this.choicePicker(t, "st-ct", "cursor_trail", CURSOR_TRAILS), "cursor_trail"))
+      .child(this.row(t, "Cursor trail", "A glowing streak from one pane's cursor to the next as the focus moves between panes.", this.choicePicker(t, "st-ct", "cursor_trail", CURSOR_TRAILS), "cursor_trail"))
       .when(on, (el) =>
-        el.child(this.row(t, "Trail time", "How long the tail takes to reach the cursor.", this.stepper(t, "st-cursor_trail_duration_ms", `${ms} ms`, (_e, cx) => step(-25, cx), (_e, cx) => step(25, cx)), "cursor_trail_duration_ms")),
+        el.child(this.row(t, "Trail time", "How long the streak takes to go into the cursor.", this.stepper(t, "st-cursor_trail_duration_ms", `${ms} ms`, (_e, cx) => step(-20, cx), (_e, cx) => step(20, cx)), "cursor_trail_duration_ms")),
       );
   }
 
