@@ -288,6 +288,12 @@ function headerSeparator(t, sep) {
 
 const SUGGESTED_HEADER_INFO = "{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed} · {subagents}";
 
+// How the agents list shows sub-agents (agents_subagents); Tree is the default, left out of settings.json.
+const AGENTS_SUBAGENTS = [
+  ["tree", "Tree"],
+  ["folded", "Folded"],
+  ["off", "Off"],
+];
 const RESUME_AGENTS = [
   ["ask", "Ask"],
   ["auto", "Auto"],
@@ -1639,6 +1645,15 @@ export default class Settings extends View {
       .w_full()
       .child(this.heading(t, "Agents"))
       .child(this.row(t, "Working spinner", "What spins while an agent works: in pane headers, tabs, the agents list, the picker and peeks.", this.spinnerPicker(t), "working_spinner"))
+      .child(
+        this.row(
+          t,
+          "Sub-agents",
+          "Each agent's live sub-agents in the agents list: a tree under it, the same folded to a count until you open it, or Off (no rows, no count). A fold you make is kept. Header info's {subagents} is set there, apart from this.",
+          this.choicePicker(t, "st-sa", "agents_subagents", AGENTS_SUBAGENTS),
+          "agents_subagents",
+        ),
+      )
       .child(
         this.row(
           t,

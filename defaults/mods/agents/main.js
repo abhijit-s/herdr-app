@@ -3,7 +3,7 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, settings } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, settings, nextCommand } from "herdr";
 
 // The person's working_spinner: the ring, or frames in the terminal font,
 // centred in a fixed width so nothing beside it moves as they change.
@@ -81,6 +81,9 @@ const SORTS = [
   { id: "priority", label: "Priority", icon: "clock" },
   { id: "grouped", label: "Grouped by space", icon: "layers" },
 ];
+// agents_subagents: a tree under each agent, the same folded until clicked
+// open, or "off" (no rows, no count). Builds without the setting give tree.
+const subagentMode = () => settings().agents_subagents ?? "tree";
 const sortOf = () => SORTS.find((s) => s.id === shared("agents.sort")) ?? SORTS[0];
 const SECTION = { 4: "Needs you", 3: "Done", 2: "Working", 1: "Idle" };
 const SECTION_STATUS = { 4: "blocked", 3: "done", 2: "working" };
@@ -102,13 +105,42 @@ function icon(p, size, color) {
 export default class Agents extends View {
   init(_props, cx) {
     if (props()?.sortMenu) return;
+    // Group headers folded this run.
     this.folded = new Set();
+    // The agents the person folded (true) or opened (false) against
+    // agents_subagents, kept across restarts; the rest follow the setting.
+    this.folds = JSON.parse(localStorage.getItem("folds") ?? "{}");
     // Each agent's last state and when it changed (ms), kept across restarts.
     this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}");
     this.pendingPins = JSON.parse(localStorage.getItem("pins") ?? "[]");
     if (!this.pendingPins.length) localStorage.removeItem("pins");
     this.migratingPins = new Set();
     cx.timer.every(30000, (cx) => cx.notify());
+    cx.spawn(async (cx) => {
+      for (;;) {
+        this.command(await nextCommand());
+        cx.notify();
+      }
+    });
+  }
+
+  // agents.fold_all and agents.unfold_all (keys.json, the palette): every agent listed now.
+  command(name) {
+    if (name === "fold_all" || name === "unfold_all") this.setFolds(agents().map((a) => a.address), name === "fold_all");
+  }
+
+  isFolded(address) {
+    return this.folds[address] ?? subagentMode() === "folded";
+  }
+
+  // Only a fold against the setting is kept, so a change of setting reaches the rest.
+  setFolds(addresses, folded) {
+    const usual = subagentMode() === "folded";
+    for (const address of addresses) {
+      if (folded === usual) delete this.folds[address];
+      else this.folds[address] = folded;
+    }
+    localStorage.setItem("folds", JSON.stringify(this.folds));
   }
 
   // Stamps agents whose state changed. Done and idle count as one: looking at a
@@ -126,6 +158,10 @@ export default class Agents extends View {
     const listed = new Set(list.map((a) => a.address));
     for (const [k, c] of Object.entries(this.changed)) if (!listed.has(k) && now - c.at > 30 * 86400000) delete this.changed[k];
     localStorage.setItem("changed", JSON.stringify(this.changed));
+    // A fold goes with its agent's entry.
+    const gone = Object.keys(this.folds).filter((k) => !this.changed[k]);
+    for (const k of gone) delete this.folds[k];
+    if (gone.length) localStorage.setItem("folds", JSON.stringify(this.folds));
   }
 
   // Keep offline pins until their terminal returns, and keep each pending until
@@ -253,6 +289,8 @@ export default class Agents extends View {
     const t = theme();
     if (props()?.sortMenu) return this.sortMenu(t);
     const collapsed = narrow();
+    // The rail, and agents_subagents off, draw no trees.
+    const trees = !collapsed && subagentMode() !== "off";
     const sort = sortOf();
     let list = agents();
     this.listed = new Map(list.map((a) => [a.address, a.status]));
@@ -264,7 +302,7 @@ export default class Agents extends View {
     this.hold(list);
     // A kept sub-agent (one with a pane) is in agents() too: where a tree shows
     // it, it gets no row of its own, unless it's pinned.
-    const nested = new Set(collapsed ? [] : list.flatMap((a) => this.tree(all, a.address).map((s) => s.t.address)));
+    const nested = new Set(!trees ? [] : list.flatMap((a) => this.tree(all, a.address).map((s) => s.t.address)));
     list = list.filter((a) => a.pinned || !nested.has(a.address));
     const tabCounts = new Map();
     for (const a of list) tabCounts.set(a.tab, (tabCounts.get(a.tab) ?? 0) + 1);
@@ -278,9 +316,9 @@ export default class Agents extends View {
     setAgentOrder(list.map((a) => a.address));
 
     const withKids = (a, i) => {
-      const subs = collapsed ? [] : this.tree(all, a.address);
+      const subs = trees ? this.tree(all, a.address) : [];
       const r = row(a, i, subs);
-      if (this.folded.has(a.address)) return [r];
+      if (this.isFolded(a.address)) return [r];
       return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority))];
     };
 
@@ -289,7 +327,7 @@ export default class Agents extends View {
     const counted = roomForSubCount();
     const fold = (a, subs) => {
       const top = topStatus(subs, this.listed);
-      const open = !this.folded.has(a.address);
+      const open = !this.isFolded(a.address);
       return div()
         .id(`fold-${a.address}`)
         .h(18)
@@ -304,7 +342,7 @@ export default class Agents extends View {
         .hover((s) => s.bg(t.hover).text_color(t.foreground))
         .on_click((_e, cx) => {
           cx.stop_propagation();
-          open ? this.folded.add(a.address) : this.folded.delete(a.address);
+          this.setFolds([a.address], open);
           cx.notify();
         })
         .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none())
@@ -392,7 +430,7 @@ export default class Agents extends View {
         .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
           .when(subs.length > 0, el => el.on_click((_e, cx) => {
             cx.stop_propagation();
-            this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);
+            this.setFolds([a.address], !this.isFolded(a.address));
             cx.notify();
           })).child(pic)))
         .child(h_flex().flex_1().min_w(0).gap(5).items_center()

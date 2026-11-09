@@ -8006,7 +8006,7 @@ import { modActions, props } from "herdr";
 export default class Acts extends View {
   render() {
     return div().w(200).h(100)
-      .child(div().id("actions").w(10 + 10 * modActions().length).h(10).flex_none())
+      .child(div().id("actions").w(10 + 10 * modActions().filter((a) => a.mod === "extra").length).h(10).flex_none())
       .child(div().id("n").w(10 + 10 * (props().n ?? 0)).h(10).flex_none());
   }
 }"#;

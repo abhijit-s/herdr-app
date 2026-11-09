@@ -503,7 +503,9 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  lists `{ name, frames, interval_ms }` for each preset besides the ring. `space_avatar` is
  *  how to draw space avatars: `"letter" | "glyph" | "emoji" | "repo"`, `"glyph"` when unset or
  *  unknown (null only from builds before that default: draw letters). `pane_header_info` is the agent pane header's template, or `null`
- *  (unset or blank); panes carry it resolved as `header_info`.
+ *  (unset or blank); panes carry it resolved as `header_info`. `agents_subagents` is how an
+ *  agents list shows sub-agents: `"tree" | "folded" | "off"`, `"tree"` when unset (undefined on
+ *  builds without it: draw a tree).
  *  `toast_duration`, `toast_style`, `toast_corners`, `toast_mark`, `toast_design` and `toast_progress` are the person's toast choices
  *  (see AGENTS.md). */
 export function settings(): Record<string, unknown>;
