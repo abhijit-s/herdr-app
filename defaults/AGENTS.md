@@ -879,8 +879,8 @@ What's about the user, never a look:
   Bash: make", else "permission", "question"), `{state}` and `{elapsed}`
   (`<1m`, `3m`, `1h2m`, changing on the minute), and `{branch}`, `{ahead}`
   (`↑2`), `{behind}` (`↓1`) and `{dirty}` (`*`) from the folder's cached
-  git status, and `{subagents}` the agent's live sub-agents (`3 sub-agents`, `3 sub-agents, 1 blocked`,
-  `2 sub-agents blocked`); each is empty when unknown or zero, and other text is drawn
+  git status, `{subagents}` the agent's live sub-agents (`3 sub-agents`, `3 sub-agents, 1 blocked`,
+  `2 sub-agents blocked`), and `{machine}` (`local` for this computer), `{remote}` (another machine's name, else empty) and `{space}` (its space's name); each is empty when unknown or zero, and other text is drawn
   as written. Keys side by side (`{branch}{dirty}`) are drawn a space
   apart ("main ↑2 *"). `fitHeaderInfo` measures each separator as
   `sep.trim()` with 4 px either side, so draw it that way, as the shipped
@@ -892,6 +892,7 @@ What's about the user, never a look:
   show nothing. Mods read it resolved as `PaneInfo.header_info` and keep
   what fits with `fitHeaderInfo`. Settings > Agents > Activity has it as
   "Header info".
+- `agents_card_info`: what an agent's card in an agents list shows beside its name, as a template in `pane_header_info`'s grammar and keys. Unset, the default `"@{remote} · {space}"`: another machine's name, then the space; set empty, nothing. Herdr resolves it for each agent when what it shows changes (and on the minute when it has `{elapsed}`), never per frame, as `agents()[i].card_info`: `{ text, segments }` as `header_info`, null when nothing shows, and with `{space}` in the template also `no_space`, the same without the space (null when nothing is left), for a card whose space goes without saying (under its space's header, or when its name is the space); a segment that holds other keys keeps them there. Draw each segment as a chip or words, in order; `card_info` is undefined on builds without it. Mods read the template as `settings().agents_card_info`, `null` while unset: the shipped `agents` mod draws `card_info` (without the space, which its rows always name) in place of the machine only once it is set, so its rows look as they always have by default. Settings > Agents > Activity has it as "Card info", with a preview on an agent on another machine.
 - `agents_subagents`: how the agents list shows each agent's live sub-agents. `"tree"` (the default) a row each under it, with their count on its row and a chevron to fold them; `"folded"` the same with every agent folded until opened; `"off"` no sub-agent rows, count or chevron, and a sub-agent with a pane keeps its own row (a blocked sub-agent still moves its parent into Needs you, as the Dock badge counts it). A fold or unfold the person makes against the setting is kept across restarts in the mod's localStorage (one that matches the setting is dropped, so a change of setting reaches it), until the agent is unlisted and has not changed state for 30 days; `agents.fold_all` and `agents.unfold_all` (keys.json, the palette's Fold all agents and Unfold all agents) fold or open every agent listed, and reach the list only while it is on screen. `pane_header_info`'s `{subagents}` doesn't follow it: that key shows wherever the template has it. Mods read `settings().agents_subagents`, `"tree"` when unset. Settings > Agents > Activity has it as "Sub-agents".
 - `agents_subagent_click`: what a click on a sub-agent row in an agents list should open. `"claude"` (the default) the sub-agent in Claude Code's own view (a mod can get there by sending the agent's own keys, after checking it is the one shown), `"transcript"` a popup with the sub-agent's transcript. Herdr only passes it on: it is a preference agents mods may honour, and the shipped `agents` mod doesn't read it (a click on a sub-agent row still focuses the parent agent's pane, or peeks it when that agent isn't listed). Mods read `settings().agents_subagent_click`, `"claude"` when unset. Settings > Agents > Activity has it as "Sub-agent click", after "Sub-agents".
 - `focus_follows_mouse`: `true` focuses a terminal pane (a tab's, or a layout's
@@ -1325,7 +1326,7 @@ All of it is in `herdr.d.ts`. In short:
   machine, branch), `machines()` (name, null for this computer; layout:
   `loading`, `ready`, or `unavailable` on this connection; loading ends on
   the first read even if it fails, and offline machines are unavailable),
-  `agents()` (status, app, space, tab, label, session, pinned, focused; "done" turns "idle"
+  `agents()` (status, app, space, tab, label, session, pinned, focused, card_info; "done" turns "idle"
   once someone looks at it on any Herdr client), `terminals()`
   (every core terminal), `focused()`, `layout()`, `theme()` (every color by
   name: background (the terminals', cards), canvas (behind cards), chrome

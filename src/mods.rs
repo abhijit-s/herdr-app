@@ -836,6 +836,11 @@ pub fn published_spaces() -> Value {
 pub fn published_panes() -> Value {
     SNAPSHOT.with(|s| s.borrow().panes.clone())
 }
+/// `agents()` as last published, for tests.
+#[cfg(test)]
+pub fn published_agents() -> Value {
+    SNAPSHOT.with(|s| s.borrow().agents.clone())
+}
 
 pub fn publish_panes(v: Value) -> bool {
     publish("panes", |s| (std::mem::replace(&mut s.panes, v.clone()), v))
@@ -1470,6 +1475,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
             crate::header_info::fit_for_mods(from_host(a.value(0)?), a.number(1)? as f32, a.number(2)? as f32).map(|v| to_host(&v)).map_err(HostError::new)
         })
         .function("headerInfoPreview", |a| Ok(to_host(&crate::header_info::preview_for_mods(a.string(0)?))))
+        .function("cardInfoPreview", |a| Ok(to_host(&crate::header_info::card_preview_for_mods(a.get(0).and_then(HostValue::as_str)))))
         .function("headerTextWidth", |a| Ok(HostValue::Number(crate::header_info::width(a.string(0)?, a.number(1)? as f32) as f64)))
         .async_function("nextGitStatus", |a| {
             let place = git_place(a)?;

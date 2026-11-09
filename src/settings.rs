@@ -903,6 +903,26 @@ mod derivation_tests {
         }
     }
 
+    /// `agents_card_info`: out of settings.json and null for mods unless set
+    /// (the default card), passed on as written, empty too (no card info),
+    /// and kept when the app rewrites settings.json.
+    #[test]
+    fn agents_card_info_is_null_unless_set_and_reaches_mods_as_written() {
+        let compose = |p: &Person| Settings::compose(p, &crate::layout::Look::default(), true);
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.agents_card_info, None);
+        assert_eq!(serde_json::to_value(&default).unwrap().get("agents_card_info"), None);
+        assert_eq!(compose(&default).for_mods()["agents_card_info"], serde_json::Value::Null);
+        for value in ["{space} · {branch}", ""] {
+            let person: Person = serde_json::from_value(serde_json::json!({"agents_card_info": value, "zoom": 1.1})).unwrap();
+            assert_eq!(compose(&person).for_mods()["agents_card_info"], value, "blank stays blank: it means no card info");
+            let rewritten: Person = serde_json::from_str(&serde_json::to_string_pretty(&person).unwrap()).unwrap();
+            assert_eq!(rewritten.agents_card_info.as_deref(), Some(value));
+        }
+        let settings_js = include_str!("../defaults/frame/settings/main.js");
+        assert!(settings_js.contains(&format!("const DEFAULT_CARD_INFO = \"{}\";", crate::header_info::DEFAULT_CARD_INFO)), "the Settings window's default is the app's");
+    }
+
     /// Classic is the derivation Herdr shipped before tinted panels, value for
     /// value: the fixture is that build's `resolve` output for these themes.
     #[test]
@@ -1326,6 +1346,10 @@ pub struct Person {
     /// that honour it.
     #[serde(skip_serializing_if = "AgentsSubagentClick::is_claude")]
     pub agents_subagent_click: AgentsSubagentClick,
+    /// What an agents list's card shows beside the agent's name, as a
+    /// template (header_info.rs); unset: `DEFAULT_CARD_INFO`, empty: nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents_card_info: Option<String>,
     /// What happens to recorded agents whose terminals are back to a shell
     /// after Herdr starts or the core comes back (resume.rs).
     #[serde(skip_serializing_if = "ResumeAgents::is_ask")]
@@ -2341,6 +2365,7 @@ impl Default for Person {
             pane_header_info: None,
             agents_subagents: AgentsSubagents::Tree,
             agents_subagent_click: AgentsSubagentClick::Claude,
+            agents_card_info: None,
             resume_agents: ResumeAgents::Ask,
             alert_command: None,
             focus_follows_mouse: false,
@@ -2521,6 +2546,9 @@ pub struct Settings {
     pub agents_subagents: AgentsSubagents,
     /// What a click on a sub-agent row opens; mods read it.
     pub agents_subagent_click: AgentsSubagentClick,
+    /// `agents_card_info` as written, empty too; None: the default, which
+    /// agents mods that draw their own cards when it is unset may keep.
+    pub agents_card_info: Option<String>,
     /// Why settings.json's `working_spinner` fell back to the ring.
     #[serde(skip)]
     pub working_spinner_problem: Option<String>,
@@ -2625,6 +2653,7 @@ impl Default for Settings {
             pane_header_info: None,
             agents_subagents: AgentsSubagents::Tree,
             agents_subagent_click: AgentsSubagentClick::Claude,
+            agents_card_info: None,
             working_spinner_problem: None,
             space_avatar_problem: None,
         }
@@ -2725,6 +2754,7 @@ impl Settings {
             pane_header_info: person.pane_header_info.clone().filter(|t| !t.trim().is_empty()),
             agents_subagents: person.agents_subagents,
             agents_subagent_click: person.agents_subagent_click,
+            agents_card_info: person.agents_card_info.clone(),
             working_spinner_problem,
             space_avatar_problem: person.space_avatar.as_ref().filter(|v| !SPACE_AVATARS.contains(&v.as_str())).map(|v| format!("space_avatar {v:?} is not one of letter, glyph, emoji, repo: using \"{SPACE_AVATAR_DEFAULT}\"")),
             clipboard_write: person.clipboard_write,
@@ -4301,7 +4331,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, pane_header_info: Some(String::new()), agents_card_info: Some(String::new()), ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

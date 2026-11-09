@@ -161,6 +161,7 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
         crate::header_info::fit_for_mods(from_host(a.value(0)?), a.number(1)? as f32, a.number(2)? as f32).map(|v| to_host(&v)).map_err(HostError::new)
     });
     module = module.function("headerInfoPreview", |a| Ok(to_host(&crate::header_info::preview_for_mods(a.string(0)?))));
+    module = module.function("cardInfoPreview", |a| Ok(to_host(&crate::header_info::card_preview_for_mods(a.get(0).and_then(HostValue::as_str)))));
     module = module.function("headerTextWidth", |a| Ok(HostValue::Number(crate::header_info::width(a.string(0)?, a.number(1)? as f32) as f64)));
     module = module.function("refreshGitStatus", |_| Ok(HostValue::Null));
     for name in ["nextCommand", "watchFolder", "nextGitStatus"] {
@@ -1944,6 +1945,39 @@ fn agents_sub_agents_follow_the_setting_remembered_folds_and_fold_all(cx: &mut T
     assert_eq!(shows(&draw(Some("off"), Some(&restart(false)), cx)), (false, false, false), "off stays off");
     assert_eq!(shows(&draw(None, Some("this.command(\"fold_all\");"), cx)), (false, true, true), "fold all");
     assert_eq!(shows(&draw(Some("folded"), Some("this.command(\"unfold_all\");"), cx)), (true, true, true), "unfold all");
+}
+
+/// `agents_card_info`: unset, the shipped agents rows draw as before whatever
+/// card info the agents carry; set, a row draws its info without the space
+/// (named by its header or its name), and none when there is nothing.
+#[gpui::test]
+fn agents_rows_draw_card_info_once_set(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let info = json!({"text":"main · Local","segments":[{"sep":"","text":"main","ask":false},{"sep":" · ","text":"Local","ask":false}],"no_space":{"text":"main","segments":[{"sep":"","text":"main","ask":false}]}});
+    let draw = |set: Option<&str>, card: Value, cx: &mut TestAppContext| {
+        let mut values = fixture(true, props(), updates("current", "current"));
+        if let Some(set) = set {
+            values.get_mut("settings").unwrap()["agents_card_info"] = json!(set);
+        }
+        values.get_mut("agents").unwrap().as_array_mut().unwrap().iter_mut().for_each(|a| a["card_info"] = card.clone());
+        describe_with_values(cx, &staged, "mods/agents", values, None).unwrap()
+    };
+    let unset = draw(None, info.clone(), cx);
+    let before = describe(cx, &staged, "mods/agents", true, props(), updates("current", "current"), None).unwrap();
+    assert_eq!(unset, before, "unset: drawn as before");
+    // Another machine's agent, unset: its machine's bare name, as the shipped rows always drew it.
+    let mut values = fixture(true, props(), updates("current", "current"));
+    values.get_mut("agents").unwrap().as_array_mut().unwrap().iter_mut().for_each(|a| {
+        a["address"] = json!(format!("vps/{}", a["address"].as_str().unwrap()));
+        a["card_info"] = json!({"text":"@vps · Local","segments":[{"sep":"","text":"@vps","ask":false},{"sep":" · ","text":"Local","ask":false}],"no_space":{"text":"@vps","segments":[]}});
+    });
+    let remote = describe_with_values(cx, &staged, "mods/agents", values, None).unwrap();
+    assert!(remote.contains("text \"vps\"") && !remote.contains("@vps"), "{remote}");
+    let set = draw(Some("{branch} · {space}"), info, cx);
+    assert!(set.contains("text \"main\"") && !set.contains("main · Local"), "the info without its space: {set}");
+    let none = draw(Some(""), Value::Null, cx);
+    assert!(!none.contains("text \"main\""), "{none}");
 }
 
 /// The pane menu names the pane first among the pane's own items, as the tab
