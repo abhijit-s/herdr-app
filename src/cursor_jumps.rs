@@ -6,9 +6,10 @@
 //! `cursor_trail_min_cells` from the last settled place in either axis
 //! (Chebyshev distance, so a diagonal step is one cell; kitty's start
 //! threshold, moves of that many cells or fewer are ignored), or the cursor's
-//! shape changed. Typing settles one cell at a time, so it never draws; output
-//! that moves the cursor faster than the settle time draws nothing until it
-//! pauses.
+//! shape changed. Typing settles a cell or two at a time, so it doesn't draw;
+//! output that moves the cursor faster than the settle time draws nothing
+//! until it pauses. The time is paint's, so the settle time must outlast the
+//! gap between frames while output streams.
 //!
 //! A hidden cursor forgets where it was, so it reappearing isn't a jump.
 
@@ -328,6 +329,8 @@ mod tests {
         let mut events = moves.iter().copied().peekable();
         loop {
             let next_move = events.peek().map(|m| m.0);
+            // A move and a wake at the same ms: the move first, as a paint
+            // landing just before the timer would.
             match (next_move, wake) {
                 (Some(m), Some(w)) if w < m => {}
                 (Some(_), _) => {
@@ -349,9 +352,14 @@ mod tests {
         }
     }
 
+    /// The default settle time: paint, not the program, stamps each move, and
+    /// frames come 16 to 50 ms apart while output streams.
+    const S: u64 = 80;
+
     #[test]
     fn typing_on_a_line_never_draws() {
-        // A key every 60 to 150 ms, a backspace, a pause of half a second, more keys.
+        // A key every 60 to 150 ms, a backspace, a pause of half a second, more keys:
+        // at most two keys land within one settle time, two cells, the threshold itself.
         let mut moves = vec![(0, 10, 5)];
         let (mut t, mut x) = (0, 10);
         for (i, gap) in [60, 150, 90, 120, 75, 140, 60, 100].iter().enumerate() {
@@ -366,20 +374,36 @@ mod tests {
             moves.push((t, x, 5));
         }
         assert_eq!(
-            run(&moves, 10, 2),
+            run(&moves, S, 2),
             vec![],
-            "each key settles alone as a one-cell move"
+            "keys settle a cell or two at a time"
+        );
+    }
+
+    #[test]
+    fn three_keys_within_one_settle_time_draw_once() {
+        // What the 80 ms default leaves: a fast burst of three keys is a three-cell move.
+        let moves = [(0, 10, 5), (100, 11, 5), (130, 12, 5), (160, 13, 5)];
+        assert_eq!(
+            run(&moves, S, 2),
+            vec![(
+                240,
+                Jump::Moved {
+                    from: (10, 5),
+                    to: (13, 5)
+                }
+            )]
         );
     }
 
     #[test]
     fn real_jumps_still_draw_after_the_settle_time() {
-        let jump = |from: Cell, to: Cell| run(&[(0, from.0, from.1), (100, to.0, to.1)], 10, 2);
+        let jump = |from: Cell, to: Cell| run(&[(0, from.0, from.1), (100, to.0, to.1)], S, 2);
         // Enter at the end of a command: the prompt on the next line.
         assert_eq!(
             jump((30, 5), (0, 6)),
             vec![(
-                110,
+                180,
                 Jump::Moved {
                     from: (30, 5),
                     to: (0, 6)
@@ -390,7 +414,7 @@ mod tests {
         assert_eq!(
             jump((40, 20), (0, 0)),
             vec![(
-                110,
+                180,
                 Jump::Moved {
                     from: (40, 20),
                     to: (0, 0)
@@ -403,13 +427,13 @@ mod tests {
 
     #[test]
     fn output_pushing_three_lines_draws_and_one_or_two_lines_dont() {
-        let push = |lines: u16| run(&[(0, 0, 5), (100, 0, 5 + lines)], 10, 2);
+        let push = |lines: u16| run(&[(0, 0, 5), (100, 0, 5 + lines)], S, 2);
         assert_eq!(push(1), vec![]);
         assert_eq!(push(2), vec![]);
         assert_eq!(
             push(3),
             vec![(
-                110,
+                180,
                 Jump::Moved {
                     from: (0, 5),
                     to: (0, 8)
@@ -419,24 +443,36 @@ mod tests {
     }
 
     #[test]
-    fn a_stream_faster_than_the_settle_time_draws_at_most_once_per_pause() {
-        // Three bursts: the cursor moving every 5 ms for 300 ms, then still for 200 ms.
-        let mut moves = vec![(0, 0, 0)];
-        for burst in 0..3u64 {
-            let start = 1 + burst * 500;
-            for i in 0..60u64 {
-                moves.push((start + i * 5, (i % 40) as u16, (burst * 3 + i / 20) as u16));
+    fn streaming_at_paint_cadence_draws_at_most_once_per_pause() {
+        // Paint sees the cursor move once a frame: every 16 ms (60 Hz) or every
+        // 50 ms (a stream's frames, as the bench measures). Three bursts of 300 ms,
+        // each followed by 300 ms still.
+        for frame in [16u64, 50] {
+            let mut moves = vec![(0, 0, 0)];
+            for burst in 0..3u64 {
+                let start = 1 + burst * 600;
+                for i in 0..(300 / frame) {
+                    moves.push((
+                        start + i * frame,
+                        (i * 7 % 40) as u16,
+                        (burst * 10 + i) as u16,
+                    ));
+                }
             }
+            let fired = run(&moves, S, 2);
+            assert_eq!(
+                fired.len(),
+                3,
+                "{frame} ms frames: one per pause: {fired:?}"
+            );
+            assert!(
+                fired
+                    .iter()
+                    .zip([0u64, 600, 1200])
+                    .all(|((at, _), start)| *at >= start + 280 && *at < start + 600),
+                "{frame} ms: {fired:?}"
+            );
         }
-        let fired = run(&moves, 10, 2);
-        assert_eq!(fired.len(), 3, "one per pause: {fired:?}");
-        assert!(
-            fired
-                .iter()
-                .zip([0u64, 500, 1000])
-                .all(|((at, _), start)| *at > start + 295 && *at < start + 500),
-            "{fired:?}"
-        );
     }
 
     #[test]

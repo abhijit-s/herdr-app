@@ -1833,7 +1833,7 @@ impl Arrival {
     }
 }
 
-pub const SETTLE_MS_DEFAULT: u32 = 10;
+pub const SETTLE_MS_DEFAULT: u32 = 80;
 pub const SETTLE_MS: std::ops::RangeInclusive<u32> = 0..=500;
 /// kitty's start threshold: moves of this many cells or fewer are ignored, so
 /// typing never draws; 0 draws every move.
@@ -4329,7 +4329,7 @@ mod tests {
     fn cursor_trail_all_with_its_settle_time_and_threshold() {
         let p: Person = serde_json::from_str(r#"{"cursor_trail": "all"}"#).unwrap();
         let s = Settings::compose(&p, &crate::layout::Look::default(), true);
-        assert_eq!((s.cursor_trail, s.trail_settle(), s.trail_min_cells()), (CursorTrail::All, std::time::Duration::from_millis(10), 2));
+        assert_eq!((s.cursor_trail, s.trail_settle(), s.trail_min_cells()), (CursorTrail::All, std::time::Duration::from_millis(80), 2));
         assert_eq!(s.for_mods()["cursor_trail"], "all");
         let json = serde_json::to_value(&p).unwrap();
         assert!(json.get("cursor_trail_settle_ms").is_none() && json.get("cursor_trail_min_cells").is_none(), "{json}");

@@ -398,10 +398,10 @@ test("settle time and ignored moves show only for Panes and jumps, within their 
   const step = (person: Record<string, any>, id: string) => click(person, {}, id, [], "cursor");
   expect(() => step({ cursor_trail: "panes" }, "st-cursor_trail_settle_ms-plus")).toThrow();
   const all = { cursor_trail: "all" };
-  expect(step(all, "st-cursor_trail_settle_ms-plus")).toEqual({ ...all, cursor_trail_settle_ms: 20 });
+  expect(step(all, "st-cursor_trail_settle_ms-plus")).toEqual({ ...all, cursor_trail_settle_ms: 90 });
   expect(step({ ...all, cursor_trail_settle_ms: 0 }, "st-cursor_trail_settle_ms-minus")).toEqual({ ...all, cursor_trail_settle_ms: 0 });
   expect(step({ ...all, cursor_trail_settle_ms: 500 }, "st-cursor_trail_settle_ms-plus")).toEqual({ ...all, cursor_trail_settle_ms: 500 });
-  expect(step({ ...all, cursor_trail_settle_ms: 20 }, "st-cursor_trail_settle_ms-minus")).toEqual(all);
+  expect(step({ ...all, cursor_trail_settle_ms: 90 }, "st-cursor_trail_settle_ms-minus")).toEqual(all);
   expect(step(all, "st-cursor_trail_min_cells-plus")).toEqual({ ...all, cursor_trail_min_cells: 3 });
   expect(step({ ...all, cursor_trail_min_cells: 1 }, "st-cursor_trail_min_cells-minus")).toEqual({ ...all, cursor_trail_min_cells: 0 });
   expect(step({ ...all, cursor_trail_min_cells: 0 }, "st-cursor_trail_min_cells-minus")).toEqual({ ...all, cursor_trail_min_cells: 0 });

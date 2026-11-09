@@ -328,7 +328,7 @@ const ARRIVALS = [
 ];
 // cursor_trail_settle_ms and cursor_trail_min_cells: the app's SETTLE_MS and MIN_CELLS ranges and defaults (settings.rs).
 const SETTLE_MS = [0, 500];
-const SETTLE_MS_DEFAULT = 10;
+const SETTLE_MS_DEFAULT = 80;
 const MIN_CELLS = [0, 50];
 const MIN_CELLS_DEFAULT = 2;
 // cursor_trail_duration_ms: the app's TRAIL_MS range and TRAIL_MS_DEFAULT (settings.rs).
@@ -1819,7 +1819,7 @@ export default class Settings extends View {
   // Cursor effects: the trail (Off, Between panes, or that and the focused pane's cursor
   // jumps), its style while it's on, the arrival pulse, how long they take (20 ms steps)
   // while either is on, and, for jumps, how still the cursor must be (10 ms steps) and
-  // how small a move it ignores. Off, Comet, Off, 120 ms, 10 ms and 2 cells are the defaults,
+  // how small a move it ignores. Off, Comet, Off, 120 ms, 80 ms and 2 cells are the defaults,
   // left out of settings.json.
   cursorPage(t) {
     const on = (this.person.cursor_trail ?? "off") !== "off";
