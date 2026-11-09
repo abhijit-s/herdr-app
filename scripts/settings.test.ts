@@ -359,6 +359,27 @@ test("focus border width writes 1 to 3 px and leaves the layout's width out", ()
   expect(pick({ focus_border_width: 3, zoom: 1.1 }, "st-fw-Layout")).toEqual({ zoom: 1.1 });
 });
 
+test("cursor trail sits on the Panes page, writes panes and leaves off out", () => {
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "panes");
+  expect(pick({}, "st-ct-Between panes")).toEqual({ cursor_trail: "panes" });
+  expect(pick({ cursor_trail: "panes", zoom: 1.1 }, "st-ct-Off")).toEqual({ zoom: 1.1 });
+  const shown = texts(search("cursor_trail").root).join("|");
+  expect(shown).toContain("Appearance › Panes|PANES|Cursor");
+});
+
+test("trail time shows only while the trail is on, and steps by 20 ms within 50 to 1000, leaving 120 out", () => {
+  const step = (person: Record<string, any>, id: string) => click(person, {}, id, [], "panes");
+  expect(() => step({}, "st-cursor_trail_duration_ms-plus")).toThrow();
+  expect(() => step({ cursor_trail: "off" }, "st-cursor_trail_duration_ms-plus")).toThrow();
+  const on = { cursor_trail: "panes" };
+  expect(step(on, "st-cursor_trail_duration_ms-plus")).toEqual({ ...on, cursor_trail_duration_ms: 140 });
+  expect(step(on, "st-cursor_trail_duration_ms-minus")).toEqual({ ...on, cursor_trail_duration_ms: 100 });
+  expect(step({ ...on, cursor_trail_duration_ms: 50 }, "st-cursor_trail_duration_ms-minus")).toEqual({ ...on, cursor_trail_duration_ms: 50 });
+  expect(step({ ...on, cursor_trail_duration_ms: 1000 }, "st-cursor_trail_duration_ms-plus")).toEqual({ ...on, cursor_trail_duration_ms: 1000 });
+  expect(step({ ...on, cursor_trail_duration_ms: 5000 }, "st-cursor_trail_duration_ms-minus")).toEqual({ ...on, cursor_trail_duration_ms: 980 });
+  expect(step({ ...on, cursor_trail_duration_ms: 140 }, "st-cursor_trail_duration_ms-minus")).toEqual(on);
+});
+
 test("focus border picks a theme color into colors.focus and from theme takes it out", () => {
   const theme = new Proxy({ ansi1: "#E06C75", ansi4: "#61afef", terminal_foreground: "#abb2bf" } as Record<string, string>, { get: (o, k: string) => o[k] ?? (k.startsWith("ansi") ? undefined : "#000000") });
   const swatch = (person: Record<string, any>, id: string) => {
