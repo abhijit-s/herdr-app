@@ -565,6 +565,23 @@ test("sub-agents sits on the Activity page, writes folded or off and leaves tree
   expect(pick({ agents_subagents: "off", zoom: 1.1 }, "st-sa-Tree")).toEqual({ zoom: 1.1 });
 });
 
+test("sub-agent click sits right after sub-agents on the Activity page, writes transcript and leaves claude out", () => {
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "activity");
+  expect(pick({}, "st-sc-Transcript")).toEqual({ agents_subagent_click: "transcript" });
+  expect(pick({ agents_subagent_click: "transcript", zoom: 1.1 }, "st-sc-Claude's view")).toEqual({ zoom: 1.1 });
+  expect(pick({ agents_subagent_click: "transcript" }, "st-sc-Transcript")).toEqual({ agents_subagent_click: "transcript" });
+  const view = new Settings();
+  view.person = {};
+  const drawn = texts(view.page("activity", new Proxy({}, { get: () => "#000000" }), {}));
+  const at = drawn.indexOf("Sub-agents");
+  expect(at).toBeGreaterThanOrEqual(0);
+  expect(drawn.indexOf("Sub-agent click")).toBeGreaterThan(at);
+  // Only the Sub-agents row's own hint and choices lie between the two titles.
+  expect(drawn.slice(at + 2, drawn.indexOf("Sub-agent click"))).toEqual(["Tree", "Folded", "Off"]);
+  const after = drawn.indexOf("Sub-agent click");
+  expect(drawn.slice(after + 2, after + 4)).toEqual(["Claude's view", "Transcript"]);
+});
+
 // A layout like agent-deck: the tab block in a row beside a panel.
 const deck = () => ({
   id: "root", type: "row", terminal_padding: [14, 12],

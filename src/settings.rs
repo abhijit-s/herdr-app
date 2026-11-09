@@ -877,6 +877,32 @@ mod derivation_tests {
         }
     }
 
+    /// `agents_subagent_click`: claude unless set, out of settings.json as
+    /// claude, passed to mods as written, kept when the app rewrites
+    /// settings.json (`write_person`'s text read back), and anything else refused.
+    #[test]
+    fn agents_subagent_click_defaults_to_claude_reaches_mods_and_survives_a_rewrite() {
+        assert_eq!(AgentsSubagentClick::default(), AgentsSubagentClick::Claude);
+        let default: Person = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.agents_subagent_click, AgentsSubagentClick::Claude);
+        assert_eq!(serde_json::to_value(&default).unwrap().get("agents_subagent_click"), None);
+        let compose = |p: &Person| Settings::compose(p, &crate::layout::Look::default(), true);
+        assert_eq!(compose(&default).for_mods()["agents_subagent_click"], "claude");
+        for (value, click) in [("claude", AgentsSubagentClick::Claude), ("transcript", AgentsSubagentClick::Transcript)] {
+            let person: Person = serde_json::from_value(serde_json::json!({"agents_subagent_click": value, "zoom": 1.1})).unwrap();
+            assert_eq!(person.agents_subagent_click, click);
+            assert_eq!(compose(&person).for_mods()["agents_subagent_click"], value);
+            let rewritten: Person = serde_json::from_str(&serde_json::to_string_pretty(&person).unwrap()).unwrap();
+            assert_eq!(rewritten.agents_subagent_click, click, "{value} survives write_person");
+            assert_eq!(rewritten.zoom, 1.1);
+        }
+        let written = serde_json::to_value(Person { agents_subagent_click: AgentsSubagentClick::Transcript, ..Person::default() }).unwrap();
+        assert_eq!(written["agents_subagent_click"], "transcript");
+        for bad in [serde_json::json!({"agents_subagent_click": "popup"}), serde_json::json!({"agents_subagent_click": true})] {
+            assert!(serde_json::from_value::<Person>(bad.clone()).is_err(), "{bad} is refused");
+        }
+    }
+
     /// Classic is the derivation Herdr shipped before tinted panels, value for
     /// value: the fixture is that build's `resolve` output for these themes.
     #[test]
@@ -1295,6 +1321,11 @@ pub struct Person {
     /// `folded` or `off` (drawn by the agents mods).
     #[serde(skip_serializing_if = "AgentsSubagents::is_tree")]
     pub agents_subagents: AgentsSubagents,
+    /// What a click on a sub-agent row opens: `claude` (Claude Code's own
+    /// view of it) or `transcript` (a transcript popup), for agents mods
+    /// that honour it.
+    #[serde(skip_serializing_if = "AgentsSubagentClick::is_claude")]
+    pub agents_subagent_click: AgentsSubagentClick,
     /// What happens to recorded agents whose terminals are back to a shell
     /// after Herdr starts or the core comes back (resume.rs).
     #[serde(skip_serializing_if = "ResumeAgents::is_ask")]
@@ -1743,6 +1774,22 @@ pub enum AgentsSubagents {
 impl AgentsSubagents {
     fn is_tree(&self) -> bool {
         *self == AgentsSubagents::Tree
+    }
+}
+
+/// What a click on a sub-agent row opens: Claude Code's own view of that
+/// sub-agent, or a transcript popup. Herdr passes it on; agents mods act on it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentsSubagentClick {
+    #[default]
+    Claude,
+    Transcript,
+}
+
+impl AgentsSubagentClick {
+    fn is_claude(&self) -> bool {
+        *self == AgentsSubagentClick::Claude
     }
 }
 
@@ -2293,6 +2340,7 @@ impl Default for Person {
             working_spinner: None,
             pane_header_info: None,
             agents_subagents: AgentsSubagents::Tree,
+            agents_subagent_click: AgentsSubagentClick::Claude,
             resume_agents: ResumeAgents::Ask,
             alert_command: None,
             focus_follows_mouse: false,
@@ -2471,6 +2519,8 @@ pub struct Settings {
     pub pane_header_info: Option<String>,
     /// How the agents list shows sub-agents; mods read it.
     pub agents_subagents: AgentsSubagents,
+    /// What a click on a sub-agent row opens; mods read it.
+    pub agents_subagent_click: AgentsSubagentClick,
     /// Why settings.json's `working_spinner` fell back to the ring.
     #[serde(skip)]
     pub working_spinner_problem: Option<String>,
@@ -2574,6 +2624,7 @@ impl Default for Settings {
             working_spinner: None,
             pane_header_info: None,
             agents_subagents: AgentsSubagents::Tree,
+            agents_subagent_click: AgentsSubagentClick::Claude,
             working_spinner_problem: None,
             space_avatar_problem: None,
         }
@@ -2673,6 +2724,7 @@ impl Settings {
             working_spinner,
             pane_header_info: person.pane_header_info.clone().filter(|t| !t.trim().is_empty()),
             agents_subagents: person.agents_subagents,
+            agents_subagent_click: person.agents_subagent_click,
             working_spinner_problem,
             space_avatar_problem: person.space_avatar.as_ref().filter(|v| !SPACE_AVATARS.contains(&v.as_str())).map(|v| format!("space_avatar {v:?} is not one of letter, glyph, emoji, repo: using \"{SPACE_AVATAR_DEFAULT}\"")),
             clipboard_write: person.clipboard_write,
@@ -4249,7 +4301,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();
