@@ -363,6 +363,36 @@ impl Model {
         Some(true)
     }
 
+    /// Moves a whole tab (layout, floats, name, focus and zoom) to a place in
+    /// another space of its machine (1 = first; None or past the end: last)
+    /// and shows it there. A space it leaves empty closes, as after its last
+    /// tab, but nothing ends. Ok: whether that space closed.
+    pub fn move_tab_to_space(&mut self, id: &str, space: &str, index: Option<usize>) -> Result<bool, String> {
+        let from = self.spaces.iter().position(|p| p.tab(id).is_some()).ok_or_else(|| format!("no tab {id:?}"))?;
+        let to = self.spaces.iter().position(|p| p.id == space).ok_or_else(|| format!("no space {space:?}"))?;
+        if from == to {
+            return Err(format!("tab {id:?} is already in space {space:?}"));
+        }
+        if self.spaces[from].machine != self.spaces[to].machine {
+            return Err(format!("space {space:?} is on another machine: a tab's terminals stay on their own"));
+        }
+        let source = &mut self.spaces[from];
+        let at = source.tabs.iter().position(|c| c.id == id).unwrap();
+        let tab = source.tabs.remove(at);
+        if source.active.as_deref() == Some(id) {
+            source.active = source.tabs.get(at).or(source.tabs.last()).map(|c| c.id.clone());
+        }
+        let emptied = source.tabs.is_empty().then(|| source.id.clone());
+        let target = &mut self.spaces[to];
+        let place = index.map_or(target.tabs.len(), |i| i.saturating_sub(1).min(target.tabs.len()));
+        target.tabs.insert(place, tab);
+        if let Some(gone) = &emptied {
+            self.remove_space(gone);
+        }
+        self.select_tab(id);
+        Ok(emptied.is_some())
+    }
+
     pub fn active_index(&self) -> Option<usize> {
         let id = self.active.as_deref()?;
         self.spaces.iter().position(|p| p.id == id).or((!self.spaces.is_empty()).then_some(0))
@@ -1080,6 +1110,85 @@ mod tests {
         assert_eq!(order(&m), ["c1", "c2", "c3"]);
         assert_eq!(m.step_tab("x1", 1), None);
         assert_eq!(m.step_tab("nope", -1), None);
+    }
+
+    #[test]
+    fn a_tab_moves_whole_to_another_space_and_is_shown_there() {
+        let mut m = Model::default();
+        m.add_space("p1", "", "/a", Tab::new("c1", "", "x1", "t1"));
+        m.add_tab("p1", Tab::new("c2", "work", "x2", "t2"));
+        m.add_tab("p1", Tab::new("c3", "", "x3", "t3"));
+        m.add_space("p2", "", "/b", Tab::new("d1", "", "y1", "u1"));
+        m.add_tab("p2", Tab::new("d2", "", "y2", "u2"));
+        m.split("x2", Axis::Row, "x2b", "t2b");
+        let c = m.tab_mut("c2").unwrap();
+        c.floating.push(FloatPane { pane: pane("f2", "tf2"), rect: [0.1, 0.1, 0.5, 0.5], dock: None });
+        c.focused = Some("x2b".into());
+        c.before = vec!["x2".into()];
+        c.zoomed = Some("x2b".into());
+        c.settled = Some(5);
+        c.arrange = Some(crate::arrange::Mode::Rows);
+        c.rest.insert("newer".into(), json!(1));
+        let before = m.tab("c2").unwrap().clone();
+        m.select_tab("c2");
+        m.select_tab("d1");
+
+        assert_eq!(m.move_tab_to_space("c2", "p2", Some(2)), Ok(false));
+        let order = |m: &Model, s: &str| m.space(s).map(|p| p.tabs.iter().map(|c| c.id.clone()).collect::<Vec<_>>());
+        assert_eq!(order(&m, "p1").unwrap(), ["c1", "c3"]);
+        assert_eq!(order(&m, "p2").unwrap(), ["d1", "c2", "d2"]);
+        let moved = m.tab("c2").unwrap();
+        assert_eq!((&moved.root, &moved.floating, &moved.name), (&before.root, &before.floating, &before.name));
+        assert_eq!((&moved.focused, &moved.before, &moved.zoomed, &moved.arrange, &moved.rest), (&before.focused, &before.before, &before.zoomed, &before.arrange, &before.rest));
+        assert_eq!(moved.settled, None, "shown, so back in the lists");
+        assert_eq!(m.space("p2").unwrap().tabs.iter().flat_map(Tab::addresses).collect::<Vec<_>>(), ["u1", "t2", "t2b", "tf2", "u2"]);
+        // Shown where it went; the space it left shows the tab that slid into its place.
+        assert_eq!((m.active.as_deref(), m.active_tab().map(|c| c.id.as_str())), (Some("p2"), Some("c2")));
+        assert_eq!(m.space("p1").unwrap().active.as_deref(), Some("c3"));
+        assert_eq!(m.focused_pane().as_deref(), Some("x2b"));
+
+        // No index, or one past the end: last. 1: first.
+        assert_eq!(m.move_tab_to_space("c2", "p1", None), Ok(false));
+        assert_eq!(order(&m, "p1").unwrap(), ["c1", "c3", "c2"]);
+        assert_eq!(m.space("p2").unwrap().active.as_deref(), Some("d2"), "the last tab moved: the new last one");
+        assert_eq!(m.move_tab_to_space("c2", "p2", Some(99)), Ok(false));
+        assert_eq!(order(&m, "p2").unwrap(), ["d1", "d2", "c2"]);
+        assert_eq!(m.move_tab_to_space("c3", "p2", Some(1)), Ok(false));
+        assert_eq!(order(&m, "p2").unwrap(), ["c3", "d1", "d2", "c2"]);
+        // A tab not shown in its space leaves that space's choice alone.
+        m.select_tab("c1");
+        m.move_tab_to_space("d1", "p1", Some(0)).unwrap();
+        assert_eq!(order(&m, "p1").unwrap(), ["d1", "c1"]);
+        assert_eq!(m.space("p2").unwrap().active.as_deref(), Some("c3"), "c3 was p2's shown tab and stays so");
+
+        // Errors, and nothing moves.
+        let snapshot = |m: &Model| m.spaces.iter().map(|p| (p.id.clone(), order(m, &p.id).unwrap())).collect::<Vec<_>>();
+        let was = snapshot(&m);
+        assert_eq!(m.move_tab_to_space("x1", "p2", None), Err("no tab \"x1\"".into()), "a pane id is not a tab");
+        assert_eq!(m.move_tab_to_space("nope", "p2", None), Err("no tab \"nope\"".into()));
+        assert_eq!(m.move_tab_to_space("c1", "nope", None), Err("no space \"nope\"".into()));
+        assert_eq!(m.move_tab_to_space("c1", "c3", None), Err("no space \"c3\"".into()), "a tab id is not a space");
+        assert_eq!(m.move_tab_to_space("c1", "p1", None), Err("tab \"c1\" is already in space \"p1\"".into()));
+        m.add_space("mac/p3", "", "/c", Tab::new("mac/e1", "", "mac/z1", "mac/v1"));
+        m.space_mut("mac/p3").unwrap().machine = Some("mac".into());
+        let was = [was, vec![("mac/p3".into(), vec!["mac/e1".into()])]].concat();
+        assert!(m.move_tab_to_space("c1", "mac/p3", None).unwrap_err().contains("another machine"));
+        assert!(m.move_tab_to_space("mac/e1", "p1", None).unwrap_err().contains("another machine"));
+        assert_eq!(snapshot(&m), was);
+    }
+
+    #[test]
+    fn moving_a_spaces_last_tab_closes_the_space_and_ends_nothing() {
+        let mut m = Model::default();
+        m.add_space("p1", "kept", "/a", Tab::new("c1", "", "x1", "t1"));
+        m.add_space("p2", "", "/b", Tab::new("d1", "", "y1", "u1"));
+        m.add_space("p3", "", "/c", Tab::new("e1", "", "z1", "v1"));
+        m.select_tab("c1");
+        assert_eq!(m.move_tab_to_space("c1", "p3", None), Ok(true));
+        assert_eq!(m.spaces.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["p2", "p3"]);
+        assert_eq!(m.all_addresses(), ["u1", "v1", "t1"], "every terminal still has its pane");
+        assert_eq!((m.active.as_deref(), m.active_tab().map(|c| c.id.as_str())), (Some("p3"), Some("c1")));
+        assert_eq!(m.recent.first().map(|r| r.name.as_str()), Some("kept"), "remembered, as a closed space is");
     }
 
     #[test]

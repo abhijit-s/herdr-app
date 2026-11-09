@@ -104,7 +104,7 @@ Mod pane props are stored as given, never machine-qualified. Space order is loca
 machine first, then machines by name; `space.move` stays inside its machine's block.
 In the expanded Spaces sidebar, drag a space to reorder it within its machine;
 the highlighted line shows where it will land.
-In the tab bar, drag a tab to reorder it: it follows the pointer and a line shows where it will land (either end and the gaps count); Esc or leaving the bar cancels. A tab's right-click menu has Move left and Move right, and `tab.move_left` / `tab.move_right` move the shown tab by keys (Cmd+Shift+Left / Right on macOS; elsewhere unbound by default, so Alt+Shift+[ / ] stay with terminal programs: bind them in keys.json).
+In the tab bar, drag a tab to reorder it: it follows the pointer and a line shows where it will land (either end and the gaps count); Esc or leaving the bar cancels. A tab's right-click menu has Move left and Move right, and Move to space… when its machine has another space: the shipped `tab-move` picker (`mod.open {name: "tab-move", props: {id?}}`, also in the palette as Move tab to space…) runs `tab.move_to_space`. `tab.move_left` / `tab.move_right` move the shown tab by keys (Cmd+Shift+Left / Right on macOS; elsewhere unbound by default, so Alt+Shift+[ / ] stay with terminal programs: bind them in keys.json).
 
 - A **space** is a place to work, on one machine: this one, or another
   from `hc machine ls` (`spaces()[i].machine`). Herdr leaves out machines
@@ -638,6 +638,9 @@ The main ones:
   closes its space and asks first unless confirmed),
   `tab.rename {id?, name}` ("": its number again), `tab.move {id, index}`,
   `tab.move_left {id?}`, `tab.move_right {id?}` (one place; nothing at the end),
+  `tab.move_to_space {space, id?, index?}` (the whole tab, the shown one by
+  default, to another space on its machine, last unless index; shown there,
+  its terminals keep running; a space it leaves empty closes),
   `tab.select {index | id}`, `tab.next`, `tab.prev`,
   `tab.settle {id?}`, `tab.unsettle {id?}` (index, next and prev
   skip settled tabs).

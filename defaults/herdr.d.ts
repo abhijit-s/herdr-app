@@ -54,7 +54,9 @@ export function playSound(sound: string): null;
  * Tabs: tab.new {name?, space?, folder?, argv?, task?} (argv: an agent, task: its first message)
  *   or {name?, space?, mod, props?} (a tab whose only pane is a mod),
  *   tab.close {id?}, tab.rename {id?, name}, tab.move {id, index}, tab.select {index | id},
- *   tab.move_left {id?}, tab.move_right {id?} (one place; nothing at the end), tab.next, tab.prev.
+ *   tab.move_left {id?}, tab.move_right {id?} (one place; nothing at the end), tab.next, tab.prev,
+ *   tab.move_to_space {space, id?, index?} (the whole tab to another space on its machine, last unless index;
+ *   shown there, terminals keep running; a space it leaves empty closes).
  * Panes: pane.split {direction: "right" | "down", pane?}, pane.close {pane?}, pane.zoom {pane?},
  *   pane.zoom_text_in|zoom_text_out|zoom_text_reset {pane?} (a terminal pane's own text size, on top of the app's zoom),
  *   pane.focus {pane | terminal}, pane.refocus (the keyboard back to what has the focus, a focused mod pane included, after a mod took it), pane.go {direction},

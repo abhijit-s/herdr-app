@@ -1,7 +1,8 @@
 // Context menus (Herdr's items). Opened as a popup with
 // props { tab: "pane" | "tab" | "space" | "global", target }.
 // ↑/↓ move, Enter runs, Esc closes. An item is [label, command, args, from?];
-// a command "worktree" opens the worktree dialog instead, "icon" the icon picker.
+// a command "worktree" opens the worktree dialog instead, "icon" the icon picker,
+// "tab-move" the space picker for tab.move_to_space.
 // `from` is a mod's entry from menuItems(), for the pane menu's mod group.
 
 import { View, div, svg } from "gpui-kit";
@@ -102,12 +103,17 @@ function items(p, git) {
       ];
     }
     case "tab": {
-      const tabs = spaces().find((s) => (s.tabs ?? []).some((c) => c.id === tg.id))?.tabs ?? [];
+      const all = spaces();
+      const space = all.find((s) => (s.tabs ?? []).some((c) => c.id === tg.id));
+      const tabs = space?.tabs ?? [];
       const at = tabs.findIndex((c) => c.id === tg.id), tab = tabs[at];
+      // A tab's terminals stay on their machine: only its other spaces can take it.
+      const elsewhere = Boolean(space) && all.some((s) => s !== space && s.machine === space.machine);
       return [
         ["Rename", "tab.rename", { id: tg.id }],
         ...(at > 0 ? [["Move left", "tab.move_left", { id: tg.id }]] : []),
         ...(at !== -1 && at < tabs.length - 1 ? [["Move right", "tab.move_right", { id: tg.id }]] : []),
+        ...(elsewhere ? [["Move to space…", "tab-move", { id: tg.id }]] : []),
         ["Change icon…", "icon", { tab_id: tg.id }],
         ...(tab?.own_icon ? [["Clear icon", "tab.set_icon", { id: tg.id, icon: null }]] : []),
         ["New tab", "tab.new", { space: tg.space }],
@@ -150,7 +156,7 @@ const itemHeight = (list, i) => ROW + (startsGroup(list, i) ? RULE : 0);
 function menuIcon(command) {
   if (command === "icon") return "mods/icon-picker/smile.svg";
   if (command.endsWith(".set_icon")) return "mods/workspace-chrome/x.svg";
-  const name = command === "terminal.copy" ? "copy" : command === "terminal.copy_all" ? "files" : command === "terminal.copy_last_output" ? "file-text" : command === "terminal.copy_path" ? "folder" : command === "terminal.paste" ? "clipboard" : command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : command === "tab.move_left" ? "chevron-left" : command === "tab.move_right" ? "chevron-right" : "terminal";
+  const name = command === "terminal.copy" ? "copy" : command === "terminal.copy_all" ? "files" : command === "terminal.copy_last_output" ? "file-text" : command === "terminal.copy_path" ? "folder" : command === "terminal.paste" ? "clipboard" : command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : command === "tab.move_left" ? "chevron-left" : command === "tab.move_right" ? "chevron-right" : command === "tab-move" ? "layers" : "terminal";
   return `mods/workspace-chrome/${name}.svg`;
 }
 
@@ -185,6 +191,7 @@ export default class Menu extends View {
     if (!it) return;
     closeOverlay(props()?.overlay);
     if (it[1] === "icon") openOverlay({ mod: "icon-picker", kind: "dialog", width: 452, height: 392, props: it[2] });
+    else if (it[1] === "tab-move") run("mod.open", { name: "tab-move", props: it[2] });
     else if (it[1] === "worktree") openOverlay({ mod: "worktree", kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 440, height: 260 }), props: it[2] });
     else run(it[1], it[2]);
   }

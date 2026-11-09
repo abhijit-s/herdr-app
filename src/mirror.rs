@@ -328,6 +328,33 @@ mod tests {
         assert_eq!(other.tab("t").unwrap().settled, Some(12));
     }
 
+    /// Two screens of one machine: one moves a tab to another space. The
+    /// other reads it there with its own focus and zoom on it, a newer build's
+    /// fields on it kept, and the space it emptied gone.
+    #[test]
+    fn a_tab_moved_on_one_screen_keeps_the_other_screens_view_of_it() {
+        let mut here = model();
+        here.split("p", Axis::Row, "q", "t2");
+        here.tab_mut("t").unwrap().rest.insert("newer".into(), serde_json::json!({"x": 1}));
+        here.add_space("s2", "", "/b", Tab::new("u", "", "r", "t3"));
+        let mut there = Model::default();
+        Document::capture(&here, None).replace(&mut there, None);
+        there.focus_pane("q");
+        there.tab_mut("t").unwrap().zoomed = Some("q".into());
+        there.select_tab("t");
+
+        here.move_tab_to_space("t", "s2", Some(1)).unwrap();
+        let doc = Document::capture(&here, None);
+        doc.replace(&mut there, None);
+        assert_eq!(there.spaces.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["s2"]);
+        assert_eq!(there.space("s2").unwrap().tabs.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["t", "u"]);
+        let t = there.tab("t").unwrap();
+        assert_eq!((t.focused.as_deref(), t.zoomed.as_deref()), (Some("q"), Some("q")), "this screen's view goes with the tab");
+        assert_eq!(t.rest.get("newer"), Some(&serde_json::json!({"x": 1})));
+        assert_eq!(there.active.as_deref(), Some("s2"), "its shown space closed: the first one left");
+        assert_eq!(Document::capture(&there, None), doc, "read alone, it writes the same document back");
+    }
+
     #[test]
     fn a_tabs_arrange_mode_is_this_screens_and_survives_a_restart() {
         let mut m = model();
