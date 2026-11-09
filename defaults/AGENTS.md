@@ -198,10 +198,9 @@ In the tab bar, drag a tab to reorder it: it follows the pointer and a line show
   `terminal.keep` gives one a pane. A program's OSC 7501 child records
   (reports with an `id`, in `terminals()[i].records` by id) are sub-agents
   too, with no terminal of their own: a row each under the terminal,
-  named by the record's `title`, else its id. Claude Code runs its own
-  sub-agents (the Task tool) in its process, so it reports none by itself;
-  a SubagentStart/SubagentStop hook that writes `state=working:id=agent/<claude pid>/<agent_id>`
-  and `state=clear:id=agent/<claude pid>/<agent_id>` to Claude's terminal shows them.
+  named by the record's `title`, else its id. Claude Code reports its own
+  sub-agents (the Task tool) this way: one record each, `id=<agentId>`,
+  `app=claude-code`, `title=<description>`.
   Ctrl-click (Cmd-click on macOS) a live terminal address in terminal text to
   peek at it. Bare addresses refer to the machine of the terminal showing them;
   use `machine/address` for another machine. Names and non-live addresses aren't links.
