@@ -8031,6 +8031,110 @@ export default class Picker extends View {
     }
 
     #[test]
+    fn a_mods_on_key_down_never_sees_tab() {
+        in_own_process("mod_tab_on_key_down");
+    }
+
+    #[test]
+    fn a_mod_reads_tab_from_its_keys_section() {
+        in_own_process("mod_tab_section_command");
+    }
+
+    /// The contract mods rely on: tab and shift-tab move focus between a mod's
+    /// focusable elements and never reach `on_key_down`, while other keys do.
+    #[gpui::test]
+    fn mod_tab_on_key_down(cx: &mut gpui::TestAppContext) {
+        if !running_alone("mod_tab_on_key_down") {
+            return;
+        }
+        let cx = open_tab_counter(cx, None);
+        cx.simulate_keystrokes("j");
+        cx.run_until_parked();
+        assert_eq!(tab_counter(cx, "keys"), Some(1), "j reaches on_key_down");
+        assert!(!tab_counter_in_input(cx), "the root, not the field, has the keyboard");
+        cx.simulate_keystrokes("tab");
+        cx.run_until_parked();
+        assert_eq!(tab_counter(cx, "tabs"), Some(0), "tab never reaches on_key_down");
+        assert!(tab_counter_in_input(cx), "tab moves focus to the next focusable element");
+        cx.simulate_keystrokes("shift-tab");
+        cx.run_until_parked();
+        assert_eq!(tab_counter(cx, "tabs"), Some(0), "shift-tab never reaches on_key_down either");
+    }
+
+    /// A mod that wants tab binds it in its `mod:<name>` section: it arrives
+    /// as that command through `nextCommand()`, and focus stays put.
+    #[gpui::test]
+    fn mod_tab_section_command(cx: &mut gpui::TestAppContext) {
+        if !running_alone("mod_tab_section_command") {
+            return;
+        }
+        let cx = open_tab_counter(cx, Some(r#"{ "mod:tabcount": { "tab": "tabcount.view" } }"#));
+        cx.simulate_keystrokes("tab");
+        cx.run_until_parked();
+        assert_eq!(tab_counter(cx, "views"), Some(1), "tab arrives as tabcount.view");
+        assert_eq!(tab_counter(cx, "tabs"), Some(0), "not through on_key_down");
+        assert!(!tab_counter_in_input(cx), "the bound tab doesn't move focus");
+        cx.simulate_keystrokes("j");
+        cx.run_until_parked();
+        assert_eq!(tab_counter(cx, "keys"), Some(1), "j still reaches on_key_down");
+    }
+
+    /// A popup whose root holds the keyboard and counts tab, shift-tab and j in
+    /// `on_key_down` and `view` commands; a field after it is the next tab stop.
+    fn open_tab_counter<'a>(cx: &'a mut gpui::TestAppContext, keys: Option<&str>) -> &'a mut gpui::VisualTestContext {
+        use serde_json::json;
+        let main_js = r#"import { View, div } from "gpui-kit";
+import { InputState, Input } from "gpui-base";
+import { nextCommand } from "herdr";
+export default class TabCount extends View {
+  init(_props, cx) {
+    this.tabs = 0;
+    this.keys = 0;
+    this.views = 0;
+    this.input = InputState.new({});
+    this.handle = cx.focus_handle();
+    this.handle.focus();
+    cx.spawn(async (cx) => {
+      for (;;) { if (await nextCommand() === "view") this.views += 1; cx.notify(); }
+    });
+  }
+  render() {
+    return div().id("tabcount").track_focus(this.handle).w(300).h(200)
+      .on_key_down((e, cx) => {
+        if (e.keystroke === "tab" || e.keystroke === "shift-tab") { this.tabs += 1; cx.notify(); }
+        else if (e.keystroke === "j") { this.keys += 1; cx.notify(); }
+      })
+      .child(Input.new(this.input).w(100).h(20))
+      .child(div().id("tabs").w(10 + 10 * this.tabs).h(10).flex_none())
+      .child(div().id("keys").w(10 + 10 * this.keys).h(10).flex_none())
+      .child(div().id("views").w(10 + 10 * this.views).h(10).flex_none());
+  }
+}"#;
+        std::fs::create_dir_all(crate::mods::app_dir()).unwrap();
+        if let Some(keys) = keys {
+            std::fs::write(crate::keys::path(), keys).unwrap();
+        }
+        let (view, cx) = open_window(cx, "tabcount", main_js, json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model.add_space("s1", "one", "", crate::model::Tab::new("a", "a", "pa", "t1"));
+            this.model.select_tab("a");
+            this.sync(window, cx);
+            this.dispatch("mod.open", &json!({ "name": "tabcount" }), true, window, cx);
+        }));
+        cx.run_until_parked();
+        assert!(!tab_counter_in_input(cx), "the popup's root has the keyboard");
+        cx
+    }
+
+    fn tab_counter(cx: &mut gpui::VisualTestContext, id: &'static str) -> Option<usize> {
+        cx.debug_bounds(id).map(|b| (f32::from(b.size.width) as usize - 10) / 10)
+    }
+
+    fn tab_counter_in_input(cx: &mut gpui::VisualTestContext) -> bool {
+        cx.update(|window, _| window.context_stack().last().is_some_and(|c| c.contains("Input")))
+    }
+
+    #[test]
     fn mod_palette_actions_follow_their_folders_and_mod_open_passes_props() {
         in_own_process("mod_actions");
     }
