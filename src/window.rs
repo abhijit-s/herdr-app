@@ -3293,8 +3293,11 @@ impl AppWindow {
 
     /// Puts a live terminal where its labels say, without changing what's
     /// shown. A space or tab the app doesn't know is made under the label's
-    /// id, unnamed (called Herdr's way).
+    /// id, unnamed (called Herdr's way). A labeled tab that moved to another
+    /// space (tab.move_to_space) is found there, never made twice.
     fn adopt(&mut self, addr: &str, space: &str, ctx: Option<&str>) {
+        let moved = ctx.and_then(|t| self.model.space_of(t)).map(|s| s.id.clone());
+        let space = moved.as_deref().unwrap_or(space);
         let machine = addr.split_once('/').map(|(m, _)| m.to_owned());
         let pane = self.model.fresh_id_on("p", machine.as_deref());
         let ctx_id = ctx.map(str::to_owned).unwrap_or_else(|| self.model.fresh_id_on("tb", machine.as_deref()));
@@ -3674,14 +3677,13 @@ impl AppWindow {
         Ok(reply)
     }
 
-    /// Parking changes labels/keep in the background; only a successful reply removes the pane.
     /// Tells the core the space a moved tab's terminals live in now
     /// (`herdr.space`; the tab keeps its id), so one ever found without a
     /// pane is put back there, not in a space that's gone.
     fn label_space(&self, tab: &str, cx: &mut Context<Self>) {
         let Some(space) = self.model.space_of(tab) else { return };
         let label = crate::mirror::local(&space.id, space.machine.as_deref()).to_owned();
-        for addr in space.tab(tab).map(Tab::addresses).unwrap_or_default().into_iter().filter(|a| self.live.contains_key(a)) {
+        for addr in space.tab(tab).map(Tab::addresses).unwrap_or_default() {
             let core = self.core.clone();
             let params = json!({ "terminal": addr, "labels": { "herdr.space": label } });
             cx.background_executor().spawn(async move {
@@ -3690,6 +3692,7 @@ impl AppWindow {
         }
     }
 
+    /// Parking changes labels/keep in the background; only a successful reply removes the pane.
     fn park_terminal(&mut self, addr: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<Value, String> {
         self.require_document(addr.split_once('/').map(|(m, _)| m))?;
         if self.changing_terminals.contains(addr) { return Err("This terminal already has a pane change in progress.".into()); }
@@ -3740,6 +3743,8 @@ impl AppWindow {
         match change {
             TerminalChange::Keep { space, tab, pane, name, target, axis } => {
                 if !self.live.contains_key(&address) { return; }
+                // Its tab may have moved to another space meanwhile (tab.move_to_space).
+                let space = self.model.space_of(&tab).map_or(space, |s| s.id.clone());
                 if self.model.space(&space).is_none() {
                     if let Err(error) = self.park_terminal(&address, window, cx) {
                         tracing::error!("cannot undo pane placement into closed space: {error}");
@@ -8814,6 +8819,8 @@ export default class Recent extends View {
         }
         let (core, calls) = crate::hc::answering(|method, _| match method {
             "terminal.label" => Ok(json!({})),
+            // A terminal still labeled with a space a move closed.
+            "terminal.get" => Ok(json!({ "address": "tz", "state": "live", "keep": true, "labels": { "herdr.space": "s2", "herdr.tab": "v" } })),
             _ => Err(json!({ "message": "not in this test" })),
         });
         let (view, cx) = open_window_on(core, cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
@@ -8844,8 +8851,8 @@ export default class Recent extends View {
             this.model.space_mut("mac/r").unwrap().machine = Some("mac".into());
             this.model.focus_pane("b");
             this.model.tab_mut("t").unwrap().zoomed = Some("b".into());
-            for a in ["ta", "tb", "tf", "tc", "td"] {
-                this.live.insert(a.into(), json!({ "address": a, "keep": true, "labels": { "herdr.space": "s1", "herdr.tab": "t" } }));
+            for (a, space, tab) in [("ta", "s1", "t"), ("tb", "s1", "t"), ("tf", "s1", "t"), ("tc", "s1", "u"), ("td", "s2", "v")] {
+                this.live.insert(a.into(), json!({ "address": a, "keep": true, "labels": { "herdr.space": space, "herdr.tab": tab } }));
             }
         });
         let before = view.update(cx, |this, _| this.model.tab("t").unwrap().clone());
@@ -8886,6 +8893,14 @@ export default class Recent extends View {
             let reply = run(cx, "tab.move_to_space", args.clone());
             assert!(reply["error"].as_str().is_some_and(|e| e.contains(error)), "{args}: {reply}");
         }
+        // While the machine's layout is unavailable, as for every structural command.
+        view.update(cx, |this, _| {
+            let slot = this.documents.get_mut("").unwrap();
+            (slot.available, slot.error) = (false, None);
+        });
+        let reply = run(cx, "tab.move_to_space", json!({ "id": "t", "space": "s2" }));
+        assert!(reply["error"].as_str().is_some_and(|e| e.contains("unavailable")), "{reply}");
+        view.update(cx, |this, _| this.documents.get_mut("").unwrap().available = true);
         assert_eq!(tabs_of(cx), ["s1:t,u", "s2:v", "mac/r:mac/w"]);
         assert!(!calls_of("terminal.label").iter().any(|p| p["labels"].get("herdr.space").is_some()), "a failed move labels nothing");
 
@@ -8894,6 +8909,35 @@ export default class Recent extends View {
         assert_eq!(tabs_of(cx), ["s1:t,u,v", "mac/r:mac/w"]);
         assert!(calls_of("terminal.kill").is_empty() && view.update(cx, |this, _| this.model.pane_of("td").is_some()));
         assert_eq!(view.update(cx, |this, _| this.model.active.clone()).as_deref(), Some("s1"));
+        assert!(calls_of("terminal.label").contains(&json!({ "terminal": "td", "labels": { "herdr.space": "s1" } })));
+
+        // A terminal found without a pane, still labeled with the closed space
+        // and the moved tab, joins that tab where it is now: no second s2 or v.
+        view.update_in(cx, |this, window, cx| {
+            this.live.insert("tz".into(), json!({ "address": "tz", "keep": true, "labels": { "herdr.space": "s2", "herdr.tab": "v" } }));
+            this.reconcile(window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.model.pane_of("tz").and_then(|p| this.model.tab_of(&p).map(|t| t.id.clone()))).as_deref(), Some("v"));
+        assert_eq!(tabs_of(cx), ["s1:t,u,v", "mac/r:mac/w"]);
+
+        // Another machine's tab moves between its spaces, labeled with the id that machine knows.
+        view.update(cx, |this, _| {
+            this.model.add_space("mac/r2", "", "/tmp", Tab::new("mac/x", "", "mac/g", "mac/tg"));
+            this.model.space_mut("mac/r2").unwrap().machine = Some("mac".into());
+            this.live.insert("mac/te".into(), json!({ "address": "mac/te", "keep": true, "labels": { "herdr.space": "r", "herdr.tab": "w" } }));
+        });
+        assert_eq!(run(cx, "tab.move_to_space", json!({ "id": "mac/w", "space": "mac/r2" })), json!({ "ok": true }));
+        assert_eq!(tabs_of(cx), ["s1:t,u,v", "mac/r2:mac/x,mac/w"]);
+        assert!(calls_of("terminal.label").contains(&json!({ "terminal": "mac/te", "labels": { "herdr.space": "r2" } })));
+
+        // A pane given to a terminal (terminal.keep) whose tab moved meanwhile lands in that tab, not parked.
+        view.update_in(cx, |this, window, cx| {
+            this.live.insert("tk".into(), json!({ "address": "tk", "keep": true, "labels": {} }));
+            let change = super::TerminalChange::Keep { space: "gone".into(), tab: "u".into(), pane: "k".into(), name: String::new(), target: None, axis: Axis::Row };
+            this.apply_terminal_change("tk".into(), change, Ok(()), window, cx);
+        });
+        assert_eq!(view.update(cx, |this, _| this.model.tab_of("k").map(|t| t.id.clone())).as_deref(), Some("u"));
     }
 
     #[test]

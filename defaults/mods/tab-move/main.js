@@ -42,7 +42,8 @@ export function searchRows(rows, query) {
     .filter((r) => r.rank !== null).sort((a, b) => a.rank - b.rank).map((r) => r.space);
 }
 
-export const tabName = (t) => t.name || `Tab ${t.index}`;
+// An unnamed tab's name is its position ("2").
+export const tabName = (t) => (t.named === false ? `tab ${t.name}` : t.name);
 const count = (n, what) => `${n} ${what}${n === 1 ? "" : "s"}`;
 
 // A key that types into the query: one printable character with no command chord held.

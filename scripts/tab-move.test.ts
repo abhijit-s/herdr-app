@@ -72,6 +72,12 @@ test("it moves the named tab, else the shown one, and offers only the other spac
   expect(alone.runs).toEqual([]);
 });
 
+test("the title names the tab, an unnamed one by its position", () => {
+  expect(harness({ id: "t1" }).render()).toContain("Move build to a space");
+  const unnamed = [{ ...SPACES[0], tabs: [{ id: "t9", name: "2", named: false, index: 2, active: true }] }, SPACES[1]];
+  expect(harness({ id: "t9" }, unnamed).render()).toContain("Move tab 2 to a space");
+});
+
 test("1-9, Enter and a click run tab.move_to_space once and close", () => {
   const h = harness({ id: "t1" });
   h.press("2");
@@ -105,9 +111,10 @@ test("typing searches by name; while searching every character types and Esc ste
   h.press("backspace");
   h.press("backspace");
   expect(h.view.query).toBe("");
-  h.type("d1");
+  h.type("dj1k");
+  expect(h.view.query).toBe("dj1k");
   expect(h.rows()).toEqual([]);
-  expect(h.render()).toContain('No space matches "d1"');
+  expect(h.render()).toContain('No space matches "dj1k"');
   h.press("escape"); // clears the query
   expect(h.view.query).toBe("");
   h.press("escape"); // ends the search, not the picker
