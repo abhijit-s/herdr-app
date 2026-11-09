@@ -1465,6 +1465,17 @@ impl Vt {
         flags
     }
 
+    /// The cursor's cell in the active area, read from the terminal (two field
+    /// reads, no render state).
+    pub fn cursor_xy(&self) -> (u16, u16) {
+        let (mut x, mut y) = (0u16, 0u16);
+        unsafe {
+            ghostty_terminal_get(self.term, GHOSTTY_TERMINAL_DATA_CURSOR_X, &mut x as *mut _ as *mut c_void);
+            ghostty_terminal_get(self.term, GHOSTTY_TERMINAL_DATA_CURSOR_Y, &mut y as *mut _ as *mut c_void);
+        }
+        (x, y)
+    }
+
     fn get_bool(&self, data: GhosttyTerminalData) -> bool {
         let mut v = false;
         unsafe { ghostty_terminal_get(self.term, data, &mut v as *mut _ as *mut c_void) };

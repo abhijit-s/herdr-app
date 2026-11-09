@@ -213,6 +213,16 @@ pub fn initial_display(window: &Window) -> serde_json::Value {
 }
 
 impl Grid {
+    /// Writes program output to the screen; with `track` (`cursor_trail:
+    /// "all"`), notes when it moved the cursor (cursor_jumps.rs), once a chunk.
+    fn write_output(&mut self, bytes: &[u8], track: bool, now: impl FnOnce() -> Instant) {
+        let before = track.then(|| self.vt.cursor_xy());
+        self.vt.write(bytes);
+        if before.is_some_and(|b| b != self.vt.cursor_xy()) {
+            self.jumps.program_moved(now());
+        }
+    }
+
     fn ready_to_attach(&mut self) {
         self.attach_ready = true;
         if let Some(ready) = self.fit_ready.take() {
@@ -559,8 +569,10 @@ impl TerminalView {
             for item in batch {
                 match item {
                     Stream::Data(bytes) => {
-                        g.vt.allow_clipboard_write(crate::settings::get().clipboard_write);
-                        g.vt.write(&bytes);
+                        let settings = crate::settings::get();
+                        g.vt.allow_clipboard_write(settings.clipboard_write);
+                        let track = settings.cursor_trail == crate::settings::CursorTrail::All;
+                        g.write_output(&bytes, track, || cx.background_executor().now());
                         let [clipboard, primary] = g.vt.take_clipboard();
                         if let Some(text) = clipboard {
                             cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -1064,10 +1076,11 @@ impl TerminalView {
         true
     }
 
-    /// Feeds program output straight to the screen, for tests.
+    /// Feeds program output to the screen as the output path does, for tests.
     #[cfg(test)]
-    pub fn feed(&self, bytes: &[u8]) {
-        self.grid.borrow_mut().vt.write(bytes);
+    pub fn feed(&self, bytes: &[u8], cx: &App) {
+        let track = crate::settings::get().cursor_trail == crate::settings::CursorTrail::All;
+        self.grid.borrow_mut().write_output(bytes, track, || cx.background_executor().now());
     }
 
     /// Scrolls the screen back `rows` (forward when negative), for tests.

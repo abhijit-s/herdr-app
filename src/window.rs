@@ -8884,7 +8884,7 @@ export default class Recent extends View {
             view.update(cx, |this, cx| {
                 let term = this.terms[pane].view.clone();
                 term.update(cx, |t, cx| {
-                    t.feed(bytes.as_bytes());
+                    t.feed(bytes.as_bytes(), cx);
                     cx.notify();
                 });
             });

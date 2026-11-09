@@ -6,10 +6,13 @@
 //! `cursor_trail_min_cells` from the last settled place in either axis
 //! (Chebyshev distance, so a diagonal step is one cell; kitty's start
 //! threshold, moves of that many cells or fewer are ignored), or the cursor's
-//! shape changed. Typing settles a cell or two at a time, so it doesn't draw;
-//! output that moves the cursor faster than the settle time draws nothing
-//! until it pauses. The time is paint's, so the settle time must outlast the
-//! gap between frames while output streams.
+//! shape changed. Stillness is measured from when the program last moved the
+//! cursor (the output path calls `program_moved` after a chunk that moved it),
+//! as kitty measures from `position_changed_by_client_at`, not from when a
+//! frame drew it: frames come up to ~50 ms apart while output streams, so
+//! paint time would find a streaming cursor "still" between frames. Typing
+//! settles one cell at a time, so it doesn't draw; output draws nothing until
+//! it pauses for the settle time.
 //!
 //! A hidden cursor forgets where it was, so it reappearing isn't a jump.
 
@@ -53,8 +56,14 @@ pub struct Jumps {
     view: Option<View>,
     settled: Option<Spot>,
     moved: Option<(Spot, Instant)>,
+    /// When the program last moved the cursor, as the output path saw it.
+    program: Option<Instant>,
     timer: bool,
 }
+
+/// How long the settle timer waits, past the settle time, for a frame to draw
+/// the program's last move before settling on what was drawn.
+const CATCH_UP: Duration = Duration::from_millis(100);
 
 /// Cells between two cells, a diagonal step counting one.
 pub fn chebyshev(a: Cell, b: Cell) -> u16 {
@@ -62,7 +71,14 @@ pub fn chebyshev(a: Cell, b: Cell) -> u16 {
 }
 
 impl Jumps {
-    /// Paint drew the cursor at `spot` (None: hidden) in `view` at `now`.
+    /// Program output moved the cursor at `at` (the output path, once per
+    /// chunk that moved it).
+    pub fn program_moved(&mut self, at: Instant) {
+        self.program = Some(at);
+    }
+
+    /// Paint drew the cursor at `spot` (None: hidden) in `view` at `now`; a
+    /// move counts from when the program made it, else from now.
     /// True when a settle timer must be started: the cursor moved and none is
     /// pending. A new view (scrolled, resized, settings changed) only settles,
     /// so scrolling back or a reflow is no jump.
@@ -81,9 +97,13 @@ impl Jumps {
         };
         let latest = self.moved.map_or(settled, |(s, _)| s);
         if spot == latest {
+            // Drawn where it was drawn last, as of the program's latest move.
+            if let (Some((_, seen)), Some(p)) = (self.moved.as_mut(), self.program) {
+                *seen = p.max(*seen);
+            }
             return false;
         }
-        self.moved = Some((spot, now));
+        self.moved = Some((spot, self.program.unwrap_or(now)));
         let start = !self.timer;
         self.timer = true;
         start
@@ -101,15 +121,25 @@ impl Jumps {
     }
 
     /// The settle timer fired at `now`: wait on while the cursor moved within
-    /// `settle`, else settle it and say whether it jumped.
+    /// `settle` (by paint's last sight or the program's last move, whichever is
+    /// later, so a move not yet drawn still counts), else settle it and say
+    /// whether it jumped.
     pub fn due(&mut self, now: Instant, settle: Duration, min_cells: u16) -> Due {
         let Some((spot, at)) = self.moved else {
             self.timer = false;
             return Due::Fire(None);
         };
-        let still = now.saturating_duration_since(at);
+        let still = now.saturating_duration_since(self.program.map_or(at, |p| p.max(at)));
         if still < settle {
             return Due::Wait(settle - still);
+        }
+        // The program moved the cursor after paint last drew it: wait for the
+        // frame that shows where, so the trail ends there, not on a stale cell;
+        // but never for long, in case no frame comes (a hidden window).
+        if self.program.is_some_and(|p| p > at)
+            && now.saturating_duration_since(at) < settle + CATCH_UP
+        {
+            return Due::Wait(settle);
         }
         self.timer = false;
         self.moved = None;
@@ -316,150 +346,141 @@ mod tests {
         );
     }
 
-    /// Paint observations `(ms, column, row)` run through `Jumps` with its one
-    /// settle timer, as `settle_jumps` drives it: the jumps that fire, each
-    /// with when.
-    fn run(moves: &[(u64, u16, u16)], settle_ms: u64, min_cells: u16) -> Vec<(u64, Jump)> {
+    /// The program moving the cursor to `(ms, column, row)`, drawn on frames
+    /// every `frame` ms, through `Jumps` with its one settle timer as the output
+    /// path, paint and `settle_jumps` drive it: the jumps that fire, each with
+    /// when. The first move is where the cursor starts.
+    fn run(
+        moves: &[(u64, u16, u16)],
+        frame: u64,
+        settle_ms: u64,
+        min_cells: u16,
+    ) -> Vec<(u64, Jump)> {
         let (mut j, t0, settle) = (
             Jumps::default(),
             Instant::now(),
             Duration::from_millis(settle_ms),
         );
+        let end = moves.last().map_or(0, |m| m.0) + 1000;
+        let (mut at_cell, mut moved) = ((moves[0].1, moves[0].2), 0usize);
         let (mut wake, mut fired) = (None::<u64>, Vec::new());
-        let mut events = moves.iter().copied().peekable();
-        loop {
-            let next_move = events.peek().map(|m| m.0);
-            // A move and a wake at the same ms: the move first, as a paint
-            // landing just before the timer would.
-            match (next_move, wake) {
-                (Some(m), Some(w)) if w < m => {}
-                (Some(_), _) => {
-                    let (t, x, y) = events.next().unwrap();
-                    if j.observe(at(x, y), V, ms(t0, t)) {
-                        wake = Some(t + settle_ms);
-                    }
-                    continue;
+        // Millisecond by millisecond: the program's moves first, then a frame, then the timer.
+        for t in 0..=end {
+            while moved < moves.len() && moves[moved].0 == t {
+                if moved > 0 {
+                    j.program_moved(ms(t0, t));
                 }
-                (None, None) => return fired,
-                (None, Some(_)) => {}
+                at_cell = (moves[moved].1, moves[moved].2);
+                moved += 1;
             }
-            let w = wake.take().unwrap();
-            match j.due(ms(t0, w), settle, min_cells) {
-                Due::Wait(more) => wake = Some(w + more.as_millis() as u64),
-                Due::Fire(Some(jump)) => fired.push((w, jump)),
-                Due::Fire(None) => {}
+            if t % frame == 0 && j.observe(at(at_cell.0, at_cell.1), V, ms(t0, t)) {
+                wake = Some(t + settle_ms);
+            }
+            if wake == Some(t) {
+                wake = None;
+                match j.due(ms(t0, t), settle, min_cells) {
+                    Due::Wait(more) => wake = Some(t + more.as_millis() as u64),
+                    Due::Fire(Some(jump)) => fired.push((t, jump)),
+                    Due::Fire(None) => {}
+                }
             }
         }
+        fired
     }
 
-    /// The default settle time: paint, not the program, stamps each move, and
-    /// frames come 16 to 50 ms apart while output streams.
-    const S: u64 = 80;
+    /// The default settle time.
+    const S: u64 = 10;
 
     #[test]
     fn typing_on_a_line_never_draws() {
-        // A key every 60 to 150 ms, a backspace, a pause of half a second, more keys:
-        // at most two keys land within one settle time, two cells, the threshold itself.
+        // A key every 60 to 150 ms, a backspace, a pause, and three fast keys 30 ms apart.
         let mut moves = vec![(0, 10, 5)];
         let (mut t, mut x) = (0, 10);
-        for (i, gap) in [60, 150, 90, 120, 75, 140, 60, 100].iter().enumerate() {
+        for (i, gap) in [60, 150, 90, 120, 75, 140, 60, 100, 500, 30, 30]
+            .iter()
+            .enumerate()
+        {
             t += gap;
             x = if i == 4 { x - 1 } else { x + 1 };
             moves.push((t, x, 5));
         }
-        t += 500;
-        for gap in [80, 110, 65] {
-            t += gap;
-            x += 1;
-            moves.push((t, x, 5));
+        for frame in [16, 50] {
+            assert_eq!(
+                run(&moves, frame, S, 2),
+                vec![],
+                "{frame} ms frames: each key settles alone, one cell"
+            );
         }
-        assert_eq!(
-            run(&moves, S, 2),
-            vec![],
-            "keys settle a cell or two at a time"
-        );
     }
 
     #[test]
-    fn three_keys_within_one_settle_time_draw_once() {
-        // What the 80 ms default leaves: a fast burst of three keys is a three-cell move.
-        let moves = [(0, 10, 5), (100, 11, 5), (130, 12, 5), (160, 13, 5)];
-        assert_eq!(
-            run(&moves, S, 2),
-            vec![(
-                240,
-                Jump::Moved {
-                    from: (10, 5),
-                    to: (13, 5)
-                }
-            )]
-        );
-    }
-
-    #[test]
-    fn real_jumps_still_draw_after_the_settle_time() {
-        let jump = |from: Cell, to: Cell| run(&[(0, from.0, from.1), (100, to.0, to.1)], S, 2);
-        // Enter at the end of a command: the prompt on the next line.
-        assert_eq!(
-            jump((30, 5), (0, 6)),
-            vec![(
-                180,
-                Jump::Moved {
+    fn real_jumps_still_draw_once_the_program_pauses() {
+        for frame in [16, 50] {
+            let jump =
+                |from: Cell, to: Cell| run(&[(0, from.0, from.1), (100, to.0, to.1)], frame, S, 2);
+            // Enter at the end of a command: the prompt on the next line; `clear`: home; ten cells along the row.
+            assert_eq!(
+                jump((30, 5), (0, 6))
+                    .iter()
+                    .map(|f| f.1)
+                    .collect::<Vec<_>>(),
+                vec![Jump::Moved {
                     from: (30, 5),
                     to: (0, 6)
-                }
-            )]
-        );
-        // `clear`: home.
-        assert_eq!(
-            jump((40, 20), (0, 0)),
-            vec![(
-                180,
-                Jump::Moved {
+                }]
+            );
+            assert_eq!(
+                jump((40, 20), (0, 0))
+                    .iter()
+                    .map(|f| f.1)
+                    .collect::<Vec<_>>(),
+                vec![Jump::Moved {
                     from: (40, 20),
                     to: (0, 0)
-                }
-            )]
-        );
-        // Ten cells along the row (a word jump, an editor motion).
-        assert_eq!(jump((5, 5), (15, 5)).len(), 1);
+                }]
+            );
+            assert_eq!(jump((5, 5), (15, 5)).len(), 1);
+            // Drawn within a frame and the settle time of the move.
+            assert!(
+                jump((5, 5), (15, 5)).iter().all(|f| f.0 <= 100 + frame + S),
+                "{frame}"
+            );
+        }
     }
 
     #[test]
     fn output_pushing_three_lines_draws_and_one_or_two_lines_dont() {
-        let push = |lines: u16| run(&[(0, 0, 5), (100, 0, 5 + lines)], S, 2);
+        let push = |lines: u16| run(&[(0, 0, 5), (100, 0, 5 + lines)], 16, S, 2);
         assert_eq!(push(1), vec![]);
         assert_eq!(push(2), vec![]);
         assert_eq!(
-            push(3),
-            vec![(
-                180,
-                Jump::Moved {
-                    from: (0, 5),
-                    to: (0, 8)
-                }
-            )]
+            push(3).iter().map(|f| f.1).collect::<Vec<_>>(),
+            vec![Jump::Moved {
+                from: (0, 5),
+                to: (0, 8)
+            }]
         );
     }
 
     #[test]
-    fn streaming_at_paint_cadence_draws_at_most_once_per_pause() {
-        // Paint sees the cursor move once a frame: every 16 ms (60 Hz) or every
-        // 50 ms (a stream's frames, as the bench measures). Three bursts of 300 ms,
-        // each followed by 300 ms still.
+    fn streaming_output_draws_nothing_until_it_pauses_whatever_the_frame_rate() {
+        // The program moves the cursor every 2 ms (a chunk at a time) for 300 ms,
+        // down a line every 20 ms, then leaves it for 300 ms; three times. Frames
+        // come every 16 or every 50 ms, slower than the settle time: what keeps
+        // it quiet is the program's moves, not the frames.
         for frame in [16u64, 50] {
             let mut moves = vec![(0, 0, 0)];
             for burst in 0..3u64 {
                 let start = 1 + burst * 600;
-                for i in 0..(300 / frame) {
+                for i in 0..150u64 {
                     moves.push((
-                        start + i * frame,
+                        start + i * 2,
                         (i * 7 % 40) as u16,
-                        (burst * 10 + i) as u16,
+                        (burst * 20 + i / 10) as u16,
                     ));
                 }
             }
-            let fired = run(&moves, S, 2);
+            let fired = run(&moves, frame, S, 2);
             assert_eq!(
                 fired.len(),
                 3,
@@ -469,10 +490,81 @@ mod tests {
                 fired
                     .iter()
                     .zip([0u64, 600, 1200])
-                    .all(|((at, _), start)| *at >= start + 280 && *at < start + 600),
+                    .all(|((at, _), start)| *at >= start + 300 && *at < start + 600),
                 "{frame} ms: {fired:?}"
             );
         }
+    }
+
+    #[test]
+    fn streaming_with_small_moves_stays_silent() {
+        // A spinner or a status line redrawn in place: the cursor steps back and
+        // forth a cell or two, every 30 ms, for a second.
+        let mut moves = vec![(0, 20, 10)];
+        for i in 1..=33u64 {
+            moves.push((i * 30, 20 + (i % 3) as u16, 10));
+        }
+        for frame in [16, 50] {
+            assert_eq!(run(&moves, frame, S, 2), vec![], "{frame}");
+        }
+    }
+
+    #[test]
+    fn a_settled_move_not_yet_drawn_waits_for_its_frame_but_not_forever() {
+        let (mut j, t0, settle) = (Jumps::default(), Instant::now(), Duration::from_millis(10));
+        j.observe(at(0, 0), V, t0);
+        j.program_moved(t0);
+        assert!(j.observe(at(9, 0), V, t0));
+        // The program moved on at 5 and stopped; no frame has drawn it yet.
+        j.program_moved(ms(t0, 5));
+        assert_eq!(
+            j.due(ms(t0, 15), settle, 2),
+            Due::Wait(settle),
+            "still long enough, but drawn stale"
+        );
+        // The frame comes: drawn at (20, 0).
+        assert!(!j.observe(at(20, 0), V, ms(t0, 16)));
+        assert_eq!(
+            j.due(ms(t0, 25), settle, 2),
+            Due::Fire(Some(Jump::Moved {
+                from: (0, 0),
+                to: (20, 0)
+            }))
+        );
+        // No frame ever comes (a hidden window): it settles on what was drawn.
+        j.program_moved(ms(t0, 30));
+        assert!(j.observe(at(30, 0), V, ms(t0, 30)));
+        j.program_moved(ms(t0, 35));
+        let mut t = 45;
+        let fired = loop {
+            match j.due(ms(t0, t), settle, 2) {
+                Due::Wait(more) => t += more.as_millis() as u64,
+                Due::Fire(jump) => break jump,
+            }
+        };
+        assert!(t <= 30 + 10 + 100 + 10, "gave up waiting by {t}");
+        assert_eq!(
+            fired,
+            Some(Jump::Moved {
+                from: (20, 0),
+                to: (30, 0)
+            })
+        );
+    }
+
+    #[test]
+    fn a_move_not_yet_drawn_keeps_the_timer_waiting() {
+        // Paint saw the move at 0; the program moved again at 8, before the timer
+        // woke at 10, and that frame hasn't come: the timer waits from 8.
+        let (mut j, t0) = (Jumps::default(), Instant::now());
+        j.observe(at(0, 0), V, t0);
+        j.program_moved(t0);
+        assert!(j.observe(at(9, 0), V, t0));
+        j.program_moved(ms(t0, 8));
+        assert_eq!(
+            j.due(ms(t0, 10), Duration::from_millis(10), 2),
+            Due::Wait(Duration::from_millis(8))
+        );
     }
 
     #[test]
