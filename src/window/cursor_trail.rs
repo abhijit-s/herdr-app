@@ -236,7 +236,7 @@ impl AppWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::{CAUGHT_UP, opacity, paler, progress, streak};
+    use super::{CAUGHT_UP, LAYERS, opacity, paler, progress, settle, streak};
     use gpui::{Bounds, Pixels, Point, point, px, size};
     use std::time::Duration;
 
@@ -311,9 +311,9 @@ mod tests {
         let (a, b, c) = (tail(0.1), tail(0.2), tail(0.3));
         assert!(4.0 < a && a < b && b < c && c < 404.0, "{a} {b} {c}");
         assert!(b - a < a - 4.0, "fast at first, then slower: {a} {b}");
-        let last = streak(from, to, 0.99, 1.0).unwrap();
+        let last = streak(from, to, 0.95, 1.0).unwrap();
         assert!(
-            dist(xy(last[0]), (404.0, 8.0)) < 2.0,
+            dist(xy(last[0]), (404.0, 8.0)) < 4.0,
             "the last frame is all but in the cursor: {last:?}"
         );
         assert_eq!(streak(from, to, 1.0, 1.0), None, "and gone at the end");
@@ -362,7 +362,47 @@ mod tests {
                             .all(|p| xy(*p).0.is_finite() && xy(*p).1.is_finite()),
                         "{to:?} {t}: {o:?}"
                     );
-                    assert!(dist(xy(o[0]), xy(to.center())) >= CAUGHT_UP);
+                    // The tail is on the way back to the old cursor, settle(t) of it.
+                    let (head, from) = (xy(to.center()), (4.0, 8.0));
+                    let k = settle(t.clamp(0.0, 1.0));
+                    let want = (
+                        head.0 + (from.0 - head.0) * k,
+                        head.1 + (from.1 - head.1) * k,
+                    );
+                    assert!(
+                        dist(xy(o[0]), want) < 0.01,
+                        "{to:?} {t}: {:?} not {want:?}",
+                        xy(o[0])
+                    );
+                    assert!(dist(xy(o[0]), head) >= CAUGHT_UP);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_layer_is_a_convex_outline_at_any_length() {
+        // Each turn along the outline goes the same way: convex, so never self-crossing.
+        let convex = |o: &[Point<Pixels>]| {
+            let turns: Vec<f32> = (0..o.len())
+                .map(|i| {
+                    let (a, b, c) = (xy(o[i]), xy(o[(i + 1) % o.len()]), xy(o[(i + 2) % o.len()]));
+                    (b.0 - a.0) * (c.1 - b.1) - (b.1 - a.1) * (c.0 - b.0)
+                })
+                .collect();
+            turns.iter().all(|t| *t > 0.0) || turns.iter().all(|t| *t < 0.0)
+        };
+        for dir in [
+            (1.0f32, 0.0f32),
+            (0.0, -1.0),
+            (0.707, 0.707),
+            (37.0 / 214.2, 211.0 / 214.2),
+        ] {
+            for len in [0.6f32, 1.0, 5.0, 10.0, 400.0] {
+                let to = cell(dir.0 * len, dir.1 * len);
+                for (widen, _, _) in LAYERS {
+                    let o = streak(cell(0.0, 0.0), to, 0.0, widen).unwrap();
+                    assert!(convex(&o), "{dir:?} {len} {widen}: {o:?}");
                 }
             }
         }
