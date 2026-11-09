@@ -538,8 +538,10 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  unset (the default); agents carry it resolved as `card_info`. The shipped agents mod draws
  *  `card_info` only once it is set, so its rows stay as they were by default.
  *  `toast_duration`, `toast_style`, `toast_corners`, `toast_mark`, `toast_design` and `toast_progress` are the person's toast choices
- *  (see AGENTS.md). `cursor_trail` is `"off" | "panes"`, with `cursor_trail_duration_ms` and
- *  `cursor_trail_color` (`null` for the theme's `cursor`) as written; the app draws the trail. */
+ *  (see AGENTS.md). `cursor_trail` is `"off" | "panes" | "all"`, `cursor_trail_style`
+ *  `"comet" | "tail" | "sweep" | "warp"`, `cursor_arrival` `"off" | "ripple" | "boom" | "ripple_rect" | "boom_rect"`,
+ *  with `cursor_trail_duration_ms`, `cursor_trail_settle_ms`, `cursor_trail_min_cells` and
+ *  `cursor_trail_color` (`null` for the theme's `cursor`) as written; the app draws the effects. */
 export function settings(): Record<string, unknown>;
 
 /** The toast previews the Settings window draws: `styles` is `{ standard, subtle, "high-contrast",

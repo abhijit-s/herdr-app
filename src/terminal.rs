@@ -68,6 +68,10 @@ pub enum TerminalEvent {
     ContextMenu(Point<Pixels>),
     /// A mouse selection was copied on release.
     Copied,
+    /// The focused terminal's cursor settled after a jump (`cursor_trail:
+    /// "all"`): from this cell (window coordinates) to where it is drawn now,
+    /// or None when only its shape changed.
+    CursorJump(Option<Bounds<Pixels>>),
 }
 
 /// What the canvas closures need, shared outside the entity so prepaint can resize.
@@ -102,6 +106,8 @@ struct Grid {
     /// The cursor's cell in window coordinates, from the last paint: where the
     /// input method puts its candidate window.
     cursor_at: Option<Bounds<Pixels>>,
+    /// Where the focused terminal's cursor settled, for `cursor_trail: "all"`.
+    jumps: crate::cursor_jumps::Jumps,
     /// The scroll thumb's grabbable lane from the last paint, in window
     /// coordinates (wider than the few px drawn).
     thumb: Option<Bounds<Pixels>>,
@@ -305,6 +311,7 @@ impl TerminalView {
                 link_spans: Vec::new(),
                 marked: None,
                 cursor_at: None,
+                jumps: Default::default(),
                 thumb: None,
                 track: None,
                 painted: Vec::new(),
@@ -1055,6 +1062,18 @@ impl TerminalView {
             g.core.input(ch, &bytes);
         }
         true
+    }
+
+    /// Feeds program output straight to the screen, for tests.
+    #[cfg(test)]
+    pub fn feed(&self, bytes: &[u8]) {
+        self.grid.borrow_mut().vt.write(bytes);
+    }
+
+    /// Scrolls the screen back `rows` (forward when negative), for tests.
+    #[cfg(test)]
+    pub fn scroll_back(&self, rows: isize) {
+        self.grid.borrow_mut().vt.scroll_viewport(-rows);
     }
 
     /// The pointer is over the pane: pressing or letting go of the link key redraws it.
@@ -1924,7 +1943,41 @@ fn glyph_thicken() -> gpui::GlyphThicken {
     s.font_thicken.glyph(s.font_thicken_strength)
 }
 
-fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, window: &mut Window, cx: &mut App) {
+/// The one settle timer of a terminal whose cursor moved (`cursor_trail:
+/// "all"`): waits until the cursor has been still for `settle`, then tells the
+/// window if it jumped (`TerminalEvent::CursorJump`).
+fn settle_jumps(grid: Rc<RefCell<Grid>>, view: WeakEntity<TerminalView>, settle: Duration, min_cells: u16, window: &mut Window, cx: &mut App) {
+    use crate::cursor_jumps::{Due, Jump};
+    window
+        .spawn(cx, async move |cx| {
+            let mut wait = settle;
+            loop {
+                cx.background_executor().timer(wait).await;
+                // The executor's clock, so tests can move it.
+                let due = grid.borrow_mut().jumps.due(cx.background_executor().now(), settle, min_cells);
+                match due {
+                    Due::Wait(more) => wait = more,
+                    Due::Fire(jump) => {
+                        let from = match jump {
+                            Some(Jump::Moved { from: (x, y), .. }) => {
+                                let g = grid.borrow();
+                                Some(Some(Bounds::new(g.origin + point(g.cell.width * f32::from(x), g.cell.height * f32::from(y)), g.cell)))
+                            }
+                            Some(Jump::Reshaped) => Some(None),
+                            None => None,
+                        };
+                        if let Some(from) = from {
+                            let _ = view.update(cx, |_, cx| cx.emit(TerminalEvent::CursorJump(from)));
+                        }
+                        return;
+                    }
+                }
+            }
+        })
+        .detach();
+}
+
+fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, view: &WeakEntity<TerminalView>, focused: bool, window: &mut Window, cx: &mut App) {
     crate::bench::count(&crate::bench::GRID);
     let mut g = grid.borrow_mut();
     let (cell, text_size) = (g.cell, g.font);
@@ -2114,7 +2167,21 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, w
         g.track = None;
         let sb = g.vt.scrollbar();
         let track = f32::from(cell.height) * f32::from(g.vt.rows);
-        if crate::settings::get().pane_scrollbars
+        let settings = crate::settings::get();
+        if settings.cursor_trail == crate::settings::CursorTrail::All {
+            let spot = frame.cursor.map(|c| crate::cursor_jumps::Spot { cell: (c.x, c.y), shape: c.shape });
+            // What the cells are measured in: scrolled back from the bottom, the
+            // grid's size, and these settings (a new `Rc` per change, so turning
+            // "all" off and on again starts afresh).
+            let back = (sb.total as u64).saturating_sub(sb.offset as u64 + sb.len as u64);
+            let view_of = (back, g.vt.cols, g.vt.rows, std::rc::Rc::as_ptr(&settings) as usize);
+            if focused && g.jumps.observe(spot, view_of, cx.background_executor().now()) {
+                settle_jumps(grid.clone(), view.clone(), settings.trail_settle(), settings.trail_min_cells(), window, cx);
+            } else if !focused && g.jumps.knows() {
+                g.jumps.forget();
+            }
+        }
+        if settings.pane_scrollbars
             && !g.vt.alt_screen()
             && g.vt.cols > 4
             && let Some((top, len)) = scrollbar_thumb(sb.total, sb.offset, sb.len, track, f32::from(cell.height))
@@ -2358,7 +2425,7 @@ impl Render for TerminalView {
                         let subpixel = crate::settings::get().text_rendering.subpixel();
                         window.with_font_weight_shift(0.0, |window| {
                             window.with_glyph_thicken(glyph_thicken(), |window| {
-                                window.with_glyph_contrast(contrast, |window| window.with_glyph_subpixel(subpixel, |window| paint_grid(bounds, &grid_paint, focused, window, cx)))
+                                window.with_glyph_contrast(contrast, |window| window.with_glyph_subpixel(subpixel, |window| paint_grid(bounds, &grid_paint, &selection_view, focused, window, cx)))
                             })
                         });
                         let view = selection_view.clone();

@@ -8,6 +8,7 @@ mod bench;
 mod commands;
 mod control;
 mod core_bin;
+mod cursor_jumps;
 mod dock_badge;
 mod files;
 mod float_pane;

@@ -112,6 +112,22 @@ while True:
     time.sleep(0.5)
 """
 
+# A shell running bursts of commands: twenty prompts and outputs as fast as they
+# print, then still for half a second at a fresh prompt, over and over, so the
+# cursor jumps and settles twice a second.
+BURST = r"""
+import sys, time
+w = sys.stdout.write
+n = 0
+while True:
+    for i in range(20):
+        n += 1
+        w(f"$ echo {n}\r\n{n} done\r\n")
+    w("$ ")
+    sys.stdout.flush()
+    time.sleep(0.5)
+"""
+
 
 def env():
     e = dict(os.environ)
@@ -411,6 +427,19 @@ def trail(bin, app, a, agent):
         hopper.join()
 
 
+def jumps(bin, app, a, agent, burst):
+    """Cursor jumps in the focused pane (cursor_trail "all"): a shell at rest,
+    an agent streaming in the focused pane, then a shell bursting commands in
+    the focused pane beside it."""
+    rows = ROWS_OUT
+    do(bin, "space.new", {"name": "bench", "folder": ROOT})
+    rows.append(measure("jumps-rest", app, a.seconds, a.sample))
+    do(bin, "tab.new", {"name": "stream", "argv": agent})
+    rows.append(measure("jumps-stream", app, a.seconds, a.sample))
+    do(bin, "pane.split", {"direction": "right", "argv": burst})
+    rows.append(measure("jumps-burst", app, a.seconds, a.sample))
+
+
 ROWS_OUT = []
 
 
@@ -420,9 +449,9 @@ def main():
     ap.add_argument("--seconds", type=int, default=20)
     ap.add_argument("--sample", action="store_true")
     ap.add_argument("--zoom", type=float, default=1.0)
-    ap.add_argument("--set", choices=["all", "spinners", "toasts", "subagents", "floats", "trail"], default="all",
+    ap.add_argument("--set", choices=["all", "spinners", "toasts", "subagents", "floats", "trail", "jumps"], default="all",
                     help="spinners: many spaces of idle agents, one agent working on screen; toasts: agents finishing in waves and in a storm, raising toasts; subagents: agents whose in-process sub-agents come and go (OSC 7501 child records); "
-                         "floats: floating panes over streaming agents, still and moving; trail: the focus hopping between panes beside streaming agents")
+                         "floats: floating panes over streaming agents, still and moving; trail: the focus hopping between panes beside streaming agents; jumps: the focused pane's cursor streaming and bursting")
     ap.add_argument("--only", help="measure only this scenario, e.g. spinners+stream")
     ap.add_argument("--settings", default="{}", help="JSON merged into the test home's settings.json, e.g. '{\"toast_duration\": \"long\"}'")
     a = ap.parse_args()
@@ -454,6 +483,8 @@ def main():
         f.write(CYCLE)
     with open(f"{ROOT}/subagents.py", "w") as f:
         f.write(SUBAGENTS)
+    with open(f"{ROOT}/burst.py", "w") as f:
+        f.write(BURST)
     cycle = lambda start, busy, rest: [sys.executable, "-u", f"{ROOT}/cycle.py", str(start), str(busy), str(rest)]
     agent = [sys.executable, "-u", f"{ROOT}/agent.py"]
     tui = [sys.executable, "-u", f"{ROOT}/tui.py"]
@@ -501,6 +532,9 @@ def main():
             return
         if a.set == "trail":
             trail(bin, app.pid, a, agent)
+            return
+        if a.set == "jumps":
+            jumps(bin, app.pid, a, agent, [sys.executable, "-u", f"{ROOT}/burst.py"])
             return
         if a.set == "subagents":
             # Six agents, each with sub-agents coming and going twice a second; one on screen.

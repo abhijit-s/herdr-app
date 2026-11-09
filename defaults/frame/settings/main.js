@@ -104,7 +104,7 @@ function stepSpacing(v, d) {
 // The sidebar: groups that open and close, each with its pages. A page's id is
 // what app.settings' section names.
 const GROUPS = [
-  { id: "appearance", title: "Appearance", icon: "palette", pages: [["themes", "Themes"], ["layout", "Layout"], ["window", "Window"], ["panes", "Panes"]] },
+  { id: "appearance", title: "Appearance", icon: "palette", pages: [["themes", "Themes"], ["layout", "Layout"], ["window", "Window"], ["panes", "Panes"], ["cursor", "Cursor"]] },
   { id: "text", title: "Text", icon: "type", pages: [["zoom", "Zoom"], ["fonts", "Fonts"], ["grid", "Terminal grid"], ["rendering", "Rendering"]] },
   { id: "input", title: "Input", icon: "keyboard", pages: [...(window()?.platform === "macos" ? [["keyboard", "Keyboard"]] : []), ["mouse", "Mouse"]] },
   { id: "agents", title: "Agents", icon: "bell", pages: [["activity", "Activity"], ["alerts", "Alerts"]] },
@@ -281,7 +281,28 @@ const FOCUS_WIDTHS = [
 const CURSOR_TRAILS = [
   ["off", "Off"],
   ["panes", "Between panes"],
+  ["all", "Panes and jumps"],
 ];
+// How the trail looks (cursor_trail_style); Comet is the default, left out of settings.json.
+const TRAIL_STYLES = [
+  ["comet", "Comet"],
+  ["tail", "Tail"],
+  ["sweep", "Sweep"],
+  ["warp", "Warp"],
+];
+// The pulse as the focus lands (cursor_arrival); Off is the default, left out of settings.json.
+const ARRIVALS = [
+  ["off", "Off"],
+  ["ripple", "Ripple"],
+  ["boom", "Boom"],
+  ["ripple_rect", "Ripple box"],
+  ["boom_rect", "Boom box"],
+];
+// cursor_trail_settle_ms and cursor_trail_min_cells: the app's SETTLE_MS and MIN_CELLS ranges and defaults (settings.rs).
+const SETTLE_MS = [0, 500];
+const SETTLE_MS_DEFAULT = 80;
+const MIN_CELLS = [1, 50];
+const MIN_CELLS_DEFAULT = 2;
 // cursor_trail_duration_ms: the app's TRAIL_MS range and TRAIL_MS_DEFAULT (settings.rs).
 const TRAIL_MS = [50, 1000];
 const TRAIL_MS_DEFAULT = 120;
@@ -741,6 +762,7 @@ export default class Settings extends View {
       case "layout": return this.layoutPage(t, cx);
       case "window": return this.windowPage(t);
       case "panes": return this.panes(t);
+      case "cursor": return this.cursorPage(t);
       case "zoom":
       case "fonts":
       case "grid":
@@ -1676,14 +1698,18 @@ export default class Settings extends View {
         ),
       )
       .child(this.row(t, "Focus border", "The color around the pane you're typing in, where the layout draws it. From theme is the accent, or the theme's own focus color.", this.focusColorPicker(t), "colors.focus"))
-      .child(this.row(t, "Focus border width", "Layout keeps the layout's own width. Panes keep their size as the focus moves.", this.choicePicker(t, "st-fw", "focus_border_width", FOCUS_WIDTHS), "focus_border_width"))
-      .child(this.cursorTrail(t));
+      .child(this.row(t, "Focus border width", "Layout keeps the layout's own width. Panes keep their size as the focus moves.", this.choicePicker(t, "st-fw", "focus_border_width", FOCUS_WIDTHS), "focus_border_width"));
   }
 
-  // Cursor trail: Off or Between panes, then how long its tail takes (20 ms steps)
-  // while it's on. Off and 120 ms are the defaults, left out of settings.json.
-  cursorTrail(t) {
+  // Cursor effects: the trail (Off, Between panes, or that and the focused pane's cursor
+  // jumps), its style while it's on, the arrival pulse, how long they take (20 ms steps)
+  // while either is on, and, for jumps, how still the cursor must be (10 ms steps) and
+  // how far it must move. Off, Comet, Off, 120 ms, 80 ms and 2 cells are the defaults,
+  // left out of settings.json.
+  cursorPage(t) {
     const on = (this.person.cursor_trail ?? "off") !== "off";
+    const jumps = this.person.cursor_trail === "all";
+    const pulse = (this.person.cursor_arrival ?? "off") !== "off";
     const clamp = (ms) => Math.max(TRAIL_MS[0], Math.min(TRAIL_MS[1], ms));
     const ms = clamp(this.person.cursor_trail_duration_ms ?? TRAIL_MS_DEFAULT);
     const step = (d, cx) =>
@@ -1692,11 +1718,32 @@ export default class Settings extends View {
         if (next === TRAIL_MS_DEFAULT) delete q.cursor_trail_duration_ms;
         else q.cursor_trail_duration_ms = next;
       }, cx);
+    // A stepper over [lo, hi] in steps of `by` whose default `def` is left out of settings.json.
+    const within = (key, [lo, hi], def, by) => {
+      const clampTo = (v) => Math.max(lo, Math.min(hi, v));
+      const go = (d, cx) =>
+        this.change((q) => {
+          const next = clampTo(Math.round((clampTo(q[key] ?? def) + d) / by) * by);
+          if (next === def) delete q[key];
+          else q[key] = next;
+        }, cx);
+      return [clampTo(this.person[key] ?? def), (_e, cx) => go(-by, cx), (_e, cx) => go(by, cx)];
+    };
+    const [settle, settleLess, settleMore] = within("cursor_trail_settle_ms", SETTLE_MS, SETTLE_MS_DEFAULT, 10);
+    const [cells, cellsLess, cellsMore] = within("cursor_trail_min_cells", MIN_CELLS, MIN_CELLS_DEFAULT, 1);
     return v_flex()
       .w_full()
-      .child(this.row(t, "Cursor trail", "A glowing streak from one pane's cursor to the next as the focus moves between panes.", this.choicePicker(t, "st-ct", "cursor_trail", CURSOR_TRAILS), "cursor_trail"))
-      .when(on, (el) =>
-        el.child(this.row(t, "Trail time", "How long the streak takes to go into the cursor.", this.stepper(t, "st-cursor_trail_duration_ms", `${ms} ms`, (_e, cx) => step(-20, cx), (_e, cx) => step(20, cx)), "cursor_trail_duration_ms")),
+      .child(this.heading(t, "Cursor effects"))
+      .child(this.row(t, "Cursor trail", "A trail from one pane's cursor to the next as the focus moves between panes, and with Panes and jumps, as the cursor jumps in the pane you're typing in.", this.choicePicker(t, "st-ct", "cursor_trail", CURSOR_TRAILS), "cursor_trail"))
+      .when(on, (el) => el.child(this.row(t, "Trail style", "Comet: a glowing streak. Tail: the cursor stretched, as kitty does. Sweep: a block shrinking into the cursor. Warp: a soft stretched block, as Neovide does.", this.choicePicker(t, "st-cs", "cursor_trail_style", TRAIL_STYLES), "cursor_trail_style")))
+      .when(jumps, (el) =>
+        el
+          .child(this.row(t, "Settle time", "How long the cursor stays still before a jump counts, so streaming output draws nothing until it stops.", this.stepper(t, "st-cursor_trail_settle_ms", `${settle} ms`, settleLess, settleMore), "cursor_trail_settle_ms"))
+          .child(this.row(t, "Jump distance", "How far the cursor must move from where it last settled, in cells.", this.stepper(t, "st-cursor_trail_min_cells", `${cells} ${cells === 1 ? "cell" : "cells"}`, cellsLess, cellsMore), "cursor_trail_min_cells")),
+      )
+      .child(this.row(t, "Arrival effect", "A pulse at the cursor as the focus lands in another pane, with the trail or without it; with Panes and jumps, also after a jump or a cursor shape change.", this.choicePicker(t, "st-ca", "cursor_arrival", ARRIVALS), "cursor_arrival"))
+      .when(on || pulse, (el) =>
+        el.child(this.row(t, "Effect time", "How long the trail and the pulse take.", this.stepper(t, "st-cursor_trail_duration_ms", `${ms} ms`, (_e, cx) => step(-20, cx), (_e, cx) => step(20, cx)), "cursor_trail_duration_ms")),
       );
   }
 
