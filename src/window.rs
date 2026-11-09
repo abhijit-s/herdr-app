@@ -8785,7 +8785,10 @@ export default class Recent extends View {
         };
         let seen = |tab: &str, pane: &str| Some((tab.to_owned(), pane.to_owned()));
         let anchor = |cx: &mut gpui::VisualTestContext, pane: &str| view.update(cx, |this, cx| this.terms[pane].view.read(cx).trail_anchor()).expect("drawn, so it has a cursor anchor");
-        let expire = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail.as_mut().unwrap().start -= std::time::Duration::from_secs(2));
+        let expire = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| {
+            let trail = this.trail.as_mut().unwrap();
+            trail.start = trail.start.checked_sub(std::time::Duration::from_secs(2)).unwrap();
+        });
         let layer = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.cursor_trail_layer().is_some());
 
         focus(cx, "b");
@@ -8799,13 +8802,13 @@ export default class Recent extends View {
         focus(cx, "a");
         assert_eq!(state(cx), (Some((b, "a".into())), seen("t", "a")), "b to a starts a trail from b's cursor");
         assert!(layer(cx), "a live trail has a layer");
+        let started = view.update(cx, |this, _| this.trail.as_ref().map(|t| t.start));
+        focus(cx, "a");
+        assert_eq!(view.update(cx, |this, _| this.trail.as_ref().map(|t| t.start)), started, "the same pane neither ends it nor starts another");
         expire(cx);
         draw(cx);
         assert_eq!(state(cx).0, None, "its time up, the next draw drops it");
-        assert!(!layer(cx), "and asks for no more frames");
-
-        focus(cx, "a");
-        assert_eq!(state(cx).0, None, "the same pane starts none");
+        assert!(!layer(cx), "and has no layer, the one thing that asks for frames");
 
         focus(cx, "d");
         let d = anchor(cx, "d");
@@ -8814,8 +8817,10 @@ export default class Recent extends View {
         assert_eq!(trail.as_ref().map(|(from, _)| *from), Some(d), "closing d starts a trail from where d drew its cursor");
         assert_eq!(trail.map(|(_, to)| to), now.map(|(_, pane)| pane), "to the pane focused after");
 
-        view.update(cx, |this, _| this.trail.as_mut().unwrap().pane = "gone".into());
-        assert!(!layer(cx), "a trail whose pane is gone ends");
+        // Its pane's terminal going (a close the next draw hasn't seen yet) ends it.
+        let to = state(cx).0.unwrap().1;
+        view.update(cx, |this, _| this.terms.remove(&to));
+        assert!(!layer(cx), "a trail whose terminal is gone ends");
         assert_eq!(state(cx).0, None);
 
         focus(cx, "b");

@@ -14,7 +14,8 @@
 //!
 //! Nothing runs in the terminals' output or paint paths. With the setting off,
 //! a window draw checks one setting; on, it compares the focused pane with the
-//! one it saw last. Frames are asked for only while a trail is alive, and every
+//! one it saw last and keeps that pane's cursor anchor (a map lookup and a
+//! cell read). Frames are asked for only while a trail is alive, and every
 //! trail ends: its duration is clamped and its progress only grows.
 
 use super::*;
@@ -310,11 +311,10 @@ mod tests {
     fn the_trail_ends_on_the_cursor() {
         let (from, to) = (cell(0.0, 0.0), cell(0.0, 600.0));
         assert!(comet(from, to, 0.5).is_some());
-        assert_eq!(
-            comet(from, to, 1.0),
-            None,
-            "within half a px by its end, even across 600 px"
-        );
+        // The last frame drawn (progress just short of 1) is within a px, even across 600 px.
+        let last = comet(from, to, 0.99).unwrap();
+        assert!((y(last[0]) - 600.0).abs() < 1.0, "{last:?}");
+        assert_eq!(comet(from, to, 1.0), None, "and on it at the end");
     }
 
     #[test]
