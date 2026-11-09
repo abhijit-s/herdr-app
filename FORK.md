@@ -909,6 +909,18 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Files: `defaults/mods/agents/{main.js,mod.json}`, `defaults/frame/settings/main.js`, `src/settings.rs`, `src/mods.rs`, `src/mods/render_tests.rs`, `src/window.rs` (test), `defaults/herdr.d.ts`, `defaults/AGENTS.md`, `scripts/agents.test.ts`, `scripts/settings.test.ts`.
 - Upstream: none.
 
+### Sub-agent click
+
+`feat/subagent-click-setting` (branched from `master`, fork only): `agents_subagent_click` in settings.json says what a click on a sub-agent row should open: `"claude"` (the default: the sub-agent in Claude Code's own view, which the person's own agents mod reaches with guarded keys) or `"transcript"` (a transcript popup).
+
+- Setting: `AgentsSubagentClick` in `src/settings.rs`, typed as `agents_subagents` is (another value is a settings.json error; claude is left out when written, and the app's own rewrites of settings.json keep transcript). Herdr only passes it on, as `settings().agents_subagent_click`; builds without it give `undefined`, to be read as claude. Settings > Agents > Activity, "Sub-agent click" (Claude's view, Transcript), right after "Sub-agents".
+- The shipped agents mod doesn't act on it: a click on a sub-agent row still focuses the parent agent's pane, or peeks it when that agent isn't listed. It is a preference agents mods may honour; the Settings help, `defaults/AGENTS.md` and `defaults/herdr.d.ts` say so.
+- Three questions: (1) Does the app act on it? No: the app types the value and passes it on; a mod acts on the click. (2) Can only the app see it? No: `settings()` reaches mods. (3) Can a mod not do it? A mod could keep its own preference, but only the app can type a settings.json key and draw its Settings window row. Verdict: D (fork only): the toggle exists for a fork-only mod behaviour (opening Claude Code's own sub-agent view through guarded keys), and follows Sub-agent display.
+- Perf: no render-path change. `Settings::for_mods()` is built once per settings change and shared as one `Arc` (`settings::for_mods()`), so the key adds one short string to a value mods already receive; the shipped mod doesn't read it. No bench run.
+- Tests: `settings::derivation_tests::agents_subagent_click_defaults_to_claude_reaches_mods_and_survives_a_rewrite` (the default, each value reaching mods, `write_person`'s text read back, other values refused), `settings::tests::the_guide_explains_every_setting`, `scripts/settings.test.ts` (the Activity row, its place after Sub-agents and what it writes).
+- Files: `src/settings.rs`, `defaults/frame/settings/main.js`, `defaults/herdr.d.ts`, `defaults/AGENTS.md`, `scripts/settings.test.ts`.
+- Upstream: none.
+
 ### Unknown document fields kept
 
 `fix/doc-keep-unknown-fields` (branched from `master`; offered upstream as `up/doc-keep-unknown-fields`, cut from `upstream/master`): a machine's layout document is shared by every screen of that machine, and those screens may run different builds. `SharedSpace` and `SharedTab` dropped fields they didn't know, so an older build's next write erased whatever a newer build had added, such as the per-tab floating layer proposed in herdrdev/herdr-app#718. Unknown space and tab fields are now read into `Space::rest` and `Tab::rest` (`#[serde(flatten)]`) and written back as read, the way focus history keeps its document's unknown fields.

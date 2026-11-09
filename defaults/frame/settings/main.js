@@ -294,6 +294,11 @@ const AGENTS_SUBAGENTS = [
   ["folded", "Folded"],
   ["off", "Off"],
 ];
+// What a click on a sub-agent row opens (agents_subagent_click); Claude's view is the default, left out of settings.json.
+const AGENTS_SUBAGENT_CLICK = [
+  ["claude", "Claude's view"],
+  ["transcript", "Transcript"],
+];
 const RESUME_AGENTS = [
   ["ask", "Ask"],
   ["auto", "Auto"],
@@ -1652,6 +1657,15 @@ export default class Settings extends View {
           "Each agent's live sub-agents in the agents list: a tree under it, the same folded to a count until you open it, or Off (no rows, no count). A fold you make is kept. Header info's {subagents} is set there, apart from this.",
           this.choicePicker(t, "st-sa", "agents_subagents", AGENTS_SUBAGENTS),
           "agents_subagents",
+        ),
+      )
+      .child(
+        this.row(
+          t,
+          "Sub-agent click",
+          "What a click on a sub-agent row opens: the sub-agent in Claude Code's own view, or a transcript popup. A preference agents mods may honour: the shipped agents list doesn't read it and keeps focusing the parent agent.",
+          this.choicePicker(t, "st-sc", "agents_subagent_click", AGENTS_SUBAGENT_CLICK),
+          "agents_subagent_click",
         ),
       )
       .child(

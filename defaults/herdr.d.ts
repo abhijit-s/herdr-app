@@ -507,7 +507,9 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  unknown (null only from builds before that default: draw letters). `pane_header_info` is the agent pane header's template, or `null`
  *  (unset or blank); panes carry it resolved as `header_info`. `agents_subagents` is how an
  *  agents list shows sub-agents: `"tree" | "folded" | "off"`, `"tree"` when unset (undefined on
- *  builds without it: draw a tree).
+ *  builds without it: draw a tree). `agents_subagent_click` is what a click on a sub-agent row
+ *  should open: `"claude" | "transcript"` (Claude Code's own view, or a transcript popup),
+ *  `"claude"` when unset (undefined on builds without it); the shipped agents mod doesn't read it.
  *  `toast_duration`, `toast_style`, `toast_corners`, `toast_mark`, `toast_design` and `toast_progress` are the person's toast choices
  *  (see AGENTS.md). */
 export function settings(): Record<string, unknown>;
