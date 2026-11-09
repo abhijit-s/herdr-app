@@ -24,7 +24,8 @@ export interface TerminalLine {
 }
 /** The last `lines` lines of a terminal's screen that carry anything (all when omitted), top to
  *  bottom, trailing blanks trimmed, read on demand from the app's own grid. Null when no tab in this
- *  window holds that terminal (`terminal`: an address, as `terminals()[i].address`). */
+ *  window holds that terminal (`terminal`: an address, as `terminals()[i].address`); rejects when
+ *  no window takes requests. */
 export function terminalLines(terminal: string, options?: { lines?: number }): Promise<TerminalLine[] | null>;
 
 /** The user's home directory. */
