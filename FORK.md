@@ -959,6 +959,18 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Files: `src/files.rs` (`code_root`, `frame_file_counts`, `changes`, `FileEvents::revision_provider`)
 - Upstream: pull request #719 (`up/frame-mod-revision`), awaiting review
 
+### Mod reads faint text
+
+`feat/mod-faint-text` (branched from `master`): `terminalLines(terminal, { lines })` gives a mod a terminal's last lines that carry anything, each `{ text, faint }`, `faint` the `[start, end)` stretches drawn faint (SGR 2) in `text.slice` offsets (UTF-16 units). `hc read` returns plain text, so Claude Code's faint suggestion of the next prompt (`❯ suggested text`) reads the same as text typed there, and a mod that acts only on an empty prompt (the person's agent-deck sub-agent view switch) refuses after nearly every turn.
+
+- Where: `hc read` is served by herdr-core's own screen model (`terminal_read` in `herdr-core/src/api.rs`), which keeps text only; the core stays as it is. The app already keeps a ghostty grid for every terminal in any of its tabs (only visible ones are drawn), with each cell's style, and `Vt::tail_text` already reads its last lines for the agent screen rules (`harness.rs`). `Vt::tail_lines` is the same walk asking `ghostty_grid_ref_style` per cell; `tail_text` passes `styles: false` and skips that call, so the per-tick harness read costs what it did.
+- Shape: an async mod function that sends `Request::Lines` to the window and resolves with the reply: an array of lines, or null when no tab in this window holds that terminal (a parked one, one on a closed screen). It rejects when no window takes requests. Wide characters count once (their spacer cell is skipped), a cell without text reads as a space, trailing blanks are trimmed and a faint stretch is cut at the trim. Bold, italic and colors are left out until a mod needs them.
+- Cost: computed only when called, on the window thread, over at most the screen's rows (all rows when `lines` is omitted): one grid walk, nothing per frame or per tick.
+- Three questions: (1) Does the app act on it? No, it reports. (2) Can only the app see it? Here yes: the core's screen model drops styles, and the app's grid is the one place a mod can get them without a core change. (3) Can a mod not do it? Yes, it can't: a mod sees only `hc read`'s text. Verdict B: a small general mod API, offered upstream on its own once used here.
+- Tests: `vt::tests::tail_lines_mark_what_is_drawn_faint` (a faint suggestion after `❯` and a no-break space, wide characters inside a faint stretch, an emoji's two UTF-16 units, faint and normal runs on one line, faint trailing blanks trimmed, a line of only faint blanks dropped, `tail_text` reading the same text), `vt::tests::tail_text_is_the_last_lines_that_carry_anything`.
+- Files: `src/vt.rs`, `src/terminal.rs`, `src/window.rs`, `src/mods.rs`, `src/mods/render_tests.rs`, `defaults/herdr.d.ts`, `defaults/AGENTS.md`
+- Upstream: none yet
+
 ### Rejected text experiments
 
 Two text-quality experiments measured against the shipped thicken, contrast and weight settings, and not kept. The numbers are here so neither is tried again without a new reason.

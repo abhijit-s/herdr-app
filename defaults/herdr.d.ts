@@ -16,6 +16,17 @@ export function exec(command: string, args?: string[], options?: { cwd?: string;
 /** Runs `hc` (herdr-core) with the given arguments. Add "--json" for machine output. */
 export function hc(args: string[]): Promise<ExecResult>;
 
+/** One screen line: its text and the `[start, end)` stretches drawn faint (SGR 2), in
+ *  `text.slice` offsets (UTF-16 units). */
+export interface TerminalLine {
+  text: string;
+  faint: [number, number][];
+}
+/** The last `lines` lines of a terminal's screen that carry anything (all when omitted), top to
+ *  bottom, trailing blanks trimmed, read on demand from the app's own grid. Null when no tab in this
+ *  window holds that terminal (`terminal`: an address, as `terminals()[i].address`). */
+export function terminalLines(terminal: string, options?: { lines?: number }): Promise<TerminalLine[] | null>;
+
 /** The user's home directory. */
 export function home(): string;
 /** The app's folder (`~/.config/herdr-app`, or `$HERDR_APP_HOME`): settings.json, keys.json, layouts/. */

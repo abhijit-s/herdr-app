@@ -571,6 +571,8 @@ pub enum Request {
     Git(crate::git_status::Update),
     /// From `herdr-app do` / `herdr-app status` (control.rs); answer on `reply`.
     Control { cmd: Value, reply: std::sync::mpsc::Sender<Value> },
+    /// `terminalLines`: a terminal's last `lines` lines with their faint stretches, or null.
+    Lines { terminal: String, lines: usize, reply: async_channel::Sender<Value> },
 }
 
 static REQUESTS: OnceLock<async_channel::Sender<Request>> = OnceLock::new();
@@ -1274,6 +1276,13 @@ fn module(inst: Instance, copy: u64) -> HostModule {
             Ok(crate::mod_files::write_text(a.string(0)?.to_owned(), a.string(1)?.to_owned(), expected))
         })
         .async_function("hc", |a| Ok(exec_future("hc".into(), strings(a.get(0)), None, None, EXEC_LIMIT)))
+        .async_function("terminalLines", |a| {
+            let terminal = a.string(0)?.to_owned();
+            let lines = a.get(1).and_then(|o| o.get("lines")).and_then(HostValue::as_number).map_or(usize::MAX, |n| n.max(0.0) as usize);
+            let (reply, answer) = async_channel::bounded(1);
+            request(Request::Lines { terminal, lines, reply });
+            Ok(async move { answer.recv().await.map(|v| to_host(&v)).map_err(|_| HostError::new("no window to read terminals from")) })
+        })
         .function("home", |_| Ok(home().to_string_lossy().into_owned().into()))
         .function("appHome", |_| Ok(app_dir().to_string_lossy().into_owned().into()))
         .function("fonts", |_| Ok(to_host(&json!(*FONTS.lock().unwrap()))))

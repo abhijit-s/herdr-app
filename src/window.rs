@@ -5311,6 +5311,13 @@ impl AppWindow {
                     self.refresh_snapshot_mods(cx);
                 }
             }
+            Request::Lines { terminal, lines, reply } => {
+                let read = self.terms.values().find(|t| t.address == terminal).map(|t| t.view.read(cx).tail_lines(lines));
+                let answer = read.map_or(Value::Null, |lines| {
+                    Value::Array(lines.into_iter().map(|l| json!({ "text": l.text, "faint": l.faint })).collect())
+                });
+                let _ = reply.try_send(answer);
+            }
             Request::Control { cmd, reply } => match cmd.get("wait").and_then(Value::as_str) {
                 Some(address) => self.wait_for(address, reply, cx),
                 None => {
