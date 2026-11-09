@@ -2,7 +2,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { hc, run, theme, themes, fonts, updates, telemetry, settings, layoutSpacing, layouts, shared, setShared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window, headerInfoPreview, toastLooks } from "herdr";
+import { hc, run, theme, themes, fonts, updates, telemetry, settings, layoutSpacing, layouts, shared, setShared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window, headerInfoPreview, cardInfoPreview, toastLooks } from "herdr";
 
 const I = (name) => `frame/settings/${name}.svg`;
 
@@ -287,12 +287,19 @@ function headerSeparator(t, sep) {
 }
 
 const SUGGESTED_HEADER_INFO = "{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed} · {subagents}";
+// agents_card_info while settings.json leaves it out (the app's DEFAULT_CARD_INFO): another machine's name, the space.
+const DEFAULT_CARD_INFO = "@{remote} · {space}";
 
 // How the agents list shows sub-agents (agents_subagents); Tree is the default, left out of settings.json.
 const AGENTS_SUBAGENTS = [
   ["tree", "Tree"],
   ["folded", "Folded"],
   ["off", "Off"],
+];
+// What a click on a sub-agent row opens (agents_subagent_click); Claude's view is the default, left out of settings.json.
+const AGENTS_SUBAGENT_CLICK = [
+  ["claude", "Claude's view"],
+  ["transcript", "Transcript"],
 ];
 const RESUME_AGENTS = [
   ["ask", "Ask"],
@@ -490,6 +497,7 @@ export default class Settings extends View {
     this.index = null;
     this.matched = null;
     this.headerInputState();
+    this.cardInputState();
     this.searchInput = InputState.new({ placeholder: "Search settings" });
     this.searchInput.on("change", (_e, cx) => { this.setQuery(this.searchInput.value(), false); cx.notify(); });
     this.searchInput.on("focus", (_e, cx) => { this.searchFocused = true; cx.notify(); });
@@ -561,6 +569,8 @@ export default class Settings extends View {
     }
     const typed = this.person.pane_header_info ?? "";
     if (syncHeader && !this.headerFocused && this.headerInput && this.headerInput.value() !== typed) this.headerInput.set_value(typed);
+    const card = this.person.agents_card_info ?? DEFAULT_CARD_INFO;
+    if (syncHeader && !this.cardFocused && this.cardInput && this.cardInput.value() !== card) this.cardInput.set_value(card);
   }
 
   // pane_header_info as typed: previewed live, written on Enter or leaving the field.
@@ -574,6 +584,27 @@ export default class Settings extends View {
     input.on("blur", (_e, cx) => { this.headerFocused = false; this.setHeaderInfo(input.value(), cx); });
     input.on("submit", (_e, cx) => this.setHeaderInfo(input.value(), cx));
     return input;
+  }
+
+  // agents_card_info as typed, the default when unset: previewed live, written on Enter or leaving the field.
+  cardInputState() {
+    if (this.cardInput) return this.cardInput;
+    const input = (this.cardInput = InputState.new({ placeholder: "Off" }));
+    input.set_value(this.person.agents_card_info ?? DEFAULT_CARD_INFO);
+    input.on("change", (_e, cx) => cx.notify());
+    input.on("focus", (_e, cx) => { this.cardFocused = true; cx.notify(); });
+    input.on("blur", (_e, cx) => { this.cardFocused = false; this.setCardInfo(input.value(), cx); });
+    input.on("submit", (_e, cx) => this.setCardInfo(input.value(), cx));
+    return input;
+  }
+
+  // agents_card_info: the default leaves it out of settings.json; blank is kept, as no card info.
+  setCardInfo(text, cx) {
+    if (text === (this.person.agents_card_info ?? DEFAULT_CARD_INFO)) return cx.notify();
+    this.change((p) => {
+      if (text === DEFAULT_CARD_INFO) delete p.agents_card_info;
+      else p.agents_card_info = text;
+    }, cx);
   }
 
   // pane_header_info: blank leaves it out of settings.json (headers as without it).
@@ -1657,10 +1688,28 @@ export default class Settings extends View {
       .child(
         this.row(
           t,
+          "Sub-agent click",
+          "What a click on a sub-agent row opens: the sub-agent in Claude Code's own view, or a transcript popup. A preference agents mods may honour: the shipped agents list doesn't read it and keeps focusing the parent agent.",
+          this.choicePicker(t, "st-sc", "agents_subagent_click", AGENTS_SUBAGENT_CLICK),
+          "agents_subagent_click",
+        ),
+      )
+      .child(
+        this.row(
+          t,
           "Header info",
-          "Extra words in an agent pane's header, as fit: {ask} what it needs from you, {state} {elapsed}, {branch}{ahead}{behind}{dirty}, {subagents} its live sub-agents. · or | separates segments; empty ones and those that don't fit are left out. Empty: off.",
+          "Extra words in an agent pane's header, as fit: {ask} what it needs from you, {state} {elapsed}, {branch}{ahead}{behind}{dirty}, {subagents} its live sub-agents, {machine} {remote} {space}. · or | separates segments; empty ones and those that don't fit are left out. Empty: off.",
           this.headerInfoField(t),
           "pane_header_info",
+        ),
+      )
+      .child(
+        this.row(
+          t,
+          "Card info",
+          "What an agent's card in the agents list shows beside its name, as Header info's template: the same keys, and {machine} (local for this computer), {remote} (another machine's name, else nothing), {space}. Each segment is a chip; {space} is left out where a space header or the name already says it. Empty: off. The shipped agents list keeps its own look (the machine's name) until you set one.",
+          this.cardInfoField(t),
+          "agents_card_info",
         ),
       )
       .child(this.plain(div().h(18)))
@@ -1724,6 +1773,58 @@ export default class Settings extends View {
                 ...(s.sep ? [headerSeparator(t, s.sep)] : []),
                 div().when(i === preview.segments.length - 1, (d) => d.min_w(0).truncate()).when(i < preview.segments.length - 1, (d) => d.flex_none().whitespace_nowrap()).text_color(s.ask ? t.blocked : t.dim).child(s.text),
               ]),
+            ),
+          ),
+      );
+  }
+
+  // agents_card_info: the template, the default, and the chips a card for an
+  // agent on another machine would show.
+  cardInfoField(t) {
+    const input = this.cardInputState();
+    const typed = input.value();
+    const preview = typed.trim() ? cardInfoPreview(typed) : null;
+    return v_flex()
+      .w(340)
+      .gap(6)
+      .child(
+        h_flex()
+          .gap(6)
+          .items_center()
+          .child(Input.new(input).flex_1().min_w(0).h(28).px(8).rounded(7).border_1().border_color(this.cardFocused ? t.accent : t.input).bg(t.background).text_size(12).font_family(DEFAULT_FONT).text_color(t.foreground))
+          .when(typed !== DEFAULT_CARD_INFO, (el) =>
+            el.child(
+              div()
+                .id("st-ci-suggested")
+                .flex_none()
+                .px(8)
+                .py(4)
+                .rounded(6)
+                .text_size(12)
+                .text_color(t.muted)
+                .cursor_pointer()
+                .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                .on_click((_e, cx) => {
+                  input.set_value(DEFAULT_CARD_INFO);
+                  this.setCardInfo(DEFAULT_CARD_INFO, cx);
+                })
+                .child("Use suggested"),
+            ),
+          ),
+      )
+      .child(
+        h_flex()
+          .id("st-ci-preview")
+          .h(18)
+          .min_w(0)
+          .gap(4)
+          .items_center()
+          .overflow_hidden()
+          .text_size(11)
+          .when(!preview, (el) => el.text_size(12).text_color(t.dim).child(typed.trim() ? "Nothing to show" : "Off: cards show only the name"))
+          .when(Boolean(preview), (el) =>
+            el.tooltip(preview.text).children(
+              preview.segments.map((s, i) => div().when(i === preview.segments.length - 1, (d) => d.min_w(0).truncate()).when(i < preview.segments.length - 1, (d) => d.flex_none().whitespace_nowrap()).px(5).py(1).rounded(4).bg(t.chrome).text_color(s.ask ? t.blocked : t.muted).child(s.text)),
             ),
           ),
       );

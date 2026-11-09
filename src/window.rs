@@ -1181,9 +1181,10 @@ impl AppWindow {
         if !problems.is_empty() {
             self.report_layout(&problems.join("; "));
         }
-        let republish = s.pane_auto_names != settings::get().pane_auto_names || s.space_avatar != settings::get().space_avatar || s.pane_header_info != settings::get().pane_header_info;
-        let git_counts = crate::header_info::counts_git;
-        let recount = git_counts(s.pane_header_info.as_deref()) != git_counts(settings::get().pane_header_info.as_deref());
+        let republish = s.pane_auto_names != settings::get().pane_auto_names || s.space_avatar != settings::get().space_avatar || s.pane_header_info != settings::get().pane_header_info
+            || s.agents_card_info != settings::get().agents_card_info;
+        let git_counts = |s: &settings::Settings| crate::header_info::counts_git(s.pane_header_info.as_deref(), s.agents_card_info.as_deref());
+        let recount = git_counts(&s) != git_counts(&settings::get());
         let redesign = s.toast_design != settings::get().toast_design || (s.toast_design == settings::ToastDesign::Terminal && s.font_family != settings::get().font_family);
         if settings::set(s) {
             self.theme_changed(window, cx);
@@ -2168,9 +2169,12 @@ impl AppWindow {
         // Every pane's label, mod panes too: an unnamed tab's letter is its focused pane's.
         let mut shown_labels: HashMap<&str, String> = HashMap::new();
         let header = settings::get().pane_header_info.as_deref().map(crate::header_info::Template::parse).filter(|t| !t.is_empty());
+        let card = crate::header_info::card_template(settings::get().agents_card_info.as_deref());
+        let templates: Vec<&crate::header_info::Template> = header.iter().chain(card.iter()).collect();
         let now = model::now_ms();
         let mut next_tick: Option<u64> = None;
         for pr in &m.spaces {
+            let space_name = m.space_name(pr, &home);
             for (ci, ctx) in pr.tabs.iter().enumerate() {
                 let tab_panes = ctx.panes();
                 let names = if auto_names_on { crate::pane_names::for_tab(tab_panes.iter().map(|p| p.id.as_str())) } else { HashMap::new() };
@@ -2211,16 +2215,17 @@ impl AppWindow {
                     icons.insert(&p.id, icon.clone());
                     shown_labels.insert(&p.id, label.clone());
                     labels.insert(p.id.clone(), label.clone());
-                    let header_info = header.as_ref().zip(m.status(addr)).and_then(|(template, status)| {
+                    // What the header and card templates show, worked out once for both.
+                    let values = m.status(addr).filter(|_| !templates.is_empty()).map(|status| {
                         let since = a.map(|a| a.since).filter(|s| *s > 0);
-                        if let Some(since) = since.filter(|_| template.uses_elapsed()) {
+                        if let Some(since) = since.filter(|_| templates.iter().any(|t| t.uses_elapsed())) {
                             let at = crate::header_info::next_change(since, now);
                             next_tick = Some(next_tick.map_or(at, |t| t.min(at)));
                         }
                         let blocked = status == "blocked";
                         let said = crate::alert::Said::of(self.live.get(addr).and_then(|r| r.get("report")));
                         let folder = m.folder_info.get(addr);
-                        template.resolve(&crate::header_info::Values {
+                        let mut v = crate::header_info::Values {
                             ask: crate::header_info::ask(blocked, &said),
                             blocked,
                             state: status.to_owned(),
@@ -2229,9 +2234,15 @@ impl AppWindow {
                             ahead: folder.map_or(0, |f| f.ahead),
                             behind: folder.map_or(0, |f| f.behind),
                             dirty: folder.is_some_and(|f| f.dirty),
-                            subagents: if template.uses_subagents() { crate::header_info::count_subagents(&self.live, addr, |k| m.status(k)) } else { Default::default() },
-                        })
+                            subagents: if templates.iter().any(|t| t.uses_subagents()) { crate::header_info::count_subagents(&self.live, addr, |k| m.status(k)) } else { Default::default() },
+                            space: space_name.clone(),
+                            ..Default::default()
+                        };
+                        v.on_machine(addr);
+                        v
                     });
+                    let header_info = header.as_ref().zip(values.as_ref()).and_then(|(t, v)| t.resolve(v));
+                    let card_info = card.as_ref().zip(values.as_ref()).and_then(|(t, v)| crate::header_info::card(t, v));
                     panes.push(json!({
                         "pane": p.id, "terminal": addr, "tab": ctx.id, "title": title.clone().unwrap_or_default(), "name": p.title, "auto_name": auto_name,
                         "label": label, "session": session, "icon": icon, "own_icon": own,
@@ -2245,13 +2256,14 @@ impl AppWindow {
                     let pinned = self.live.get(addr).and_then(|r| r.pointer("/labels/herdr.pinned")).and_then(Value::as_str).is_some_and(|v| !v.is_empty());
                     rows.push(crate::dock_badge::Listed { address: addr, status, pinned });
                     agents.push(json!({
-                        "address": addr, "pane": p.id, "space": pr.id, "space_name": m.space_name(pr, &home),
+                        "address": addr, "pane": p.id, "space": pr.id, "space_name": space_name,
                         "tab": ctx.id, "tab_index": ci + 1, "tab_name": Model::tab_name(pr, ctx),
                         "status": status, "app": a.and_then(|a| a.app.clone()), "program": self.program(addr), "title": title.unwrap_or_default(),
                         "label": label, "session": session, "icon": icon,
                         "seq": a.map(|a| a.seq).unwrap_or(0),
                         "pinned": pinned,
                         "focused": m.active.as_deref() == Some(pr.id.as_str()) && focused_pane.as_deref() == Some(p.id.as_str()),
+                        "card_info": card_info,
                     }));
                 }
             }
@@ -3350,7 +3362,7 @@ impl AppWindow {
         let home = mods::home().to_string_lossy().into_owned();
         let mut moved = false;
         let mut changed = false;
-        let counts = crate::header_info::counts_git(settings::get().pane_header_info.as_deref());
+        let counts = crate::header_info::counts_git(settings::get().pane_header_info.as_deref(), settings::get().agents_card_info.as_deref());
         for (addr, rec) in &self.live {
             // Core's live folder of what runs there (any machine), else the shell's (local).
             let cwd = rec
@@ -10352,6 +10364,8 @@ export default class Keeper extends View {
         let template = |t: Option<&str>, cx: &mut gpui::VisualTestContext| {
             view.update_in(cx, |this, window, cx| {
                 this.person.pane_header_info = t.map(str::to_owned);
+                // Cards off: these counts are the header's alone (card_info_follows_changes has the cards').
+                this.person.agents_card_info = Some(String::new());
                 this.apply_look(window, cx);
             });
             cx.run_until_parked();
@@ -10421,6 +10435,99 @@ export default class Keeper extends View {
 
         template(None, cx);
         assert_eq!((info("a"), ticking(cx)), (Value::Null, None), "cleared: the timer stops");
+    }
+
+    #[test]
+    fn card_info_follows_changes_and_the_minute_not_frames() {
+        in_own_process("card_info_follows_changes");
+    }
+
+    /// `agents_card_info` is resolved in publish beside the header's, for each
+    /// agent: by default (another machine's name, the space) on every publish
+    /// that lists it, never per frame and with no timer; with `{elapsed}`, on
+    /// the minute too; set empty, nothing. Header info off throughout.
+    #[gpui::test]
+    fn card_info_follows_changes(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use serde_json::{Value, json};
+        if !running_alone("card_info_follows_changes") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb")]);
+            this.model.add_space("s", "Work", "/tmp", tab);
+            this.model.select_tab("t");
+            this.sync(window, cx);
+        });
+        let listed = |status: Value, cx: &mut gpui::VisualTestContext| {
+            let terminals = json!({ "terminals": [{ "address": "ta", "argv": ["claude"], "status": status }, { "address": "tb", "argv": ["zsh"] }] });
+            cx.update(|window, cx| view.update(cx, |this, cx| this.terminals_listed(terminals, window, cx)));
+            cx.run_until_parked();
+        };
+        let template = |t: Option<&str>, cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| {
+                this.person.agents_card_info = t.map(str::to_owned);
+                this.apply_look(window, cx);
+            });
+            cx.run_until_parked();
+        };
+        let resolved = || crate::header_info::RESOLVED.with(std::cell::Cell::get);
+        let agents = || crate::mods::published_agents().as_array().cloned().unwrap_or_default();
+        let card = |address: &str| agents().iter().find(|a| a["address"] == address).map(|a| a["card_info"].clone());
+        let ticking = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.header_tick.as_ref().map(|(at, _)| *at));
+        let frames = |cx: &mut gpui::VisualTestContext| {
+            for _ in 0..30 {
+                cx.update(|window, _| window.refresh());
+                cx.run_until_parked();
+            }
+        };
+        let minute = |cx: &mut gpui::VisualTestContext| {
+            cx.executor().advance_clock(std::time::Duration::from_secs(61));
+            cx.run_until_parked();
+        };
+
+        listed(json!({ "state": "working", "app": "claude-code" }), cx);
+        assert_eq!(
+            card("ta"),
+            Some(json!({ "text": "Work", "segments": [{ "sep": "", "text": "Work", "ask": false }], "no_space": null })),
+            "unset: the default, the space here (no machine for this computer), and nothing without it"
+        );
+        assert_eq!(card("tb"), None, "a shell is no agent");
+        let before = resolved();
+        frames(cx);
+        minute(cx);
+        assert_eq!((resolved(), ticking(cx)), (before, None), "the default: nothing resolved for a frame, nothing timed");
+
+        listed(json!({ "state": "blocked", "kind": "permission", "msg": "approve", "app": "claude-code" }), cx);
+        assert_eq!(resolved() - before, 2, "a status change publishes once: the card, and again without its space");
+
+        template(Some("{machine} · {state} {elapsed}"), cx);
+        assert_eq!(card("ta").unwrap()["text"], json!("local · blocked <1m"));
+        assert_eq!(card("ta").unwrap().get("no_space"), None, "no {{space}}: no no_space");
+        let since = view.update(cx, |this, _| this.model.agents["ta"].since);
+        assert_eq!(ticking(cx), Some(since + 60_000), "{{elapsed}} in the card times the minute mark");
+        let before = resolved();
+        frames(cx);
+        assert_eq!(resolved(), before, "no card is resolved for a frame");
+        minute(cx);
+        assert_eq!(resolved() - before, 1, "the minute publishes once");
+
+        // {subagents} in the card alone is counted.
+        template(Some("{subagents}"), cx);
+        let terminals = json!({ "terminals": [{ "address": "ta", "argv": ["claude"], "status": { "state": "working" }, "records": { "agent/a1": { "state": "working" } } }, { "address": "tb", "argv": ["zsh"] }] });
+        cx.update(|window, cx| view.update(cx, |this, cx| this.terminals_listed(terminals, window, cx)));
+        cx.run_until_parked();
+        assert_eq!(card("ta").unwrap()["text"], json!("1 sub-agent"));
+
+        template(Some(""), cx);
+        assert_eq!((card("ta"), ticking(cx)), (Some(Value::Null), None), "set empty: no card info, the timer stops");
+        let before = resolved();
+        listed(json!({ "state": "working", "app": "claude-code" }), cx);
+        assert_eq!(resolved(), before, "and nothing is resolved");
     }
 
     #[test]

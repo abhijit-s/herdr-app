@@ -181,9 +181,9 @@ for (const sort of ["priority", "grouped"]) for (const named of [false, true]) t
 
 // A kept sub-agent: started by t1 (`hc run`), then given a pane (`terminal.keep`).
 type Kid = { address: string; parent: string };
-function keptRender(sort: string, { width = 268, kept = [{ address: "t3", parent: "t1" }] as Kid[], paneless = [] as Kid[], pinned = [] as string[], mode = undefined as string | undefined, records = {} as Record<string, unknown>, data = new Map<string, string>(), before = (_: any) => {} } = {}) {
+function keptRender(sort: string, { width = 268, kept = [{ address: "t3", parent: "t1" }] as Kid[], paneless = [] as Kid[], pinned = [] as string[], mode = undefined as string | undefined, records = {} as Record<string, unknown>, data = new Map<string, string>(), before = (_: any) => {}, more = (_: any) => ({}), set = {} as Record<string, unknown> } = {}) {
   const program = { name: "Claude", key: "claude", agent: true, icon: "claude.svg", tint: true };
-  const row = (address: string, seq: number) => ({ address, pane: `p-${address}`, tab: "tab1", space: "s1", space_name: "Project", program, title: address, label: address, status: "working", seq, pinned: pinned.includes(address) });
+  const row = (address: string, seq: number) => ({ address, pane: `p-${address}`, tab: "tab1", space: "s1", space_name: "Project", program, title: address, label: address, status: "working", seq, pinned: pinned.includes(address), ...more(address) });
   const list = [row("t1", 1), ...kept.map((k, i) => row(k.address, i + 2))];
   const live = (address: string, parent: string | null) => ({ address, parent, state: "live", status: "working", program, labels: {} });
   const orders: string[][] = [];
@@ -193,7 +193,7 @@ function keptRender(sort: string, { width = 268, kept = [{ address: "t3", parent
     panes: () => list.map(a => ({ tab: a.tab, terminal: a.address, program, title: a.title, label: a.label })), focused: () => null,
     spaces: () => [{ tabs: [{ id: "tab1", name: "Project", named: true }] }],
     layout: () => ({ id: "sidebar", size: { px: width } }), shared: () => sort,
-    theme: () => ({}), settings: () => ({ working_spinner: null, agents_subagents: mode }), setAgentOrder: (order: string[]) => orders.push(order),
+    theme: () => ({}), settings: () => ({ working_spinner: null, agents_subagents: mode, ...set }), setAgentOrder: (order: string[]) => orders.push(order),
     div: element, v_flex: element, h_flex: element, svg: element, image: element,
   }, data);
   before(agents);
@@ -330,4 +330,27 @@ test("key commands reach the agents mod through nextCommand", async () => {
   await Promise.resolve();
   expect(JSON.parse(data.get("folds")!)).toEqual({ t1: true, t2: true });
   expect(notified).toBe(1);
+});
+
+// agents_card_info: t1 on another machine, t3 its kept sub-agent shown as its own row (no tree).
+for (const sort of ["priority", "grouped"]) test(`${sort}: a row shows its card info in place of its machine once agents_card_info is set`, () => {
+  const info = (text: string, noSpace?: string | null) => ({ text, segments: [{ sep: "", text, ask: false }], ...(noSpace === undefined ? {} : { no_space: noSpace === null ? null : { text: noSpace, segments: [] } }) });
+  const remote = (card: Record<string, unknown>, set: Record<string, unknown>) => {
+    const r = keptRender(sort, { kept: [], more: (a: string) => ({ address: `vps/${a}`, pane: `p-${a}`, ...card }), set });
+    return r.texts.get("ag-vps/t1");
+  };
+  const card = { card_info: info("@vps · Project", "@vps") };
+  // Unset: the machine, as without it, whatever Herdr resolved.
+  expect(remote(card, {})).toContain("vps");
+  expect(remote(card, {})).not.toContain("@vps");
+  // Set: the info without its space, which the header or the name already says.
+  expect(remote(card, { agents_card_info: "@{remote} · {space}" })).toContain("@vps");
+  expect(remote(card, { agents_card_info: "@{remote} · {space}" })).not.toContain("@vps · Project");
+  // A template without {space} has no no_space: its info as it is.
+  expect(remote({ card_info: info("main · idle") }, { agents_card_info: "{branch} · {state}" })).toContain("main · idle");
+  // Nothing to show, or nothing once the space is left out: no machine either.
+  expect(remote({ card_info: null }, { agents_card_info: "" })).not.toContain("vps");
+  expect(remote({ card_info: info("Project", null) }, { agents_card_info: "{space}" })).not.toContain("Project Project");
+  // A build without card_info: the machine.
+  expect(remote({}, { agents_card_info: "{branch}" })).toContain("vps");
 });
