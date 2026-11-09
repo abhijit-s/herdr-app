@@ -8943,6 +8943,42 @@ export default class Recent extends View {
         wait(cx, 200);
         assert_eq!(effect(cx), None, "and back down: none");
 
+        // The default 10 ms settle, timed from the program's moves: output every
+        // 5 ms drawn only every 50 ms (frames slower than the settle time) draws
+        // nothing until it pauses, then once. Timed from frames, it would draw
+        // at each of them.
+        view.update_in(cx, |this, window, cx| {
+            this.person.cursor_trail_settle_ms = 10;
+            this.apply_look(window, cx);
+        });
+        feed(cx, "a", "\x1b[1;1H");
+        wait(cx, 200);
+        clear(cx);
+        for i in 0..40u64 {
+            // Output without a frame: the terminal isn't asked to draw.
+            view.update(cx, |this, cx| {
+                let term = this.terms["a"].view.clone();
+                term.update(cx, |t, cx| t.feed(format!("\x1b[{};{}H", 1 + i % 20, 1 + i * 3 % 60).as_bytes(), cx));
+            });
+            wait(cx, 5);
+            if i % 10 == 9 {
+                cx.update(|window, _| window.refresh());
+                cx.run_until_parked();
+            }
+            assert_eq!(effect(cx), None, "nothing while the program keeps moving it ({i})");
+        }
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        wait(cx, 200);
+        assert!(effect(cx).is_some(), "once it pauses");
+        clear(cx);
+        wait(cx, 300);
+        assert_eq!(effect(cx), None, "and once only");
+        view.update_in(cx, |this, window, cx| {
+            this.person.cursor_trail_settle_ms = 80;
+            this.apply_look(window, cx);
+        });
+
         // A one-cell step is under the threshold.
         feed(cx, "a", "\x1b[1;1H");
         wait(cx, 200);

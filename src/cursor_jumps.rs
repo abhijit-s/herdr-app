@@ -58,12 +58,23 @@ pub struct Jumps {
     moved: Option<(Spot, Instant)>,
     /// When the program last moved the cursor, as the output path saw it.
     program: Option<Instant>,
+    /// When paint last drew this terminal.
+    seen: Option<Instant>,
+    /// When the settle timer began waiting for a frame to draw the program's
+    /// last move.
+    catching: Option<Instant>,
     timer: bool,
 }
 
-/// How long the settle timer waits, past the settle time, for a frame to draw
-/// the program's last move before settling on what was drawn.
+/// How long the settle timer waits, once the cursor is still, for a frame to
+/// draw the program's last move before settling on what was drawn; and how
+/// often it looks meanwhile (never zero, so a settle time of 0 can't spin).
 const CATCH_UP: Duration = Duration::from_millis(100);
+const CATCH_UP_STEP: Duration = Duration::from_millis(8);
+/// Not drawn for this long, the terminal isn't on screen (another tab, a
+/// covered window): a pending timer gives up rather than wake on as its output
+/// streams.
+const LOST: Duration = Duration::from_millis(500);
 
 /// Cells between two cells, a diagonal step counting one.
 pub fn chebyshev(a: Cell, b: Cell) -> u16 {
@@ -83,6 +94,7 @@ impl Jumps {
     /// pending. A new view (scrolled, resized, settings changed) only settles,
     /// so scrolling back or a reflow is no jump.
     pub fn observe(&mut self, spot: Option<Spot>, view: View, now: Instant) -> bool {
+        self.seen = Some(now);
         if self.view != Some(view) {
             self.forget();
             self.view = Some(view);
@@ -103,7 +115,14 @@ impl Jumps {
             }
             return false;
         }
-        self.moved = Some((spot, self.program.unwrap_or(now)));
+        // A new cell counts from the program's move; a shape change alone, which
+        // the output path doesn't see, from now.
+        let stamp = if spot.cell != latest.cell {
+            self.program.map_or(now, |p| p.min(now))
+        } else {
+            now
+        };
+        self.moved = Some((spot, stamp));
         let start = !self.timer;
         self.timer = true;
         start
@@ -112,7 +131,7 @@ impl Jumps {
     /// Forgets where the cursor was (hidden, or the terminal lost the focus);
     /// a pending timer stays pending, so there is still at most one.
     pub fn forget(&mut self) {
-        (self.settled, self.moved) = (None, None);
+        (self.settled, self.moved, self.catching) = (None, None, None);
     }
 
     /// Whether there is anything to forget.
@@ -129,6 +148,14 @@ impl Jumps {
             self.timer = false;
             return Due::Fire(None);
         };
+        if self
+            .seen
+            .is_some_and(|seen| now.saturating_duration_since(seen) >= LOST)
+        {
+            self.forget();
+            self.timer = false;
+            return Due::Fire(None);
+        }
         let still = now.saturating_duration_since(self.program.map_or(at, |p| p.max(at)));
         if still < settle {
             return Due::Wait(settle - still);
@@ -136,13 +163,14 @@ impl Jumps {
         // The program moved the cursor after paint last drew it: wait for the
         // frame that shows where, so the trail ends there, not on a stale cell;
         // but never for long, in case no frame comes (a hidden window).
-        if self.program.is_some_and(|p| p > at)
-            && now.saturating_duration_since(at) < settle + CATCH_UP
-        {
-            return Due::Wait(settle);
+        if self.program.is_some_and(|p| p > at) {
+            let waited = now.saturating_duration_since(*self.catching.get_or_insert(now));
+            if waited < CATCH_UP {
+                return Due::Wait(CATCH_UP_STEP.min(CATCH_UP - waited));
+            }
         }
         self.timer = false;
-        self.moved = None;
+        (self.moved, self.catching) = (None, None);
         let before = self.settled.replace(spot);
         Due::Fire(before.and_then(|b| {
             if chebyshev(b.cell, spot.cell) > min_cells {
@@ -253,8 +281,15 @@ mod tests {
             })),
             "three from where it last settled: more than the threshold"
         );
+        // Back to (8, 6), three cells, to try a shape change there.
         j.observe(at(8, 6), V, ms(t0, 460));
-        j.due(ms(t0, 560), SETTLE, 2);
+        assert_eq!(
+            j.due(ms(t0, 560), SETTLE, 2),
+            Due::Fire(Some(Jump::Moved {
+                from: (11, 6),
+                to: (8, 6)
+            }))
+        );
         j.observe(
             Some(Spot {
                 cell: (8, 6),
@@ -367,10 +402,12 @@ mod tests {
         // Millisecond by millisecond: the program's moves first, then a frame, then the timer.
         for t in 0..=end {
             while moved < moves.len() && moves[moved].0 == t {
-                if moved > 0 {
+                let cell = (moves[moved].1, moves[moved].2);
+                // As the output path: only a chunk that moved the cursor counts.
+                if moved > 0 && cell != at_cell {
                     j.program_moved(ms(t0, t));
                 }
-                at_cell = (moves[moved].1, moves[moved].2);
+                at_cell = cell;
                 moved += 1;
             }
             if t % frame == 0 && j.observe(at(at_cell.0, at_cell.1), V, ms(t0, t)) {
@@ -408,7 +445,7 @@ mod tests {
             assert_eq!(
                 run(&moves, frame, S, 2),
                 vec![],
-                "{frame} ms frames: each key settles alone, one cell"
+                "{frame} ms frames: keys settle a cell (two when a frame catches two keys) at a time"
             );
         }
     }
@@ -450,16 +487,70 @@ mod tests {
 
     #[test]
     fn output_pushing_three_lines_draws_and_one_or_two_lines_dont() {
-        let push = |lines: u16| run(&[(0, 0, 5), (100, 0, 5 + lines)], 16, S, 2);
-        assert_eq!(push(1), vec![]);
-        assert_eq!(push(2), vec![]);
-        assert_eq!(
-            push(3).iter().map(|f| f.1).collect::<Vec<_>>(),
-            vec![Jump::Moved {
-                from: (0, 5),
-                to: (0, 8)
-            }]
+        for frame in [16, 50] {
+            let push = |lines: u16| run(&[(0, 0, 5), (100, 0, 5 + lines)], frame, S, 2);
+            assert_eq!(push(1), vec![], "{frame}");
+            assert_eq!(push(2), vec![], "{frame}");
+            assert_eq!(
+                push(3).iter().map(|f| f.1).collect::<Vec<_>>(),
+                vec![Jump::Moved {
+                    from: (0, 5),
+                    to: (0, 8)
+                }],
+                "{frame}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_settle_of_zero_waiting_for_a_frame_never_spins() {
+        let (mut j, t0) = (Jumps::default(), Instant::now());
+        j.observe(at(0, 0), V, t0);
+        j.program_moved(t0);
+        assert!(j.observe(at(9, 0), V, t0));
+        j.program_moved(ms(t0, 2));
+        let (mut t, mut wakes) = (2u64, 0);
+        let fired = loop {
+            wakes += 1;
+            match j.due(ms(t0, t), Duration::ZERO, 2) {
+                Due::Wait(more) => {
+                    assert!(more > Duration::ZERO, "a zero wait would spin at {t}");
+                    t += more.as_millis() as u64;
+                }
+                Due::Fire(jump) => break jump,
+            }
+        };
+        assert!(
+            t <= 2 + 100 + 8 && wakes <= 14,
+            "gave up by {t} after {wakes} wakes"
         );
+        assert_eq!(
+            fired,
+            Some(Jump::Moved {
+                from: (0, 0),
+                to: (9, 0)
+            })
+        );
+    }
+
+    #[test]
+    fn a_terminal_not_drawn_for_a_while_gives_its_timer_up() {
+        // Another tab streams: the program keeps moving the cursor, nothing draws it.
+        let (mut j, t0) = (Jumps::default(), Instant::now());
+        j.observe(at(0, 0), V, t0);
+        j.program_moved(t0);
+        assert!(j.observe(at(9, 0), V, t0));
+        let mut t = 0;
+        let fired = loop {
+            t += 5;
+            j.program_moved(ms(t0, t));
+            if let Due::Fire(jump) = j.due(ms(t0, t + 1), Duration::from_millis(10), 2) {
+                break jump;
+            }
+        };
+        assert!((500..520).contains(&t), "gave up after half a second: {t}");
+        assert_eq!(fired, None);
+        assert!(!j.knows(), "and forgot, so its next sight only settles");
     }
 
     #[test]
@@ -519,7 +610,7 @@ mod tests {
         j.program_moved(ms(t0, 5));
         assert_eq!(
             j.due(ms(t0, 15), settle, 2),
-            Due::Wait(settle),
+            Due::Wait(CATCH_UP_STEP),
             "still long enough, but drawn stale"
         );
         // The frame comes: drawn at (20, 0).
