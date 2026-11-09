@@ -84,6 +84,15 @@ const SORTS = [
 // agents_subagents: a tree under each agent, the same folded until clicked
 // open, or "off" (no rows, no count). Builds without the setting give tree.
 const subagentMode = () => settings().agents_subagents ?? "tree";
+// agents_card_info once the person sets it (`set`): the words beside a row's name, in place
+// of its machine; null for none. Its space always goes without saying here (a space header
+// above it, or its name in priority), so the info without {space}. Undefined: the machine, as
+// on builds without it and while it is unset.
+function cardText(a, set) {
+  if (!set || a.card_info === undefined) return undefined;
+  const info = a.card_info && "no_space" in a.card_info ? a.card_info.no_space : a.card_info;
+  return info?.text ?? null;
+}
 const sortOf = () => SORTS.find((s) => s.id === shared("agents.sort")) ?? SORTS[0];
 const SECTION = { 4: "Needs you", 3: "Done", 2: "Working", 1: "Idle" };
 const SECTION_STATUS = { 4: "blocked", 3: "done", 2: "working" };
@@ -325,6 +334,7 @@ export default class Agents extends View {
     // The fold chevron; folded, colored by the most urgent sub-agent, with
     // their count when the row has no room for it.
     const counted = roomForSubCount();
+    const cardSet = settings().agents_card_info != null;
     const fold = (a, subs) => {
       const top = topStatus(subs, this.listed);
       const open = !this.isFolded(a.address);
@@ -373,6 +383,7 @@ export default class Agents extends View {
       const more = detail.get(a.address);
       // An agent on another machine (`vps/t7`) says which.
       const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
+      const card = cardText(a, cardSet);
       if (collapsed) {
         return h_flex()
           .id(`ag-${a.address}`)
@@ -436,7 +447,8 @@ export default class Agents extends View {
         .child(h_flex().flex_1().min_w(0).gap(5).items_center()
           .child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().text_color(idle ? t.muted : t.foreground).child(name))
           .when(full && Boolean(more), el => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`\u00b7 ${more}`))))
-        .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
+        .when(card === undefined && Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
+        .when(Boolean(card), el => el.child(div().flex_shrink_1().min_w(0).truncate().text_size(10).text_color(t.dim).child(card)))
         .when(subs.length > 0 && counted, el => el.child(subCount(t, subs.length, topStatus(subs, this.listed))))
         .when(subs.length > 0, el => el.child(fold(a, subs)))
         .when(this.hovered === a.address, el => el.child(pin))

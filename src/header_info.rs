@@ -4,10 +4,13 @@
 //! status, settings) and on the minute for `{elapsed}`; header mods only draw
 //! it and pick what fits their width (`fit`).
 //!
+//! `agents_card_info` is the same grammar for what an agents list's card shows
+//! beside the agent's name, resolved here too, per agent (`card`).
+//!
 //! Grammar, all of it:
 //! - `{ask}`, `{state}`, `{elapsed}`, `{branch}`, `{ahead}`, `{behind}`,
-//!   `{dirty}`, `{subagents}` are keys; any other text, an unknown `{word}`
-//!   too, is literal.
+//!   `{dirty}`, `{subagents}`, `{machine}`, `{remote}`, `{space}` are keys;
+//!   any other text, an unknown `{word}` too, is literal.
 //! - `·` and `|` split the template into segments; a separator shows between
 //!   two segments that show.
 //! - A segment with keys shows only when one of them is not empty; one with no
@@ -40,6 +43,9 @@ enum Key {
     Behind,
     Dirty,
     Subagents,
+    Machine,
+    Remote,
+    Space,
 }
 
 impl Key {
@@ -53,6 +59,9 @@ impl Key {
             "behind" => Key::Behind,
             "dirty" => Key::Dirty,
             "subagents" => Key::Subagents,
+            "machine" => Key::Machine,
+            "remote" => Key::Remote,
+            "space" => Key::Space,
             _ => return None,
         })
     }
@@ -128,6 +137,11 @@ impl Template {
     /// Whether it shows `{subagents}` (publish then counts them).
     pub fn uses_subagents(&self) -> bool {
         self.uses(Key::Subagents)
+    }
+
+    /// Whether it shows `{space}` (a card then also resolves without it).
+    pub fn uses_space(&self) -> bool {
+        self.uses(Key::Space)
     }
 
     fn uses(&self, key: Key) -> bool {
@@ -209,6 +223,12 @@ pub struct Values {
     pub behind: u64,
     pub dirty: bool,
     pub subagents: Subagents,
+    /// The machine it runs on, `local` for this one.
+    pub machine: String,
+    /// The machine it runs on when that is another one, else empty.
+    pub remote: String,
+    /// The space it is in, by the name the app shows.
+    pub space: String,
 }
 
 /// An agent's live sub-agents: child terminals below it, and the OSC 7501
@@ -290,6 +310,18 @@ impl Values {
             // reads as one more separator beside ` · `.
             Key::Dirty => if self.dirty { "*".into() } else { String::new() },
             Key::Subagents => self.subagents.text(),
+            Key::Machine => self.machine.clone(),
+            Key::Remote => self.remote.clone(),
+            Key::Space => self.space.clone(),
+        }
+    }
+
+    /// `{machine}` and `{remote}` for a terminal address: another machine's
+    /// are `<machine>/<terminal>`, as the agents mods read them.
+    pub fn on_machine(&mut self, address: &str) {
+        match address.split_once('/') {
+            Some((machine, _)) => (self.machine, self.remote) = (machine.to_owned(), machine.to_owned()),
+            None => (self.machine, self.remote) = (LOCAL.to_owned(), String::new()),
         }
     }
 
@@ -305,14 +337,48 @@ impl Values {
             behind: 0,
             dirty: true,
             subagents: Subagents { live: 2, blocked: 0 },
+            machine: "vps".into(),
+            remote: "vps".into(),
+            space: "herdr-app".into(),
         }
     }
 }
 
-/// Whether `pane_header_info` shows ahead, behind or dirty: folder info
-/// counts them only then.
-pub fn counts_git(template: Option<&str>) -> bool {
-    template.is_some_and(|t| Template::parse(t).uses_git_counts())
+/// `{machine}` for this computer.
+pub const LOCAL: &str = "local";
+
+/// `agents_card_info` while settings.json leaves it out: the cards the agents
+/// lists drew before it, another machine's name and the space.
+pub const DEFAULT_CARD_INFO: &str = "@{remote} · {space}";
+
+/// The card template in effect: settings.json's, else the default; None
+/// when it shows nothing.
+pub fn card_template(set: Option<&str>) -> Option<Template> {
+    Some(Template::parse(set.unwrap_or(DEFAULT_CARD_INFO))).filter(|t| !t.is_empty())
+}
+
+/// An agent's resolved card info, as `AgentInfo.card_info`. `no_space`, there
+/// only when the template has `{space}`, is the same without it, for a card
+/// whose space goes without saying (under its space's header, or named by
+/// it): a segment that also holds other keys keeps them.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CardInfo {
+    #[serde(flatten)]
+    pub info: Info,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_space: Option<Option<Info>>,
+}
+
+pub fn card(template: &Template, v: &Values) -> Option<CardInfo> {
+    let info = template.resolve(v)?;
+    let no_space = template.uses_space().then(|| template.resolve(&Values { space: String::new(), ..v.clone() }));
+    Some(CardInfo { info, no_space })
+}
+
+/// Whether `pane_header_info` or `agents_card_info` shows ahead, behind or
+/// dirty: folder info counts them only then.
+pub fn counts_git(header: Option<&str>, card: Option<&str>) -> bool {
+    header.is_some_and(|t| Template::parse(t).uses_git_counts()) || card_template(card).is_some_and(|t| t.uses_git_counts())
 }
 
 /// `{ask}`: the agent's own summary from its 7501 report, else what kind of
@@ -412,6 +478,12 @@ pub fn preview_for_mods(template: &str) -> serde_json::Value {
     serde_json::json!(Template::parse(template).resolve(&Values::sample()))
 }
 
+/// `cardInfoPreview(template)` for mods: a card template (null: the default)
+/// with `Values::sample()`, an agent on another machine.
+pub fn card_preview_for_mods(template: Option<&str>) -> serde_json::Value {
+    serde_json::json!(card_template(template).and_then(|t| card(&t, &Values::sample())))
+}
+
 /// About how wide `text` is in `font_px` text (`headerTextWidth` for mods, so a
 /// header sizes what's beside the info as `fit` sizes the info).
 pub fn width(text: &str, font_px: f32) -> f32 {
@@ -448,7 +520,8 @@ mod tests {
         assert!(Template::parse("").is_empty() && Template::parse("  ·  | ").is_empty(), "nothing to show");
         assert!(Template::parse(SUGGESTED).uses_elapsed() && !Template::parse("{branch}").uses_elapsed());
         assert!(Template::parse(SUGGESTED).uses_git_counts() && !Template::parse("{branch} · {state}").uses_git_counts());
-        assert!(counts_git(Some(SUGGESTED)) && !counts_git(Some("{branch}")) && !counts_git(None));
+        assert!(counts_git(Some(SUGGESTED), None) && !counts_git(Some("{branch}"), None) && !counts_git(None, None));
+        assert!(counts_git(None, Some("{space} · {dirty}")) && !counts_git(None, Some("")), "the card template counts too, the default doesn't");
         let info = Template::parse(SUGGESTED).resolve(&Values::sample()).unwrap();
         assert_eq!(info.text, "approve Bash: make · main ↑2 * · blocked 3m · 2 sub-agents", "the whole line, for the tooltip");
     }
@@ -579,5 +652,64 @@ mod tests {
         assert_eq!(fit(&blocked, w(23.0), 12.0), vec![seg("", "3 sub-agents, 1 blocked", true)], "blocked outlasts the rest");
         let from_js: Vec<Shown> = serde_json::from_value(serde_json::json!([{ "sep": "", "text": "a", "ask": false }])).unwrap();
         assert!(!from_js[0].minor, "segments from an older mod read as not minor");
+    }
+    fn card_on(address: &str, space: &str) -> Values {
+        let mut v = Values { space: space.into(), branch: "main".into(), state: "idle".into(), ..Values::default() };
+        v.on_machine(address);
+        v
+    }
+
+    fn texts(info: Option<&Info>) -> Vec<String> {
+        info.map(|i| i.segments.iter().map(|s| s.text.clone()).collect()).unwrap_or_default()
+    }
+
+    #[test]
+    fn machine_is_always_named_and_remote_only_off_this_computer() {
+        let (here, there) = (card_on("t7", "app"), card_on("vps/t7", "app"));
+        assert_eq!((here.machine.as_str(), here.remote.as_str()), ("local", ""));
+        assert_eq!((there.machine.as_str(), there.remote.as_str()), ("vps", "vps"));
+        assert_eq!(shown("{machine}", &here)[0].1, "local");
+        assert_eq!(shown("@{remote}", &here), vec![], "a segment of an empty key goes, its @ with it");
+        assert_eq!(shown("@{remote}", &there)[0].1, "@vps");
+        assert_eq!(card_on("a/b/t1", "x").machine, "a", "the machine is the address's first part");
+    }
+
+    #[test]
+    fn the_default_card_is_the_remote_machine_then_the_space() {
+        let default = card_template(None).unwrap();
+        let c = card(&default, &card_on("vps/t7", "herdr-app")).unwrap();
+        assert_eq!(texts(Some(&c.info)), vec!["@vps", "herdr-app"], "the chips the agents lists drew, in their order");
+        assert_eq!(texts(c.no_space.as_ref().unwrap().as_ref()), vec!["@vps"], "without the space: the machine alone");
+        let local = card(&default, &card_on("t7", "herdr-app")).unwrap();
+        assert_eq!(texts(Some(&local.info)), vec!["herdr-app"]);
+        assert_eq!(local.no_space, Some(None), "nothing at all without the space: null, not the full info");
+        assert_eq!(card(&default, &card_on("t7", "")), None, "no space name, this computer: nothing");
+        assert_eq!(card_template(Some("")), None, "set empty: no card info");
+        assert_eq!(card_template(Some(" · ")), None);
+        assert!(card_template(Some("{state}")).is_some());
+        let json = serde_json::to_value(&c).unwrap();
+        assert_eq!(json["text"], "@vps · herdr-app", "flattened beside segments, as header_info is read");
+        assert_eq!(json["segments"][1]["text"], "herdr-app");
+        assert_eq!(json["no_space"]["text"], "@vps");
+        assert_eq!(serde_json::to_value(&local).unwrap()["no_space"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn a_card_without_space_keeps_the_other_keys_of_its_segment() {
+        let t = Template::parse("{space} {branch} · {state}");
+        let c = card(&t, &card_on("t1", "app")).unwrap();
+        assert_eq!(texts(Some(&c.info)), vec!["app main", "idle"]);
+        assert_eq!(texts(c.no_space.as_ref().unwrap().as_ref()), vec!["main", "idle"]);
+        let plain = card(&Template::parse("{branch}"), &card_on("t1", "app")).unwrap();
+        assert_eq!(plain.no_space, None, "no {{space}}: nothing to leave out, so no no_space");
+        assert!(serde_json::to_value(&plain).unwrap().get("no_space").is_none());
+        assert!(t.uses_space() && !Template::parse("{branch}").uses_space());
+    }
+
+    #[test]
+    fn card_previews_resolve_the_sample_on_another_machine() {
+        assert_eq!(card_preview_for_mods(None)["text"], "@vps · herdr-app");
+        assert_eq!(card_preview_for_mods(Some("{machine} · {branch}"))["text"], "vps · main");
+        assert_eq!(card_preview_for_mods(Some("")), serde_json::Value::Null);
     }
 }

@@ -227,6 +227,18 @@ export interface AgentInfo {
   /** Pinned with `terminal.pin`, on any Herdr client. */
   pinned: boolean;
   focused: boolean;
+  /** `agents_card_info` resolved for it (the default, `@{remote} · {space}`, while unset), when
+   *  what it shows changes (and on the minute for `{elapsed}`): what its card shows beside its
+   *  name, a chip or a word per segment. null when set empty and when every segment is empty;
+   *  undefined on builds without it (draw the machine). */
+  card_info?: CardInfo | null;
+}
+
+/** `AgentInfo.card_info`: `text` and `segments` as `HeaderInfo`'s. `no_space`, present only when
+ *  the template has `{space}`, is the same without it (null when nothing is left), for a card
+ *  whose space goes without saying: under its space's header, or when its name is the space. */
+export interface CardInfo extends HeaderInfo {
+  no_space?: HeaderInfo | null;
 }
 
 /** Terminals whose program reports a status (agents), in space, tab, pane order. Live. */
@@ -510,6 +522,9 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  builds without it: draw a tree). `agents_subagent_click` is what a click on a sub-agent row
  *  should open: `"claude" | "transcript"` (Claude Code's own view, or a transcript popup),
  *  `"claude"` when unset (undefined on builds without it); the shipped agents mod doesn't read it.
+ *  `agents_card_info` is the agents cards' template as written (`""` for none), or `null` while
+ *  unset (the default); agents carry it resolved as `card_info`. The shipped agents mod draws
+ *  `card_info` only once it is set, so its rows stay as they were by default.
  *  `toast_duration`, `toast_style`, `toast_corners`, `toast_mark`, `toast_design` and `toast_progress` are the person's toast choices
  *  (see AGENTS.md). */
 export function settings(): Record<string, unknown>;
@@ -676,6 +691,11 @@ export function fitHeaderInfo(segments: HeaderSegment[], width: number, fontPx: 
  *  "approve Bash: make" for 3m, on main, 2 ahead, with changes), as `header_info`; null
  *  when nothing would show. For a settings preview. */
 export function headerInfoPreview(template: string): HeaderInfo | null;
+
+/** An `agents_card_info` template (null: the default) resolved as `card_info` for a sample
+ *  agent on another machine, `vps`, in the space `herdr-app`, with `headerInfoPreview`'s other
+ *  values; null when nothing would show. For a settings preview. */
+export function cardInfoPreview(template: string | null): CardInfo | null;
 
 /** About how wide `text` is in `fontPx` text, as `fitHeaderInfo` estimates it (wide
  *  characters, Chinese, Japanese and Korean (CJK) and emoji, twice): for sizing what sits beside the info. */

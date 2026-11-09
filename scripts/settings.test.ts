@@ -54,6 +54,8 @@ const values: Record<string, any> = {
   hc: async (args: string[]) => (args.join(" ") === "machine ls --json" ? { code: 0, stdout: JSON.stringify({ machines: machineDisk }) } : { code: 1, stderr: "no" }),
   // Herdr's preview of a pane_header_info template: here, the template as one segment (a test may swap it).
   headerInfoPreview: (template: string) => previewOf(template),
+  // Herdr's preview of an agents_card_info template on the sample agent: here, each segment as written (a test may swap it).
+  cardInfoPreview: (template: string | null) => cardPreviewOf(template),
   appHome: () => "/home", notify: (n: any) => { disk.toasts.push(n); },
   shared: (key: string) => (key === "layout" ? layoutDisk.name : sharedDisk[key]), run: (name: string, args: any) => { layoutDisk.runs.push([name, args]); },
   layout: () => { layoutDisk.layoutReads++; return layoutDisk.shown; },
@@ -78,6 +80,12 @@ const values: Record<string, any> = {
     if (expected !== disk.raw) throw new Error("changed since read");
     disk.raw = text;
   },
+};
+// What cardInfoPreview gives: the default resolved as Herdr does, else the template's segments as written.
+let cardPreviewOf = (template: string | null): any => {
+  const parts = (template ?? "@{remote} · {space}").split(/[·|]/).map((p) => p.trim()).filter(Boolean)
+    .map((p) => p.replace("{remote}", "vps").replace("{space}", "herdr-app"));
+  return parts.length ? { text: parts.join(" · "), segments: parts.map((text, i) => ({ sep: i ? " · " : "", text, ask: false })) } : null;
 };
 // What headerInfoPreview gives for a template.
 let previewOf = (template: string): any => ({ text: template, segments: [{ sep: "", text: template, ask: false }] });
@@ -1369,4 +1377,54 @@ test("header info: the preview draws separators as the pane header does, the mar
   expect(texts(shown)).toEqual(["approve", "\u00b7", "main", "|", "idle"]);
   expect(seps(shown).map((c: any) => [c.calls.px, c.calls.text_color, texts(c)])).toEqual([[[4], ["#dim"], ["\u00b7"]], [[4], ["#dim"], ["|"]]]);
   previewOf = one;
+});
+
+test("card info: the field holds the default until set, Use suggested and the default leave it out, blank is kept as off", () => {
+  const field = (person: Record<string, any>) => {
+    composed = {};
+    const view = new Settings();
+    view.person = person;
+    let written: Record<string, any> | undefined;
+    view.change = (edit: (q: Record<string, any>) => void) => { written = structuredClone(person); edit(written); };
+    const page = view.page("activity", new Proxy({}, { get: (_t, k) => `#${String(k)}` }), {});
+    return { view, page, preview: find(page, "st-ci-preview"), written: () => written };
+  };
+  const unset = field({});
+  expect(unset.view.cardInput.value()).toBe("@{remote} · {space}");
+  expect(find(unset.page, "st-ci-suggested")).toBeUndefined();
+  // Each segment a chip, as the agents panel draws them.
+  expect(texts(unset.preview)).toEqual(["@vps", "herdr-app"]);
+  expect(unset.preview.nodes.map((c: any) => [c.calls.px, c.calls.rounded, c.calls.bg])).toEqual([[[5], [4], ["#chrome"]], [[5], [4], ["#chrome"]]]);
+  unset.view.setCardInfo("@{remote} · {space}", clickCx());
+  expect(unset.written()).toBeUndefined();
+  unset.view.setCardInfo("{machine} · {space}", clickCx());
+  expect(unset.written()).toEqual({ agents_card_info: "{machine} · {space}" });
+  const blank = field({ zoom: 1.1 });
+  blank.view.setCardInfo("", clickCx());
+  expect(blank.written()).toEqual({ zoom: 1.1, agents_card_info: "" });
+  const set = field({ agents_card_info: "{space} · {branch}", zoom: 1.1 });
+  expect(set.view.cardInput.value()).toBe("{space} · {branch}");
+  set.view.setCardInfo("@{remote} · {space}", clickCx());
+  expect(set.written()).toEqual({ zoom: 1.1 });
+  expect(click({ agents_card_info: "{space}", zoom: 1.1 }, {}, "st-ci-suggested", [], "activity")).toEqual({ zoom: 1.1 });
+  const off = field({ agents_card_info: "" });
+  expect(off.view.cardInput.value()).toBe("");
+  expect(texts(off.preview).join("")).toContain("Off");
+  const none = field({ agents_card_info: " · " });
+  expect(texts(none.preview)).toEqual(["Nothing to show"]);
+});
+
+test("card info: its row follows Header info; opening fills the field from settings.json", async () => {
+  composed = {};
+  const view = new Settings();
+  view.person = {};
+  const drawn = texts(view.page("activity", new Proxy({}, { get: () => "#000000" }), {}));
+  expect(drawn.indexOf("Card info")).toBeGreaterThan(drawn.indexOf("Header info"));
+  expect(drawn.indexOf("Card info")).toBeLessThan(drawn.indexOf("Resume agents after restart"));
+  Object.assign(disk, { raw: '{"agents_card_info": ""}', writes: 0, fail: undefined, readFail: undefined, toasts: [] });
+  await view.load(true);
+  expect(view.cardInput.value()).toBe("");
+  Object.assign(disk, { raw: "{}" });
+  await view.load(true);
+  expect(view.cardInput.value()).toBe("@{remote} · {space}");
 });
