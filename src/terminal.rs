@@ -1062,6 +1062,21 @@ impl TerminalView {
         self.grid.borrow().hover.is_some()
     }
 
+    /// Where a cursor trail meets this terminal, in window coordinates from
+    /// the last paint: the cursor's cell, shown or hidden (agents hide it at
+    /// their input), else the middle cell when the cursor is scrolled out of
+    /// view. None before the first paint.
+    pub fn trail_anchor(&self) -> Option<Bounds<Pixels>> {
+        let g = self.grid.borrow();
+        g.cursor_at.or_else(|| {
+            // The origin is set by the first paint.
+            (g.origin != Point::default()).then(|| {
+                let middle = point(g.cell.width * f32::from(g.vt.cols / 2), g.cell.height * f32::from(g.vt.rows / 2));
+                Bounds::new(g.origin + middle, g.cell)
+            })
+        })
+    }
+
     /// The link at a window position, and where it shows.
     fn link_at(&self, pos: Point<Pixels>) -> Option<(LinkTarget, vt::Spans)> {
         let g = self.grid.borrow();

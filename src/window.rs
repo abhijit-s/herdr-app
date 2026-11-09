@@ -6,6 +6,7 @@
 
 use crate::git_status;
 use crate::hc::Core;
+mod cursor_trail;
 mod floats;
 mod follow_mouse;
 mod pane_floats;
@@ -667,6 +668,9 @@ pub struct AppWindow {
     drag_from: Option<Point<Pixels>>,
     titlebar_applied: Option<(crate::layout::Titlebar, Option<[f32; 2]>)>,
     focused_pane: Option<String>,
+    /// The cursor trail being drawn, and the (tab, pane) focused at the last draw (window/cursor_trail.rs).
+    trail: Option<cursor_trail::Trail>,
+    trail_seen: Option<cursor_trail::Seen>,
     /// The mod block holding the keyboard for directional navigation.
     focused_block: Option<String>,
     synced_model_pane: Option<String>,
@@ -807,6 +811,8 @@ impl AppWindow {
             drag_from: None,
             titlebar_applied: None,
             focused_pane: None,
+            trail: None,
+            trail_seen: None,
             focused_block: None,
             synced_model_pane: None,
             window_terminal: None,
@@ -6761,6 +6767,7 @@ impl Render for AppWindow {
             self.publish(cx);
         }
         self.tick_floats(window);
+        self.watch_cursor_trail(cx);
         self.apply_titlebar(window);
         if mods::publish_window(self.window_json(window)) {
             self.refresh_snapshot_mods(cx);
@@ -6770,6 +6777,7 @@ impl Render for AppWindow {
         let tree = self.render_node(&self.chrome, &focused, None, cx);
         self.painting_main.set(false);
         let tree = self.window_frame(tree, window, cx);
+        let trail = self.cursor_trail_layer();
         let overlays = self.render_overlays(window.viewport_size(), cx);
         let tracker = self.float_tracker(cx);
         let win_tracker = self.window_tracker(cx);
@@ -6862,6 +6870,7 @@ impl Render for AppWindow {
                 }
             }))
             .child(tree)
+            .children(trail)
             .children(overlays)
             .children(tracker)
             .children(win_tracker)
@@ -8717,6 +8726,107 @@ export default class Recent extends View {
         let (view, cx) = cx.add_window_view(|window, cx| super::AppWindow::new(core, requests, window, cx));
         assert_eq!(view.update(cx, |this, _| this.layout_name.clone()), "test");
         (view, cx)
+    }
+
+    #[test]
+    fn cursor_trail_runs_between_panes_then_ends() {
+        in_own_process("cursor_trail");
+    }
+
+    /// Tab t: a | b | d, tab u: c. Off, a focus change keeps nothing. On,
+    /// turning it on starts nothing; b to a starts a trail from b's cursor,
+    /// which has a layer until its time is up and the next draw drops it.
+    /// The same pane starts none. Closing the focused pane starts one from
+    /// where it last drew its cursor. A trail whose pane is gone, or one
+    /// running when the tab changes, ends at once; another tab starts none.
+    #[gpui::test]
+    fn cursor_trail(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use serde_json::json;
+        if !running_alone("cursor_trail") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        let mode = |trail: crate::settings::CursorTrail| {
+            let before = crate::settings::get();
+            crate::settings::set(crate::settings::Settings { cursor_trail: trail, cursor_trail_duration_ms: 1000, ..(*before).clone() });
+        };
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                this.close_overlay(&id, window, cx);
+            }
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb"), pane("d", "td")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.add_tab("s", Tab::new("u", "", "c", "tc"));
+            this.model.select_tab("t");
+            this.model.focus_pane("a");
+            this.sync(window, cx);
+        });
+        cx.run_until_parked();
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+        let change = |cx: &mut gpui::VisualTestContext, f: &dyn Fn(&mut crate::model::Model)| {
+            view.update_in(cx, |this, window, cx| {
+                f(&mut this.model);
+                this.sync(window, cx);
+            });
+            draw(cx);
+        };
+        let focus = |cx: &mut gpui::VisualTestContext, pane: &str| change(cx, &|m| { m.focus_pane(pane); });
+        // (where the trail starts, toward which pane), and the (tab, pane) seen last.
+        type State = (Option<(gpui::Bounds<gpui::Pixels>, String)>, Option<(String, String)>);
+        let state = |cx: &mut gpui::VisualTestContext| -> State {
+            view.update(cx, |this, _| (this.trail.as_ref().map(|t| (t.from, t.pane.clone())), this.trail_seen.as_ref().map(|s| (s.tab.clone(), s.pane.clone()))))
+        };
+        let seen = |tab: &str, pane: &str| Some((tab.to_owned(), pane.to_owned()));
+        let anchor = |cx: &mut gpui::VisualTestContext, pane: &str| view.update(cx, |this, cx| this.terms[pane].view.read(cx).trail_anchor()).expect("drawn, so it has a cursor anchor");
+        let expire = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail.as_mut().unwrap().start -= std::time::Duration::from_secs(2));
+        let layer = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.cursor_trail_layer().is_some());
+
+        focus(cx, "b");
+        assert_eq!(state(cx), (None, None), "off: nothing kept");
+
+        mode(crate::settings::CursorTrail::Panes);
+        draw(cx);
+        assert_eq!(state(cx), (None, seen("t", "b")), "turning it on starts no trail");
+        let b = anchor(cx, "b");
+
+        focus(cx, "a");
+        assert_eq!(state(cx), (Some((b, "a".into())), seen("t", "a")), "b to a starts a trail from b's cursor");
+        assert!(layer(cx), "a live trail has a layer");
+        expire(cx);
+        draw(cx);
+        assert_eq!(state(cx).0, None, "its time up, the next draw drops it");
+        assert!(!layer(cx), "and asks for no more frames");
+
+        focus(cx, "a");
+        assert_eq!(state(cx).0, None, "the same pane starts none");
+
+        focus(cx, "d");
+        let d = anchor(cx, "d");
+        change(cx, &|m| { m.remove_pane("d"); });
+        let (trail, now) = state(cx);
+        assert_eq!(trail.as_ref().map(|(from, _)| *from), Some(d), "closing d starts a trail from where d drew its cursor");
+        assert_eq!(trail.map(|(_, to)| to), now.map(|(_, pane)| pane), "to the pane focused after");
+
+        view.update(cx, |this, _| this.trail.as_mut().unwrap().pane = "gone".into());
+        assert!(!layer(cx), "a trail whose pane is gone ends");
+        assert_eq!(state(cx).0, None);
+
+        focus(cx, "b");
+        focus(cx, "a");
+        assert!(state(cx).0.is_some());
+        change(cx, &|m| { m.select_tab("u"); });
+        assert_eq!(state(cx), (None, seen("u", "c")), "a tab change ends a running trail and starts none");
+
+        mode(crate::settings::CursorTrail::Off);
+        draw(cx);
+        assert_eq!(state(cx), (None, None), "off again forgets");
     }
 
     #[test]

@@ -1488,6 +1488,16 @@ pub struct Person {
     /// unset, the layout's `focus` width.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focus_border_width: Option<f32>,
+    /// A comet drawn from one pane's cursor to the next as the focus moves
+    /// between panes (window/cursor_trail.rs): `off` or `panes`.
+    #[serde(skip_serializing_if = "CursorTrail::is_off")]
+    pub cursor_trail: CursorTrail,
+    /// How long until the trail's tail reaches the cursor, in ms (read through `trail_duration`).
+    #[serde(skip_serializing_if = "is_trail_ms_default")]
+    pub cursor_trail_duration_ms: u32,
+    /// The trail's color (`"#rrggbb"`), else the theme's `cursor`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor_trail_color: Option<String>,
     /// Minimum terminal text contrast ratio; 1 leaves program colors unchanged.
     pub minimum_contrast: f32,
     /// Px (at zoom 1) added to (or, negative, taken from) the terminal cell width.
@@ -1745,6 +1755,30 @@ impl TextRendering {
     pub fn subpixel(self) -> bool {
         self == TextRendering::Subpixel
     }
+}
+
+/// When a cursor trail is drawn: never, or as the focus moves between the
+/// shown tab's panes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CursorTrail {
+    #[default]
+    Off,
+    Panes,
+}
+
+impl CursorTrail {
+    fn is_off(&self) -> bool {
+        *self == CursorTrail::Off
+    }
+}
+
+pub const TRAIL_MS_DEFAULT: u32 = 150;
+/// Long enough to see, short enough that a trail never outstays the next keypress.
+pub const TRAIL_MS: std::ops::RangeInclusive<u32> = 50..=1000;
+
+fn is_trail_ms_default(ms: &u32) -> bool {
+    *ms == TRAIL_MS_DEFAULT
 }
 
 /// What `unfocused_dim` fades while the window isn't active: everything in
@@ -2408,6 +2442,9 @@ impl Default for Person {
             toast_design: ToastDesign::Card,
             toast_progress: false,
             focus_border_width: None,
+            cursor_trail: CursorTrail::Off,
+            cursor_trail_duration_ms: TRAIL_MS_DEFAULT,
+            cursor_trail_color: None,
             minimum_contrast: 1.0,
             letter_spacing: None,
             cell_width: CellWidth::Font,
@@ -2510,6 +2547,11 @@ pub struct Settings {
     pub toast_progress: bool,
     /// `focus_border_width` as written (`focus_width` reads it).
     pub focus_border_width: Option<f32>,
+    /// The cursor trail, as written (`trail_duration` and `trail_color` read
+    /// the other two).
+    pub cursor_trail: CursorTrail,
+    pub cursor_trail_duration_ms: u32,
+    pub cursor_trail_color: Option<String>,
     /// Space between a terminal's edge and its text, in px: [x, y].
     pub terminal_padding: [f32; 2],
     /// 0..1: below 1, what's behind a terminal shows through.
@@ -2627,6 +2669,9 @@ impl Default for Settings {
             toast_design: ToastDesign::Card,
             toast_progress: false,
             focus_border_width: None,
+            cursor_trail: CursorTrail::Off,
+            cursor_trail_duration_ms: TRAIL_MS_DEFAULT,
+            cursor_trail_color: None,
             terminal_padding: [10.0, 6.0],
             terminal_opacity: 1.0,
             clipboard_write: true,
@@ -2735,6 +2780,9 @@ impl Settings {
             toast_design: person.toast_design,
             toast_progress: person.toast_progress,
             focus_border_width: person.focus_border_width,
+            cursor_trail: person.cursor_trail,
+            cursor_trail_duration_ms: person.cursor_trail_duration_ms,
+            cursor_trail_color: person.cursor_trail_color.clone(),
             terminal_padding: look.terminal_padding.unwrap_or(d.terminal_padding),
             terminal_opacity: look.terminal_opacity.unwrap_or(1.0).clamp(0.0, 1.0),
             sounds: person.sounds.clone(),
@@ -2817,6 +2865,14 @@ impl Settings {
         }
         if let Some(w) = self.focus_border_width.filter(|w| !FOCUS_BORDER_WIDTH.contains(w)) {
             out.push(format!("focus_border_width {w} is outside 1..3"));
+        }
+        if !TRAIL_MS.contains(&self.cursor_trail_duration_ms) {
+            out.push(format!("cursor_trail_duration_ms {} is outside {}..{}", self.cursor_trail_duration_ms, TRAIL_MS.start(), TRAIL_MS.end()));
+        }
+        if let Some(color) = &self.cursor_trail_color
+            && self.trail_color().is_none()
+        {
+            out.push(format!("cursor_trail_color {color:?} isn't a \"#rrggbb\" color; the trail takes the theme's cursor color"));
         }
         if !(1.0..=21.0).contains(&self.minimum_contrast) {
             out.push(format!("minimum_contrast {} is outside 1..21", self.minimum_contrast));
@@ -3252,6 +3308,18 @@ impl Settings {
     /// within 1 to 3), when settings.json sets one.
     pub fn focus_width(&self) -> Option<f32> {
         self.focus_border_width.map(|w| w.clamp(*FOCUS_BORDER_WIDTH.start(), *FOCUS_BORDER_WIDTH.end()))
+    }
+
+    /// `cursor_trail_duration_ms`, within `TRAIL_MS`.
+    pub fn trail_duration(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.cursor_trail_duration_ms.clamp(*TRAIL_MS.start(), *TRAIL_MS.end()).into())
+    }
+
+    /// `cursor_trail_color` when it's a `"#rrggbb"` color, else None (the
+    /// theme's `cursor`).
+    pub fn trail_color(&self) -> Option<Hsla> {
+        let color = self.cursor_trail_color.as_deref()?;
+        (color.len() == 7 && color.starts_with('#')).then(|| parse_hex(color)).flatten()
     }
 
     /// The zoom `steps` presses of the zoom keys away (0 resets; `step_zoom`).
@@ -4111,6 +4179,40 @@ mod tests {
     }
 
     #[test]
+    fn cursor_trail_is_off_by_default_and_stays_out_of_settings_json() {
+        let person = Person::default();
+        assert_eq!(person.cursor_trail, CursorTrail::Off);
+        let json = serde_json::to_value(&person).unwrap();
+        for key in ["cursor_trail", "cursor_trail_duration_ms", "cursor_trail_color"] {
+            assert!(json.get(key).is_none(), "{key} in {json}");
+        }
+        let on: Person = serde_json::from_str(r##"{"cursor_trail": "panes", "cursor_trail_duration_ms": 300, "cursor_trail_color": "#ff8800"}"##).unwrap();
+        let s = Settings::compose(&on, &crate::layout::Look::default(), true);
+        assert_eq!((s.cursor_trail, s.trail_duration(), s.trail_color()), (CursorTrail::Panes, std::time::Duration::from_millis(300), parse_hex("#ff8800")));
+        assert!(s.problems().is_empty(), "{:?}", s.problems());
+        let mods = s.for_mods();
+        assert_eq!((mods["cursor_trail"].clone(), mods["cursor_trail_duration_ms"].clone()), (serde_json::json!("panes"), serde_json::json!(300)));
+        for bad in [r#"{"cursor_trail": "all"}"#, r#"{"cursor_trail": true}"#] {
+            assert!(serde_json::from_str::<Person>(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn cursor_trail_duration_and_color_are_kept_in_range() {
+        let s = |json: &str| Settings::compose(&serde_json::from_str(json).unwrap(), &crate::layout::Look::default(), true);
+        for (asked, ms, ok) in [(0, 50, false), (49, 50, false), (50, 50, true), (200, 200, true), (1000, 1000, true), (5000, 1000, false)] {
+            let s = s(&format!(r#"{{"cursor_trail_duration_ms": {asked}}}"#));
+            assert_eq!(s.trail_duration(), std::time::Duration::from_millis(ms), "asked {asked}");
+            assert_eq!(s.problems().is_empty(), ok, "asked {asked}");
+        }
+        for (color, ok) in [("#ff8800", true), ("#ff880080", false), ("orange", false), ("", false)] {
+            let s = s(&format!(r#"{{"cursor_trail_color": "{color}"}}"#));
+            assert_eq!(s.trail_color().is_some(), ok, "{color}");
+            assert_eq!(s.problems().iter().any(|p| p.contains("cursor_trail_color")), !ok, "{color}");
+        }
+    }
+
+    #[test]
     fn focus_follows_mouse_delay_is_clamped() {
         for (asked, ms) in [(0, 0), (2000, 2000), (2001, 2000), (u32::MAX, 2000)] {
             let person = Person { focus_follows_mouse_delay_ms: asked, ..Person::default() };
@@ -4331,7 +4433,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, pane_header_info: Some(String::new()), agents_card_info: Some(String::new()), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, pane_header_info: Some(String::new()), agents_card_info: Some(String::new()), cursor_trail: CursorTrail::Panes, cursor_trail_duration_ms: 300, cursor_trail_color: Some("#ff8800".into()), ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

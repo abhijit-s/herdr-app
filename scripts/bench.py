@@ -386,6 +386,31 @@ def floats(bin, app, a, agent):
         mover.join()
 
 
+def trail(bin, app, a, agent):
+    """Focus moving between panes (cursor_trail draws a comet per move): two
+    agents streaming beside a shell, still, then the focus hopping between
+    panes twice a second."""
+    rows = ROWS_OUT
+    do(bin, "space.new", {"name": "bench", "folder": ROOT, "argv": agent})
+    do(bin, "pane.split", {"direction": "right", "argv": agent})
+    do(bin, "pane.split", {"direction": "down"})
+    rows.append(measure("trail-still", app, a.seconds, a.sample))
+    stop = threading.Event()
+    def hop():
+        step = 0
+        while not stop.is_set():
+            do(bin, "pane.go", {"direction": ("left", "right", "down", "up")[step % 4]})
+            step += 1
+            stop.wait(0.5)
+    hopper = threading.Thread(target=hop, daemon=True)
+    hopper.start()
+    try:
+        rows.append(measure("trail-hops", app, a.seconds, a.sample))
+    finally:
+        stop.set()
+        hopper.join()
+
+
 ROWS_OUT = []
 
 
@@ -395,9 +420,9 @@ def main():
     ap.add_argument("--seconds", type=int, default=20)
     ap.add_argument("--sample", action="store_true")
     ap.add_argument("--zoom", type=float, default=1.0)
-    ap.add_argument("--set", choices=["all", "spinners", "toasts", "subagents", "floats"], default="all",
+    ap.add_argument("--set", choices=["all", "spinners", "toasts", "subagents", "floats", "trail"], default="all",
                     help="spinners: many spaces of idle agents, one agent working on screen; toasts: agents finishing in waves and in a storm, raising toasts; subagents: agents whose in-process sub-agents come and go (OSC 7501 child records); "
-                         "floats: floating panes over streaming agents, still and moving")
+                         "floats: floating panes over streaming agents, still and moving; trail: the focus hopping between panes beside streaming agents")
     ap.add_argument("--only", help="measure only this scenario, e.g. spinners+stream")
     ap.add_argument("--settings", default="{}", help="JSON merged into the test home's settings.json, e.g. '{\"toast_duration\": \"long\"}'")
     a = ap.parse_args()
@@ -473,6 +498,9 @@ def main():
             return
         if a.set == "floats":
             floats(bin, app.pid, a, agent)
+            return
+        if a.set == "trail":
+            trail(bin, app.pid, a, agent)
             return
         if a.set == "subagents":
             # Six agents, each with sub-agents coming and going twice a second; one on screen.
