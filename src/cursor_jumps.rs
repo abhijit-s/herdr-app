@@ -101,7 +101,10 @@ impl Jumps {
         let before = self.settled.replace(spot);
         Due::Fire(before.and_then(|b| {
             if chebyshev(b.cell, spot.cell) >= min_cells.max(1) {
-                Some(Jump::Moved { from: b.cell, to: spot.cell })
+                Some(Jump::Moved {
+                    from: b.cell,
+                    to: spot.cell,
+                })
             } else {
                 (b.shape != spot.shape).then_some(Jump::Reshaped)
             }
@@ -116,7 +119,10 @@ mod tests {
     const SETTLE: Duration = Duration::from_millis(80);
 
     fn at(x: u16, y: u16) -> Option<Spot> {
-        Some(Spot { cell: (x, y), shape: CursorShape::Block })
+        Some(Spot {
+            cell: (x, y),
+            shape: CursorShape::Block,
+        })
     }
 
     fn ms(t0: Instant, n: u64) -> Instant {
@@ -127,10 +133,27 @@ mod tests {
     fn a_jump_fires_once_the_cursor_has_been_still_for_the_settle_time() {
         let (mut j, t0) = (Jumps::default(), Instant::now());
         assert!(!j.observe(at(0, 0), t0), "the first sight only settles");
-        assert!(j.observe(at(10, 3), ms(t0, 5)), "a move starts the one timer");
-        assert_eq!(j.due(ms(t0, 50), SETTLE, 2), Due::Wait(Duration::from_millis(35)), "not yet still long enough");
-        assert_eq!(j.due(ms(t0, 85), SETTLE, 2), Due::Fire(Some(Jump::Moved { from: (0, 0), to: (10, 3) })));
-        assert_eq!(j.due(ms(t0, 200), SETTLE, 2), Due::Fire(None), "settled: nothing more");
+        assert!(
+            j.observe(at(10, 3), ms(t0, 5)),
+            "a move starts the one timer"
+        );
+        assert_eq!(
+            j.due(ms(t0, 50), SETTLE, 2),
+            Due::Wait(Duration::from_millis(35)),
+            "not yet still long enough"
+        );
+        assert_eq!(
+            j.due(ms(t0, 85), SETTLE, 2),
+            Due::Fire(Some(Jump::Moved {
+                from: (0, 0),
+                to: (10, 3)
+            }))
+        );
+        assert_eq!(
+            j.due(ms(t0, 200), SETTLE, 2),
+            Due::Fire(None),
+            "settled: nothing more"
+        );
     }
 
     #[test]
@@ -143,11 +166,20 @@ mod tests {
             timers += j.observe(at(i as u16 % 40, (i / 40) as u16), ms(t0, i * 16)) as u32;
             // The timer, whenever it wakes during the burst, waits on.
             if i % 5 == 0 {
-                assert!(matches!(j.due(ms(t0, i * 16 + 1), SETTLE, 2), Due::Wait(_)), "{i}");
+                assert!(
+                    matches!(j.due(ms(t0, i * 16 + 1), SETTLE, 2), Due::Wait(_)),
+                    "{i}"
+                );
             }
         }
         assert_eq!(timers, 1, "one timer for the whole burst");
-        assert_eq!(j.due(ms(t0, 960 + 80), SETTLE, 2), Due::Fire(Some(Jump::Moved { from: (0, 0), to: (20, 1) })));
+        assert_eq!(
+            j.due(ms(t0, 960 + 80), SETTLE, 2),
+            Due::Fire(Some(Jump::Moved {
+                from: (0, 0),
+                to: (20, 1)
+            }))
+        );
     }
 
     #[test]
@@ -155,11 +187,31 @@ mod tests {
         let (mut j, t0) = (Jumps::default(), Instant::now());
         j.observe(at(5, 5), t0);
         j.observe(at(6, 6), ms(t0, 1));
-        assert_eq!(j.due(ms(t0, 100), SETTLE, 2), Due::Fire(None), "a diagonal step is one cell, under two");
+        assert_eq!(
+            j.due(ms(t0, 100), SETTLE, 2),
+            Due::Fire(None),
+            "a diagonal step is one cell, under two"
+        );
         j.observe(at(8, 6), ms(t0, 200));
-        assert_eq!(j.due(ms(t0, 300), SETTLE, 2), Due::Fire(Some(Jump::Moved { from: (6, 6), to: (8, 6) })), "two from where it last settled");
-        j.observe(Some(Spot { cell: (8, 6), shape: CursorShape::Bar }), ms(t0, 400));
-        assert_eq!(j.due(ms(t0, 500), SETTLE, 2), Due::Fire(Some(Jump::Reshaped)));
+        assert_eq!(
+            j.due(ms(t0, 300), SETTLE, 2),
+            Due::Fire(Some(Jump::Moved {
+                from: (6, 6),
+                to: (8, 6)
+            })),
+            "two from where it last settled"
+        );
+        j.observe(
+            Some(Spot {
+                cell: (8, 6),
+                shape: CursorShape::Bar,
+            }),
+            ms(t0, 400),
+        );
+        assert_eq!(
+            j.due(ms(t0, 500), SETTLE, 2),
+            Due::Fire(Some(Jump::Reshaped))
+        );
     }
 
     #[test]
@@ -177,7 +229,14 @@ mod tests {
         let (mut j, t0) = (Jumps::default(), Instant::now());
         j.observe(at(0, 0), t0);
         j.observe(at(1, 0), t0);
-        assert_eq!(j.due(t0, Duration::ZERO, 0), Due::Fire(Some(Jump::Moved { from: (0, 0), to: (1, 0) })), "0 cells counts as 1: staying put is never a jump");
+        assert_eq!(
+            j.due(t0, Duration::ZERO, 0),
+            Due::Fire(Some(Jump::Moved {
+                from: (0, 0),
+                to: (1, 0)
+            })),
+            "0 cells counts as 1: staying put is never a jump"
+        );
     }
 
     #[test]
@@ -187,12 +246,28 @@ mod tests {
         assert!(j.observe(at(9, 0), ms(t0, 1)));
         j.forget();
         j.observe(at(0, 0), ms(t0, 2));
-        assert!(!j.observe(at(9, 9), ms(t0, 3)), "the first timer still runs");
-        assert_eq!(j.due(ms(t0, 100), SETTLE, 2), Due::Fire(Some(Jump::Moved { from: (0, 0), to: (9, 9) })));
+        assert!(
+            !j.observe(at(9, 9), ms(t0, 3)),
+            "the first timer still runs"
+        );
+        assert_eq!(
+            j.due(ms(t0, 100), SETTLE, 2),
+            Due::Fire(Some(Jump::Moved {
+                from: (0, 0),
+                to: (9, 9)
+            }))
+        );
     }
 
     #[test]
     fn chebyshev_counts_a_diagonal_step_as_one() {
-        assert_eq!((chebyshev((0, 0), (1, 1)), chebyshev((3, 0), (0, 2)), chebyshev((5, 5), (5, 5))), (1, 3, 0));
+        assert_eq!(
+            (
+                chebyshev((0, 0), (1, 1)),
+                chebyshev((3, 0), (0, 2)),
+                chebyshev((5, 5), (5, 5))
+            ),
+            (1, 3, 0)
+        );
     }
 }

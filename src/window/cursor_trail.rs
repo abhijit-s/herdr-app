@@ -119,10 +119,18 @@ impl AppWindow {
     /// The focused pane's cursor settled after a jump (`cursor_trail: "all"`,
     /// cursor_jumps.rs): a trail from `from` and the arrival pulse, or the
     /// pulse alone when only its shape changed (`from` None).
-    pub(super) fn cursor_jump(&mut self, pane: &str, from: Option<Bounds<Pixels>>, cx: &mut Context<Self>) {
+    pub(super) fn cursor_jump(
+        &mut self,
+        pane: &str,
+        from: Option<Bounds<Pixels>>,
+        cx: &mut Context<Self>,
+    ) {
         let s = settings::get();
         let focused = self.model.active_tab().and_then(|t| t.focused_pane());
-        if s.cursor_trail != settings::CursorTrail::All || focused.as_deref() != Some(pane) || (from.is_none() && s.cursor_arrival == settings::Arrival::Off) {
+        if s.cursor_trail != settings::CursorTrail::All
+            || focused.as_deref() != Some(pane)
+            || (from.is_none() && s.cursor_arrival == settings::Arrival::Off)
+        {
             return;
         }
         self.trail = Some(Trail {

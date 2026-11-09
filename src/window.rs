@@ -8858,11 +8858,13 @@ export default class Recent extends View {
             return;
         }
         let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
-        let set = |trail: CursorTrail| {
-            let before = crate::settings::get();
-            crate::settings::set(crate::settings::Settings { cursor_trail: trail, cursor_arrival: Arrival::Ripple, cursor_trail_duration_ms: 1000, cursor_trail_settle_ms: 80, cursor_trail_min_cells: 2, ..(*before).clone() });
+        // Through the window's own settings, which a later look resolve keeps.
+        let set = |cx: &mut gpui::VisualTestContext, trail: CursorTrail| {
+            view.update_in(cx, |this, window, cx| {
+                (this.person.cursor_trail, this.person.cursor_arrival, this.person.cursor_trail_duration_ms) = (trail, Arrival::Ripple, 1000);
+                this.apply_look(window, cx);
+            });
         };
-        set(CursorTrail::All);
         view.update_in(cx, |this, window, cx| {
             this.documents.entry(String::new()).or_default().available = true;
             for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
@@ -8895,6 +8897,7 @@ export default class Recent extends View {
         let effect = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail.as_ref().map(|t| (t.from.is_some(), t.arrival, t.pane.clone(), t.start)));
         let clear = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail = None);
         assert!(view.update_in(cx, |this, window, cx| this.terms["a"].view.read(cx).owns_keyboard_focus(window, cx)), "a has the keyboard");
+        set(cx, CursorTrail::All);
 
         feed(cx, "a", "\x1b[1;1H");
         wait(cx, 200);
@@ -8934,7 +8937,7 @@ export default class Recent extends View {
         assert_eq!(effect(cx), None, "not the focused pane");
 
         // Panes mode: in-pane jumps draw nothing.
-        set(CursorTrail::Panes);
+        set(cx, CursorTrail::Panes);
         feed(cx, "a", "\x1b[1;1H");
         wait(cx, 200);
         feed(cx, "a", "\x1b[15;40H");
