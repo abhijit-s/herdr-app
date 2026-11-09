@@ -1492,6 +1492,21 @@ pub struct Person {
     /// between panes (window/cursor_trail.rs): `off` or `panes`.
     #[serde(skip_serializing_if = "CursorTrail::is_off")]
     pub cursor_trail: CursorTrail,
+    /// How the trail looks: `comet`, `tail`, `sweep` or `warp`.
+    #[serde(skip_serializing_if = "TrailStyle::is_comet")]
+    pub cursor_trail_style: TrailStyle,
+    /// A pulse at the new cursor as the focus lands in another pane: `off`,
+    /// `ripple`, `boom`, `ripple_rect` or `boom_rect`.
+    #[serde(skip_serializing_if = "Arrival::is_off")]
+    pub cursor_arrival: Arrival,
+    /// With `cursor_trail: "all"`, how long the cursor stays still before a
+    /// jump counts, in ms (read through `trail_settle`).
+    #[serde(skip_serializing_if = "is_settle_ms_default")]
+    pub cursor_trail_settle_ms: u32,
+    /// With `cursor_trail: "all"`, how many cells (Chebyshev) a jump must
+    /// cover from where the cursor last settled.
+    #[serde(skip_serializing_if = "is_min_cells_default")]
+    pub cursor_trail_min_cells: u16,
     /// How long until the trail's tail reaches the cursor, in ms (read through `trail_duration`).
     #[serde(skip_serializing_if = "is_trail_ms_default")]
     pub cursor_trail_duration_ms: u32,
@@ -1757,20 +1772,78 @@ impl TextRendering {
     }
 }
 
-/// When a cursor trail is drawn: never, or as the focus moves between the
-/// shown tab's panes.
+/// When a cursor trail is drawn: never, as the focus moves between the shown
+/// tab's panes, or that and as the focused pane's cursor jumps (cursor_jumps.rs).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CursorTrail {
     #[default]
     Off,
     Panes,
+    All,
 }
 
 impl CursorTrail {
     fn is_off(&self) -> bool {
         *self == CursorTrail::Off
     }
+}
+
+/// How a cursor trail looks (window/cursor_shapes.rs).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrailStyle {
+    /// A glowing streak tapering to a point, as Rex draws.
+    #[default]
+    Comet,
+    /// A cursor-sized quad whose corners decay into the cursor, as kitty draws.
+    Tail,
+    /// A block from the old cursor shrinking into the new one.
+    Sweep,
+    /// A stretched block with soft edges, as Neovide draws.
+    Warp,
+}
+
+impl TrailStyle {
+    fn is_comet(&self) -> bool {
+        *self == TrailStyle::Comet
+    }
+}
+
+/// A pulse at the new cursor as the focus lands in another pane.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Arrival {
+    #[default]
+    Off,
+    /// An expanding ring.
+    Ripple,
+    /// An expanding disc, fading.
+    Boom,
+    /// An expanding cursor-shaped box outline.
+    RippleRect,
+    /// An expanding filled box, fading.
+    BoomRect,
+}
+
+impl Arrival {
+    fn is_off(&self) -> bool {
+        *self == Arrival::Off
+    }
+}
+
+pub const SETTLE_MS_DEFAULT: u32 = 80;
+pub const SETTLE_MS: std::ops::RangeInclusive<u32> = 0..=500;
+/// kitty's threshold: a jump of at least two cells.
+pub const MIN_CELLS_DEFAULT: u16 = 2;
+pub const MIN_CELLS: std::ops::RangeInclusive<u16> = 1..=50;
+
+fn is_settle_ms_default(ms: &u32) -> bool {
+    *ms == SETTLE_MS_DEFAULT
+}
+
+fn is_min_cells_default(n: &u16) -> bool {
+    *n == MIN_CELLS_DEFAULT
 }
 
 pub const TRAIL_MS_DEFAULT: u32 = 120;
@@ -2443,6 +2516,10 @@ impl Default for Person {
             toast_progress: false,
             focus_border_width: None,
             cursor_trail: CursorTrail::Off,
+            cursor_trail_style: TrailStyle::Comet,
+            cursor_arrival: Arrival::Off,
+            cursor_trail_settle_ms: SETTLE_MS_DEFAULT,
+            cursor_trail_min_cells: MIN_CELLS_DEFAULT,
             cursor_trail_duration_ms: TRAIL_MS_DEFAULT,
             cursor_trail_color: None,
             minimum_contrast: 1.0,
@@ -2550,6 +2627,10 @@ pub struct Settings {
     /// The cursor trail, as written (`trail_duration` and `trail_color` read
     /// the other two).
     pub cursor_trail: CursorTrail,
+    pub cursor_trail_style: TrailStyle,
+    pub cursor_arrival: Arrival,
+    pub cursor_trail_settle_ms: u32,
+    pub cursor_trail_min_cells: u16,
     pub cursor_trail_duration_ms: u32,
     pub cursor_trail_color: Option<String>,
     /// Space between a terminal's edge and its text, in px: [x, y].
@@ -2670,6 +2751,10 @@ impl Default for Settings {
             toast_progress: false,
             focus_border_width: None,
             cursor_trail: CursorTrail::Off,
+            cursor_trail_style: TrailStyle::Comet,
+            cursor_arrival: Arrival::Off,
+            cursor_trail_settle_ms: SETTLE_MS_DEFAULT,
+            cursor_trail_min_cells: MIN_CELLS_DEFAULT,
             cursor_trail_duration_ms: TRAIL_MS_DEFAULT,
             cursor_trail_color: None,
             terminal_padding: [10.0, 6.0],
@@ -2781,6 +2866,10 @@ impl Settings {
             toast_progress: person.toast_progress,
             focus_border_width: person.focus_border_width,
             cursor_trail: person.cursor_trail,
+            cursor_trail_style: person.cursor_trail_style,
+            cursor_arrival: person.cursor_arrival,
+            cursor_trail_settle_ms: person.cursor_trail_settle_ms,
+            cursor_trail_min_cells: person.cursor_trail_min_cells,
             cursor_trail_duration_ms: person.cursor_trail_duration_ms,
             cursor_trail_color: person.cursor_trail_color.clone(),
             terminal_padding: look.terminal_padding.unwrap_or(d.terminal_padding),
@@ -2865,6 +2954,12 @@ impl Settings {
         }
         if let Some(w) = self.focus_border_width.filter(|w| !FOCUS_BORDER_WIDTH.contains(w)) {
             out.push(format!("focus_border_width {w} is outside 1..3"));
+        }
+        if !SETTLE_MS.contains(&self.cursor_trail_settle_ms) {
+            out.push(format!("cursor_trail_settle_ms {} is outside {}..{}", self.cursor_trail_settle_ms, SETTLE_MS.start(), SETTLE_MS.end()));
+        }
+        if !MIN_CELLS.contains(&self.cursor_trail_min_cells) {
+            out.push(format!("cursor_trail_min_cells {} is outside {}..{}", self.cursor_trail_min_cells, MIN_CELLS.start(), MIN_CELLS.end()));
         }
         if !TRAIL_MS.contains(&self.cursor_trail_duration_ms) {
             out.push(format!("cursor_trail_duration_ms {} is outside {}..{}", self.cursor_trail_duration_ms, TRAIL_MS.start(), TRAIL_MS.end()));
@@ -3308,6 +3403,11 @@ impl Settings {
     /// within 1 to 3), when settings.json sets one.
     pub fn focus_width(&self) -> Option<f32> {
         self.focus_border_width.map(|w| w.clamp(*FOCUS_BORDER_WIDTH.start(), *FOCUS_BORDER_WIDTH.end()))
+    }
+
+    /// `cursor_trail_settle_ms`, within `SETTLE_MS`.
+    pub fn trail_settle(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.cursor_trail_settle_ms.min(*SETTLE_MS.end()).into())
     }
 
     /// `cursor_trail_duration_ms`, within `TRAIL_MS`.
@@ -4192,8 +4292,45 @@ mod tests {
         assert!(s.problems().is_empty(), "{:?}", s.problems());
         let mods = s.for_mods();
         assert_eq!((mods["cursor_trail"].clone(), mods["cursor_trail_duration_ms"].clone()), (serde_json::json!("panes"), serde_json::json!(300)));
-        for bad in [r#"{"cursor_trail": "all"}"#, r#"{"cursor_trail": true}"#] {
+        for bad in [r#"{"cursor_trail": "jumps"}"#, r#"{"cursor_trail": true}"#] {
             assert!(serde_json::from_str::<Person>(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn cursor_trail_style_and_arrival_default_to_comet_and_off_and_reach_mods() {
+        let person = Person::default();
+        assert_eq!((person.cursor_trail_style, person.cursor_arrival), (TrailStyle::Comet, Arrival::Off));
+        let json = serde_json::to_value(&person).unwrap();
+        assert!(json.get("cursor_trail_style").is_none() && json.get("cursor_arrival").is_none(), "{json}");
+        for (style, name) in [(TrailStyle::Comet, "comet"), (TrailStyle::Tail, "tail"), (TrailStyle::Sweep, "sweep"), (TrailStyle::Warp, "warp")] {
+            let p: Person = serde_json::from_value(serde_json::json!({ "cursor_trail_style": name })).unwrap();
+            assert_eq!(p.cursor_trail_style, style);
+            assert_eq!(Settings::compose(&p, &crate::layout::Look::default(), true).for_mods()["cursor_trail_style"], name);
+        }
+        for (kind, name) in [(Arrival::Off, "off"), (Arrival::Ripple, "ripple"), (Arrival::Boom, "boom"), (Arrival::RippleRect, "ripple_rect"), (Arrival::BoomRect, "boom_rect")] {
+            let p: Person = serde_json::from_value(serde_json::json!({ "cursor_arrival": name })).unwrap();
+            assert_eq!(p.cursor_arrival, kind);
+            assert_eq!(Settings::compose(&p, &crate::layout::Look::default(), true).for_mods()["cursor_arrival"], name);
+        }
+        for bad in [r#"{"cursor_trail_style": "sparkle"}"#, r#"{"cursor_arrival": "ripple-rect"}"#, r#"{"cursor_arrival": true}"#] {
+            assert!(serde_json::from_str::<Person>(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn cursor_trail_all_with_its_settle_time_and_threshold() {
+        let p: Person = serde_json::from_str(r#"{"cursor_trail": "all"}"#).unwrap();
+        let s = Settings::compose(&p, &crate::layout::Look::default(), true);
+        assert_eq!((s.cursor_trail, s.trail_settle(), s.cursor_trail_min_cells), (CursorTrail::All, std::time::Duration::from_millis(80), 2));
+        assert_eq!(s.for_mods()["cursor_trail"], "all");
+        let json = serde_json::to_value(&p).unwrap();
+        assert!(json.get("cursor_trail_settle_ms").is_none() && json.get("cursor_trail_min_cells").is_none(), "{json}");
+        for (settle, min, ok, ms) in [(0, 1, true, 0), (500, 50, true, 500), (900, 2, false, 500), (80, 0, false, 80), (80, 51, false, 80)] {
+            let p: Person = serde_json::from_value(serde_json::json!({ "cursor_trail_settle_ms": settle, "cursor_trail_min_cells": min })).unwrap();
+            let s = Settings::compose(&p, &crate::layout::Look::default(), true);
+            assert_eq!(s.trail_settle(), std::time::Duration::from_millis(ms), "{settle}");
+            assert_eq!(s.problems().is_empty(), ok, "{settle} {min}: {:?}", s.problems());
         }
     }
 
@@ -4433,7 +4570,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, pane_header_info: Some(String::new()), agents_card_info: Some(String::new()), cursor_trail: CursorTrail::Panes, cursor_trail_duration_ms: 300, cursor_trail_color: Some("#ff8800".into()), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, pane_header_info: Some(String::new()), agents_card_info: Some(String::new()), cursor_trail: CursorTrail::Panes, cursor_trail_style: TrailStyle::Warp, cursor_arrival: Arrival::Ripple, cursor_trail_settle_ms: 40, cursor_trail_min_cells: 3, cursor_trail_duration_ms: 300, cursor_trail_color: Some("#ff8800".into()), ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

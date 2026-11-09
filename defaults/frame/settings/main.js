@@ -104,7 +104,7 @@ function stepSpacing(v, d) {
 // The sidebar: groups that open and close, each with its pages. A page's id is
 // what app.settings' section names.
 const GROUPS = [
-  { id: "appearance", title: "Appearance", icon: "palette", pages: [["themes", "Themes"], ["layout", "Layout"], ["window", "Window"], ["panes", "Panes"]] },
+  { id: "appearance", title: "Appearance", icon: "palette", pages: [["themes", "Themes"], ["layout", "Layout"], ["window", "Window"], ["panes", "Panes"], ["cursor", "Cursor"]] },
   { id: "text", title: "Text", icon: "type", pages: [["zoom", "Zoom"], ["fonts", "Fonts"], ["grid", "Terminal grid"], ["rendering", "Rendering"]] },
   { id: "input", title: "Input", icon: "keyboard", pages: [...(window()?.platform === "macos" ? [["keyboard", "Keyboard"]] : []), ["mouse", "Mouse"]] },
   { id: "agents", title: "Agents", icon: "bell", pages: [["activity", "Activity"], ["alerts", "Alerts"]] },
@@ -281,6 +281,21 @@ const FOCUS_WIDTHS = [
 const CURSOR_TRAILS = [
   ["off", "Off"],
   ["panes", "Between panes"],
+];
+// How the trail looks (cursor_trail_style); Comet is the default, left out of settings.json.
+const TRAIL_STYLES = [
+  ["comet", "Comet"],
+  ["tail", "Tail"],
+  ["sweep", "Sweep"],
+  ["warp", "Warp"],
+];
+// The pulse as the focus lands (cursor_arrival); Off is the default, left out of settings.json.
+const ARRIVALS = [
+  ["off", "Off"],
+  ["ripple", "Ripple"],
+  ["boom", "Boom"],
+  ["ripple_rect", "Ripple box"],
+  ["boom_rect", "Boom box"],
 ];
 // cursor_trail_duration_ms: the app's TRAIL_MS range and TRAIL_MS_DEFAULT (settings.rs).
 const TRAIL_MS = [50, 1000];
@@ -741,6 +756,7 @@ export default class Settings extends View {
       case "layout": return this.layoutPage(t, cx);
       case "window": return this.windowPage(t);
       case "panes": return this.panes(t);
+      case "cursor": return this.cursorPage(t);
       case "zoom":
       case "fonts":
       case "grid":
@@ -1676,14 +1692,15 @@ export default class Settings extends View {
         ),
       )
       .child(this.row(t, "Focus border", "The color around the pane you're typing in, where the layout draws it. From theme is the accent, or the theme's own focus color.", this.focusColorPicker(t), "colors.focus"))
-      .child(this.row(t, "Focus border width", "Layout keeps the layout's own width. Panes keep their size as the focus moves.", this.choicePicker(t, "st-fw", "focus_border_width", FOCUS_WIDTHS), "focus_border_width"))
-      .child(this.cursorTrail(t));
+      .child(this.row(t, "Focus border width", "Layout keeps the layout's own width. Panes keep their size as the focus moves.", this.choicePicker(t, "st-fw", "focus_border_width", FOCUS_WIDTHS), "focus_border_width"));
   }
 
-  // Cursor trail: Off or Between panes, then how long its tail takes (20 ms steps)
-  // while it's on. Off and 120 ms are the defaults, left out of settings.json.
-  cursorTrail(t) {
+  // Cursor effects as the focus moves between panes: the trail (Off or Between panes),
+  // its style while it's on, the arrival pulse, and how long they take (20 ms steps)
+  // while either is on. Off, Comet, Off and 120 ms are the defaults, left out of settings.json.
+  cursorPage(t) {
     const on = (this.person.cursor_trail ?? "off") !== "off";
+    const pulse = (this.person.cursor_arrival ?? "off") !== "off";
     const clamp = (ms) => Math.max(TRAIL_MS[0], Math.min(TRAIL_MS[1], ms));
     const ms = clamp(this.person.cursor_trail_duration_ms ?? TRAIL_MS_DEFAULT);
     const step = (d, cx) =>
@@ -1694,9 +1711,12 @@ export default class Settings extends View {
       }, cx);
     return v_flex()
       .w_full()
-      .child(this.row(t, "Cursor trail", "A glowing streak from one pane's cursor to the next as the focus moves between panes.", this.choicePicker(t, "st-ct", "cursor_trail", CURSOR_TRAILS), "cursor_trail"))
-      .when(on, (el) =>
-        el.child(this.row(t, "Trail time", "How long the streak takes to go into the cursor.", this.stepper(t, "st-cursor_trail_duration_ms", `${ms} ms`, (_e, cx) => step(-20, cx), (_e, cx) => step(20, cx)), "cursor_trail_duration_ms")),
+      .child(this.heading(t, "Cursor effects"))
+      .child(this.row(t, "Cursor trail", "A trail from one pane's cursor to the next as the focus moves between panes.", this.choicePicker(t, "st-ct", "cursor_trail", CURSOR_TRAILS), "cursor_trail"))
+      .when(on, (el) => el.child(this.row(t, "Trail style", "Comet: a glowing streak. Tail: the cursor stretched, as kitty does. Sweep: a block shrinking into the cursor. Warp: a soft stretched block, as Neovide does.", this.choicePicker(t, "st-cs", "cursor_trail_style", TRAIL_STYLES), "cursor_trail_style")))
+      .child(this.row(t, "Arrival effect", "A pulse at the cursor as the focus lands in another pane, with the trail or without it.", this.choicePicker(t, "st-ca", "cursor_arrival", ARRIVALS), "cursor_arrival"))
+      .when(on || pulse, (el) =>
+        el.child(this.row(t, "Effect time", "How long the trail and the pulse take.", this.stepper(t, "st-cursor_trail_duration_ms", `${ms} ms`, (_e, cx) => step(-20, cx), (_e, cx) => step(20, cx)), "cursor_trail_duration_ms")),
       );
   }
 
