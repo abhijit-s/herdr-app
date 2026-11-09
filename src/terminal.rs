@@ -1064,13 +1064,19 @@ impl TerminalView {
         true
     }
 
-    /// The pointer is over the pane: pressing or letting go of the link key redraws it.
     /// Feeds program output straight to the screen, for tests.
     #[cfg(test)]
     pub fn feed(&self, bytes: &[u8]) {
         self.grid.borrow_mut().vt.write(bytes);
     }
 
+    /// Scrolls the screen back `rows` (forward when negative), for tests.
+    #[cfg(test)]
+    pub fn scroll_back(&self, rows: isize) {
+        self.grid.borrow_mut().vt.scroll_viewport(-rows);
+    }
+
+    /// The pointer is over the pane: pressing or letting go of the link key redraws it.
     pub fn hovered(&self) -> bool {
         self.grid.borrow().hover.is_some()
     }
@@ -2164,8 +2170,13 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, view: &WeakEntit
         let settings = crate::settings::get();
         if settings.cursor_trail == crate::settings::CursorTrail::All {
             let spot = frame.cursor.map(|c| crate::cursor_jumps::Spot { cell: (c.x, c.y), shape: c.shape });
-            if focused && g.jumps.observe(spot, cx.background_executor().now()) {
-                settle_jumps(grid.clone(), view.clone(), settings.trail_settle(), settings.cursor_trail_min_cells, window, cx);
+            // What the cells are measured in: scrolled back from the bottom, the
+            // grid's size, and these settings (a new `Rc` per change, so turning
+            // "all" off and on again starts afresh).
+            let back = (sb.total as u64).saturating_sub(sb.offset as u64 + sb.len as u64);
+            let view_of = (back, g.vt.cols, g.vt.rows, std::rc::Rc::as_ptr(&settings) as usize);
+            if focused && g.jumps.observe(spot, view_of, cx.background_executor().now()) {
+                settle_jumps(grid.clone(), view.clone(), settings.trail_settle(), settings.trail_min_cells(), window, cx);
             } else if !focused && g.jumps.knows() {
                 g.jumps.forget();
             }

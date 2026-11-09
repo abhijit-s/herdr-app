@@ -39,9 +39,14 @@ pub enum Due {
     Fire(Option<Jump>),
 }
 
+/// What a cell is measured against: how far the screen is scrolled back, its
+/// size, and anything else whose change makes old cells meaningless.
+pub type View = (u64, u16, u16, usize);
+
 /// The focused terminal's cursor as paint saw it.
 #[derive(Default)]
 pub struct Jumps {
+    view: Option<View>,
     settled: Option<Spot>,
     moved: Option<(Spot, Instant)>,
     timer: bool,
@@ -53,9 +58,15 @@ pub fn chebyshev(a: Cell, b: Cell) -> u16 {
 }
 
 impl Jumps {
-    /// Paint drew the cursor at `spot` (None: hidden) at `now`. True when a
-    /// settle timer must be started: the cursor moved and none is pending.
-    pub fn observe(&mut self, spot: Option<Spot>, now: Instant) -> bool {
+    /// Paint drew the cursor at `spot` (None: hidden) in `view` at `now`.
+    /// True when a settle timer must be started: the cursor moved and none is
+    /// pending. A new view (scrolled, resized, settings changed) only settles,
+    /// so scrolling back or a reflow is no jump.
+    pub fn observe(&mut self, spot: Option<Spot>, view: View, now: Instant) -> bool {
+        if self.view != Some(view) {
+            self.forget();
+            self.view = Some(view);
+        }
         let Some(spot) = spot else {
             self.forget();
             return false;
@@ -117,6 +128,7 @@ mod tests {
     use super::*;
 
     const SETTLE: Duration = Duration::from_millis(80);
+    const V: View = (0, 80, 24, 1);
 
     fn at(x: u16, y: u16) -> Option<Spot> {
         Some(Spot {
@@ -132,9 +144,9 @@ mod tests {
     #[test]
     fn a_jump_fires_once_the_cursor_has_been_still_for_the_settle_time() {
         let (mut j, t0) = (Jumps::default(), Instant::now());
-        assert!(!j.observe(at(0, 0), t0), "the first sight only settles");
+        assert!(!j.observe(at(0, 0), V, t0), "the first sight only settles");
         assert!(
-            j.observe(at(10, 3), ms(t0, 5)),
+            j.observe(at(10, 3), V, ms(t0, 5)),
             "a move starts the one timer"
         );
         assert_eq!(
@@ -159,11 +171,11 @@ mod tests {
     #[test]
     fn a_burst_never_fires_until_it_stops_and_then_once_from_where_it_started() {
         let (mut j, t0) = (Jumps::default(), Instant::now());
-        j.observe(at(0, 0), t0);
+        j.observe(at(0, 0), V, t0);
         let mut timers = 0;
         // Streaming output: the cursor moves every 16 ms for a second.
         for i in 1..=60u64 {
-            timers += j.observe(at(i as u16 % 40, (i / 40) as u16), ms(t0, i * 16)) as u32;
+            timers += j.observe(at(i as u16 % 40, (i / 40) as u16), V, ms(t0, i * 16)) as u32;
             // The timer, whenever it wakes during the burst, waits on.
             if i % 5 == 0 {
                 assert!(
@@ -185,14 +197,14 @@ mod tests {
     #[test]
     fn small_moves_settle_without_an_effect_and_shape_changes_pulse() {
         let (mut j, t0) = (Jumps::default(), Instant::now());
-        j.observe(at(5, 5), t0);
-        j.observe(at(6, 6), ms(t0, 1));
+        j.observe(at(5, 5), V, t0);
+        j.observe(at(6, 6), V, ms(t0, 1));
         assert_eq!(
             j.due(ms(t0, 100), SETTLE, 2),
             Due::Fire(None),
             "a diagonal step is one cell, under two"
         );
-        j.observe(at(8, 6), ms(t0, 200));
+        j.observe(at(8, 6), V, ms(t0, 200));
         assert_eq!(
             j.due(ms(t0, 300), SETTLE, 2),
             Due::Fire(Some(Jump::Moved {
@@ -206,6 +218,7 @@ mod tests {
                 cell: (8, 6),
                 shape: CursorShape::Bar,
             }),
+            V,
             ms(t0, 400),
         );
         assert_eq!(
@@ -217,18 +230,18 @@ mod tests {
     #[test]
     fn a_hidden_cursor_forgets_so_reappearing_is_no_jump() {
         let (mut j, t0) = (Jumps::default(), Instant::now());
-        j.observe(at(0, 0), t0);
-        j.observe(None, ms(t0, 10));
+        j.observe(at(0, 0), V, t0);
+        j.observe(None, V, ms(t0, 10));
         assert!(!j.knows());
-        assert!(!j.observe(at(30, 10), ms(t0, 20)), "back: only settles");
+        assert!(!j.observe(at(30, 10), V, ms(t0, 20)), "back: only settles");
         assert_eq!(j.due(ms(t0, 200), SETTLE, 2), Due::Fire(None));
     }
 
     #[test]
     fn a_settle_of_zero_fires_at_the_first_wake_and_one_cell_is_the_least_threshold() {
         let (mut j, t0) = (Jumps::default(), Instant::now());
-        j.observe(at(0, 0), t0);
-        j.observe(at(1, 0), t0);
+        j.observe(at(0, 0), V, t0);
+        j.observe(at(1, 0), V, t0);
         assert_eq!(
             j.due(t0, Duration::ZERO, 0),
             Due::Fire(Some(Jump::Moved {
@@ -242,12 +255,12 @@ mod tests {
     #[test]
     fn forgetting_keeps_a_pending_timer_so_there_is_never_a_second() {
         let (mut j, t0) = (Jumps::default(), Instant::now());
-        j.observe(at(0, 0), t0);
-        assert!(j.observe(at(9, 0), ms(t0, 1)));
+        j.observe(at(0, 0), V, t0);
+        assert!(j.observe(at(9, 0), V, ms(t0, 1)));
         j.forget();
-        j.observe(at(0, 0), ms(t0, 2));
+        j.observe(at(0, 0), V, ms(t0, 2));
         assert!(
-            !j.observe(at(9, 9), ms(t0, 3)),
+            !j.observe(at(9, 9), V, ms(t0, 3)),
             "the first timer still runs"
         );
         assert_eq!(
@@ -256,6 +269,25 @@ mod tests {
                 from: (0, 0),
                 to: (9, 9)
             }))
+        );
+    }
+
+    #[test]
+    fn a_new_view_settles_without_a_jump() {
+        let (mut j, t0) = (Jumps::default(), Instant::now());
+        j.observe(at(0, 20), V, t0);
+        // Scrolled back five lines: the cursor's cell moves down five, but it didn't move.
+        assert!(
+            !j.observe(at(0, 25), (5, 80, 24, 1), ms(t0, 10)),
+            "a new view only settles"
+        );
+        assert_eq!(j.due(ms(t0, 200), SETTLE, 2), Due::Fire(None));
+        // Resized, or the settings changed (all off and on again): the same.
+        assert!(!j.observe(at(9, 9), (5, 100, 30, 1), ms(t0, 300)));
+        assert!(!j.observe(at(30, 2), (5, 100, 30, 2), ms(t0, 310)));
+        assert!(
+            j.observe(at(0, 0), (5, 100, 30, 2), ms(t0, 320)),
+            "within one view a move is a move"
         );
     }
 

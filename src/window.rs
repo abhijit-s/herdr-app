@@ -8922,6 +8922,26 @@ export default class Recent extends View {
         wait(cx, 500);
         assert_eq!(effect(cx), None, "and no other");
 
+        // Scrolling back with the cursor in view moves its cell, not the cursor.
+        feed(cx, "a", &"line\r\n".repeat(50));
+        feed(cx, "a", "\x1b[5;1H");
+        wait(cx, 200);
+        clear(cx);
+        let scroll = |cx: &mut gpui::VisualTestContext, rows: isize| {
+            view.update(cx, |this, cx| this.terms["a"].view.update(cx, |t, cx| {
+                t.scroll_back(rows);
+                cx.notify();
+            }));
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+        scroll(cx, 5);
+        wait(cx, 200);
+        assert_eq!(effect(cx), None, "scrolled back: no jump");
+        scroll(cx, -5);
+        wait(cx, 200);
+        assert_eq!(effect(cx), None, "and back down: none");
+
         // A one-cell step is under the threshold.
         feed(cx, "a", "\x1b[1;1H");
         wait(cx, 200);

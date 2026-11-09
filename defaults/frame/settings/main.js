@@ -1739,7 +1739,7 @@ export default class Settings extends View {
       .when(jumps, (el) =>
         el
           .child(this.row(t, "Settle time", "How long the cursor stays still before a jump counts, so streaming output draws nothing until it stops.", this.stepper(t, "st-cursor_trail_settle_ms", `${settle} ms`, settleLess, settleMore), "cursor_trail_settle_ms"))
-          .child(this.row(t, "Jump distance", "How far the cursor must move from where it last settled, in cells.", this.stepper(t, "st-cursor_trail_min_cells", `${cells}`, cellsLess, cellsMore), "cursor_trail_min_cells")),
+          .child(this.row(t, "Jump distance", "How far the cursor must move from where it last settled, in cells.", this.stepper(t, "st-cursor_trail_min_cells", `${cells} ${cells === 1 ? "cell" : "cells"}`, cellsLess, cellsMore), "cursor_trail_min_cells")),
       )
       .child(this.row(t, "Arrival effect", "A pulse at the cursor as the focus lands in another pane, with the trail or without it; with Panes and jumps, also after a jump or a cursor shape change.", this.choicePicker(t, "st-ca", "cursor_arrival", ARRIVALS), "cursor_arrival"))
       .when(on || pulse, (el) =>

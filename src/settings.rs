@@ -1507,7 +1507,7 @@ pub struct Person {
     /// cover from where the cursor last settled.
     #[serde(skip_serializing_if = "is_min_cells_default")]
     pub cursor_trail_min_cells: u16,
-    /// How long until the trail's tail reaches the cursor, in ms (read through `trail_duration`).
+    /// How long the trail and the arrival pulse take, in ms (read through `trail_duration`).
     #[serde(skip_serializing_if = "is_trail_ms_default")]
     pub cursor_trail_duration_ms: u32,
     /// The trail's color (`"#rrggbb"`), else the theme's `cursor`.
@@ -3403,6 +3403,11 @@ impl Settings {
     /// within 1 to 3), when settings.json sets one.
     pub fn focus_width(&self) -> Option<f32> {
         self.focus_border_width.map(|w| w.clamp(*FOCUS_BORDER_WIDTH.start(), *FOCUS_BORDER_WIDTH.end()))
+    }
+
+    /// `cursor_trail_min_cells`, within `MIN_CELLS`.
+    pub fn trail_min_cells(&self) -> u16 {
+        self.cursor_trail_min_cells.clamp(*MIN_CELLS.start(), *MIN_CELLS.end())
     }
 
     /// `cursor_trail_settle_ms`, within `SETTLE_MS`.

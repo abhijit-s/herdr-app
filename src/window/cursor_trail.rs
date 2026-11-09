@@ -12,10 +12,12 @@
 //! drawn) gets no effect. The new end follows the pane's cursor live while the
 //! effect runs.
 //!
-//! Nothing runs in the terminals' output or paint paths. With both settings
-//! off, a window draw checks them; on, it compares the focused pane with the
-//! one it saw last and keeps that pane's cursor anchor (a map lookup and a
-//! cell read). Frames are asked for only while an effect is alive, and every
+//! Nothing runs in the terminals' output paths, and their paint takes one
+//! branch on `cursor_trail`; only `"all"` adds work there (cursor_jumps.rs: a
+//! compare of the drawn cursor and at most one settle timer per terminal). With
+//! both settings off, a window draw checks them; on, it compares the focused
+//! pane with the one it saw last and keeps that pane's cursor anchor (a map
+//! lookup and a cell read). Frames are asked for only while an effect is alive, and every
 //! effect ends: its duration is clamped and its progress only grows.
 
 use super::cursor_shapes;
