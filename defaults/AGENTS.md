@@ -1402,6 +1402,7 @@ All of it is in `herdr.d.ts`. In short:
   `timeout` is milliseconds, defaults to 30,000 and is capped at 600,000 (10 minutes),
   locally and remotely. It rejects on timeout, if the program cannot start or the machine cannot be reached.
   `hc(args)` (`hc read <t>` gives a terminal's text),
+  `terminalLines(terminal, { lines })` (the screen's last lines that carry anything, from the app's own grid, as `{ text, faint }`: `faint` lists the `[start, end)` `text.slice` stretches drawn faint, SGR 2, such as Claude Code's suggested next prompt; null when no tab here holds it),
   `home()`, `appHome()`, `playSound("done" | "blocked" | file)`.
   `knownAgents({ on })`: the agents people can start (programs.json's
   `run`), most picked first, each `installed` or not there (asked of the

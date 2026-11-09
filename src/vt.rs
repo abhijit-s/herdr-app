@@ -87,6 +87,14 @@ pub struct Cell {
     pub wide: bool,
 }
 
+/// A screen line and where it is drawn faint (SGR 2): `[start, end)` pairs in
+/// UTF-16 units of `text`, what JavaScript's `slice` takes.
+#[derive(Debug, PartialEq, Eq)]
+pub struct StyledLine {
+    pub text: String,
+    pub faint: Vec<[usize; 2]>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CursorShape {
     Block,
@@ -1305,6 +1313,16 @@ impl Vt {
     /// trailing blanks trimmed: what an agent's screen rules read (harness.rs).
     /// Reads the grid itself, not the render state a hidden terminal released.
     pub fn tail_text(&self, n: usize) -> Vec<String> {
+        self.tail(n, false).into_iter().map(|l| l.text).collect()
+    }
+
+    /// `tail_text` with each line's faint (SGR 2) stretches: what a mod reads
+    /// to tell a suggestion drawn faint from text typed (`terminalLines`).
+    pub fn tail_lines(&self, n: usize) -> Vec<StyledLine> {
+        self.tail(n, true)
+    }
+
+    fn tail(&self, n: usize, styles: bool) -> Vec<StyledLine> {
         let mut out = Vec::new();
         for y in (0..u32::from(self.rows)).rev() {
             if out.len() >= n {
@@ -1312,10 +1330,13 @@ impl Vt {
             }
             let Some(mut r) = self.grid_ref(GHOSTTY_POINT_TAG_ACTIVE, 0, y) else { continue };
             let mut line = String::new();
+            let mut units = 0usize;
+            let mut faint: Vec<[usize; 2]> = Vec::new();
             for x in 0..self.cols {
                 r.x = x;
                 let mut cps = [0u32; 16];
                 let mut len = 0usize;
+                let mut style = GhosttyStyle { size: std::mem::size_of::<GhosttyStyle>(), ..Default::default() };
                 let spacer = unsafe {
                     let mut cell: GhosttyCell = Default::default();
                     ghostty_grid_ref_cell(&r, &mut cell);
@@ -1324,21 +1345,42 @@ impl Vt {
                     let spacer = wide == GHOSTTY_CELL_WIDE_SPACER_TAIL || wide == GHOSTTY_CELL_WIDE_SPACER_HEAD;
                     if !spacer {
                         ghostty_grid_ref_graphemes(&r, cps.as_mut_ptr(), cps.len(), &mut len);
+                        if styles && ghostty_grid_ref_style(&r, &mut style) != GHOSTTY_SUCCESS {
+                            style.faint = false;
+                        }
                     }
                     spacer
                 };
                 if spacer {
                     continue;
                 }
+                let start = units;
                 let before = line.len();
-                line.extend(cps[..len.min(cps.len())].iter().filter_map(|c| char::from_u32(*c)));
+                for c in cps[..len.min(cps.len())].iter().filter_map(|c| char::from_u32(*c)) {
+                    line.push(c);
+                    units += c.len_utf16();
+                }
                 if line.len() == before {
                     line.push(' ');
+                    units += 1;
+                }
+                if style.faint {
+                    match faint.last_mut() {
+                        Some(run) if run[1] == start => run[1] = units,
+                        _ => faint.push([start, units]),
+                    }
                 }
             }
-            let line = line.trim_end_matches([' ', '\t']);
+            let kept = line.trim_end_matches([' ', '\t']).len();
+            // Spaces and tabs are one byte and one UTF-16 unit each.
+            let end = units - (line.len() - kept);
+            line.truncate(kept);
+            faint.retain_mut(|run| {
+                run[1] = run[1].min(end);
+                run[0] < run[1]
+            });
             if !line.is_empty() {
-                out.push(line.to_owned());
+                out.push(StyledLine { text: line, faint });
             }
         }
         out.reverse();
@@ -2270,6 +2312,32 @@ mod tests {
         }
         vt.scroll_viewport(-10);
         assert_eq!(vt.tail_text(1), ["line 29"], "the live screen, wherever the person scrolled");
+    }
+
+    #[test]
+    fn tail_lines_mark_what_is_drawn_faint() {
+        let mut vt = Vt::new(30, 6);
+        // Claude Code's suggestion of the next prompt: ❯, a no-break space, then faint text.
+        vt.write("❯\u{a0}\x1b[2mfix the 中文 tests\x1b[0m\r\n".as_bytes());
+        vt.write("❯\u{a0}typed\r\n".as_bytes());
+        vt.write("ab\x1b[2mcd\x1b[22mef\x1b[2m😀g   \x1b[0m\r\n".as_bytes());
+        vt.write("\x1b[2m   \x1b[0m\r\n".as_bytes());
+        vt.write("x\x1b[2m   \x1b[0m".as_bytes());
+        let lines = vt.tail_lines(10);
+        let slices = |i: usize| -> Vec<String> {
+            let units: Vec<u16> = lines[i].text.encode_utf16().collect();
+            lines[i].faint.iter().map(|[a, b]| String::from_utf16(&units[*a..*b]).unwrap()).collect()
+        };
+        assert_eq!(lines.len(), 4, "a line of faint blanks carries nothing");
+        assert_eq!(lines[3], StyledLine { text: "x".into(), faint: vec![] }, "a stretch of faint blanks trimmed away is gone");
+        assert_eq!(lines[0].text, "❯\u{a0}fix the 中文 tests");
+        assert_eq!(lines[0].faint, [[2, 18]], "wide characters count once, the no-break space is not faint");
+        assert_eq!(slices(0), ["fix the 中文 tests"]);
+        assert_eq!(lines[1], StyledLine { text: "❯\u{a0}typed".into(), faint: vec![] });
+        assert_eq!(lines[2].text, "abcdef😀g");
+        assert_eq!(lines[2].faint, [[2, 4], [6, 9]], "an emoji is two UTF-16 units; trailing faint blanks trimmed");
+        assert_eq!(slices(2), ["cd", "😀g"]);
+        assert_eq!(vt.tail_text(10), ["❯\u{a0}fix the 中文 tests", "❯\u{a0}typed", "abcdef😀g", "x"], "the same text");
     }
 
     #[test]

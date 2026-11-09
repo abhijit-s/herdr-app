@@ -510,6 +510,11 @@ impl TerminalView {
         self.grid.borrow().vt.tail_text(n)
     }
 
+    /// The screen's last `n` non-empty lines with their faint stretches (`Vt::tail_lines`).
+    pub fn tail_lines(&self, n: usize) -> Vec<crate::vt::StyledLine> {
+        self.grid.borrow().vt.tail_lines(n)
+    }
+
     /// The cell the grid was last fitted with.
     #[cfg(test)]
     pub fn cell(&self) -> Size<Pixels> {
