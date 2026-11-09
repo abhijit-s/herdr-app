@@ -580,6 +580,11 @@ shortcuts must then be added by hand.
   command's first argument), `send:<text>` (types into the terminal),
   `<mod>.<command>` (delivered to that mod's `nextCommand()`), or `terminal`
   (the program gets the key).
+- Tab and Shift-Tab move focus between a mod's focusable elements and never reach its `on_key_down`. A mod that wants them binds them in its `mod:<name>` section to `<mod>.<command>` and reads the command with `nextCommand()`:
+  ```js
+  // keys.json: "mod:chooser": { "tab": "chooser.next", "shift-tab": "chooser.prev" }
+  cx.spawn(async (cx) => { for (;;) { const c = await nextCommand(); if (c === "next") this.move(1); else if (c === "prev") this.move(-1); cx.notify(); } });
+  ```
 - Named, typed command arguments use an object instead of a string:
   `"ctrl-shift-r": {"command": "layout.resize", "args": {"id": "sidebar", "px": 240}}`.
   `command` names an app command; `args` is an object (optional, defaults to `{}`).
@@ -1304,6 +1309,7 @@ Chained builders with GPUI's snake_case names: `div()`, `h_flex()`,
 `.rounded(n)`; `.id("unique")` then `.on_click(...)`, `.on_mouse_down("right", ...)`,
 `.hover((s) => s.bg(c))`, `.on_scroll_wheel(...)`; keyboard: `this.h = cx.focus_handle()`
 in init, `.track_focus(this.h).on_key_down((e, cx) => …)`, `this.h.focus()`.
+Tab and Shift-Tab never reach `on_key_down` (they move focus): bind them in the mod's keys.json section (Keys).
 `.on_drop((event, cx) => …)` on a plain layout element receives external files as
 `event.paths` (absolute paths). The feedback form accepts dropped images with
 the same limits, previews and removal as picked images.
