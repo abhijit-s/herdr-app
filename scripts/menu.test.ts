@@ -22,11 +22,12 @@ const element = () => new Element();
 const ran: any[] = [];
 let menuProps: any;
 let items: any[] = [];
+let spaceList: any[] = [];
 const values: Record<string, any> = {
   View: class {}, div: element, svg: element, v_flex: element, h_flex: element,
   run: (...args: any[]) => ran.push(args), props: () => menuProps, closeOverlay: () => {}, openOverlay: () => {},
   theme: () => new Proxy({}, { get: () => "#000000" }), keys: () => [], exec: async () => ({ code: 1 }),
-  terminals: () => [{ address: "t2", labels: {} }], spaces: () => [], panes: () => [{ pane: "p1", terminal: "t1", focused: true }, { pane: "p2", terminal: "t2", focused: false }],
+  terminals: () => [{ address: "t2", labels: {} }], spaces: () => spaceList, panes: () => [{ pane: "p1", terminal: "t1", focused: true }, { pane: "p2", terminal: "t2", focused: false }],
   focused: () => ({ pane: "p1", terminal: "t1" }),
   menuItems: () => items,
 };
@@ -161,4 +162,27 @@ test("up from the first item wraps to the pinned Close pane without scrolling", 
   expect(view.at).toBe(last);
   expect(find(find(tree, "menu-body"), `mi-${last}`)).toBeUndefined();
   expect(view.scroll).toBe(0);
+});
+
+// Move to space… opens the tab-move picker on the right-clicked tab, and only
+// when that tab's machine has another space.
+test("a tab's Move to space… opens the space picker for that tab", () => {
+  const tab = (id: string) => ({ id, name: id, index: 1, active: true });
+  spaceList = [
+    { id: "s1", machine: null, tabs: [tab("a"), tab("b")] },
+    { id: "mac/s2", machine: "mac", tabs: [tab("mac/c")] },
+  ];
+  menuProps = { tab: "tab", target: { id: "b", space: "s1" }, overlay: "o1" };
+  const titles = () => {
+    const view = new Menu();
+    view.init(menuProps, { focus_handle: () => ({ focus() {} }), spawn() {} });
+    const tree = view.render({});
+    return Array.from({ length: 40 }, (_, i) => find(tree, `mi-${i}`)).filter(Boolean).map((r) => JSON.stringify(r.nodes.map((n: any) => n.nodes)));
+  };
+  expect(titles().some((t) => t.includes("Move to space"))).toBe(false);
+  spaceList.push({ id: "s3", machine: null, tabs: [tab("d")] });
+  expect(click("Move to space…")).toEqual([["mod.open", { name: "tab-move", props: { id: "b" } }]]);
+  menuProps = { tab: "tab", target: { id: "mac/c", space: "mac/s2" }, overlay: "o1" };
+  expect(titles().some((t) => t.includes("Move to space"))).toBe(false);
+  spaceList = [];
 });

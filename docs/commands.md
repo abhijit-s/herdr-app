@@ -114,6 +114,16 @@ Move a tab (default: the shown one) one place right in its space; at the last pl
 |---|---|
 | `id` | no |
 
+## `tab.move_to_space`
+
+Move a tab (default: the shown one) to another space on its machine, at a position (1 = first; default: last), and show it there. Its panes, floats, name and terminals go with it; a space it leaves empty closes.
+
+| Argument | Required |
+|---|---|
+| `space` | yes |
+| `id` | no |
+| `index` | no |
+
 ## `tab.set_icon`
 
 Choose a tab's icon (default: the selected tab): icon {"kind": "glyph" | "emoji", "value": one glyph or emoji} or {"kind": "letter"} (the first letter of its name); null or absent (a misspelt key too): its focused pane's again. Kept with the tab.

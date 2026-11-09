@@ -24,6 +24,7 @@ const GROUPS = ["Recent", "Tab", "Pane", "Space", "Layout", "Terminal", "Agent",
 const NAMED = [
   ["tab.new", {}, "Tab", "New tab", "tab agent new task"],
   ["mod.open", { name: "picker" }, "Tab", "Go to space or tab…", "switch jump find"],
+  ["mod.open", { name: "tab-move" }, "Tab", "Move tab to space…", "send relocate workspace"],
   ["tab.rename", {}, "Tab", "Rename tab", "tab"],
   ["tab.close", {}, "Tab", "Close tab", "tab kill"],
   ["tab.next", {}, "Tab", "Next tab", "tab"],

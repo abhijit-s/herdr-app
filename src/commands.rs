@@ -41,6 +41,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("tab.move", &[req("id"), req("index")], "Move a tab to a position in its space (1 = first)."),
     cmd("tab.move_left", &[opt("id")], "Move a tab (default: the shown one) one place left in its space; at the first place, nothing happens."),
     cmd("tab.move_right", &[opt("id")], "Move a tab (default: the shown one) one place right in its space; at the last place, nothing happens."),
+    cmd("tab.move_to_space", &[req("space"), opt("id"), opt("index")], "Move a tab (default: the shown one) to another space on its machine, at a position (1 = first; default: last), and show it there. Its panes, floats, name and terminals go with it; a space it leaves empty closes."),
     cmd("tab.set_icon", &[opt("id"), opt("icon")], "Choose a tab's icon (default: the selected tab): icon {\"kind\": \"glyph\" | \"emoji\", \"value\": one glyph or emoji} or {\"kind\": \"letter\"} (the first letter of its name); null or absent (a misspelt key too): its focused pane's again. Kept with the tab."),
     cmd("pane.split", &[req("direction"), opt("pane"), opt("argv"), opt("mod"), opt("props")], "Split a pane (default: the focused one) \"right\" or \"down\" with a new terminal, or with a mod (`mod`, its `props`) beside it."),
     cmd("pane.close", &[opt("pane")], "Close a pane and end its terminal."),
@@ -230,7 +231,7 @@ mod tests {
 
     #[test]
     fn malformed_targets_cannot_fall_back_to_the_current_work() {
-        for (name, arg) in [("tab.close", "id"), ("pane.close", "pane"), ("pane.rename", "pane"), ("pane.set_icon", "pane"), ("tab.set_icon", "id"), ("space.close", "id"), ("tab.new", "space"), ("terminal.show", "terminal"), ("pane.swap", "pane"), ("pane.swap", "target")] {
+        for (name, arg) in [("tab.close", "id"), ("pane.close", "pane"), ("pane.rename", "pane"), ("pane.set_icon", "pane"), ("tab.set_icon", "id"), ("space.close", "id"), ("tab.new", "space"), ("terminal.show", "terminal"), ("pane.swap", "pane"), ("pane.swap", "target"), ("tab.move_to_space", "id"), ("tab.move_to_space", "space")] {
             let c = find(name).unwrap();
             for value in [json!(123), json!(false), json!([]), json!({"id": "target"})] {
                 let error = validate_args(c, &json!({arg: value})).unwrap_err();

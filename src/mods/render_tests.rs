@@ -1546,6 +1546,67 @@ fn pane_and_tab_menus_offer_change_and_clear_icon(cx: &mut TestAppContext) {
     assert!(!space.iter().any(|t| t.contains("icon")), "spaces have their own: {space:?}");
 }
 
+/// Spaces on this machine besides the fixture's: Docs (two tabs) and Ops.
+fn with_more_local_spaces(values: &mut BTreeMap<String, Value>) {
+    let tab = |id: &str, name: &str, index: u64| json!({"id":id,"index":index,"name":name,"active":index == 1,"status":null,"panes":1,"zoomed":false,"settled":false,"settled_at":null,"changed_at":null,"working_since":null});
+    let spaces = values.get_mut("spaces").unwrap().as_array_mut().unwrap();
+    spaces.push(json!({"id":"s3","index":3,"name":"Docs","folder":"/fixture/docs","machine":null,"branch":null,"active":false,"status":null,"tabs":[tab("tab3", "Write", 1), tab("tab4", "", 2)]}));
+    spaces.push(json!({"id":"s4","index":4,"name":"Ops","folder":"/fixture/ops","machine":null,"branch":null,"active":false,"status":null,"tabs":[tab("tab5", "Logs", 1)]}));
+}
+
+/// Move to space… in a tab's menu, right after the moves within its space,
+/// only when the tab's machine has another space: the fixture's other space is
+/// on another machine, and a tab's terminals stay on their own.
+#[gpui::test]
+fn tab_menu_offers_move_to_space_only_with_another_space_on_its_machine(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let items = |id: &str, more: bool, cx: &mut TestAppContext| {
+        let mut values = fixture(true, json!({"tab":"tab","target":{"id":id,"space":"s1"}}), updates("current", "current"));
+        if more {
+            with_more_local_spaces(&mut values);
+        }
+        let tree = describe_with_values(cx, &staged, "mods/menu", values, None).unwrap();
+        let lines: Vec<&str> = tree.lines().collect();
+        let labels = lines.windows(2).filter(|w| w[0].trim() == "div .flex_1").filter_map(|w| w[1].trim().strip_prefix("text ")).map(|t| t.trim_matches('"').to_owned()).collect::<Vec<_>>();
+        (labels, tree)
+    };
+    let (alone, _) = items("tab1", false, cx);
+    assert!(!alone.iter().any(|t| t == "Move to space…"), "{alone:?}");
+    let (local, tree) = items("tab1", true, cx);
+    assert_eq!(local[..3], ["Rename", "Move to space…", "Change icon…"], "{local:?}");
+    assert!(tree.contains("mods/workspace-chrome/layers.svg"), "{tree}");
+    let (second, _) = items("tab4", true, cx);
+    assert_eq!(second[..4], ["Rename", "Move left", "Move to space…", "Change icon…"], "{second:?}");
+    let (remote, _) = items("tab2", true, cx);
+    assert!(!remote.iter().any(|t| t == "Move to space…"), "the remote space is alone on its machine: {remote:?}");
+}
+
+/// The tab-move picker: the other spaces of the tab's machine, numbered, with
+/// their tab counts; a search keeps the matching ones; none to go to says so.
+#[gpui::test]
+fn tab_move_picker_lists_the_other_spaces_of_the_tabs_machine(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let tree = |more: bool, setup: Option<&str>, cx: &mut TestAppContext| {
+        let mut values = fixture(true, json!({"id":"tab1","overlay":"o1"}), updates("current", "current"));
+        if more {
+            with_more_local_spaces(&mut values);
+        }
+        describe_with_values(cx, &staged, "mods/tab-move", values, setup).unwrap()
+    };
+    let all = tree(true, None, cx);
+    for text in ["Move Build to a space", "Docs", "2 tabs", "Ops", "1 tab", "Type to search spaces", "1-9 or Enter moves it there · / or type to search · Esc closes"] {
+        assert!(all.contains(&format!("text {text:?}")), "{text}: {all}");
+    }
+    assert!(!all.contains("text \"Local\"") && !all.contains("text \"Remote\""), "not its own space, nor another machine's: {all}");
+    let found = tree(true, Some("this.search(\"op\");"), cx);
+    assert!(found.contains("text \"Ops\"") && !found.contains("text \"Docs\""), "{found}");
+    assert!(found.contains("text \"op▏\""), "the query shows: {found}");
+    let none = tree(false, None, cx);
+    assert!(none.contains("text \"No other space on this machine.\""), "{none}");
+}
+
 /// Mods' terminal menu items: after Herdr's own, before Close pane, one group
 /// per mod under a divider, each with its `when` and its target.
 #[gpui::test]

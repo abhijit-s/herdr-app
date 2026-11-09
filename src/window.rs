@@ -3675,6 +3675,21 @@ impl AppWindow {
     }
 
     /// Parking changes labels/keep in the background; only a successful reply removes the pane.
+    /// Tells the core the space a moved tab's terminals live in now
+    /// (`herdr.space`; the tab keeps its id), so one ever found without a
+    /// pane is put back there, not in a space that's gone.
+    fn label_space(&self, tab: &str, cx: &mut Context<Self>) {
+        let Some(space) = self.model.space_of(tab) else { return };
+        let label = crate::mirror::local(&space.id, space.machine.as_deref()).to_owned();
+        for addr in space.tab(tab).map(Tab::addresses).unwrap_or_default().into_iter().filter(|a| self.live.contains_key(a)) {
+            let core = self.core.clone();
+            let params = json!({ "terminal": addr, "labels": { "herdr.space": label } });
+            cx.background_executor().spawn(async move {
+                if let Err(e) = core.call("terminal.label", params) { tracing::warn!("space label for {addr}: {e:#}"); }
+            }).detach();
+        }
+    }
+
     fn park_terminal(&mut self, addr: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<Value, String> {
         self.require_document(addr.split_once('/').map(|(m, _)| m))?;
         if self.changing_terminals.contains(addr) { return Err("This terminal already has a pane change in progress.".into()); }
@@ -3912,7 +3927,7 @@ impl AppWindow {
             if !args.is_object() { args = json!({}); }
             args["machine"] = json!(machine);
         }
-        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "tab.move_left" | "tab.move_right" | "tab.set_icon" | "pane.split" | "pane.close" | "pane.rename" | "pane.set_icon" | "pane.swap" | "pane.arrange" | "terminal.keep" | "terminal.park")
+        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "tab.move_to_space" | "tab.move_left" | "tab.move_right" | "tab.set_icon" | "pane.split" | "pane.close" | "pane.rename" | "pane.set_icon" | "pane.swap" | "pane.arrange" | "terminal.keep" | "terminal.park")
             || pane_floats::COMMANDS.contains(&name)
         {
             let node = ["id", "space", "pane"].into_iter().find_map(|k| Self::arg(&args, k))
@@ -4058,6 +4073,19 @@ impl AppWindow {
             "tab.move" => {
                 let (Some(id), Some(i)) = (Self::arg(a, "id"), a.get("index").and_then(Value::as_u64)) else { return self.fail("tab.move needs id and index") };
                 if !self.model.move_tab(id, i as usize) { return self.fail(format!("no tab {id:?}")); }
+            }
+            "tab.move_to_space" => {
+                let Some(id) = Self::owned(a, "id").or(active_ctx) else { return self.fail("no tab to move") };
+                let Some(space) = Self::arg(a, "space") else { return self.fail("tab.move_to_space needs space") };
+                let index = match a.get("index") {
+                    None | Some(Value::Null) => None,
+                    Some(i) => match i.as_u64() {
+                        Some(i) => Some(i as usize),
+                        None => return self.fail(format!("tab.move_to_space index is a position (1 = first), not {i}")),
+                    },
+                };
+                if let Err(error) = self.model.move_tab_to_space(&id, space, index) { return self.fail(error); }
+                self.label_space(&id, cx);
             }
             "tab.move_left" | "tab.move_right" => {
                 let Some(id) = Self::owned(a, "id").or(active_ctx) else { return self.fail("no tab to move") };
@@ -8762,6 +8790,110 @@ export default class Recent extends View {
         let off = state(cx);
         assert_eq!(off.0, None, "off: an object binding doesn't zoom either");
         assert!(off.4, "off: f6 reached a's program");
+    }
+
+    #[test]
+    fn a_tab_moves_to_another_space_with_its_panes_and_terminals() {
+        in_own_process("tab_to_space");
+    }
+
+    /// Space s1: tab t (a | b tiled, f floating; b focused and zoomed) and
+    /// tab u; space s2: tab v; space mac/r on another machine. tab.move_to_space
+    /// takes t whole to s2 and shows it; its terminals keep running, labeled
+    /// with their new space, and the document has it there. Wrong ids, its own
+    /// space and another machine are errors that change nothing; moving a
+    /// space's last tab closes the space and ends no terminal.
+    #[gpui::test]
+    fn tab_to_space(cx: &mut gpui::TestAppContext) {
+        use crate::float_pane::FloatPane;
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use serde_json::json;
+        if !running_alone("tab_to_space") {
+            return;
+        }
+        let (core, calls) = crate::hc::answering(|method, _| match method {
+            "terminal.label" => Ok(json!({})),
+            _ => Err(json!({ "message": "not in this test" })),
+        });
+        let (view, cx) = open_window_on(core, cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        let run = |cx: &mut gpui::VisualTestContext, command: &str, args: serde_json::Value| {
+            let reply = view.update_in(cx, |this, window, cx| this.run_as(command, args, false, window, cx));
+            cx.run_until_parked();
+            reply
+        };
+        let calls_of = |method: &str| {
+            let mut calls = calls.lock().unwrap();
+            let (taken, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut *calls).into_iter().partition(|(m, _)| m == method);
+            *calls = kept;
+            let mut taken = taken.into_iter().map(|(_, p)| p).collect::<Vec<_>>();
+            taken.sort_by_key(|p| p.to_string());
+            taken
+        };
+        view.update_in(cx, |this, _, _| {
+            for machine in ["", "mac"] {
+                this.documents.entry(machine.into()).or_default().available = true;
+            }
+            let mut tab = Tab::new("t", "build", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb")]);
+            tab.floating.push(FloatPane { pane: pane("f", "tf"), rect: [0.1, 0.1, 0.4, 0.4], dock: None });
+            this.model.add_space("s1", "", "/tmp", tab);
+            this.model.add_tab("s1", Tab::new("u", "", "c", "tc"));
+            this.model.add_space("s2", "", "/tmp", Tab::new("v", "", "d", "td"));
+            this.model.add_space("mac/r", "", "/tmp", Tab::new("mac/w", "", "mac/e", "mac/te"));
+            this.model.space_mut("mac/r").unwrap().machine = Some("mac".into());
+            this.model.focus_pane("b");
+            this.model.tab_mut("t").unwrap().zoomed = Some("b".into());
+            for a in ["ta", "tb", "tf", "tc", "td"] {
+                this.live.insert(a.into(), json!({ "address": a, "keep": true, "labels": { "herdr.space": "s1", "herdr.tab": "t" } }));
+            }
+        });
+        let before = view.update(cx, |this, _| this.model.tab("t").unwrap().clone());
+        let tabs_of = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| {
+            this.model.spaces.iter().map(|s| format!("{}:{}", s.id, s.tabs.iter().map(|t| t.id.as_str()).collect::<Vec<_>>().join(","))).collect::<Vec<_>>()
+        });
+
+        assert_eq!(run(cx, "tab.move_to_space", json!({ "id": "t", "space": "s2" })), json!({ "ok": true }));
+        assert_eq!(tabs_of(cx), ["s1:u", "s2:v,t", "mac/r:mac/w"]);
+        view.update(cx, |this, _| {
+            let t = this.model.tab("t").unwrap();
+            assert_eq!((&t.root, &t.floating, &t.name, &t.zoomed), (&before.root, &before.floating, &before.name, &before.zoomed));
+            assert_eq!((this.model.active.as_deref(), this.model.focused_pane().as_deref()), (Some("s2"), Some("b")), "shown where it went, focus kept");
+            let shared = serde_json::to_value(crate::mirror::Document::capture(&this.model, None)).unwrap();
+            assert_eq!(shared["spaces"][1]["tabs"][1]["id"], "t", "in the machine's document under s2: {shared}");
+            assert_eq!(shared["spaces"][1]["tabs"][1]["floating"][0]["pane"]["id"], "f");
+        });
+        let labels = calls_of("terminal.label").into_iter().filter(|p| p["labels"].get("herdr.space").is_some()).collect::<Vec<_>>();
+        assert_eq!(labels, ["ta", "tb", "tf"].map(|a| json!({ "terminal": a, "labels": { "herdr.space": "s2" } })), "the tab's terminals, floats too, and no other");
+        assert!(calls_of("terminal.kill").is_empty());
+
+        // The shown tab by default, at a position.
+        assert_eq!(run(cx, "tab.move_to_space", json!({ "space": "s1", "index": 1 })), json!({ "ok": true }));
+        assert_eq!(tabs_of(cx), ["s1:t,u", "s2:v", "mac/r:mac/w"]);
+        assert_eq!(calls_of("terminal.label").iter().filter(|p| p["labels"]["herdr.space"] == "s1").count(), 3);
+
+        // Errors: nothing moves, nothing is labeled.
+        for (args, error) in [
+            (json!({ "id": "a", "space": "s2" }), "no tab \"a\""),
+            (json!({ "id": "t", "space": "nope" }), "no space \"nope\""),
+            (json!({ "id": "t", "space": "u" }), "no space \"u\""),
+            (json!({ "id": "t", "space": "s1" }), "already in space"),
+            (json!({ "id": "t", "space": "mac/r" }), "another machine"),
+            (json!({ "id": "mac/w", "space": "s2" }), "another machine"),
+            (json!({ "id": "t", "space": "s2", "index": "2" }), "index is a position"),
+            (json!({ "id": "t" }), "needs space"),
+        ] {
+            let reply = run(cx, "tab.move_to_space", args.clone());
+            assert!(reply["error"].as_str().is_some_and(|e| e.contains(error)), "{args}: {reply}");
+        }
+        assert_eq!(tabs_of(cx), ["s1:t,u", "s2:v", "mac/r:mac/w"]);
+        assert!(!calls_of("terminal.label").iter().any(|p| p["labels"].get("herdr.space").is_some()), "a failed move labels nothing");
+
+        // A space's last tab: the space closes, its terminal runs on.
+        assert_eq!(run(cx, "tab.move_to_space", json!({ "id": "v", "space": "s1" })), json!({ "ok": true }));
+        assert_eq!(tabs_of(cx), ["s1:t,u,v", "mac/r:mac/w"]);
+        assert!(calls_of("terminal.kill").is_empty() && view.update(cx, |this, _| this.model.pane_of("td").is_some()));
+        assert_eq!(view.update(cx, |this, _| this.model.active.clone()).as_deref(), Some("s1"));
     }
 
     #[test]
