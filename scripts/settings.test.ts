@@ -359,18 +359,32 @@ test("focus border width writes 1 to 3 px and leaves the layout's width out", ()
   expect(pick({ focus_border_width: 3, zoom: 1.1 }, "st-fw-Layout")).toEqual({ zoom: 1.1 });
 });
 
-test("cursor trail sits on the Panes page, writes panes and leaves off out", () => {
-  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "panes");
+test("cursor effects sit on their own Cursor page, each writing its choice and leaving the default out", () => {
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "cursor");
   expect(pick({}, "st-ct-Between panes")).toEqual({ cursor_trail: "panes" });
+  expect(pick({}, "st-ct-Panes and jumps")).toEqual({ cursor_trail: "all" });
   expect(pick({ cursor_trail: "panes", zoom: 1.1 }, "st-ct-Off")).toEqual({ zoom: 1.1 });
-  const shown = texts(search("cursor_trail").root).join("|");
-  expect(shown).toContain("Appearance › Panes|PANES|Cursor");
+  expect(pick({ cursor_trail: "panes" }, "st-cs-Warp")).toEqual({ cursor_trail: "panes", cursor_trail_style: "warp" });
+  expect(pick({ cursor_trail: "panes", cursor_trail_style: "tail" }, "st-cs-Comet")).toEqual({ cursor_trail: "panes" });
+  expect(pick({}, "st-ca-Ripple box")).toEqual({ cursor_arrival: "ripple_rect" });
+  expect(pick({ cursor_arrival: "boom" }, "st-ca-Off")).toEqual({});
+  // Nothing about the cursor is left on the Panes page.
+  expect(() => click({}, {}, "st-ct-Between panes", ["choicePicker"], "panes")).toThrow();
+  const shown = texts(search("cursor_arrival").root).join("|");
+  expect(shown).toContain("Appearance › Cursor|CURSOR EFFECTS|Arrival");
 });
 
-test("trail time shows only while the trail is on, and steps by 20 ms within 50 to 1000, leaving 120 out", () => {
-  const step = (person: Record<string, any>, id: string) => click(person, {}, id, [], "panes");
+test("trail style shows only while the trail is on; the arrival effect always", () => {
+  const shown = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker", "shown?"], "cursor") !== undefined;
+  expect(shown({}, "st-cs-Warp")).toBe(false);
+  expect(shown({ cursor_trail: "all" }, "st-cs-Warp")).toBe(true);
+  expect(shown({}, "st-ca-Boom")).toBe(true);
+});
+
+test("effect time shows while the trail or the pulse is on, and steps by 20 ms within 50 to 1000, leaving 120 out", () => {
+  const step = (person: Record<string, any>, id: string) => click(person, {}, id, [], "cursor");
   expect(() => step({}, "st-cursor_trail_duration_ms-plus")).toThrow();
-  expect(() => step({ cursor_trail: "off" }, "st-cursor_trail_duration_ms-plus")).toThrow();
+  expect(step({ cursor_arrival: "ripple" }, "st-cursor_trail_duration_ms-plus")).toEqual({ cursor_arrival: "ripple", cursor_trail_duration_ms: 140 });
   const on = { cursor_trail: "panes" };
   expect(step(on, "st-cursor_trail_duration_ms-plus")).toEqual({ ...on, cursor_trail_duration_ms: 140 });
   expect(step(on, "st-cursor_trail_duration_ms-minus")).toEqual({ ...on, cursor_trail_duration_ms: 100 });
@@ -378,6 +392,19 @@ test("trail time shows only while the trail is on, and steps by 20 ms within 50 
   expect(step({ ...on, cursor_trail_duration_ms: 1000 }, "st-cursor_trail_duration_ms-plus")).toEqual({ ...on, cursor_trail_duration_ms: 1000 });
   expect(step({ ...on, cursor_trail_duration_ms: 5000 }, "st-cursor_trail_duration_ms-minus")).toEqual({ ...on, cursor_trail_duration_ms: 980 });
   expect(step({ ...on, cursor_trail_duration_ms: 140 }, "st-cursor_trail_duration_ms-minus")).toEqual(on);
+});
+
+test("settle time and jump distance show only for Panes and jumps, within their ranges, defaults left out", () => {
+  const step = (person: Record<string, any>, id: string) => click(person, {}, id, [], "cursor");
+  expect(() => step({ cursor_trail: "panes" }, "st-cursor_trail_settle_ms-plus")).toThrow();
+  const all = { cursor_trail: "all" };
+  expect(step(all, "st-cursor_trail_settle_ms-plus")).toEqual({ ...all, cursor_trail_settle_ms: 90 });
+  expect(step({ ...all, cursor_trail_settle_ms: 0 }, "st-cursor_trail_settle_ms-minus")).toEqual({ ...all, cursor_trail_settle_ms: 0 });
+  expect(step({ ...all, cursor_trail_settle_ms: 500 }, "st-cursor_trail_settle_ms-plus")).toEqual({ ...all, cursor_trail_settle_ms: 500 });
+  expect(step({ ...all, cursor_trail_settle_ms: 90 }, "st-cursor_trail_settle_ms-minus")).toEqual(all);
+  expect(step(all, "st-cursor_trail_min_cells-plus")).toEqual({ ...all, cursor_trail_min_cells: 3 });
+  expect(step({ ...all, cursor_trail_min_cells: 1 }, "st-cursor_trail_min_cells-minus")).toEqual({ ...all, cursor_trail_min_cells: 1 });
+  expect(step({ ...all, cursor_trail_min_cells: 3 }, "st-cursor_trail_min_cells-minus")).toEqual(all);
 });
 
 test("focus border picks a theme color into colors.focus and from theme takes it out", () => {
@@ -1155,14 +1182,14 @@ test("a search opens every group with a match and counts each page's, leaving wh
 
 test("arrows walk the pages in order, opening their group, and close and open the shown page's group", () => {
   for (const k of Object.keys(sharedDisk)) delete sharedDisk[k];
-  const { view } = opened("panes");
+  const { view } = opened("cursor");
   const key = (k: string, modifiers = {}) => view.onKey({ key: k, modifiers }, searchCx);
   key("down");
   expect(view.section).toBe("zoom");
   expect(view.open.has("text")).toBe(true);
   key("up");
   key("up");
-  expect(view.section).toBe("window");
+  expect(view.section).toBe("panes");
   key("left");
   expect(view.open.has("appearance")).toBe(false);
   key("right");

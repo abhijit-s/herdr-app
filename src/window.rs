@@ -6,6 +6,7 @@
 
 use crate::git_status;
 use crate::hc::Core;
+mod cursor_shapes;
 mod cursor_trail;
 mod floats;
 mod follow_mouse;
@@ -1799,6 +1800,7 @@ impl AppWindow {
                     this.open_menu("pane", target, Some(*at), window, cx)
                 }
                 TerminalEvent::Copied => this.show_copied(window, cx),
+                TerminalEvent::CursorJump(from) => this.cursor_jump(block.trim_end_matches(SWAP), *from, cx),
             });
             let focus = view.read(cx).focus_handle().clone();
             self.terms.insert(id, Term { view, address, focus, _sub: sub });
@@ -8781,7 +8783,7 @@ export default class Recent extends View {
         // (where the trail starts, toward which pane), and the (tab, pane) seen last.
         type State = (Option<(gpui::Bounds<gpui::Pixels>, String)>, Option<(String, String)>);
         let state = |cx: &mut gpui::VisualTestContext| -> State {
-            view.update(cx, |this, _| (this.trail.as_ref().map(|t| (t.from, t.pane.clone())), this.trail_seen.as_ref().map(|s| (s.tab.clone(), s.pane.clone()))))
+            view.update(cx, |this, _| (this.trail.as_ref().and_then(|t| Some((t.from?, t.pane.clone()))), this.trail_seen.as_ref().map(|s| (s.tab.clone(), s.pane.clone()))))
         };
         let seen = |tab: &str, pane: &str| Some((tab.to_owned(), pane.to_owned()));
         let anchor = |cx: &mut gpui::VisualTestContext, pane: &str| view.update(cx, |this, cx| this.terms[pane].view.read(cx).trail_anchor()).expect("drawn, so it has a cursor anchor");
@@ -8832,6 +8834,208 @@ export default class Recent extends View {
         mode(crate::settings::CursorTrail::Off);
         draw(cx);
         assert_eq!(state(cx), (None, None), "off again forgets");
+    }
+
+    #[test]
+    fn cursor_jumps_in_all_mode_draw_once_settled_and_never_mid_burst() {
+        in_own_process("cursor_jumps");
+    }
+
+    /// Tab t: a | b, a focused, `cursor_trail: "all"` with a ripple. A jump in
+    /// a's terminal draws nothing until the cursor has been still for the
+    /// settle time, then one trail from where it settled before. A burst of
+    /// moves (streaming output) draws nothing while it lasts and one effect
+    /// after. A one-cell step settles with none; b's terminal, not focused,
+    /// draws none; with "panes" a's jumps draw none.
+    #[gpui::test]
+    fn cursor_jumps(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use crate::settings::{Arrival, CursorTrail};
+        use serde_json::json;
+        use std::time::Duration;
+        if !running_alone("cursor_jumps") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        // Through the window's own settings, which a later look resolve keeps.
+        let set = |cx: &mut gpui::VisualTestContext, trail: CursorTrail| {
+            view.update_in(cx, |this, window, cx| {
+                (this.person.cursor_trail, this.person.cursor_arrival, this.person.cursor_trail_duration_ms) = (trail, Arrival::Ripple, 1000);
+                this.apply_look(window, cx);
+            });
+        };
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                this.close_overlay(&id, window, cx);
+            }
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.select_tab("t");
+            this.model.focus_pane("a");
+            this.sync(window, cx);
+        });
+        cx.run_until_parked();
+        // Output to a pane's terminal, then a draw.
+        let feed = |cx: &mut gpui::VisualTestContext, pane: &str, bytes: &str| {
+            view.update(cx, |this, cx| {
+                let term = this.terms[pane].view.clone();
+                term.update(cx, |t, cx| {
+                    t.feed(bytes.as_bytes());
+                    cx.notify();
+                });
+            });
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+        let wait = |cx: &mut gpui::VisualTestContext, ms: u64| {
+            cx.executor().advance_clock(Duration::from_millis(ms));
+            cx.run_until_parked();
+        };
+        let effect = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail.as_ref().map(|t| (t.from.is_some(), t.arrival, t.pane.clone(), t.start)));
+        let clear = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail = None);
+        assert!(view.update_in(cx, |this, window, cx| this.terms["a"].view.read(cx).owns_keyboard_focus(window, cx)), "a has the keyboard");
+        set(cx, CursorTrail::All);
+
+        feed(cx, "a", "\x1b[1;1H");
+        wait(cx, 200);
+        clear(cx);
+        feed(cx, "a", "\x1b[10;30H");
+        wait(cx, 40);
+        assert_eq!(effect(cx), None, "still moving for under the settle time");
+        wait(cx, 60);
+        let first = effect(cx);
+        assert_eq!(first.as_ref().map(|e| (e.0, e.1, e.2.clone())), Some((true, Arrival::Ripple, "a".into())), "settled: a trail and a ripple at a");
+
+        // A burst: a move every 16 ms for 30 frames, then still.
+        clear(cx);
+        for i in 0..30 {
+            feed(cx, "a", &format!("\x1b[{};{}H", 2 + i % 20, 5 + i));
+            wait(cx, 16);
+            assert_eq!(effect(cx), None, "nothing mid-burst ({i})");
+        }
+        wait(cx, 100);
+        assert!(effect(cx).is_some(), "one effect once the burst stops");
+        clear(cx);
+        wait(cx, 500);
+        assert_eq!(effect(cx), None, "and no other");
+
+        // Scrolling back with the cursor in view moves its cell, not the cursor.
+        feed(cx, "a", &"line\r\n".repeat(50));
+        feed(cx, "a", "\x1b[5;1H");
+        wait(cx, 200);
+        clear(cx);
+        let scroll = |cx: &mut gpui::VisualTestContext, rows: isize| {
+            view.update(cx, |this, cx| this.terms["a"].view.update(cx, |t, cx| {
+                t.scroll_back(rows);
+                cx.notify();
+            }));
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+        scroll(cx, 5);
+        wait(cx, 200);
+        assert_eq!(effect(cx), None, "scrolled back: no jump");
+        scroll(cx, -5);
+        wait(cx, 200);
+        assert_eq!(effect(cx), None, "and back down: none");
+
+        // A one-cell step is under the threshold.
+        feed(cx, "a", "\x1b[1;1H");
+        wait(cx, 200);
+        clear(cx);
+        feed(cx, "a", "\x1b[2;2H");
+        wait(cx, 200);
+        assert_eq!(effect(cx), None, "one cell is no jump");
+
+        // b doesn't have the keyboard: its cursor moving draws nothing.
+        feed(cx, "b", "\x1b[1;1H");
+        feed(cx, "b", "\x1b[20;40H");
+        wait(cx, 200);
+        assert_eq!(effect(cx), None, "not the focused pane");
+
+        // Panes mode: in-pane jumps draw nothing.
+        set(cx, CursorTrail::Panes);
+        feed(cx, "a", "\x1b[1;1H");
+        wait(cx, 200);
+        feed(cx, "a", "\x1b[15;40H");
+        wait(cx, 200);
+        assert_eq!(effect(cx), None, "panes mode ignores jumps");
+    }
+
+    #[test]
+    fn cursor_arrival_pulses_with_the_trail_off_or_on() {
+        in_own_process("cursor_arrival");
+    }
+
+    /// Tab t: a | b. The arrival pulse alone (trail off) starts an effect at
+    /// the new pane with no trail; with the trail on it comes with the trail
+    /// in its style; the trail alone has no pulse; both off, nothing.
+    #[gpui::test]
+    fn cursor_arrival(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use crate::settings::{Arrival, CursorTrail, TrailStyle};
+        use serde_json::json;
+        if !running_alone("cursor_arrival") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        let set = |trail: CursorTrail, style: TrailStyle, arrival: Arrival| {
+            let before = crate::settings::get();
+            crate::settings::set(crate::settings::Settings { cursor_trail: trail, cursor_trail_style: style, cursor_arrival: arrival, cursor_trail_duration_ms: 1000, ..(*before).clone() });
+        };
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                this.close_overlay(&id, window, cx);
+            }
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.select_tab("t");
+            this.model.focus_pane("a");
+            this.sync(window, cx);
+        });
+        cx.run_until_parked();
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+        let focus = |cx: &mut gpui::VisualTestContext, pane: &str| {
+            view.update_in(cx, |this, window, cx| {
+                this.model.focus_pane(pane);
+                this.sync(window, cx);
+            });
+            draw(cx);
+        };
+        // (has a trail's start, its style, the pulse, toward which pane), and whether it has a layer.
+        let state = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail.as_ref().map(|t| (t.from.is_some(), t.style, t.arrival, t.pane.clone())));
+        let layer = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.cursor_trail_layer().is_some());
+
+        set(CursorTrail::Off, TrailStyle::Comet, Arrival::Ripple);
+        draw(cx);
+        focus(cx, "b");
+        assert_eq!(state(cx), Some((false, None, Arrival::Ripple, "b".into())), "the pulse alone, at b");
+        assert!(layer(cx), "it draws and asks for frames while it runs");
+
+        set(CursorTrail::Panes, TrailStyle::Warp, Arrival::Ripple);
+        draw(cx);
+        focus(cx, "a");
+        assert_eq!(state(cx), Some((true, Some(TrailStyle::Warp), Arrival::Ripple, "a".into())), "a warp from b with a ripple at a");
+
+        set(CursorTrail::Panes, TrailStyle::Tail, Arrival::Off);
+        draw(cx);
+        focus(cx, "b");
+        assert_eq!(state(cx), Some((true, Some(TrailStyle::Tail), Arrival::Off, "b".into())), "the trail alone");
+
+        set(CursorTrail::Off, TrailStyle::Tail, Arrival::Off);
+        draw(cx);
+        assert_eq!(state(cx), None, "both off: nothing");
+        focus(cx, "a");
+        assert_eq!(state(cx), None);
     }
 
     #[test]
