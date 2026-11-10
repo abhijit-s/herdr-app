@@ -116,7 +116,7 @@ Each merge of `upstream/master` into `master`, with the conflict choices worth r
 
 - Tests: `persist::tests::atomic_write_keeps_the_files_permissions` (0600, 0640 and 0644 survive a rewrite, through a link too; a new file takes the default).
 - Files: `src/persist.rs`
-- Upstream: none yet
+- Upstream: merged as pull request #722 (`up/atomic-write-keeps-mode`)
 
 ### Hung alert command test
 
@@ -355,7 +355,7 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 - `tab.move` lives in `Model::move_tab`, which fails on a pane id instead of panicking on it.
 - Tests: `model::tests::tabs_move_to_a_place_or_one_step_and_stop_at_the_ends`, `window::tests::{pane_text_zoom (pane.refocus keeps a swapped-in terminal), pane_refocus_hands_a_focused_mod_block_its_keyboard_back}`, `keys::tests::untouched_fork_keys_give_alt_shift_brackets_back_to_programs`, `mods::render_tests::tabs_draw_a_drag_in_progress`, `scripts/tabs.test.ts` (slot halves, drop index for every slot, click versus drag, gaps and both ends, Escape and leaving cancel, a lost release, a tab closed mid-drag, menu moves hidden at the ends).
 - Files: `defaults/mods/{tabs,menu}/main.js`, `defaults/frame/palette/main.js`, `src/model.rs`, `src/window.rs`, `src/commands.rs`, `src/keys.rs`, `src/keys/shipped/fork-0990622-keys{,.macos}.json`, `src/keys/shipped/fork-1225b24-keys.json`, `defaults/keys{,.macos}.json`, `vendor/gpui-kit/crates/shell/src/{engine/quickjs/mod.rs,typings.rs}`, `defaults/herdr.d.ts`, `defaults/AGENTS.md`, `docs/commands.md`, `scripts/tabs.test.ts`
-- Upstream: none yet
+- Upstream: the `Model::move_tab` guard is pull request #752 (`up/tab-move-pane-id`), awaiting review; the rest none yet
 
 ### Toasts fit their content
 
@@ -477,14 +477,14 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 `perf/offscreen-no-redraw` (branched from `master`, fork only): a test, `output_off_screen_keeps_the_screen_and_redraws_nothing`, holding what `TerminalView::ingest` already does: output in a terminal not drawn in the window's current frame (another tab or space, a parked terminal, a hidden overlay) feeds its screen and still reports titles, but doesn't notify the window. The ~8 window draws a second the bench's `idle-busy-bg` shows come from the working agents' spinners in the tabs, pane header and agents mods (`spin(900)`, woken every 100 ms by gpui-kit's `spin_layer`), not from terminal output: GPUI marks every ancestor of a woken view dirty, so each spinner step runs `AppWindow::render` while terminal draws stay at 0.
 
 - Files: `src/terminal.rs` (tests)
-- Upstream: none yet
+- Upstream: in pull request #721 (`up/changed-rows-only`), with "Rows kept while output scrolls", awaiting review
 
 ### Rows kept while output scrolls
 
 `perf/changed-rows-only` (branched from `master`, fork only): a terminal row's drawing (backgrounds, shaped text, icons and sprites) is built again only when the row changed, also while output scrolls the screen. libghostty marks every row dirty when the screen scrolls (see "Row Identity" in its `render.h`), so `Vt::frame` read each one as a new row and `paint_grid`, which kept drawings by position, rebuilt the whole screen every frame an agent streamed output (the bench's `agent` scenario: ~1000 rows a second, ~56 a frame). `Vt::frame` keeps a dirty row's `Rc` when it reads the same as the row with that id last frame, and `keep_rows` finds a row's drawing by its `Rc` wherever it moved. Selection, colors and width are in the cells, so a row selected, recolored or resized reads differently and is built again; the cell, font, fonts and ligature setting still clear every drawing, and with ligatures the cursor's column is part of the key.
 
 - Files: `src/vt.rs` (`Frame`, `Vt::frame`, test `a_row_stays_the_same_rc_only_while_it_reads_the_same`), `src/terminal.rs` (`PaintedRow`, `keep_rows`, `paint_grid`, test `only_rows_that_changed_are_built_again`)
-- Upstream: none yet
+- Upstream: pull request #721 (`up/changed-rows-only`), awaiting review
 
 ### Fonts mapped, scrollback at core's cap
 
@@ -733,7 +733,7 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Tests: `window::tests::a_mod_section_key_beats_the_kits_tab_from_the_first_start` (fails with the `keys::tab` half reverted).
 - The rule mods follow since then: tab and shift-tab move focus between a mod's focusable elements and never reach its `on_key_down`; a mod that wants them binds them in its `mod:<name>` section and reads the command from `nextCommand()`. Documented in `defaults/AGENTS.md` (Keys) and `defaults/herdr.d.ts` (`nextCommand`); tested by `window::tests::a_mods_on_key_down_never_sees_tab` (fails with tab dropped from the `KitKeys` snapshot) and `window::tests::a_mod_reads_tab_from_its_keys_section` (fails when the section loses its `> ShellRoot` depth).
 - Files: `vendor/gpui-kit/crates/shell/src/lib.rs`, `vendor/gpui-kit/crates/shell/src/root.rs`, `src/keys.rs`, `src/window.rs`
-- Upstream: none yet
+- Upstream: pull request #716 (`up/mod-keys-first-start`), awaiting review
 
 ### Pane spacing in Settings
 
@@ -957,7 +957,7 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Three questions: yes, yes, yes. The app reads and writes the document, only the app sees its unknown fields, and no mod can keep them. Verdict A: upstream as is, before floats ship.
 - Tests: `mirror::tests::unknown_space_and_tab_fields_survive_a_read_and_write` (a document with an unknown space field and a `floating` tab field, read and written on this and another machine, after a rename and a split, keeps both; read alone, written byte for byte; a document without them writes no extra field).
 - Files: `src/mirror.rs`, `src/model.rs`
-- Upstream: up/doc-keep-unknown-fields (PR pending)
+- Upstream: merged as pull request #729 (`up/doc-keep-unknown-fields`)
 
 ### Floating panes
 

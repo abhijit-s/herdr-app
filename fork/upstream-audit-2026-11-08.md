@@ -1,28 +1,30 @@
 # Herdr fork: upstream audit
 
-Audit of every change the fork carries over `herdrdev/herdr-app` (merge-base `cfcf836`, fork `master` at `c7a05ef`, 414 commits, 48,702 lines added across 244 files) and `herdrdev/herdr-core` (merge-base `3965a46`, 4 fork commits), sorted by what could go upstream as pull requests (PRs). Audited 2026-11-08. Nothing was edited, committed, pushed or posted.
+Audit of every change the fork carries over `herdrdev/herdr-app` (merge-base `cfcf836`, fork `master` at `c7a05ef`, 414 commits, 48,702 lines added across 244 files) and `herdrdev/herdr-core` (merge-base `3965a46`, 4 fork commits), sorted by what could go upstream as pull requests (PRs). Audited 2026-11-08 against fork `master` at `c7a05ef`; refreshed 2026-11-10 against fork `master` at `35be845`, adding the 19 features merged since (fork PRs #5 to #32, see Features added after the first audit) and the upstream PR states of that day.
 
 ## TL;DR
 
-67 rows: the 64 `### ` sections of `FORK.md` plus 3 changes it does not list as their own section (a shared git status and selective mod redraws, the `fix/fetch-tab` keys fix, and the already-merged Xcode build fix).
+86 rows: the 64 `### ` sections of `FORK.md` at `c7a05ef`, 3 changes it did not list as their own section then (a shared git status and selective mod redraws, the `fix/fetch-tab` keys fix, and the already-merged Xcode build fix), and 19 features merged after it.
 
 | Verdict | Count | Meaning |
 | --- | --- | --- |
-| A, upstream as is | 16 | Fixes and clear fits; 8 of them already have an open or merged upstream PR |
-| B, upstream after reshaping | 8 | A fix or small surface can be split out; the rest moves to mods or stays |
-| C, discuss with Can first | 28 | Grows the core: new commands, mod APIs, settings keys or changed defaults |
-| D, fork-only | 13 | Personal taste, Rex- or bench-specific, experiments, or superseded by someone else's PR |
-| Done | 2 | Already merged upstream (#662 render-test cleanup, #331 Xcode build); remove from `FORK.md` |
+| A, upstream as is | 16 | Fixes and clear fits; 12 of them have an open upstream PR and one more rides inside #634 |
+| B, upstream after reshaping | 9 | A fix or small surface can be split out; the rest moves to mods or stays |
+| C, discuss with Can first | 34 | Grows the core: new commands, mod APIs, settings keys or changed defaults |
+| D, fork-only | 23 | Personal taste, Rex- or bench-specific, experiments, or superseded by someone else's PR |
+| Done | 4 | Merged upstream: #331 Xcode build, #662 render-test cleanup, #722 atomic writes, #729 unknown document fields |
 
-Best first upstream PRs (no Can gate needed, small, self-contained):
+Upstream PRs on 2026-11-10: 13 open (#332, #333, #336, #384, #411, #545, #546, #547, #634, #716, #719, #721, #752), none with a maintainer review yet; 5 merged (#331, #548, #662, #722, #729).
 
-1. **`fix: atomic writes keep the file's permissions`** (`fix/atomic-write-keeps-mode`): 36 lines in `src/persist.rs`, a real privacy bug (a 0600 `settings.json` turns 0644 after one Cmd+=).
-2. **`perf: rebuild only terminal rows that changed while output scrolls`** (`perf/changed-rows-only` + the off-screen test): answers the rows half of the user's own issue #413, which already has a +1 with power measurements; no API or settings change.
-3. **`fix: a mod's keys.json section wins from the first start`** (`fix/fetch-tab`): 62 lines in `src` plus a 5-line `HERDR:` patch in vendored gpui-kit.
-4. **`fix: fit fallback symbols to their cells by ink`** (`fix/fallback-fit`, split out of "Terminal font fallbacks"): likely closes upstream issue #138 (fallback circled numerals overlap); no settings key.
-5. **herdr-core: three fixes** (Xcode-free build, status event on adoption for the user's issue core#162, piped `attach --observe` ending at end of input): small, tested, and none grows the core.
+Best first upstream PRs (no Can gate needed, small, self-contained), and where each stands:
 
-Also: nurse the 9 already-open PRs (#332, #333, #336, #384, #411, #545, #546, #547, #634) before opening more, and reconcile `FORK.md` (two merged entries, one undocumented feature, see Method and caveats).
+1. 🏁 **`fix: atomic writes keep the file's permissions`**: merged as #722.
+2. ⏳ **`perf: rebuild only terminal rows that changed while output scrolls`** (`perf/changed-rows-only` + the off-screen test): open as #721; answers the rows half of the user's own issue #413.
+3. ⏳ **`fix: a mod's keys.json section wins from the first start`** (`fix/fetch-tab`): open as #716.
+4. **`fix: fit fallback symbols to their cells by ink`** (`fix/fallback-fit`, split out of "Terminal font fallbacks"): not opened; likely closes upstream issue #138 (fallback circled numerals overlap); no settings key.
+5. **herdr-core: three fixes** (Xcode-free build, status event on adoption for the user's issue core#162, piped `attach --observe` ending at end of input): not opened; small, tested, and none grows the core.
+
+Next: land the 13 open PRs before opening more. The `FORK.md` drift the first audit found is fixed (see Method and caveats).
 
 ## Rules applied
 
@@ -55,10 +57,16 @@ flowchart LR
 | #546 `perf: hidden terminals free their drawing caches` | Hidden terminals free their drawing caches | A | Review |
 | #547 `feat: font_thicken` | Font thickening (terminal half) | A | Review of a vendor GPUI (the GPU UI framework vendored from Zed) rasteriser change; answers the user's issue #414 |
 | #634 `feat: post agent alerts to the notification center` | System notifications | C | A go on three settings keys and `alert_command`; overlaps #180, #432, #120, #430, #74, #596 by others. Fold "Hung alert command test" into it |
+| #716 `fix: a mod's keys.json section wins from the first start` | Mod keys win from the first start (E2) | A | Review of a vendored gpui-kit change |
+| #719 `fix(mods): give frame mods a code revision` | Frame mods keep a code revision (N10) | A | Review |
+| #721 `perf: rebuild only terminal rows that changed while output scrolls` | Rows kept while output scrolls (32) and the off-screen test (31) | A | Review; reply on issue #413 |
+| #752 `fix: tab.move fails on a pane id instead of panicking` | `Model::move_tab` guard from Tab reordering (24) | A | Review |
 
 Also comment on **#67** (line height, by juanibiapina) with the fork's `row_height` clamp (`de1942a`): `0` makes empty rows and a hang.
 
 ### Wave 1: A-verdict PRs to open now
+
+Since the first audit, #1 merged (#722) and #2, #3 and #7 are open (#721, #716, #752). Still to open: #4, #5, #6 and #8.
 
 | # | Title | Contents | Effort | Needs from Can |
 | --- | --- | --- | --- | --- |
@@ -91,14 +99,19 @@ Also comment on **#67** (line height, by juanibiapina) with the fork's `row_heig
 | 22 | Focus history (`recentPlaces()`) | `feat/focus-history` | C | M | New issue needed |
 | 23 | Agents without a status report | `feat/agent-fallback` | C | L | #343, #158, #98; 2.5k lines of MIT tuios manifests and a licence entry; needs a herdr-core follow-up |
 | 24 | Popup terminal | `feat/popup-command` | C | L | #677 (saurabh-hirani) asks for a mod-level popup terminal |
+| 25 | Floating panes, phase 1 | `feat/floating-panes`, `feat/float-header-button` | C | L | #718 (filed 2026-11-08, no reply yet); design in `fork/design/floating-panes.md` |
+| 26 | Tab to another space | `feat/tab-to-space` | C | M | New issue once #718 settles, since the move carries `Tab.floating` |
+| 27 | Mod terminal menu items | `feat/mod-menu-items`, `fix/menu-followups` | C | M | After #16 (mod palette actions): the same `mod.json` contract for a second list |
+| 28 | Copy last output | `feat/copy-last-output` | C | S | New issue; a `terminal.copy_last_output` command reading OSC 133 marks only the app's view keeps. Offer with the pane menu copy commands (61) |
+| 29 | `terminalLines()` with faint runs for mods | `feat/mod-faint-text` | B | S | New issue; the core's screen model drops styles, so only the app's grid has them |
 
 ### Wave 3: rendering and settings keys (all C; ask once, as a batch)
 
-Each passes the three questions (only the app draws the terminal grid) but adds settings keys and, often, vendor GPUI patches. Ask Can which he wants, in one issue, before writing PRs: bold weight, faint opacity, `font_fallbacks`, `cell_width: "pixel"`, cell rounding, whole-point zoom, interface zoom and text size, interface font weight, `ui_font_thicken`, text contrast (all three shader backends), dim when inactive (adjacent to open PRs #701 and #616), theme panel derivation (changes every theme without explicit `colors`), focus colour (`focus` theme colour and `focus_border_width`), toast position (#419 by chenyn273 asks for it) and toast colours, pane spacing in Settings, pane menu copy commands, the fonts memory map (A) with the scrollback cap (C).
+Each passes the three questions (only the app draws the terminal grid) but adds settings keys and, often, vendor GPUI patches. Ask Can which he wants, in one issue, before writing PRs: bold weight, faint opacity, `font_fallbacks`, `cell_width: "pixel"`, cell rounding, whole-point zoom, interface zoom and text size, interface font weight, `ui_font_thicken`, text contrast (all three shader backends), dim when inactive (adjacent to open PRs #701 and #616), theme panel derivation (changes every theme without explicit `colors`), focus colour (`focus` theme colour and `focus_border_width`), toast position (#419 by chenyn273 asks for it) and toast colours, pane spacing in Settings, pane menu copy commands, the fonts memory map (A) with the scrollback cap (C), `toast_duration` (the window's expiry clock; style, corners, marks and designs stay fork-only). Sticky "needs you" notifications (`notification_sticky`) go with #634 once it lands, not in this batch.
 
 ### Not for upstream
 
-Build identifier, Rex theme importer, app and theme icons, subpixel smoothing, automatic pane names, tab and pane icons, icon search, working spinner, space avatar, pane header info, dock badge (superseded by #391 and #519), copied toast (superseded by #416), rejected experiments. See Rule-bending features for how the core-bending ones move into mods.
+Build identifier, Rex theme importer, app and theme icons, subpixel smoothing, automatic pane names, tab and pane icons, icon search, working spinner, space avatar, pane header info, dock badge (superseded by #391 and #519), copied toast (superseded by #416), rejected experiments; and, added after the first audit, theme look tags, toast style, corners, marks and designs, name-matched icons, header spacing, sub-agent status, display and click, agent card info, cursor trail and cursor effects. See Rule-bending features for how the core-bending ones move into mods.
 
 ## Per-feature table
 
@@ -110,7 +123,7 @@ Legend: lines are **added** lines from the merge diff (`git diff M^1...M^2 --num
 | 2 | Pane and agent labels (`35b5baf`) | s679 d35 x25 | app-core: `label`, `session` on `panes()`/`agents()`, programs.json `session_name` | N: display / P: session file by foreground pid / P: mods could repeat the rule | C | M; shipped-mod output changes | Pane names, Auto names, Session resume (`SessionFile::check`) | #323, #618; upstream `a167060` conflicts in `agents` mod |
 | 3 | Rex theme importer (`4757a58`, `d5bd786`) | s524 d1 | app-core: CLI subcommand | N / N / P: needs the app's theme parser | D | S | Theme derivation, Toast look (`toast_problems`) | none; Rex is closed source |
 | 4 | Focus colour (`6164aa5`) | s217 d69 x30 | app-core: `focus` colour, `focus_border_width`; shipped layout `main.json` | Y: frame inset / P / P: layouts already set widths | C (split Wave 1 #8) | M; shipped layout change replaces `main.json` | Theme derivation (`readable_accent`) | #362, #616 adjacent |
-| 5 | Atomic writes keep permissions (`8eb2910`) | s36 | app-render (persist) | fix | A | S; Unix modes, check Windows no-op | none | none |
+| 5 | Atomic writes keep permissions (`8eb2910`) | s36 | app-render (persist) | fix | Done | S; Unix modes, check Windows no-op | none | merged as #722 |
 | 6 | Hung alert command test (`299ef1f`) | s17 | test | fix | A (inside #634) | S | System notifications (`src/alert.rs` is fork-only) | #634 |
 | 7 | Pane text zoom (`0d9df8b`, `988dd24`) | ~s794 d32 x8 | app-core: 3 commands, `pane_zoom_keys`, `panes().text_size`, keys snapshot | Y / Y: per-view font / Y | C | L; macOS keys only, Linux/Windows unbound | Zoom in whole points, Cell width and rounding (`measure_cell_at`) | PR #159 (terminal.zoom commands) |
 | 8 | Terminal line height (`977bef2`, `04acb83`, `de1942a`, `3234bf8`) | fork delta s17, rows ~38 | app-render | Y / Y / Y | A (review input on #67) | S | none | PR #67, issues #66, #595, PR #528 |
@@ -129,15 +142,15 @@ Legend: lines are **added** lines from the merge diff (`git diff M^1...M^2 --num
 | 21 | Automatic pane names (`d67f495`) | s390 d35 x12 | app-core: `pane_auto_names`, `panes().auto_name` | N: display only / N / N: an FNV (Fowler–Noll–Vo) hash of the pane id is computable in a mod | D | M | Pane names | none |
 | 22 | Tab and pane icons (`0990622`) | s712 d277 | app-core: model `icons`, layout `Document.icons`, 2 commands | N / N / P: mods can persist in a core document | D | L; layout document schema | Auto names, Space avatar | none |
 | 23 | Icon search (`dcad9ec`) | s104 d12857 x310 | mods (icon-picker data) | N / N / N | D | L; 460 KB of name data, licences | Tab and pane icons, Handlers inside list rows | none |
-| 24 | Tab reordering (`bd6aa5e`) | s255 d114 x226 | app-core: `tab.move_left/right`, `pane.refocus`; mods `tabs`, `menu` | P / N / P: drag is mod-side | B | M; keys snapshot files | none | #382, #192 |
+| 24 | Tab reordering (`bd6aa5e`) | s255 d114 x226 | app-core: `tab.move_left/right`, `pane.refocus`; mods `tabs`, `menu` | P / N / P: drag is mod-side | B | M; keys snapshot files | none | #382, #192; the `move_tab` guard is PR #752 |
 | 25 | Toasts fit their content (`309063b`, `39114f6`) | ~s79 d3 v19 | app-render + vendor gpui-kit | Y / Y: overlay size / Y | C | S | none | issue #685 (filed) |
 | 26 | Copied toast on copy-on-select (`91011c6`, `ad9331a`) | ~s91 | app-render (`TerminalEvent::Copied`) | Y / Y: only the terminal knows / Y | D (superseded) | S | none | PR #416 (Rusya13), #344, #656, #650 |
 | 27 | Toasts stand out, and go where you put them (`7c82eb4`) | s565 d84 x10 | app-core: 9 `toast*` colours, `toast_position`, `toast_offset` | P / P: top chrome / P: colours are mod-side | B | M | Theme derivation, Toasts fit | #419 (corner choice), #396, #399, #364 |
 | 28 | Popup command (`1206d19`, `25de656`, `13747b0`) | ~s554 d17 | app-core: `terminal.popup`, CLI, control socket wait | Y / P / P | C | L; Unix poll semantics, `sh` portability | none | #677 |
 | 29 | System notifications (`579fe72`, `ea33acc`) | ~s465 d62 | app-core: 3 keys, `alert_command`, error alert | Y / Y: background state / Y | C (PR open) | M | none | PR #634; #120, #180, #430, #432, #74, #596 |
 | 30 | Notification sounds, marks, icons, `system.notify` (`e93ea37`, `bdc3a89`) | ~s1250 v158 d73 x15 | app-core + vendor GPUI platform (3 OSes) | P / P / P | B | L; images macOS only | System notifications | #312 (system.notify) |
-| 31 | Off-screen terminal output (`e8690ed`) | s51 (test) | test | fix | A | S | none | #413 |
-| 32 | Rows kept while output scrolls (`dead23a`) | s137 | app-render (`vt.rs`, `paint_grid`) | perf | A | M; conflicts with upstream find-highlight passes | none | #413 (filed) |
+| 31 | Off-screen terminal output (`e8690ed`) | s51 (test) | test | fix | A | S | none | #413; in PR #721 |
+| 32 | Rows kept while output scrolls (`dead23a`) | s137 | app-render (`vt.rs`, `paint_grid`) | perf | A | M; conflicts with upstream find-highlight passes | none | #413 (filed); PR #721 |
 | 33 | Fonts mapped, scrollback at core's cap (`f5a9881`) | s25 | app-render | perf / behaviour | B | S; truncated font file crashes | none | none |
 | 34 | Hidden terminals free their drawing caches (`e226b9a`) | s218 | app-render | perf | A | S | none | PR #546 |
 | 35 | Spinners turn without a draw (`ce52420`, `ef31625`) | ~s111 v258 | vendor gpui-pre scene and window, gpui-kit | Y / Y / Y | C | L; GPUI internals, all backends | none | #413, #94, #30, PR #383, closed #33 |
@@ -171,8 +184,34 @@ Legend: lines are **added** lines from the merge diff (`git diff M^1...M^2 --num
 | 63 | Pane header info (`c7a05ef`) | s827 d198 x91 | app-core: `pane_header_info`, `fitHeaderInfo()` + shipped mods | N / N / P | D | M | Shared git status (`folder_info_comes_from_the_git_status`), Labels | #112 (status in spaces sidebar) adjacent |
 | 64 | Rejected text experiments | none | notes | – | D | – | – | – |
 | E1 | Shared git status and selective redraws (`c01f745`, `perf/events`, **not a `FORK.md` section**) | s971 d63 | app-core: `gitStatus()`, `refreshGitStatus()`, `nextGitStatus()` + `mods.rs` revisions | Y / P / P | B | M | none | #549 (filed); #640, #626 for the title part |
-| E2 | Mod keys win from the first start (`ba4f621`, `fix/fetch-tab`, filed under Focus history) | s62 v5 | vendor gpui-kit + `keys.rs` | fix | A | S | none | none |
+| E2 | Mod keys win from the first start (`ba4f621`, `fix/fetch-tab`, filed under Focus history) | s62 v5 | vendor gpui-kit + `keys.rs` | fix | A | S | none | PR #716 |
 | E3 | Build libghostty-vt without Xcode (`5d0baa0`) | 4 | build | fix | Done | – | – | merged as #331 |
+
+## Features added after the first audit
+
+Fork PRs #5 to #32, merged 2026-11-08 to 2026-11-10. Verdicts come from each feature's `FORK.md` section, which records its answers to the three questions; rows N4, N5, N8 and N10, whose sections give none, were judged here, and N6's verdict follows from its answers. Maintenance PRs with no feature (#4 fork ADR, #8 and #28 docs, #9 review fixes, #10 flaky tests, #12 upstream sync, #13 alert dead code) have no row.
+
+| # | Feature (fork PR) | Layer | Q1 / Q2 / Q3 | Verdict | Effort, risk | Depends on | Upstream overlap |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| N1 | Theme look tags (#30) | mods (Settings window) | N / N / N: it is shipped JS | D | S | Settings groups (14) | none |
+| N2 | Toast time, style, corners and level mark (#11) | app-core: 4 `toast_*` keys | duration Y / Y / Y; looks N / P / N | C (`toast_duration`), D (the rest) | M | Toasts stand out (27), Toasts coalesced (37) | #419 adjacent |
+| N3 | Toast designs and countdown (#15) | app-core: `toast_design`, `toast_progress` + toast mod | P / P / P | D; countdown C once N2 is offered | M; `toast_progress` adds draws while a toast counts down | N2 | none |
+| N4 | Sticky "needs you" notifications (#5) | app-core: `notification_sticky` | Y: the window withdraws them / Y / Y | C, with #634 | S | System notifications (29) | PR #634 |
+| N5 | Copy last output (#6) | app-core: `terminal.copy_last_output` + menu item | Y / Y: OSC 133 marks live in the app's view / Y | C | S | none | #625 adjacent |
+| N6 | Name-matched icons (#7) | mods; one default value in Rust | N / N / N | D | S | Tab and pane icons (22) | none |
+| N7 | Mod terminal menu items (#18, #21) | app-core: `mod.json` `menu_items`, `menuItems()` | P / Y / Y | C, after Mod palette actions (58) | M | Mod palette actions (58) | #211 |
+| N8 | Header spacing (#16) | mods + `header_info` | N / N / N | D | S | Pane header info (63) | none |
+| N9 | Unknown document fields kept (#17) | app-core (layout documents) | Y / Y / Y | Done | S | none | merged as #729 |
+| N10 | Frame mods keep a code revision (#14) | app-core (`mods.rs`) | fix | A | S | none | PR #719 |
+| N11 | Sub-agent status (#19) | app-core: `{subagents}` in `pane_header_info` + mods | P / N / P | D | M | Pane header info (63) | none |
+| N12 | Sub-agent display (#24) | app-core: setting + palette runs a mod's own commands | P: the palette checks mod.json actions / N / P | D; the palette part B | M | N11 | none |
+| N13 | Sub-agent click (#25) | app-core: setting | N / N / P | D | S | N12 | none |
+| N14 | Agent card info (#26) | app-core: template resolved beside `pane_header_info` | Y / P / P | D | M | Pane header info (63), Shared git status (E1) | none |
+| N15 | Floating panes, phase 1 (#20, #22) | app-core: `Tab.floating`, layout documents | Y / Y / Y | C | L; layout document field | N9 (so older builds keep floats) | #718 (filed) |
+| N16 | Tab to another space (#23) | app-core: command + menu entry | Y / Y / P | C, after #718 | M | N15 | none |
+| N17 | Mods read faint text (#27) | app-core: mod API | N / Y / Y | B | S | none | none |
+| N18 | Cursor trail (#29) | app-render | Y / Y / Y | D (a visual preference) | M; draws while a trail runs | none | none |
+| N19 | Cursor effects and kitty-style jump threshold (#31, #32) | app-render + `vt.rs` cursor timing | Y / Y / Y | D | M; measured within about 1% of `master` | N18 | none |
 
 ## Rule-bending features
 
@@ -214,6 +253,7 @@ Also pending from the app side: "Agents without a status report" (54) wants the 
 - **Line counts are approximate** where a branch merged into `master` several times (marked `~`): three-dot diffs can count the same lines twice or include an `upstream/master` merged into the branch. For branches cut from `upstream/master`, counts come from the branch itself (marked "branch"). Binary assets are not counted.
 - **Inferred, not verified**: Q1 to Q3 answers and verdicts are judgement against upstream's rule; upstream's `tab.move` panic (row 24) was taken from `FORK.md`, not reproduced; "fit by ink closes #138" is inferred from the descriptions; settings-key growth is about 40 keys (59 new fields across `Person` and `Settings` in `src/settings.rs`) and 19 new commands (`docs/commands.md`).
 - **Next upstream sync will conflict** (`git merge-tree master upstream/master`): `THIRD-PARTY-NOTICES`, `defaults/AGENTS.md`, `defaults/herdr.d.ts`, `defaults/mods/agents/main.js`, `defaults/programs.json`, `justfile`, `scripts/agents.test.ts`, `src/commands.rs`, `src/model.rs`, `src/mods.rs`, `src/window.rs`. The agents-mod and `mods.rs` conflicts touch rows 2 and 38.
-- **`FORK.md` drift found**: "Render tests clean up their folders" says awaiting review but merged as #662; the toast clock in "Toasts coalesced" merged as #548; `perf/events` (shared git status, selective mod redraws, title-spin "no news") has no section although "Pane header info" depends on it; `fix/fetch-tab` sits inside the "Focus history" section; "Tab and pane icons" has no `Upstream:` line.
+- **`FORK.md` drift found, since fixed**: "Render tests clean up their folders" said awaiting review but merged as #662 (the section is gone); the toast clock in "Toasts coalesced" merged as #548 (now said); `perf/events` had no section (now "Shared git status and selective mod redraws"); `fix/fetch-tab` sat inside "Focus history" (now "Mod key sections win from the first start"); "Tab and pane icons" had no `Upstream:` line (now "none yet"). The 2026-11-10 refresh found six stale `Upstream:` lines, corrected in the same change: atomic writes (#722) and unknown document fields (#729) merged; off-screen output and rows kept (#721), mod key sections (#716) and tab reordering's `move_tab` guard (#752) open.
+- **Refresh, verified 2026-11-10**: fork merges from `git log --first-parent c7a05ef..35be845`; upstream PR states from `gh pr list -R herdrdev/herdr-app --author abhijit-s --state all`; #721's files and test from `gh pr view 721`; #718 open with no comments. Line counts were not taken for rows N1 to N19.
 - **Personal mods** (`~/.local/share/chezmoi/dot_config/herdr-app/mods/`), only where a fork feature exists for them: `fetch` needs `recentPlaces()` (55); `agent-deck-spaces` needs `gitStatus` (E1), `space_avatar` (62) and the icon picker (23); `agent-deck-space-menu` needs `nextGitStatus` and the icon picker; `muster` needs `scale_factor` (40); `broadcast` needs mod palette actions (58); `pane-named` reads `auto_name`, `header_info`, `session` and `working_spinner`; `reopen-tab` uses `tab.move`. Dropping a D or B feature upstream means these keep working only on the fork.
 - **Platform coverage**: every feature was tested on macOS only. Highest risk for upstream: text contrast (three shader backends), spinners present-only (GPUI scene on all backends), interface zoom (every mod's sizes), notification GPUI fields (Linux and Windows paths compiled, not run).
