@@ -1049,6 +1049,20 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Files: `src/window/cursor_shapes.rs`, `src/cursor_jumps.rs`, `src/window/cursor_trail.rs`, `src/window.rs`, `src/terminal.rs`, `src/settings.rs`, `src/main.rs`, `defaults/frame/settings/main.js`, `defaults/AGENTS.md`, `defaults/herdr.d.ts`, `scripts/settings.test.ts`, `scripts/bench.py`
 - Upstream: none
 
+### Kitty images by file path on this machine
+
+`fix/kitty-local-file-medium` (branched from `master`): a terminal whose herdr-core runs on this machine accepts kitty graphics images sent by file path (`t=f`). libghostty-vt accepts only inline data (`t=d`) unless its embedder enables more, and Herdr enabled nothing, so `kitten icat`'s probes got `EINVAL: unsupported medium` for the temporary file and shared memory mediums, and snacks.nvim, which sends a local image as a path, never had one drawn.
+
+- Locality: a terminal's address is `tN` here and `<machine>/tN` on another machine (`mirror::machine_of`, already how the header's `{machine}` and resume tell them apart). An address is fixed for the life of a `TerminalView`, and every connection makes a fresh `Vt` in `TerminalView::connect`, so `screen_for(address, cols, rows)` there makes the screen and sets `Vt::allow_image_files(machine_of(address).is_none())`. The screen `attach` makes first is replaced by `connect` before anything is written to it. The app's core is always the local `hc connect`; other machines' terminals are forwarded through it.
+- Remote terminals keep refusing: a path from a program there names that machine's disk, and an `OK` or `EINVAL` reply would tell it which files exist here.
+- File medium only. Temporary files (`t=t`, restricted to a temp folder as Ghostty restricts them) and shared memory (`t=s`) stay off: libghostty-vt deletes either after reading it, and several Herdr windows can attach to one terminal, each with its own `Vt` that reads the command, so the second viewer would find nothing and draw no image. Refused, `kitten icat` falls back to inline data, which every viewer decodes. `t=f` leaves the file alone, so every viewer reads it.
+- A local program can read its own files already, so honouring its paths gives it nothing new. A program in an `ssh` session inside a local terminal is not told apart: its paths are read from this machine's disk, as in Ghostty and kitty, which allow the file medium by default.
+- Inline (`t=d`) is unchanged; the storage limit stays 128 MiB, and file reads are capped by libghostty-vt as inline data is.
+- Three questions: (1) Does the app act on it? Yes: the app decodes kitty images in its own `Vt`, and only it can tell libghostty-vt which mediums to accept. (2) Can only the app see it? Yes: whether a terminal is on this machine and the `Vt`'s options are app state. (3) Can a mod not do it correctly? A mod can't reach the `Vt`. Verdict A: upstream as is, a fix for images that never draw.
+- Tests: `vt::tests::kitty_images_by_path_load_only_when_allowed` (a new `Vt` refuses `t=f`; allowed, a PNG file loads, answers `OK`, decodes to the red pixel and is not deleted; `t=t` with a properly named temp file and `t=s` stay `EINVAL: unsupported medium`, the temp file kept; disallowed again refuses; inline answers `OK` throughout), `terminal::tests::only_this_machines_terminals_load_kitty_images_by_path` (a view of `t1` answers `OK` and of `remote/t1` `EINVAL: unsupported medium` for the same file after a reattach, inline `OK` for both). Removing the locality check or the enable call fails them.
+- Files: `src/vt.rs`, `src/terminal.rs`
+- Upstream: none yet
+
 ### Rejected text experiments
 
 Two text-quality experiments measured against the shipped thicken, contrast and weight settings, and not kept. The numbers are here so neither is tried again without a new reason.

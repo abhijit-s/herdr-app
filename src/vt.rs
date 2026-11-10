@@ -1429,6 +1429,16 @@ impl Vt {
         self.shared.clipboard_write = allow;
     }
 
+    /// Lets programs send kitty images by file path (`t=f`). Only for a
+    /// terminal on this machine: another machine's path names its own disk,
+    /// and the reply would tell a program there which files exist here.
+    /// Temporary files (`t=t`) and shared memory (`t=s`) stay refused: reading
+    /// one deletes it, so a second window showing the same terminal would
+    /// find nothing, while programs fall back to sending the image inline.
+    pub fn allow_image_files(&mut self, allow: bool) {
+        unsafe { ghostty_terminal_set(self.term, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE, &allow as *const _ as *const c_void) };
+    }
+
     pub fn take_clipboard(&mut self) -> [Option<String>; 2] {
         std::mem::take(&mut self.shared.clipboard)
     }
@@ -2052,7 +2062,7 @@ impl Drop for Vt {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn finish_search(vt: &mut Vt) {
@@ -2594,6 +2604,68 @@ mod tests {
         assert_eq!(&bgra[..], &[0, 0, 255, 255]);
         let reply = String::from_utf8(vt.take_replies()).unwrap();
         assert!(reply.contains("i=7") && reply.contains("OK"), "{reply:?}");
+    }
+
+    /// The 1x1 red PNG above, sent with `t`'s `medium` (a path's base64 for
+    /// a file); returns the terminal's reply.
+    pub(crate) fn send_kitty_png(vt: &mut Vt, id: u32, medium: &str, payload: &str) -> String {
+        vt.write(format!("\x1b_Ga=t,f=100,t={medium},i={id},q=0;{payload}\x1b\\").as_bytes());
+        String::from_utf8(vt.take_replies()).unwrap()
+    }
+
+    pub(crate) const RED_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+
+    /// A PNG file in the temp folder, removed when dropped.
+    pub(crate) struct PngFile(pub std::path::PathBuf);
+
+    impl PngFile {
+        pub(crate) fn new(name: &str) -> PngFile {
+            use base64::Engine;
+            let path = std::env::temp_dir().join(format!("{name}-{}.png", std::process::id()));
+            std::fs::write(&path, base64::engine::general_purpose::STANDARD.decode(RED_PNG).unwrap()).unwrap();
+            PngFile(path)
+        }
+
+        pub(crate) fn payload(&self) -> String {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(self.0.to_str().unwrap())
+        }
+    }
+
+    impl Drop for PngFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn kitty_images_by_path_load_only_when_allowed() {
+        let file = PngFile::new("herdr-vt-kitty-file");
+        let mut vt = Vt::new(20, 5);
+        let refused = send_kitty_png(&mut vt, 1, "f", &file.payload());
+        assert!(refused.contains("EINVAL: unsupported medium"), "{refused:?}");
+        assert!(send_kitty_png(&mut vt, 2, "d", RED_PNG).contains("OK"));
+
+        vt.allow_image_files(true);
+        let loaded = send_kitty_png(&mut vt, 3, "f", &file.payload());
+        assert!(loaded.contains("i=3") && loaded.contains("OK"), "{loaded:?}");
+        assert_eq!(vt.image_bgra(3, [0, 0, 1, 1]), Some((1, 1, vec![0, 0, 255, 255])));
+        assert!(file.0.exists(), "a file sent by path is the program's to keep");
+        assert!(send_kitty_png(&mut vt, 4, "d", RED_PNG).contains("OK"));
+
+        // Reading these deletes them, which a second window on the terminal can't survive.
+        let temp = PngFile::new("herdr-vt-tty-graphics-protocol");
+        let refused = send_kitty_png(&mut vt, 5, "t", &temp.payload());
+        assert!(refused.contains("EINVAL: unsupported medium"), "{refused:?}");
+        assert!(temp.0.exists());
+        use base64::Engine;
+        let shm = base64::engine::general_purpose::STANDARD.encode("/herdr-vt-kitty-shm");
+        let refused = send_kitty_png(&mut vt, 6, "s", &shm);
+        assert!(refused.contains("EINVAL: unsupported medium"), "{refused:?}");
+
+        vt.allow_image_files(false);
+        let refused = send_kitty_png(&mut vt, 7, "f", &file.payload());
+        assert!(refused.contains("EINVAL: unsupported medium"), "{refused:?}");
     }
 
     fn virtual_image(vt: &mut Vt, id: u32, placement: u32) {

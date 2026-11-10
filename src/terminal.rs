@@ -263,6 +263,13 @@ impl Grid {
     }
 }
 
+/// A screen for the terminal at `address` (`<machine>/tN` on another machine).
+fn screen_for(address: &str, cols: u16, rows: u16) -> Vt {
+    let mut vt = Vt::new(cols, rows);
+    vt.allow_image_files(crate::mirror::machine_of(address).is_none());
+    vt
+}
+
 /// A cell in device pixels.
 fn device_cell(cell: Size<Pixels>, scale: f32) -> (u32, u32) {
     let px = |v: Pixels| (f32::from(v) * scale).round().max(1.0) as u32;
@@ -370,7 +377,7 @@ impl TerminalView {
             let (cols, rows) = (g.vt.cols, g.vt.rows);
             // The core repaints the whole screen (and history) on attach.
             let cell = device_cell(g.cell, g.scale);
-            g.vt = Vt::new(cols, rows);
+            g.vt = screen_for(&self.address, cols, rows);
             g.vt.resize(cols, rows, cell.0, cell.1);
             if self.search_open {
                 g.vt.start_search(&self.search_query);
@@ -2650,6 +2657,27 @@ mod tests {
             assert!(terminal.lost, "the fitted pane must attempt to attach");
             assert_eq!(terminal.dimensions(), (114, 30));
         });
+    }
+
+    #[gpui::test]
+    fn only_this_machines_terminals_load_kitty_images_by_path(cx: &mut gpui::TestAppContext) {
+        use crate::vt::tests::{PngFile, RED_PNG, send_kitty_png};
+        use gpui::AppContext as _;
+        let file = PngFile::new("herdr-terminal-kitty-file");
+        for (address, by_path) in [("t1", "OK"), ("remote/t1", "EINVAL: unsupported medium")] {
+            let view = cx.new(|cx| super::TerminalView::attach(crate::hc::offline(), address.into(), (40, 5), cx));
+            cx.run_until_parked();
+            // Every connection starts a fresh screen (`connect`), which must keep the rule.
+            view.update(cx, |view, cx| view.reattach(crate::hc::offline(), cx));
+            cx.run_until_parked();
+            view.update(cx, |view, _| {
+                let vt = &mut view.grid.borrow_mut().vt;
+                let reply = send_kitty_png(vt, 1, "f", &file.payload());
+                assert!(reply.contains(by_path), "{address}: {reply:?}");
+                let reply = send_kitty_png(vt, 2, "d", RED_PNG);
+                assert!(reply.contains("OK"), "{address} inline: {reply:?}");
+            });
+        }
     }
 
     #[gpui::test]
