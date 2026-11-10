@@ -2668,6 +2668,54 @@ pub(crate) mod tests {
         assert!(refused.contains("EINVAL: unsupported medium"), "{refused:?}");
     }
 
+    /// A path to a FIFO with no writer used to block libghostty's open, and
+    /// with it the thread that called `Vt::write`: the whole app.
+    #[cfg(unix)]
+    #[test]
+    fn kitty_image_path_to_a_fifo_is_refused_without_blocking() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = std::env::temp_dir().join(format!("herdr-vt-kitty-fifo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("fifo");
+        let c_fifo = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_fifo.as_ptr(), 0o600) }, 0);
+
+        // A blocked open would hang the test forever, so after a deadline a
+        // writer releases it and the test fails on the elapsed time instead.
+        let done = std::sync::Arc::new(AtomicBool::new(false));
+        let watchdog = std::thread::spawn({
+            let done = done.clone();
+            move || {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !done.load(Ordering::Relaxed) {
+                    if Instant::now() > deadline {
+                        let fd = unsafe { libc::open(c_fifo.as_ptr(), libc::O_WRONLY | libc::O_NONBLOCK) };
+                        if fd >= 0 {
+                            unsafe { libc::close(fd) };
+                            return;
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        });
+
+        let mut vt = Vt::new(20, 5);
+        vt.allow_image_files(true);
+        use base64::Engine;
+        let payload = base64::engine::general_purpose::STANDARD.encode(fifo.to_str().unwrap());
+        let start = Instant::now();
+        let reply = send_kitty_png(&mut vt, 9, "f", &payload);
+        let elapsed = start.elapsed();
+        done.store(true, Ordering::Relaxed);
+        watchdog.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(elapsed < Duration::from_secs(1), "the open blocked for {elapsed:?}");
+        assert!(reply.contains("i=9") && !reply.contains("OK"), "{reply:?}");
+    }
+
     fn virtual_image(vt: &mut Vt, id: u32, placement: u32) {
         use base64::Engine;
         let pixels = base64::engine::general_purpose::STANDARD.encode([255u8, 0, 0].repeat(32));

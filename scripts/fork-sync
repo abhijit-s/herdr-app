@@ -8,6 +8,9 @@ git diff --quiet && git diff --cached --quiet || { echo "Commit or stash first."
 git fetch upstream
 git switch -q master
 git merge --no-edit upstream/master
+# vendor/ghostty comes from the fork's Ghostty (FORK.md, "Vendored Ghostty patch"):
+# a clone made before that still fetches from upstream Ghostty, which lacks the commit.
+git submodule sync --recursive
 git submodule update --init --recursive
 git push -q origin master
 
