@@ -947,6 +947,7 @@ What's about the user, never a look:
   cargo). Read at start.
 - `font`, `font_size`, `line_height`, `font_weight`, `font_weight_bold`, `letter_spacing`, `ui_font`: used where the layout doesn't set its
   own. Herdr (main) leaves these unset. Bigger panels: `zoom`.
+- Mods that show code as the terminals do read `settings().terminal_font`: `{ family, size, weight, line_height, fallbacks }`, the terminals' resolved font (the layout's, else the person's, else Herdr's) in a mod's own units. `size` is for `text_size` or an `EditorState`'s `font_size`: it is the terminals' px divided by the panels' scale and text scale, so it draws at the terminals' size whatever `ui_zoom` and `ui_text_scale` are. `weight` is for `font_weight`: `font_weight` less the panels' `ui_font_weight` shift, so it draws at the terminals' weight; a weight whose shifted value would fall outside 100..900 is clamped there, so at the extremes the panel can draw lighter or heavier than the terminals. Both are worked out for the scales of the moment: read them at each render, not once. `line_height` is the terminals' multiple of the font's height (ascent plus descent), not of its size as an element's `line_height` takes it, so use it to size rows rather than passing it on. `fallbacks` is `font_fallbacks`, for information: elements take no fallback list, and the system's fallback fills in missing characters. Panel text always takes the panels' `ui_font_thicken`, `ui_text_contrast` and `ui_text_rendering`, never the terminals' own. `settings().font_family` is the same family, kept for mods that read it. On builds without `terminal_font`, `settings().terminal_font` is `undefined`.
 - `font_ligatures`: programming ligatures are off by default; set `true` to
   enable them in terminal fonts such as JetBrains Mono and Fira Code. The cursor
   and background changes (including selections) break ligatures so individual cells stay clear.
@@ -1324,9 +1325,14 @@ and other interactive controls too.
 `.when(cond, (el) => …)`, `.children([...])`. Controls from `gpui-base`
 (`Button`, `Checkbox`, `Switch`, `InputState` + `Input`) are unstyled: style
 them. Text: `TextView.markdown(id, text)` renders markdown; `EditorState.new({
-language, value, readonly, font_family: settings().font_family, syntax: {
+language, value, readonly, font_family: settings().terminal_font.family,
+font_size: settings().terminal_font.size, syntax: {
 keyword: theme().ansi5, ... } })` + `Editor.new(state)` is a code view (readonly)
-or editor with syntax highlighting, line numbers and folding. A viewer opens
+or editor with syntax highlighting, line numbers and folding. An editor keeps
+the `font_size` it was made with while the panels' scales change under it, so
+it matches the terminals only until `zoom`, `ui_zoom` or `ui_text_scale`
+changes: make it again from a fresh `settings().terminal_font` to follow
+them (or pass a size of your own). A viewer opens
 beside the shell as a pane: `pane.split {direction, mod, props: { file }}`.
 The full surface is in `gpui-kit.d.ts` next to this file.
 
