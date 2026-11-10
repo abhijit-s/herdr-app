@@ -2676,9 +2676,17 @@ pub(crate) mod tests {
     fn kitty_image_path_to_a_fifo_is_refused_without_blocking() {
         use std::os::unix::ffi::OsStrExt;
         use std::sync::atomic::{AtomicBool, Ordering};
-        let dir = std::env::temp_dir().join(format!("herdr-vt-kitty-fifo-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let fifo = dir.join("fifo");
+        struct RemoveDir(std::path::PathBuf);
+        impl Drop for RemoveDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        // A reused process id may find a stale folder, FIFO and all, from an earlier run.
+        let dir = RemoveDir(std::env::temp_dir().join(format!("herdr-vt-kitty-fifo-{}", std::process::id())));
+        let _ = std::fs::remove_dir_all(&dir.0);
+        std::fs::create_dir(&dir.0).unwrap();
+        let fifo = dir.0.join("fifo");
         let c_fifo = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(c_fifo.as_ptr(), 0o600) }, 0);
 
@@ -2711,7 +2719,6 @@ pub(crate) mod tests {
         let elapsed = start.elapsed();
         done.store(true, Ordering::Relaxed);
         watchdog.join().unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
 
         assert!(elapsed < Duration::from_secs(1), "the open blocked for {elapsed:?}");
         assert!(reply.contains("i=9") && !reply.contains("OK"), "{reply:?}");

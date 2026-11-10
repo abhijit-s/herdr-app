@@ -8,7 +8,8 @@ XDG_STATE_HOME and HC_SESSION (so its own core, socket and holder under this
 run's folder), HC_* and XDG_RUNTIME_DIR removed, window opened in the
 background. Everything it starts is stopped and its folder removed at the end;
 the JSON result (and a `sample` of a frozen app on macOS) is written to --out,
-the current folder by default.
+the current folder by default, created if missing. hc calls that time out are
+listed under `hc_timeouts`.
 
 Fixed: after the emit the app answers, the FIFO's reply is an error and no
 reader is left waiting in open(); a PNG replies OK.
@@ -58,6 +59,7 @@ while True:
 class Run:
     def __init__(self, bin, root, session):
         self.bin, self.root, self.session = bin, root, session
+        self.hc_timeouts = []
 
     def env(self):
         e = dict(os.environ)
@@ -88,9 +90,11 @@ class Run:
         return {"args": args[0], "code": code, "reply": reply[:300], "seconds": round(time.monotonic() - start, 3)}
 
     def hc(self, *args, timeout=10):
+        """Runs hc; None (and the call noted in hc_timeouts) if it times out."""
         try:
             return subprocess.run(["hc", *args], env=self.env(), capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
+            self.hc_timeouts.append({"args": list(args), "timeout": timeout})
             return None
 
 
@@ -114,6 +118,7 @@ def main():
     bin = os.path.abspath(a.bin)
     label = a.label or a.target
     out_dir = os.path.abspath(a.out)
+    os.makedirs(out_dir, exist_ok=True)
     # Short and outside $TMPDIR: the core's socket lives under it (macOS socket-path limit).
     root = tempfile.mkdtemp(prefix="k", dir="/var/tmp")
     session = "k" + "".join(c if c.isalnum() else "x" for c in os.path.basename(root)[-3:])
@@ -143,7 +148,8 @@ def main():
         core = run.hc("server", "start", timeout=30)
         if core is None or core.returncode:
             raise SystemExit(f"core startup failed: {core and core.stdout}{core and core.stderr}")
-        status = json.loads(run.hc("server", "status", "--json").stdout or "{}")
+        status_out = run.hc("server", "status", "--json")
+        status = json.loads(status_out.stdout or "{}") if status_out else {}
         result["core"] = {"pid": status.get("pid"), "holders": [h.get("pid") for h in status.get("holders", [])], "socket": status.get("socket")}
         print(f"  core: {result['core']}", flush=True)
         app = subprocess.Popen([bin], env=run.env(), stdin=subprocess.DEVNULL, stdout=log, stderr=log)
@@ -232,6 +238,7 @@ def main():
                 result["app_log_tail"] = f.read()[-3000:]
         except OSError:
             pass
+        result["hc_timeouts"] = run.hc_timeouts
         out = f"{out_dir}/result-{label}.json"
         with open(out, "w") as f:
             json.dump(result, f, indent=1)
