@@ -14,13 +14,16 @@ const key = () => JSON.stringify(location());
 const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
 const countLines = (text) => text ? text.split("\n").length - Number(text.endsWith("\n")) : 0;
 
-// The diff draws in the terminals' font, its rows as tall as a terminal's: the
-// font's height (ascent plus descent, about 1.3 em in monospace faces, which
-// mods can't measure) times line_height. Advances are about 0.64 em.
+// The diff draws in the terminals' font, its rows close to a terminal's: the
+// font's height (ascent plus descent, which mods can't measure) times
+// line_height. 1.3 em is a middle value (JetBrains Mono is about 1.32, Menlo
+// 1.16, Fira Code 1.4). Advances are about 0.64 em. Builds without
+// `terminal_font` keep the family at 11 px in 20 px rows.
 function codeMetrics() {
-  const s = settings(), font = s.terminal_font, em = font.size * (s.ui_text_scale ?? 1);
-  const row = Math.ceil(em * 1.3 * font.line_height);
-  return { font, row, line: row / em, char: em * 0.64, number: Math.max(30, Math.ceil(em * 0.64 * 4)) };
+  const s = settings(), font = s.terminal_font;
+  if (!font) return { font: { family: s.font_family ?? "JetBrains Mono", size: 11 }, row: 20, char: 7, number: 35 };
+  const em = font.size * (s.ui_text_scale ?? 1), row = Math.ceil(em * 1.3 * font.line_height);
+  return { font, row, line: row / em, char: em * 0.64, number: Math.max(30, Math.ceil(em * 0.64 * 5)) };
 }
 
 // Numbers each diff line once, so a frame only draws the rows on screen.
@@ -183,7 +186,7 @@ export default class Changes extends View {
 
   render(cx) {
     if (key() !== this.context) this.refresh(cx);
-    const t = theme(), code = codeMetrics(), add =this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
+    const t = theme(), code = codeMetrics(), add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
     const enabled = Boolean(this.message.trim() && this.root && !this.busy && !this.loading);
     return v_flex().id("changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13).track_focus(this.handle)
       .on_key_down((e, cx) => {
@@ -204,8 +207,9 @@ export default class Changes extends View {
       })).when(!this.files.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : this.root ? "No uncommitted changes" : "No folder")))))
         .child(Scrollbar.vertical("changes-list").absolute().inset_0()))
       .when(this.limited, el => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child("Showing the first 1,000 changed files")))
-      .child(div().flex_1().min_h(0).relative().font_family(code.font.family).font_weight(code.font.weight).text_size(code.font.size).line_height(code.line)
-        .child(div().id("changes-diff-x").size_full().overflow_x_scrollbar()
+      .child(div().flex_1().min_h(0).relative()
+        .child(div().id("changes-diff-x").size_full().overflow_x_scrollbar().font_family(code.font.family).text_size(code.font.size)
+          .when(code.font.weight !== undefined, (e) => e.font_weight(code.font.weight)).when(code.line !== undefined, (e) => e.line_height(code.line))
           .child(div().w_full().min_w(Math.max(300, Math.ceil(this.diffChars * code.char) + 50)).h_full().child(v_virtual_list("changes-diff", this.rows.length, code.row, (i) => String(i),
             (range) => this.rows.slice(range.start, range.end).map((row) => this.diffRow(row, t, code))).size_full())))
         .child(Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0())

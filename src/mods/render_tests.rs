@@ -1341,6 +1341,17 @@ fn changes_diff_follows_the_terminal_font(cx: &mut TestAppContext) {
         assert!(diff.contains(style), "diff lacks {style}: {diff}");
     }
     assert!(tree.contains(r#"v_virtual_list "changes-diff" ×2"#), "both diff lines are rows: {tree}");
+
+    // Builds without `terminal_font`: the family at the old 11 px, no weight or line box.
+    let mut values = fixture(false, props(), updates("current", "current"));
+    let mut settings = crate::settings::Settings::default().for_mods();
+    settings.as_object_mut().unwrap().remove("terminal_font");
+    let family = settings["font_family"].as_str().unwrap().to_owned();
+    values.insert("settings".into(), settings);
+    let tree = describe_with_values(cx, &staged, "mods/changes", values, Some(r#"this.setLines(["+x"]);"#)).unwrap();
+    let diff = tree.lines().find(|l| l.contains(".font_family[")).unwrap_or_else(|| panic!("no diff font: {tree}"));
+    assert!(diff.contains(&format!(".font_family[Str({family:?})]")) && diff.contains(".text_size[Number(11.0)]"), "{diff}");
+    assert!(!diff.contains(".font_weight[") && !diff.contains(".line_height["), "{diff}");
 }
 
 /// Panes as the app publishes them: `label` and `session` filled in by the
