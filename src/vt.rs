@@ -1431,7 +1431,8 @@ impl Vt {
 
     /// Lets programs send kitty images by file path (`t=f`). Only for a
     /// terminal on this machine: another machine's path names its own disk,
-    /// and the reply would tell a program there which files exist here.
+    /// and the reply would tell a program there whether a file exists here,
+    /// its size (probed with `S=`/`O=`) and whether the app can read it.
     /// Temporary files (`t=t`) and shared memory (`t=s`) stay refused: reading
     /// one deletes it, so a second window showing the same terminal would
     /// find nothing, while programs fall back to sending the image inline.
