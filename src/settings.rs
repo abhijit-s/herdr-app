@@ -3364,10 +3364,12 @@ impl Settings {
 
     /// What mods get as `settings()`: these settings, and `ui_scale` (what
     /// their px are drawn at, to divide window px by), the ranges of
-    /// `ui_zoom` and `ui_text_scale`, and `working_spinner`'s presets.
+    /// `ui_zoom` and `ui_text_scale`, `working_spinner`'s presets, and
+    /// `terminal_font`.
     pub fn for_mods(&self) -> serde_json::Value {
         let mut v = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
         if let Some(o) = v.as_object_mut() {
+            o.insert("terminal_font".into(), self.terminal_font_for_mods());
             o.insert("ui_scale".into(), serde_json::json!(self.ui_scale()));
             let in_use = PALETTE.with_borrow(|(p, own)| panels_in_use(self.panel_colors, p, own, self.look_paints_panels));
             o.insert("panels_in_use".into(), serde_json::json!(in_use));
@@ -3376,6 +3378,19 @@ impl Settings {
             o.insert("working_spinner_presets".into(), presets.into());
         }
         v
+    }
+
+    /// The terminals' font in a mod's units, so text drawn with it matches a
+    /// terminal at the default pane zoom: `size` for `text_size` (which takes
+    /// the panels' scale and text scale, where terminals take `zoom` alone)
+    /// and `weight` for `font_weight` (which takes the panels' weight shift,
+    /// where terminals take none). `line_height` is within the 0.8 to 2 the
+    /// terminals' rows keep it to.
+    fn terminal_font_for_mods(&self) -> serde_json::Value {
+        let size = self.terminal_font_size() / (self.ui_scale() * self.ui_text_scale);
+        let weight = (f32::from(self.font_weight.clamp(100, 900)) - self.ui_weight_shift()).clamp(100.0, 900.0);
+        let fallbacks = self.font_fallbacks.as_ref().map_or(&[][..], |f| f.fallback_list());
+        serde_json::json!({ "family": self.font_family, "size": size, "weight": weight, "line_height": self.line_height.clamp(0.8, 2.0), "fallbacks": fallbacks })
     }
 
     /// What the Settings window draws its toast previews from (`toastLooks()`):
@@ -4014,6 +4029,24 @@ mod tests {
         let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
         assert_eq!(settings.font_fallbacks.unwrap().fallback_list(), ["ZedMono Nerd Font Mono", "Menlo"]);
         assert_eq!(Settings::compose(&default, &crate::layout::Look::default(), true).font_fallbacks, None);
+    }
+
+    /// `settings().terminal_font` undoes what panels add to a mod's text, so
+    /// a mod drawing code in it lands on the terminals' family, px and weight.
+    #[test]
+    fn terminal_font_for_mods_is_the_terminals_in_mod_units() {
+        let compose = |person: serde_json::Value| Settings::compose(&serde_json::from_value(person).unwrap(), &crate::layout::Look::default(), true);
+        let d = compose(serde_json::json!({}));
+        assert_eq!(d.for_mods()["terminal_font"], serde_json::json!({ "family": d.font_family, "size": d.font_size, "weight": f32::from(d.font_weight), "line_height": d.line_height, "fallbacks": [] }));
+        let s = compose(serde_json::json!({
+            "font": "JetBrains Mono", "font_size": 12, "line_height": 1.2, "font_weight": 400, "font_fallbacks": ["ZedMono Nerd Font Mono"],
+            "zoom": 1.5, "ui_zoom": 1.2, "ui_text_scale": 1.05, "ui_font_weight": 500,
+        }));
+        let font = &s.for_mods()["terminal_font"];
+        assert_eq!((&font["family"], &font["line_height"], &font["fallbacks"]), (&serde_json::json!("JetBrains Mono"), &serde_json::json!(1.2f32), &serde_json::json!(["ZedMono Nerd Font Mono"])));
+        let size = font["size"].as_f64().unwrap() as f32;
+        assert!((size * s.ui_scale() * s.ui_text_scale - s.terminal_font_size()).abs() < 1e-4, "text_size(size) draws at the terminals' {} px: {size}", s.terminal_font_size());
+        assert_eq!(font["weight"], serde_json::json!(300.0), "font_weight(weight) draws at 400 under the panels' +100");
     }
 
     #[test]

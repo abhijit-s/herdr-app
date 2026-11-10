@@ -1322,6 +1322,27 @@ fn agent_spinners_follow_the_working_spinner_setting(cx: &mut TestAppContext) {
     }
 }
 
+/// The Changes panel draws its diff in the terminals' font: the family, and
+/// the size and weight that land on the terminals' own under the panels'
+/// text scale and weight shift (`settings().terminal_font`), in rows as tall
+/// as the terminals' line height makes theirs.
+#[gpui::test]
+fn changes_diff_follows_the_terminal_font(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut values = fixture(false, props(), updates("current", "current"));
+    let person = json!({"font": "Fixture Mono", "font_size": 15, "font_weight": 400, "line_height": 1.2, "ui_text_scale": 1.25, "ui_font_weight": 500});
+    values.insert("settings".into(), crate::settings::Settings::compose(&serde_json::from_value(person).unwrap(), &crate::layout::Look::default(), true).for_mods());
+    let tree = describe_with_values(cx, &staged, "mods/changes", values, Some(r#"this.setLines(["@@ -1 +1 @@", "+let x = 1;"]);"#)).unwrap();
+    let diff = tree.lines().find(|l| l.contains(".font_family[")).unwrap_or_else(|| panic!("no diff font: {tree}"));
+    // The virtual list's rows aren't described; the line box is the row's
+    // height over the text's, 24 px over 15 (12 at text scale 1.25).
+    for style in [r#".font_family[Str("Fixture Mono")]"#, ".font_weight[Number(300.0)]", ".text_size[Number(12.0)]", ".line_height[Number(1.6)]"] {
+        assert!(diff.contains(style), "diff lacks {style}: {diff}");
+    }
+    assert!(tree.contains(r#"v_virtual_list "changes-diff" ×2"#), "both diff lines are rows: {tree}");
+}
+
 /// Panes as the app publishes them: `label` and `session` filled in by the
 /// app's own resolver (pane_label.rs) from the other fields.
 fn labelled(mut panes: Value) -> Value {
