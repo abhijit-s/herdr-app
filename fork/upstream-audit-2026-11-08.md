@@ -189,7 +189,7 @@ Legend: lines are **added** lines from the merge diff (`git diff M^1...M^2 --num
 
 ## Features added after the first audit
 
-Fork PRs #5 to #32, merged 2026-11-08 to 2026-11-10. Verdicts come from each feature's `FORK.md` section, which records its answers to the three questions; rows N4, N5 and N8, whose sections give none, were judged here. Maintenance PRs with no feature (#4 fork ADR, #8 and #28 docs, #9 review fixes, #10 flaky tests, #12 upstream sync, #13 alert dead code) have no row.
+Fork PRs #5 to #32, merged 2026-11-08 to 2026-11-10. Verdicts come from each feature's `FORK.md` section, which records its answers to the three questions; rows N4, N5, N8 and N10, whose sections give none, were judged here, and N6's verdict follows from its answers. Maintenance PRs with no feature (#4 fork ADR, #8 and #28 docs, #9 review fixes, #10 flaky tests, #12 upstream sync, #13 alert dead code) have no row.
 
 | # | Feature (fork PR) | Layer | Q1 / Q2 / Q3 | Verdict | Effort, risk | Depends on | Upstream overlap |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -204,7 +204,7 @@ Fork PRs #5 to #32, merged 2026-11-08 to 2026-11-10. Verdicts come from each fea
 | N9 | Unknown document fields kept (#17) | app-core (layout documents) | Y / Y / Y | Done | S | none | merged as #729 |
 | N10 | Frame mods keep a code revision (#14) | app-core (`mods.rs`) | fix | A | S | none | PR #719 |
 | N11 | Sub-agent status (#19) | app-core: `{subagents}` in `pane_header_info` + mods | P / N / P | D | M | Pane header info (63) | none |
-| N12 | Sub-agent display (#24) | app-core: setting + palette runs a mod's own commands | N / N / P | D; the palette part B | M | N11 | none |
+| N12 | Sub-agent display (#24) | app-core: setting + palette runs a mod's own commands | P: the palette checks mod.json actions / N / P | D; the palette part B | M | N11 | none |
 | N13 | Sub-agent click (#25) | app-core: setting | N / N / P | D | S | N12 | none |
 | N14 | Agent card info (#26) | app-core: template resolved beside `pane_header_info` | Y / P / P | D | M | Pane header info (63), Shared git status (E1) | none |
 | N15 | Floating panes, phase 1 (#20, #22) | app-core: `Tab.floating`, layout documents | Y / Y / Y | C | L; layout document field | N9 (so older builds keep floats) | #718 (filed) |
