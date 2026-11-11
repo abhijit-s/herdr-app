@@ -216,9 +216,20 @@ pub fn paint(text: &str, cell: Bounds<Pixels>, thickness: Pixels, color: Hsla, w
         window.paint_quad(fill(Bounds::new(point(px(x0), px(y0)), size(px(d), px(d))), color).corner_radii(px(d / 2.0)));
         return;
     }
+    let light = light_thickness(thickness, scale);
     if ('\u{E0B0}'..='\u{E0BF}').contains(&c) {
-        let line = (w / 8.0).round().max(1.0 / scale);
-        powerline(c, (x, y, w, h), line, color, window);
+        let outline = !(c as u32).is_multiple_of(2);
+        let mut path = if outline { PathBuilder::stroke(px(light)) } else { PathBuilder::fill() };
+        let at = |x: f32, y: f32| point(px((dx + x) / scale), px((dy + y) / scale));
+        powerline(c, dw, dh, light * scale, |cmd| match cmd {
+            Cmd::Move(x, y) => path.move_to(at(x, y)),
+            Cmd::Line(x, y) => path.line_to(at(x, y)),
+            Cmd::Cubic(ax, ay, bx, by, x, y) => path.cubic_bezier_to(at(x, y), at(ax, ay), at(bx, by)),
+            Cmd::Close => path.close(),
+        });
+        if let Ok(path) = path.build() {
+            window.paint_path(path, color);
+        }
         return;
     }
     if let Some((rects, alpha)) = blocks(c) {
@@ -229,7 +240,6 @@ pub fn paint(text: &str, cell: Bounds<Pixels>, thickness: Pixels, color: Hsla, w
         }
         return;
     }
-    let light = light_thickness(thickness, scale);
     if let Some((sx, sy)) = arc(c) {
         // Centred as the solid arms are, so the stroke meets them exactly.
         let (cx, cy) = (centre(dx, dw, light, scale), centre(dy, dh, light, scale));
@@ -337,47 +347,60 @@ fn strokes(c: char, cell: Bounds<Pixels>, scale: f32, light: f32, mut rect: impl
     }
 }
 
-/// Nerd Font powerline separators (U+E0B0..E0BF): arrows, half circles and
-/// slants, drawn to fill the cell exactly as Ghostty does. Fonts that have
-/// them rarely match the cell, and fonts that don't fall back to whatever
-/// font has those codes (on Linux, sometimes digits).
-fn powerline(c: char, (x, y, w, h): (f32, f32, f32, f32), line: f32, color: Hsla, window: &mut Window) {
-    let solid = (c as u32).is_multiple_of(2);
-    // A solid shape reaches a device pixel past its cell's sides, so its flat
-    // edge meets the neighbor's color without an anti-aliased seam.
-    let ext = if solid { 1.0 / window.scale_factor() } else { 0.0 };
-    let p = |px_: f32, py_: f32| point(px(x + px_ * w + (px_ - 0.5) * 2.0 * ext), px(y + py_ * h));
-    let mut path = if solid { PathBuilder::fill() } else { PathBuilder::stroke(px(line)) };
-    // Half an ellipse filling the cell: four quarter arcs as cubics.
-    const K: f32 = 0.552_284_8;
-    match c {
-        '\u{E0B0}' | '\u{E0B1}' => path.add_polygon(&[p(0.0, 0.0), p(1.0, 0.5), p(0.0, 1.0)], solid),
-        '\u{E0B2}' | '\u{E0B3}' => path.add_polygon(&[p(1.0, 0.0), p(0.0, 0.5), p(1.0, 1.0)], solid),
-        '\u{E0B4}' | '\u{E0B5}' => {
-            path.move_to(p(0.0, 0.0));
-            path.cubic_bezier_to(p(1.0, 0.5), p(K, 0.0), p(1.0, 0.5 - K / 2.0));
-            path.cubic_bezier_to(p(0.0, 1.0), p(1.0, 0.5 + K / 2.0), p(K, 1.0));
-            if solid {
-                path.close();
-            }
+/// A path step in device pixels from a cell's top-left corner. `Cubic` is
+/// (first control, second control, end).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Cmd {
+    Move(f32, f32),
+    Line(f32, f32),
+    Cubic(f32, f32, f32, f32, f32, f32),
+    Close,
+}
+
+impl Cmd {
+    fn mirrored(self, w: f32) -> Self {
+        match self {
+            Cmd::Move(x, y) => Cmd::Move(w - x, y),
+            Cmd::Line(x, y) => Cmd::Line(w - x, y),
+            Cmd::Cubic(ax, ay, bx, by, x, y) => Cmd::Cubic(w - ax, ay, w - bx, by, w - x, y),
+            Cmd::Close => Cmd::Close,
         }
-        '\u{E0B6}' | '\u{E0B7}' => {
-            path.move_to(p(1.0, 0.0));
-            path.cubic_bezier_to(p(0.0, 0.5), p(1.0 - K, 0.0), p(0.0, 0.5 - K / 2.0));
-            path.cubic_bezier_to(p(1.0, 1.0), p(0.0, 0.5 + K / 2.0), p(1.0 - K, 1.0));
-            if solid {
-                path.close();
-            }
-        }
-        '\u{E0B8}' => path.add_polygon(&[p(0.0, 0.0), p(1.0, 1.0), p(0.0, 1.0)], true),
-        '\u{E0BA}' => path.add_polygon(&[p(1.0, 0.0), p(1.0, 1.0), p(0.0, 1.0)], true),
-        '\u{E0BC}' => path.add_polygon(&[p(0.0, 0.0), p(1.0, 0.0), p(0.0, 1.0)], true),
-        '\u{E0BE}' => path.add_polygon(&[p(0.0, 0.0), p(1.0, 0.0), p(1.0, 1.0)], true),
-        '\u{E0B9}' | '\u{E0BF}' => path.add_polygon(&[p(0.0, 0.0), p(1.0, 1.0)], false),
-        _ => path.add_polygon(&[p(0.0, 1.0), p(1.0, 0.0)], false), // E0BB, E0BD
     }
-    if let Ok(path) = path.build() {
-        window.paint_path(path, color);
+}
+
+/// Nerd Font powerline separators (U+E0B0..E0BF): arrows, half circles and
+/// slants, as Ghostty 1.4.0's powerline.zig draws them across a `w` x `h`
+/// device-pixel cell. Even codes are filled, odd ones are outlines stroked a
+/// light line `t` device px wide with butt caps. Fonts that have these rarely
+/// match the cell, and fonts that don't fall back to whatever font has those
+/// codes (on Linux, sometimes digits).
+fn powerline(c: char, w: f32, h: f32, t: f32, mut emit: impl FnMut(Cmd)) {
+    use Cmd::*;
+    // Diagonals overshoot the corners by half a pixel along their slope.
+    let (sx, sy) = ((w / h).min(1.0) / 2.0, (h / w).min(1.0) / 2.0);
+    // A half circle of radius r, straight between its quarter arcs on a tall cell.
+    let r = w.min(h / 2.0);
+    const K: f32 = (std::f32::consts::SQRT_2 - 1.0) * 4.0 / 3.0;
+    // Ghostty strokes the half circle's outline inset by half the line, so it
+    // stays inside the filled shape: the same arcs with radius q = r - t/2.
+    let (d, q) = (t / 2.0, (r - t / 2.0).max(0.0));
+    let cmds: &[Cmd] = match c {
+        '\u{E0B0}' | '\u{E0B2}' => &[Move(0.0, 0.0), Line(w, h / 2.0), Line(0.0, h), Close],
+        '\u{E0B1}' | '\u{E0B3}' => &[Move(0.0, 0.0), Line(w, h / 2.0), Line(0.0, h)],
+        '\u{E0B4}' | '\u{E0B6}' => &[Move(0.0, 0.0), Cubic(r * K, 0.0, r, r - r * K, r, r), Line(r, h - r), Cubic(r, h - r + r * K, r * K, h, 0.0, h), Close],
+        '\u{E0B5}' | '\u{E0B7}' => &[Move(0.0, d), Cubic(q * K, d, q, r - q * K, q, r), Line(q, h - r), Cubic(q, h - r + q * K, q * K, h - d, 0.0, h - d)],
+        '\u{E0B8}' => &[Move(0.0, 0.0), Line(w, h), Line(0.0, h), Close],
+        '\u{E0BA}' => &[Move(w, 0.0), Line(w, h), Line(0.0, h), Close],
+        '\u{E0BC}' => &[Move(0.0, 0.0), Line(w, 0.0), Line(0.0, h), Close],
+        '\u{E0BE}' => &[Move(0.0, 0.0), Line(w, 0.0), Line(w, h), Close],
+        '\u{E0B9}' | '\u{E0BF}' => &[Move(-sx, -sy), Line(w + sx, h + sy)],
+        '\u{E0BB}' | '\u{E0BD}' => &[Move(w + sx, -sy), Line(-sx, h + sy)],
+        _ => &[],
+    };
+    // Ghostty draws the left-pointing arrow and half circle as mirrors of the right ones.
+    let flip = matches!(c, '\u{E0B2}' | '\u{E0B3}' | '\u{E0B6}' | '\u{E0B7}');
+    for &cmd in cmds {
+        emit(if flip { cmd.mirrored(w) } else { cmd });
     }
 }
 
@@ -648,5 +671,119 @@ mod tests {
         }
         assert_eq!(arc('┌'), None);
         assert_eq!(dashes('─'), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rendered_powerline_stays_on_its_cell() {
+        use gpui::{prelude::*, *};
+
+        struct PowerlineScene;
+        impl Render for PowerlineScene {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().bg(rgb(0)).child(canvas(|_, _, _| {}, move |_, _, window, _| {
+                    for (col, c) in ['\u{E0B0}', '\u{E0B5}', '\u{E0B7}'].into_iter().enumerate() {
+                        paint(&c.to_string(), Bounds::new(point(px(7.3 + col as f32 * 14.0), px(5.7)), size(px(7.0), px(16.0))), px(0.5), rgb(0xffffff).into(), window);
+                    }
+                }).size_full())
+            }
+        }
+        let mut cx = HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            std::sync::Arc::new(()),
+            gpui_platform::current_headless_renderer,
+        );
+        let handle = cx.open_window(size(px(80.), px(40.)), |_, cx| cx.new(|_| PowerlineScene)).unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            // At 2x, a 0.5px underline is a one-device-pixel line.
+            assert_eq!(window.scale_factor(), 2.0);
+            let _ = window.draw(cx);
+            let image = window.render_to_image().unwrap();
+            let at = |col: u32, x: i32, y: i32| image.get_pixel((15 + col as i32 * 28 + x) as u32, (11 + y) as u32).0[0];
+            for y in 0..32 {
+                // The arrow's flat side fills its first column (bar the
+                // corners its slanted sides cut) and stops at the cell.
+                assert_eq!(at(0, -1, y), 0, "E0B0 left of the cell, row {y}");
+                assert_eq!(at(0, 14, y), 0, "E0B0 past the tip, row {y}");
+                if (2..30).contains(&y) {
+                    assert_eq!(at(0, 0, y), 255, "E0B0 row {y}");
+                }
+            }
+            for y in 15..17 {
+                // The half circles' straight run: one column inside the cell's edge.
+                assert_eq!((at(1, 12, y), at(1, 13, y), at(1, 14, y)), (0, 255, 0), "E0B5 row {y}");
+                assert_eq!((at(2, -1, y), at(2, 0, y), at(2, 1, y)), (0, 255, 0), "E0B7 row {y}");
+            }
+            for x in 0..3 {
+                // The top and bottom edges: in the cell's first and last rows, nothing outside.
+                assert_eq!((at(1, x, -1), at(1, x, 32)), (0, 0), "E0B5 column {x}");
+            }
+            // Anti-aliased where they start to curve, so lit only near the butt cap.
+            assert!(at(1, 0, 0) > 200 && at(1, 0, 31) > 200, "E0B5 edge rows");
+        }).unwrap();
+    }
+
+    /// `c`'s powerline path in a `w` x `h` cell at `scale`, in device pixels,
+    /// and its light line's width, with the font's underline `thickness` px.
+    fn powerline_cmds(c: char, (w, h): (f32, f32), scale: f32, thickness: f32) -> (Vec<Cmd>, f32) {
+        let (_, _, dw, dh) = device_cell(Bounds::new(point(px(0.0), px(0.0)), size(px(w), px(h))), scale);
+        let t = light_thickness(px(thickness), scale) * scale;
+        let mut cmds = Vec::new();
+        powerline(c, dw, dh, t, |cmd| cmds.push(cmd));
+        (cmds, t)
+    }
+
+    #[test]
+    fn half_circle_outline_is_a_light_line_inside_the_shape() {
+        // Ghostty's drawE0B5 insets the outline by half its width, so the
+        // stroke stays inside the cell: (cell, scale, underline px) ->
+        // device rows of the top edge, columns and rows of the straight
+        // run, rows of the bottom edge.
+        let cases = [
+            ((7.0, 16.0), 1.0, 1.0, (0.0, 1.0), (6.0, 7.0), (7.0, 9.0), (15.0, 16.0)),
+            ((7.0, 16.0), 2.0, 1.0, (0.0, 2.0), (12.0, 14.0), (14.0, 18.0), (30.0, 32.0)),
+            ((14.0, 32.0), 1.0, 2.0, (0.0, 2.0), (12.0, 14.0), (14.0, 18.0), (30.0, 32.0)),
+            ((14.0, 32.0), 2.0, 2.0, (0.0, 4.0), (24.0, 28.0), (28.0, 36.0), (60.0, 64.0)),
+            // A 1px underline on a 12px-wide cell gives Ghostty's 1px line,
+            // not an eighth of the cell (2px).
+            ((12.0, 24.0), 1.0, 1.0, (0.0, 1.0), (11.0, 12.0), (12.0, 12.0), (23.0, 24.0)),
+        ];
+        for (cell, scale, thickness, top, cols, rows, bottom) in cases {
+            let (cmds, t) = powerline_cmds('\u{E0B5}', cell, scale, thickness);
+            let [Cmd::Move(0.0, y0), Cmd::Cubic(.., x1, y1), Cmd::Line(x2, y2), Cmd::Cubic(.., 0.0, y3)] = cmds[..] else { panic!("{cmds:?}") };
+            assert_eq!(x1, x2, "{cell:?} at {scale}x");
+            let band = |at: f32| (at - t / 2.0, at + t / 2.0);
+            assert_eq!((band(y0), band(x2), (y1, y2), band(y3)), (top, cols, rows, bottom), "{cell:?} at {scale}x");
+            // The left-facing one mirrors it onto the cell's first columns.
+            let (mirrored, _) = powerline_cmds('\u{E0B7}', cell, scale, thickness);
+            let width = (cell.0 * scale).round();
+            assert_eq!(mirrored, cmds.iter().map(|cmd| cmd.mirrored(width)).collect::<Vec<_>>());
+            assert!(matches!(mirrored[2], Cmd::Line(x, _) if band(x) == (width - cols.1, width - cols.0)));
+        }
+    }
+
+    #[test]
+    fn powerline_shapes_follow_ghosttys_geometry() {
+        use Cmd::*;
+        const K: f32 = (std::f32::consts::SQRT_2 - 1.0) * 4.0 / 3.0;
+        // Chevrons: corner to the middle of the far side and back, a light line wide.
+        assert_eq!(powerline_cmds('\u{E0B1}', (7.0, 16.0), 1.0, 1.0), (vec![Move(0.0, 0.0), Line(7.0, 8.0), Line(0.0, 16.0)], 1.0));
+        assert_eq!(powerline_cmds('\u{E0B3}', (7.0, 16.0), 2.0, 1.0), (vec![Move(14.0, 0.0), Line(0.0, 16.0), Line(14.0, 32.0)], 2.0));
+        assert_eq!(powerline_cmds('\u{E0B1}', (12.0, 24.0), 1.0, 1.0).1, 1.0);
+        // Solid shapes fill exactly the cell, nothing past its sides.
+        assert_eq!(powerline_cmds('\u{E0B0}', (7.0, 16.0), 2.0, 1.0).0, vec![Move(0.0, 0.0), Line(14.0, 16.0), Line(0.0, 32.0), Close]);
+        assert_eq!(powerline_cmds('\u{E0B2}', (7.0, 16.0), 1.0, 1.0).0, vec![Move(7.0, 0.0), Line(0.0, 8.0), Line(7.0, 16.0), Close]);
+        assert_eq!(powerline_cmds('\u{E0BC}', (7.0, 16.0), 1.0, 1.0).0, vec![Move(0.0, 0.0), Line(7.0, 0.0), Line(0.0, 16.0), Close]);
+        // A half circle, not a half ellipse: radius min(w, h/2), straight between its arcs.
+        assert_eq!(powerline_cmds('\u{E0B4}', (7.0, 16.0), 1.0, 1.0).0,
+            vec![Move(0.0, 0.0), Cubic(7.0 * K, 0.0, 7.0, 7.0 - 7.0 * K, 7.0, 7.0), Line(7.0, 9.0), Cubic(7.0, 9.0 + 7.0 * K, 7.0 * K, 16.0, 0.0, 16.0), Close]);
+        assert_eq!(powerline_cmds('\u{E0B6}', (12.0, 16.0), 1.0, 1.0).0,
+            vec![Move(12.0, 0.0), Cubic(12.0 - 8.0 * K, 0.0, 4.0, 8.0 - 8.0 * K, 4.0, 8.0), Line(4.0, 8.0), Cubic(4.0, 8.0 + 8.0 * K, 12.0 - 8.0 * K, 16.0, 12.0, 16.0), Close]);
+        // Diagonals overshoot each corner by half a pixel along their slope.
+        assert_eq!(powerline_cmds('\u{E0B9}', (8.0, 16.0), 1.0, 1.0).0, vec![Move(-0.25, -0.5), Line(8.25, 16.5)]);
+        assert_eq!(powerline_cmds('\u{E0BD}', (8.0, 16.0), 2.0, 1.0).0, vec![Move(16.25, -0.5), Line(-0.25, 32.5)]);
+        for c in '\u{E0B0}'..='\u{E0BF}' {
+            assert!(is_sprite(&c.to_string()) && !powerline_cmds(c, (7.0, 16.0), 1.0, 1.0).0.is_empty(), "{c:?}");
+        }
     }
 }
