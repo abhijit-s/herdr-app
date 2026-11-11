@@ -203,7 +203,18 @@ impl EventLines {
             }
             "status" => set(&["status", "records", "reported"]),
             "turn" => set(&["turn"]),
-            "title" => set(&["title"]),
+            "title" => {
+                // An agent's spinner frame changes nothing the app shows (`shown_title`):
+                // kept, so the next real change compares right, but no relisting.
+                let news = match (t["title"].as_str(), data["title"].as_str()) {
+                    (Some(old), Some(new)) => {
+                        crate::terminal::shown_title(old) != crate::terminal::shown_title(new)
+                    }
+                    _ => t["title"] != data["title"],
+                };
+                t["title"] = data["title"].clone();
+                return news;
+            }
             "labels" => set(&["labels"]),
             "keep" => set(&["keep"]),
             "size" => set(&["cols", "rows"]),
@@ -653,6 +664,74 @@ mod tests {
         }}).to_string();
         assert_eq!(connect_error(&stderr).unwrap().to_string(), "the core pipe cannot be accessed\n\nstop it with hc server stop in an elevated terminal");
         assert!(connect_error("not JSON").is_none());
+    }
+
+    /// Claude Code spins its title about once a second while it works: each
+    /// frame alone must not relist every terminal, but the text it shows must.
+    #[test]
+    fn a_spinner_frame_in_a_title_is_no_terminal_news() {
+        let event = |seq: u64, t: &str, title: Value| {
+            format!(
+                "{}\n",
+                json!({"method": "event", "params": {"seq": seq, "type": "title", "terminal": t, "data": {"title": title}}})
+            )
+        };
+        let rec = json!({"address": "t1", "state": "live", "title": "\u{2733} Fix the tests", "labels": {}, "status": null});
+        let mut lines = EventLines::new(&json!({"seq": 1, "terminals": [rec]}));
+        let title = |l: &EventLines| l.live()["terminals"][0]["title"].clone();
+        for (seq, frame) in [
+            (2, "\u{25d0} Fix the tests"),
+            (3, "\u{25d1} Fix the tests"),
+            (4, "\u{2802} Fix the tests"),
+            (5, "\u{2733} Fix the tests"),
+        ] {
+            assert!(
+                !lines
+                    .push(event(seq, "t1", json!(frame)).as_bytes())
+                    .terminals,
+                "{frame}: only the spinner moved"
+            );
+            assert_eq!(title(&lines), frame, "the record still keeps the raw title");
+        }
+        assert!(
+            lines
+                .push(event(6, "t1", json!("\u{25d0} Fix the build")).as_bytes())
+                .terminals,
+            "the words changed"
+        );
+        assert_eq!(title(&lines), "\u{25d0} Fix the build");
+        assert!(
+            !lines
+                .push(event(7, "t1", json!("Fix the build")).as_bytes())
+                .terminals,
+            "the spinner went: the shown title is the same"
+        );
+        assert_eq!(title(&lines), "Fix the build");
+        assert!(
+            !lines
+                .push(event(8, "t1", json!("Fix the build")).as_bytes())
+                .terminals,
+            "the same title again"
+        );
+        assert!(
+            lines.push(event(9, "t1", json!(null)).as_bytes()).terminals,
+            "a title that went"
+        );
+        assert!(
+            !lines
+                .push(event(10, "t1", json!(null)).as_bytes())
+                .terminals
+        );
+        assert!(
+            lines.push(event(11, "t1", json!("")).as_bytes()).terminals,
+            "null to empty is a change in the record"
+        );
+        assert!(
+            lines
+                .push(event(12, "t1", json!("~/src")).as_bytes())
+                .terminals,
+            "a shell's folder title"
+        );
     }
 
     #[test]
