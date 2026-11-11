@@ -1,8 +1,8 @@
 // The bar on top of a peeked agent (an overlay the agents list opens for a
 // sub-agent, or a terminal address link): who it is and how it's doing, ↗ to
 // go to its pane (or, without one, keep it as a tab of the shown space), ✕ to
-// close (and end the program too with close_ends_program). Props: { terminal,
-// overlay, close_ends_program }.
+// close (a popup's program ends with it, as the app does for any way the
+// overlay closes). Props: { terminal, overlay }.
 
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
@@ -51,7 +51,7 @@ export default class Peek extends View {
 
   render() {
     const t = theme();
-    const { terminal, overlay, close_ends_program } = props() ?? {};
+    const { terminal, overlay } = props() ?? {};
     const k = this.term();
     const st = this.status();
     const pic = icon(k?.program, 14, t.foreground);
@@ -80,10 +80,7 @@ export default class Peek extends View {
         }),
       )
       .child(
-        this.button(t, "close", "✕", () => {
-          if (close_ends_program) run("terminal.kill", { terminal });
-          closeOverlay(overlay);
-        }),
+        this.button(t, "close", "✕", () => closeOverlay(overlay)),
       );
   }
 }

@@ -724,9 +724,8 @@ The main ones:
   this computer without a parent and peek at it in one step; the terminal is removed
   when it ends unless `wait`, which keeps it until `{"wait": terminal}` on the
   control socket returns its `exit_code` (and `signal`), or for a minute; `hold`
-  keeps the popup up until a key; ✕ hides the popup and the program keeps
-  running until the next popup, which ends the program the last popup started,
-  open or hidden; `herdr-app popup` wraps it),
+  keeps the popup up until a key; closing the popup (✕, Esc, the backdrop) ends
+  its program, and so does the next popup; keep-as-tab keeps it; `herdr-app popup` wraps it),
   `terminal.show {terminal?, pane?}`, `terminal.search` (screen and scrollback;
   find bar state stays with that terminal), `terminal.copy {terminal?}` (the selection), `terminal.copy_all {terminal?}` (the screen and all the history the core keeps, as plain text: what `hc read` prints, without the blank lines below the last text; a toast says how many lines), `terminal.copy_path {terminal?}` (the folder the terminal is in), `terminal.copy_last_output {terminal?}` (the output of the last command that finished, wrapped lines joined, without trailing blank lines; see "Copy last output" below), `terminal.paste {terminal?}` (copied
   files, such as Finder's or a clipboard manager's image, as if dropped; an image

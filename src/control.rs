@@ -201,8 +201,7 @@ const POPUP_USAGE: &str = "\
 Usage: herdr-app popup [--cwd DIR] [--hold] [--wait] [--size WxH] [--] <command> [args...]
 
 Runs a command on this computer in a popup over the shown tab (terminal.popup).
-The popup closes when the command ends; its ✕ only hides it, and the command
-keeps running (`hc ls`, `hc kill <t>`).
+The popup closes when the command ends; closing it (✕, Esc) ends the command.
 
   --cwd DIR    start in DIR (default: here)
   --hold       keep the popup up after the command ends, until a key
