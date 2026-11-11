@@ -65,47 +65,70 @@ fn dashes(c: char) -> Option<(u8, bool, bool)> {
     })
 }
 
-/// Rectangles in cell fractions (x0, y0, x1, y1) and an alpha, for block elements.
-fn blocks(c: char) -> Option<(Vec<[f32; 4]>, f32)> {
-    let e = 1.0 / 8.0;
-    let r = |x0: f32, y0: f32, x1: f32, y1: f32| [x0, y0, x1, y1];
-    let quads = |ul: bool, ur: bool, ll: bool, lr: bool| {
-        let mut v = Vec::new();
-        if ul { v.push(r(0.0, 0.0, 0.5, 0.5)) }
-        if ur { v.push(r(0.5, 0.0, 1.0, 0.5)) }
-        if ll { v.push(r(0.0, 0.5, 0.5, 1.0)) }
-        if lr { v.push(r(0.5, 0.5, 1.0, 1.0)) }
-        v
+const BLOCKS: std::ops::RangeInclusive<char> = '\u{2580}'..='\u{259F}';
+
+/// Block elements (U+2580..U+259F) as Ghostty 1.4.0's block.zig draws them
+/// on a `w` x `h` device-pixel cell: disjoint rectangles (x0, y0, x1, y1)
+/// and the coverage byte of its shade.
+fn blocks(c: char, w: i32, h: i32) -> Option<(Vec<[i32; 4]>, u8)> {
+    if !BLOCKS.contains(&c) {
+        return None;
+    }
+    // blockShade: round(cell * fraction) pixels against one edge, so a
+    // right or lower block keeps its rounded size and gives up the remainder.
+    let size = |len: i32, f: f64| (len as f64 * f).round() as i32;
+    let eighths = |n: u32| n as f64 / 8.0;
+    // fill's Fraction.min / max for the quadrants: the far half starts at
+    // len - round(len / 2), so on an odd cell both halves cover the middle pixel.
+    let (left_end, right_start) = (size(w, 0.5), w - size(w, 0.5));
+    let (top_end, bottom_start) = (size(h, 0.5), h - size(h, 0.5));
+    // The halves overlap on an odd cell's middle row and column, and Ghostty's
+    // coverage mask counts those pixels once, so the quadrants are emitted as
+    // disjoint bands (above, on and below the middle row) for a translucent
+    // (faint) colour to blend once.
+    let quads = |tl: bool, tr: bool, bl: bool, br: bool| {
+        let mut v = Vec::with_capacity(6);
+        for (y0, y1, l, r) in [(0, bottom_start, tl, tr), (bottom_start, top_end, tl || bl, tr || br), (top_end, h, bl, br)] {
+            if l && r {
+                v.push([0, y0, w, y1]);
+            } else if l {
+                v.push([0, y0, left_end, y1]);
+            } else if r {
+                v.push([right_start, y0, w, y1]);
+            }
+        }
+        (v, 0xff)
     };
-    Some(match c {
-        '▀' => (vec![r(0.0, 0.0, 1.0, 0.5)], 1.0),
-        '▁'..='█' => {
-            let n = (c as u32 - '▁' as u32 + 1) as f32;
-            (vec![r(0.0, 1.0 - n * e, 1.0, 1.0)], 1.0)
-        }
-        '▉'..='▏' => {
-            let n = (8 - (c as u32 - '▉' as u32 + 1)) as f32;
-            (vec![r(0.0, 0.0, n * e, 1.0)], 1.0)
-        }
-        '▐' => (vec![r(0.5, 0.0, 1.0, 1.0)], 1.0),
-        '░' => (vec![r(0.0, 0.0, 1.0, 1.0)], 0.25),
-        '▒' => (vec![r(0.0, 0.0, 1.0, 1.0)], 0.5),
-        '▓' => (vec![r(0.0, 0.0, 1.0, 1.0)], 0.75),
-        '▔' => (vec![r(0.0, 0.0, 1.0, e)], 1.0),
-        '▕' => (vec![r(1.0 - e, 0.0, 1.0, 1.0)], 1.0),
-        '▖' => (quads(false, false, true, false), 1.0),
-        '▗' => (quads(false, false, false, true), 1.0),
-        '▘' => (quads(true, false, false, false), 1.0),
-        '▙' => (quads(true, false, true, true), 1.0),
-        '▚' => (quads(true, false, false, true), 1.0),
-        '▛' => (quads(true, true, true, false), 1.0),
-        '▜' => (quads(true, true, false, true), 1.0),
-        '▝' => (quads(false, true, false, false), 1.0),
-        '▞' => (quads(false, true, true, false), 1.0),
-        '▟' => (quads(false, true, true, true), 1.0),
-        _ => return None,
-    })
+    let full = |shade: u8| (vec![[0, 0, w, h]], shade);
+    let (mut rects, shade) = match c {
+        '▀' => (vec![[0, 0, w, size(h, 0.5)]], 0xff),
+        '▁'..='▇' => (vec![[0, h - size(h, eighths(c as u32 - '▁' as u32 + 1)), w, h]], 0xff),
+        '█' => full(0xff),
+        '▉'..='▏' => (vec![[0, 0, size(w, eighths(7 - (c as u32 - '▉' as u32))), h]], 0xff),
+        '▐' => (vec![[w - size(w, 0.5), 0, w, h]], 0xff),
+        // Ghostty's Shade: light 0x40, medium 0x80, dark 0xc0.
+        '░' => full(0x40),
+        '▒' => full(0x80),
+        '▓' => full(0xc0),
+        '▔' => (vec![[0, 0, w, size(h, eighths(1))]], 0xff),
+        '▕' => (vec![[w - size(w, eighths(1)), 0, w, h]], 0xff),
+        '▖' => quads(false, false, true, false),
+        '▗' => quads(false, false, false, true),
+        '▘' => quads(true, false, false, false),
+        '▙' => quads(true, false, true, true),
+        '▚' => quads(true, false, false, true),
+        '▛' => quads(true, true, true, false),
+        '▜' => quads(true, true, false, true),
+        '▝' => quads(false, true, false, false),
+        '▞' => quads(false, true, true, false),
+        '▟' => quads(false, true, true, true),
+        _ => unreachable!("{c:?} is in U+2580..U+259F"),
+    };
+    // A fraction of a tiny cell can round to nothing, which Ghostty skips.
+    rects.retain(|r| r[0] < r[2] && r[1] < r[3]);
+    Some((rects, shade))
 }
+
 
 /// Ghostty's dot sizing, with vertical spacing even across adjacent cells.
 /// Bit order is 1,2,3,7 down the left, 4,5,6,8 down the right.
@@ -167,7 +190,7 @@ const RECORD: char = '\u{23FA}';
 pub fn is_sprite(text: &str) -> bool {
     let mut chars = text.chars();
     match (chars.next(), chars.next()) {
-        (Some(c), None) => lines(c).is_some() || blocks(c).is_some() || ('\u{2800}'..='\u{28FF}').contains(&c) || ('\u{E0B0}'..='\u{E0BF}').contains(&c) || (c == RECORD && !cfg!(target_os = "macos")),
+        (Some(c), None) => lines(c).is_some() || BLOCKS.contains(&c) || ('\u{2800}'..='\u{28FF}').contains(&c) || ('\u{E0B0}'..='\u{E0BF}').contains(&c) || (c == RECORD && !cfg!(target_os = "macos")),
         _ => false,
     }
 }
@@ -232,11 +255,12 @@ pub fn paint(text: &str, cell: Bounds<Pixels>, thickness: Pixels, color: Hsla, w
         }
         return;
     }
-    if let Some((rects, alpha)) = blocks(c) {
+    if let Some((rects, shade)) = blocks(c, dw as i32, dh as i32) {
         let mut color = color;
-        color.a *= alpha;
+        color.a *= shade as f32 / 255.0;
         for [x0, y0, x1, y1] in rects {
-            rect(x + x0 * w, y + y0 * h, x + x1 * w, y + y1 * h, color);
+            rect((dx + x0 as f32) / scale, (dy + y0 as f32) / scale,
+                (dx + x1 as f32) / scale, (dy + y1 as f32) / scale, color);
         }
         return;
     }
@@ -501,8 +525,9 @@ mod tests {
             assert!(lines(c).is_some(), "{c} has no entry");
         }
         for c in '\u{2580}'..='\u{259F}' {
-            assert!(blocks(c).is_some(), "{c} has no entry");
+            assert!(blocks(c, 7, 16).is_some() && is_sprite(&c.to_string()), "{c} has no entry");
         }
+        assert!(blocks('\u{257F}', 7, 16).is_none() && blocks('\u{25A0}', 7, 16).is_none());
     }
 
     #[cfg(target_os = "linux")]
@@ -759,6 +784,112 @@ mod tests {
             let width = (cell.0 * scale).round();
             assert_eq!(mirrored, cmds.iter().map(|cmd| cmd.mirrored(width)).collect::<Vec<_>>());
             assert!(matches!(mirrored[2], Cmd::Line(x, _) if band(x) == (width - cols.1, width - cols.0)));
+        }
+    }
+
+    /// The device pixels block element `c` covers in a `w` x `h` cell at
+    /// `scale`, and its coverage byte. Panics if two rectangles overlap.
+    fn block_mask(c: char, (w, h): (f32, f32), scale: f32) -> (Vec<Vec<bool>>, u8) {
+        let (_, _, dw, dh) = device_cell(Bounds::new(point(px(0.0), px(0.0)), size(px(w), px(h))), scale);
+        let (rects, shade) = blocks(c, dw as i32, dh as i32).unwrap();
+        let mut mask = vec![vec![false; dw as usize]; dh as usize];
+        for [x0, y0, x1, y1] in rects {
+            assert!(0 <= x0 && x0 < x1 && x1 <= dw as i32 && 0 <= y0 && y0 < y1 && y1 <= dh as i32, "{c} {rects:?}", rects = [x0, y0, x1, y1]);
+            for row in &mut mask[y0 as usize..y1 as usize] {
+                for px in &mut row[x0 as usize..x1 as usize] {
+                    assert!(!*px, "{c}: overlapping rectangles in {w}x{h} at {scale}x");
+                    *px = true;
+                }
+            }
+        }
+        (mask, shade)
+    }
+
+    #[test]
+    fn blocks_cover_ghosttys_device_pixels() {
+        // Worked by hand from Ghostty 1.4.0's block.zig and common.zig,
+        // rounding half away from zero: (cell, scale, device size,
+        // round(height * n / 8) and round(width * n / 8) for n = 1..7).
+        // A half is n = 4: round(len / 2) pixels, against its edge.
+        let cases = [
+            ((7.0, 16.0), 1.0, (7, 16), [2, 4, 6, 8, 10, 12, 14], [1, 2, 3, 4, 4, 5, 6]),
+            ((7.0, 16.0), 2.0, (14, 32), [4, 8, 12, 16, 20, 24, 28], [2, 4, 5, 7, 9, 11, 12]),
+            ((14.0, 32.0), 1.0, (14, 32), [4, 8, 12, 16, 20, 24, 28], [2, 4, 5, 7, 9, 11, 12]),
+            ((14.0, 32.0), 2.0, (28, 64), [8, 16, 24, 32, 40, 48, 56], [4, 7, 11, 14, 18, 21, 25]),
+            ((9.0, 19.0), 1.0, (9, 19), [2, 5, 7, 10, 12, 14, 17], [1, 2, 3, 5, 6, 7, 8]),
+            ((9.0, 19.0), 2.0, (18, 38), [5, 10, 14, 19, 24, 29, 33], [2, 5, 7, 9, 11, 14, 16]),
+        ];
+        for (cell, scale, (dw, dh), heights, widths) in cases {
+            let check = |c: char, shade: u8, on: &dyn Fn(usize, usize) -> bool| {
+                assert_eq!(block_mask(c, cell, scale), (mask_of((dw, dh), on), shade), "{c} in {cell:?} at {scale}x");
+            };
+            let (half_w, half_h) = (widths[3], heights[3]);
+            for n in 1..=7 {
+                let lower = char::from_u32('▁' as u32 + n as u32 - 1).unwrap();
+                check(lower, 0xff, &|_, y| y >= dh - heights[n - 1]);
+                let left = char::from_u32('▏' as u32 + 1 - n as u32).unwrap();
+                check(left, 0xff, &|x, _| x < widths[n - 1]);
+            }
+            check('▀', 0xff, &|_, y| y < half_h);
+            check('▐', 0xff, &|x, _| x >= dw - half_w);
+            check('▔', 0xff, &|_, y| y < heights[0]);
+            check('▕', 0xff, &|x, _| x >= dw - widths[0]);
+            check('█', 0xff, &|_, _| true);
+            check('░', 0x40, &|_, _| true);
+            check('▒', 0x80, &|_, _| true);
+            check('▓', 0xc0, &|_, _| true);
+            // Quadrants: fill(.zero, .half) ends at round(len / 2), and
+            // fill(.half, .full) starts at len - round(len / 2).
+            let (l, r) = (|x: usize| x < half_w, |x: usize| x >= dw - half_w);
+            let (t, b) = (|y: usize| y < half_h, |y: usize| y >= dh - half_h);
+            check('▘', 0xff, &|x, y| l(x) && t(y));
+            check('▝', 0xff, &|x, y| r(x) && t(y));
+            check('▖', 0xff, &|x, y| l(x) && b(y));
+            check('▗', 0xff, &|x, y| r(x) && b(y));
+            check('▚', 0xff, &|x, y| (l(x) && t(y)) || (r(x) && b(y)));
+            check('▞', 0xff, &|x, y| (r(x) && t(y)) || (l(x) && b(y)));
+            check('▙', 0xff, &|x, y| (l(x) && t(y)) || b(y));
+            check('▛', 0xff, &|x, y| t(y) || (l(x) && b(y)));
+            check('▜', 0xff, &|x, y| t(y) || (r(x) && b(y)));
+            check('▟', 0xff, &|x, y| (r(x) && t(y)) || b(y));
+        }
+        // An odd cell's halves share its middle pixel: ▐ starts at column 3 of 7.
+        assert_eq!(block_mask('▐', (7.0, 16.0), 1.0).0[0], [false, false, false, true, true, true, true]);
+    }
+
+    #[test]
+    fn blocks_land_on_device_pixels_at_fractional_origins() {
+        // paint maps a block's device rectangle to (dx + x0) / scale and
+        // snaps it back: every edge must come back as that exact device pixel.
+        for scale in [1.0f32, 1.25, 1.5, 2.0, 3.0] {
+            for i in 0..200 {
+                let (x, y) = (7.3 + i as f32 * 7.13, 5.7 + i as f32 * 16.37);
+                let (dx, dy, dw, dh) = device_cell(Bounds::new(point(px(x), px(y)), size(px(7.13), px(16.37))), scale);
+                for c in BLOCKS {
+                    for [x0, y0, x1, y1] in blocks(c, dw as i32, dh as i32).unwrap().0 {
+                        for (origin, edge) in [(dx, x0), (dy, y0), (dx, x1), (dy, y1)] {
+                            let logical = (origin + edge as f32) / scale;
+                            assert_eq!((logical * scale).round(), origin + edge as f32, "{c} at {scale}x, cell {i}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn blocks_stay_disjoint_in_any_cell() {
+        for w in 0..40 {
+            for h in 0..80 {
+                for c in BLOCKS {
+                    let (rects, _) = blocks(c, w, h).unwrap();
+                    let area: i32 = rects.iter().map(|[x0, y0, x1, y1]| (x1 - x0) * (y1 - y0)).sum();
+                    let lit = (0..w).flat_map(|x| (0..h).map(move |y| (x, y)))
+                        .filter(|&(x, y)| rects.iter().any(|&[x0, y0, x1, y1]| x0 <= x && x < x1 && y0 <= y && y < y1)).count();
+                    assert_eq!(area as usize, lit, "{c} in {w}x{h}: {rects:?}");
+                    assert!(rects.iter().all(|&[x0, y0, x1, y1]| 0 <= x0 && x0 < x1 && x1 <= w && 0 <= y0 && y0 < y1 && y1 <= h), "{c} in {w}x{h}: {rects:?}");
+                }
+            }
         }
     }
 
