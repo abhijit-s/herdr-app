@@ -1,5 +1,5 @@
 import { View, div, svg, image } from "gpui-kit";
-import { h_flex } from "gpui-base";
+import { h_flex, ScrollHandle } from "gpui-base";
 import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
 
 // The person's working_spinner: the ring, or frames in the terminal font,
@@ -41,6 +41,7 @@ export default class Tabs extends View {
     this.press = null;
     this.drag = null;
     this.handle = cx.focus_handle();
+    this.scroll = ScrollHandle.new();
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
   }
 
@@ -122,6 +123,13 @@ export default class Tabs extends View {
     const shown = space?.tabs ?? [];
     // Read once: every read copies all panes.
     const ps = panes();
+    const active = shown.findIndex(tab => tab.active);
+    const selected = shown[active]?.id;
+    if (selected !== this.selected || active !== this.selectedIndex) {
+      this.selected = selected;
+      this.selectedIndex = active;
+      if (active >= 0) this.scroll.scroll_to_item(active);
+    }
     const stop = (_e, cx) => cx.stop_propagation();
     const button = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", stop).on_click(action).child(label);
@@ -144,6 +152,8 @@ export default class Tabs extends View {
     const line = (side, first) => div().absolute().top(4).h(21).w(2).rounded(1).bg(t.accent)
       .when(side === "left", el => el.left(first ? 0 : -2.5)).when(side === "right", el => el.right(-2.5));
     const item = (c, i) => face(c, false).id(`tab-${c.id}`).relative()
+        // A rename or status dot on this or an earlier tab can push the active one out.
+        .when(i <= active, el => el.on_size_change((_size, cx) => { this.scroll.scroll_to_item(active); cx.notify(); }))
         .when(c.id === drag?.id, el => el.opacity(0.4))
         .when(!drag, el => el.hover(s => s.bg(t.hover)))
         .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressTab(c, e); if (e.click_count === 2) run("tab.rename", { id: c.id }); })
@@ -183,7 +193,8 @@ export default class Tabs extends View {
       .track_focus(this.handle)
       .on_key_down((e, cx) => { if (e.key === "escape" && this.drag) { cx.stop_propagation(); this.endDrag(cx); } })
       .on_scroll_wheel(e => { if (!this.drag && Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
-      .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar()
+      .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar().track_scroll(this.scroll)
+        .on_size_change((_size, cx) => { if (active >= 0) { this.scroll.scroll_to_item(active); cx.notify(); } })
         .on_mouse_move(e => { this.row = e.bounds; }).children(shown.map(item))
         // Past the last tab: drop at the end.
         .child(div().id("tab-tail").flex_1().min_w(24).h_full().on_mouse_move((e, cx) => this.movePointer(e, shown.length, cx))))

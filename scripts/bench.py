@@ -5,7 +5,7 @@
 
 Runs the app on its own temporary home and core session, so nothing of yours
 is touched; prints the artifact folder and keeps it after cleanup. Requires hc
-on PATH and the Python running this script. Both scenario sets use only Python
+on PATH and the Python running this script. Every scenario set uses only Python
 fixture programs. It sets HERDR_BENCH_DRAW_OCCLUDED, so on macOS the
 window draws even behind other windows (unset, a covered window isn't drawn,
 which flatters the numbers); keep the screen unlocked. Per scenario: CPU % of the app, the core and its holder
@@ -80,7 +80,8 @@ while True:
 """
 
 # Agents that only report: idle, or working without a word of output (the
-# spinners are all that moves), or working with a title that animates.
+# spinners are all that moves), or working with a title that animates
+# (in front, or after a prefix).
 REPORTS = r"""
 import sys, time, itertools
 state = sys.argv[1]
@@ -90,6 +91,9 @@ spin = itertools.cycle("\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u
 while True:
     if state == "title":
         sys.stdout.write(f"\033]2;{next(spin)} working\007")
+        sys.stdout.flush()
+    if state == "prefixed":  # omp's: the spinner after a prefix
+        sys.stdout.write(f"\033]2;\u03c0 {next(spin)} task\007")
         sys.stdout.flush()
     time.sleep(0.1)
 """
@@ -449,9 +453,10 @@ def main():
     ap.add_argument("--seconds", type=int, default=20)
     ap.add_argument("--sample", action="store_true")
     ap.add_argument("--zoom", type=float, default=1.0)
-    ap.add_argument("--set", choices=["all", "spinners", "toasts", "subagents", "floats", "trail", "jumps"], default="all",
+    ap.add_argument("--set", choices=["all", "spinners", "toasts", "subagents", "floats", "trail", "jumps", "titles"], default="all",
                     help="spinners: many spaces of idle agents, one agent working on screen; toasts: agents finishing in waves and in a storm, raising toasts; subagents: agents whose in-process sub-agents come and go (OSC 7501 child records); "
-                         "floats: floating panes over streaming agents, still and moving; trail: the focus hopping between panes beside streaming agents; jumps: the focused pane's cursor streaming and bursting")
+                         "floats: floating panes over streaming agents, still and moving; trail: the focus hopping between panes beside streaming agents; jumps: the focused pane's cursor streaming and bursting; "
+                         "titles: eight agents whose titles spin after a prefix")
     ap.add_argument("--only", help="measure only this scenario, e.g. spinners+stream")
     ap.add_argument("--settings", default="{}", help="JSON merged into the test home's settings.json, e.g. '{\"toast_duration\": \"long\"}'")
     a = ap.parse_args()
@@ -558,6 +563,12 @@ def main():
             for i in range(15):
                 do(bin, "space.new", {"name": f"storm{i}", "folder": ROOT, "argv": cycle(i / 30, 0.25, 0.25)})
             rows.append(measure("toasts-storm", app.pid, a.seconds, a.sample))
+            return
+        if a.set == "titles":
+            do(bin, "space.new", {"name": "bench", "folder": ROOT, "argv": reports("prefixed")})
+            for i in range(7):
+                do(bin, "tab.new", {"name": f"title{i}", "argv": reports("prefixed")})
+            rows.append(measure("eight-prefixed-titles", app.pid, a.seconds, a.sample))
             return
         do(bin, "space.new", {"name": "bench", "folder": ROOT})
         rows.append(measure("idle-shell", app.pid, a.seconds, a.sample))

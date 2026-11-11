@@ -26,6 +26,9 @@ function codeMetrics() {
   return { font, row, line: row / em, char: em * 0.64, number: Math.max(30, Math.ceil(em * 0.64 * 5)) };
 }
 
+// Text draws a tab as nothing: pad each to the next 4-column stop.
+const untab = (text) => text.replace(/[^\t]*\t/g, (s) => s.slice(0, -1).padEnd((s.length - 1) - (s.length - 1) % 4 + 4));
+
 // Numbers each diff line once, so a frame only draws the rows on screen.
 function diffRows(lines) {
   let old = 0, next = 0;
@@ -33,9 +36,9 @@ function diffRows(lines) {
     const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(line);
     if (match) { old = +match[1]; next = +match[2]; return { kind: "@", text: line }; }
     const kind = line[0];
-    if (kind === "-") return { kind, number: old++, text: line.slice(1) || " " };
-    if (kind === "+") return { kind, number: next++, text: line.slice(1) || " " };
-    if (kind === " ") { old++; return { kind, number: next++, text: line.slice(1) || " " }; }
+    if (kind === "-") return { kind, number: old++, text: untab(line.slice(1)) || " " };
+    if (kind === "+") return { kind, number: next++, text: untab(line.slice(1)) || " " };
+    if (kind === " ") { old++; return { kind, number: next++, text: untab(line.slice(1)) || " " }; }
     return { kind: "", text: line };
   });
 }
@@ -145,7 +148,7 @@ export default class Changes extends View {
 
   setLines(lines) {
     this.rows = diffRows(lines);
-    this.diffChars = Math.max(0, ...lines.map(line => line.length));
+    this.diffChars = Math.max(0, ...this.rows.map(row => row.text.length + 1));
   }
 
   pick(path, cx) {

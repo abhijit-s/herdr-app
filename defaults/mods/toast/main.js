@@ -38,8 +38,34 @@ export default class Toast extends View {
       if (p.action?.name) run(p.action.name, p.action.args ?? {});
       closeOverlay(p.overlay);
     };
-    const title = (color) => div().truncate().font_semibold().text_size(13).text_color(color).child(p.title ?? "");
-    const body = () => div().truncate().text_size(12).text_color(t.toast_muted).child(p.body ?? "");
+    // A machine that needs a login says the command to run, with a button that copies it.
+    const login = /^([a-z0-9][a-z0-9_.-]{0,31}) needs login; run hc machine login \1$/.exec(p.body ?? "");
+    const command = login ? `hc machine login ${login[1]}` : null;
+    const titleText = login ? `${login[1]} needs a login: run` : p.title ?? "";
+    const title = (color) => div().truncate().font_semibold().text_size(13).text_color(color).child(titleText);
+    const copy = () =>
+      div()
+        .id("toast-login-copy")
+        .flex_none()
+        .px(6)
+        .py(3)
+        .rounded(4)
+        .border_1()
+        .border_color(t.toast_border)
+        .text_size(12)
+        .text_color(t.toast_foreground)
+        .cursor_pointer()
+        .on_click((_e, cx) => {
+          cx.stop_propagation();
+          cx.write_to_clipboard(command);
+          this.copied = true;
+          cx.notify();
+        })
+        .child(this.copied ? "Copied" : "Copy");
+    const body = () =>
+      login
+        ? h_flex().gap(8).items_center().child(div().flex_1().min_w(0).truncate().tooltip(command).text_size(12).text_color(t.toast_muted).child(command)).child(copy())
+        : div().truncate().text_size(12).text_color(t.toast_muted).child(p.body ?? "");
     const lead = (el) =>
       el
         .when(Boolean(p.icon), (el) => el.child(image(p.icon).w(18).h(18).flex_none()))
@@ -92,7 +118,7 @@ export default class Toast extends View {
             .id("toast-text")
             .flex_1()
             .overflow_hidden()
-            .child(div().truncate().text_size(13).text_color(t.toast_foreground).child(p.title ?? ""))
+            .child(div().truncate().text_size(13).text_color(t.toast_foreground).child(titleText))
             .when(hasBody(p.body), (el) => el.child(body())),
         );
     }

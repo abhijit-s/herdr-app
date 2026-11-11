@@ -11,7 +11,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { panes, props, run, theme, home, settings, fitHeaderInfo, headerTextWidth } from "herdr";
+import { panes, props, run, theme, home, layout, settings, fitHeaderInfo, headerTextWidth } from "herdr";
 
 const TEXT = 12;
 const GAP = 8;
@@ -63,6 +63,22 @@ function working(t) {
   const s = settings().working_spinner;
   if (!s) return svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900);
   return div().min_w(12).flex_none().flex().justify_center().font_family(settings().font_family).text_color(t.working).frames(s.frames, s.interval_ms).child(s.frames[0]);
+}
+
+// Match the first visible tab frame, including the active child of a stack.
+function paneFrame(node) {
+  if (!node || node.hidden) return null;
+  if (node.content?.tab && node.content.pane) return node.content.pane;
+  let children = node.children ?? [];
+  if (node.type === "stack") {
+    const visible = children.filter(child => !child.hidden);
+    children = [visible.find(child => child.id === node.active) ?? visible[0]];
+  }
+  for (const child of children) {
+    const frame = paneFrame(child);
+    if (frame) return frame;
+  }
+  return null;
 }
 
 function icon(p, size, color) {
@@ -118,6 +134,7 @@ export default class Pane extends View {
     const extra = p.header_info
       ? info(t, p, infoRoom(this.width, [pic ? 14 : null, Math.min(260, estimate(name)), textSize ? estimate(textSize) : null, STATUS[st] ?? null], this.hovered))
       : null;
+    const bottom = paneFrame(layout())?.header?.position === "bottom";
     return h_flex()
       .id(`pane-head-${pane}`)
       .size_full()
@@ -125,7 +142,8 @@ export default class Pane extends View {
       .gap(8)
       .items_center()
       .bg(t.background)
-      .border_b(1)
+      .when(bottom, el => el.border_t(1))
+      .when(!bottom, el => el.border_b(1))
       .border_color(t.border)
       .text_size(12)
       .on_hover((hovered, cx) => { this.hovered = hovered; cx.notify(); })
