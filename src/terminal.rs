@@ -1852,12 +1852,17 @@ fn row_height(font_height: Pixels, line_height: f32, rounding: crate::settings::
     px(rounding.whole(f32::from(font_height) * line_height.clamp(0.8, 2.0) * scale, f32::ceil) / scale)
 }
 
-/// Where text and its lines sit in a cell, from the cell's top: the
+/// Where text and its lines sit in a cell, from the cell's top left: the
 /// baseline, underline and strikethrough with their thicknesses, as Ghostty
-/// reads them from the font's tables (`font_cell_metrics`).
+/// reads them from the font's tables (`font_cell_metrics`), and the glyphs'
+/// move across the cell (`glyph_x`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct CellMetrics {
     size: Size<Pixels>,
+    /// The font's unrounded advance (its widest ASCII glyph), as Ghostty's `face_width`.
+    face_width: Pixels,
+    /// How far every glyph moves right in its cell (`glyph_x`).
+    glyph_x: Pixels,
     baseline: Pixels,
     underline: Pixels,
     underline_thickness: Pixels,
@@ -1879,6 +1884,7 @@ fn cell_metrics(ts: &WindowTextSystem, font: &Font, cell: Size<Pixels>, text_siz
     let offset = px(((f32::from(cell.height - face.size.height) * scale) / 2.0).round() / scale);
     CellMetrics {
         size: cell,
+        glyph_x: glyph_x(cell.width, face.face_width, scale),
         baseline: face.baseline + offset,
         underline: face.underline + offset,
         strike: face.strike + offset,
@@ -1947,10 +1953,17 @@ fn font_cell_metrics(ts: &WindowTextSystem, id: FontId, fs: f32, scale: f32) -> 
     let st_thick = st.filter(|m| m.thickness > 0).map_or(ul_thick, |m| m.thickness as f32 * unit);
     let ul_pos = ul.filter(|m| m.thickness != 0 || m.position != 0).map_or(-ul_thick, |m| m.position as f32 * unit);
     let st_pos = st.filter(|m| m.thickness != 0 || m.position != 0).map_or((ex * unit + st_thick) * 0.5, |m| m.position as f32 * unit);
-    let width = (' '..='~').filter_map(|c| ts.advance(id, px(fs * scale), c).ok())
-        .map(|s| f32::from(s.width)).reduce(f32::max).unwrap_or(fs * scale * 0.6).round().max(1.0);
+    let face_width = (' '..='~')
+        .filter_map(|c| ts.advance(id, px(fs * scale), c).ok())
+        .map(|s| f32::from(s.width))
+        .reduce(f32::max)
+        .unwrap_or(fs * scale * 0.6);
+    let width = px(face_width.round().max(1.0) / scale);
+    let face_width = px(face_width / scale);
     CellMetrics {
-        size: size(px(width / scale), px(height / scale)),
+        size: size(width, px(height / scale)),
+        face_width,
+        glyph_x: glyph_x(width, face_width, scale),
         baseline: px(baseline / scale),
         underline: px((baseline - ul_pos).round() / scale),
         underline_thickness: px(ul_thick.ceil().max(1.0) / scale),
@@ -1959,11 +1972,56 @@ fn font_cell_metrics(ts: &WindowTextSystem, id: FontId, fs: f32, scale: f32) -> 
     }
 }
 
-/// Paints a cell's shaped text with its baseline on the cell's (`CellMetrics`).
-fn paint_cell_text(line: &ShapedLine, origin: Point<Pixels>, metrics: CellMetrics, window: &mut Window, cx: &mut App) {
-    let gpui_baseline = (metrics.size.height - line.ascent - line.descent) / 2.0 + line.ascent;
-    let origin = origin + point(px(0.0), metrics.baseline - gpui_baseline);
-    let _ = line.paint(origin, metrics.size.height, TextAlign::Left, None, window, cx);
+/// Ghostty's re-centring of glyphs in cells (`renderGlyph`): half the cell's
+/// difference from the face's advance, in device pixels. CoreText
+/// (`font/face/coretext.zig`) keeps, when the cell is the narrower, only the
+/// part under a whole device pixel, so glyphs keep their subpixel phase
+/// without sliding a pixel or more left; FreeType (`font/face/freetype.zig`)
+/// moves only into a wider cell, by whole pixels, to keep hinting. Every glyph
+/// a cell's text draws on its baseline moves by it (wide, combining,
+/// ligatures, the cursor's and an input method's). Sprites sit on the cell,
+/// as Ghostty's do; bundled icons and fitted fallbacks are centred on the
+/// cell, where Ghostty's face-centred fit lands once moved, and stay inside it.
+fn glyph_x(cell_width: Pixels, face_width: Pixels, scale: f32) -> Pixels {
+    let dx = (f32::from(cell_width) - f32::from(face_width)) * scale / 2.0;
+    let dx = if cfg!(target_os = "macos") {
+        if dx < 0.0 { dx - dx.trunc() } else { dx }
+    } else if dx > 0.0 {
+        dx.round()
+    } else {
+        0.0
+    };
+    px(dx / scale)
+}
+
+/// Where a cell's shaped text paints from: its baseline on the cell's, moved
+/// across by `glyph_x`, or a fitted fallback's `offset` (`RowOp::Text`).
+fn text_origin(
+    line: &ShapedLine,
+    origin: Point<Pixels>,
+    offset: Option<Point<Pixels>>,
+    metrics: CellMetrics,
+) -> Point<Pixels> {
+    origin
+        + offset.unwrap_or_else(|| {
+            let gpui_baseline =
+                (metrics.size.height - line.ascent - line.descent) / 2.0 + line.ascent;
+            point(metrics.glyph_x, metrics.baseline - gpui_baseline)
+        })
+}
+
+/// Paints a cell's shaped text from `text_origin`.
+fn paint_cell_text(
+    line: &ShapedLine,
+    origin: Point<Pixels>,
+    offset: Option<Point<Pixels>>,
+    metrics: CellMetrics,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let origin = text_origin(line, origin, offset, metrics);
+    let height = metrics.size.height;
+    let _ = line.paint(origin, height, TextAlign::Left, None, window, cx);
 }
 
 /// The font's advance plus letter_spacing, then, for `"pixel"`, in whole
@@ -2382,12 +2440,7 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, view: &WeakEntit
                 RowOp::Icon { x, offset, font, glyph, size, color } => {
                     let _ = window.paint_glyph(at(*x, y) + *offset, *font, *glyph, *size, *color);
                 }
-                RowOp::Text { x, offset: Some(offset), line } => {
-                    let _ = line.paint(at(*x, y) + *offset, cell.height, TextAlign::Left, None, window, cx);
-                }
-                RowOp::Text { x, offset: None, line } => {
-                    paint_cell_text(line, at(*x, y), metrics, window, cx);
-                }
+                RowOp::Text { x, offset, line } => paint_cell_text(line, at(*x, y), *offset, metrics, window, cx),
                 RowOp::Decoration { from, to, underline, strike, color } => {
                     for (enabled, offset, thickness) in [(*underline, metrics.underline, metrics.underline_thickness), (*strike, metrics.strike, metrics.strike_thickness)] {
                         if enabled {
@@ -2433,7 +2486,7 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, view: &WeakEntit
                         strikethrough: None,
                     };
                     let line = window.text_system().shape_line(c.text.clone().into(), px(text_size), &[run], None);
-                    paint_cell_text(&line, p, metrics, window, cx);
+                    paint_cell_text(&line, p, None, metrics, window, cx);
                 }
             }
             (true, CursorShape::Bar) => window.paint_quad(fill(snap_box(Bounds::new(p, size(px(2.0), cell.height))), color)),
@@ -2460,7 +2513,7 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, view: &WeakEntit
         };
         let line = window.text_system().shape_line(text.into(), px(text_size), &[run], None);
         window.paint_quad(fill(snap_box(Bounds::new(p, size(line.width, cell.height))), hsla(frame.bg)));
-        paint_cell_text(&line, p, metrics, window, cx);
+        paint_cell_text(&line, p, None, metrics, window, cx);
         let underline = Bounds::new(p + point(px(0.0), metrics.underline), size(line.width, metrics.underline_thickness));
         window.paint_quad(fill(snap_box(underline), fg));
     }
@@ -3899,6 +3952,145 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn cell_settings(font_size: f32, line_height: f32, cell_width: crate::settings::CellWidth, cell_rounding: crate::settings::CellRounding) -> crate::settings::Settings {
         crate::settings::Settings { font_size, line_height, cell_width, cell_rounding, zoom: 1.0, letter_spacing: 0.0, ..crate::settings::Settings::default() }
+    }
+
+    /// Ghostty's `renderGlyph` move: half the cell's difference from the face,
+    /// in device pixels; CoreText keeps only the part under a whole pixel when
+    /// the cell is narrower, FreeType moves only into a wider cell, by whole pixels.
+    #[test]
+    fn glyph_x_recentres_glyphs_as_ghostty() {
+        use super::*;
+        // (cell, face, scale, CoreText, FreeType), logical px
+        for (cell, face, scale, core_text, free_type) in [
+            (7.0, 7.2, 1.0, -0.1, 0.0), // JetBrains Mono 12 pt in a pixel cell
+            (7.0, 7.2, 2.0, -0.1, 0.0), // -0.2 device px
+            (7.2, 7.2, 1.0, 0.0, 0.0),  // a font cell
+            (7.2, 7.2, 2.0, 0.0, 0.0),
+            (7.0, 9.6, 1.0, -0.3, 0.0), // -1.3: the whole pixel is dropped
+            (7.0, 9.6, 2.0, -0.3, 0.0), // -2.6 device px: -0.6
+            (7.5, 7.8, 2.0, -0.15, 0.0), // -0.3 device px
+            (8.0, 7.2, 1.0, 0.4, 0.0),  // a wider cell: all the way, or the nearest pixel
+            (9.0, 7.2, 1.0, 0.9, 1.0),
+            (9.0, 7.2, 2.0, 0.9, 1.0), // 1.8 device px: 2
+        ] {
+            let want = if cfg!(target_os = "macos") {
+                core_text
+            } else {
+                free_type
+            };
+            let got = f32::from(glyph_x(px(cell), px(face), scale));
+            assert!(
+                (got - want).abs() < 1e-5,
+                "cell {cell}, face {face} at {scale}x: {got}, want {want}"
+            );
+        }
+    }
+
+    /// Every glyph a row's text draws moves by `glyph_x` from where its cell
+    /// puts it: each cell of a run, a wide character, and a combining mark with
+    /// its base, against CoreText's JetBrains Mono at 12 pt. gpui then places a
+    /// glyph on the nearest quarter device pixel (`Window::paint_glyph`), so a
+    /// pixel cell's -0.1 px disappears at 1x and shows as -0.25 device px at 2x.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn row_glyphs_sit_where_ghostty_centres_them() {
+        use super::*;
+        use crate::settings::CellWidth::{Font, Pixel};
+        let ts = core_text();
+        let f = font(crate::settings::DEFAULT_FONT);
+        let quarter = |v: f32| (v.abs() * 4.0 - 0.5).ceil().copysign(v) / 4.0;
+        for (width, scale, dx, device) in [
+            (Pixel, 1.0, -0.1, 0.0),
+            (Pixel, 2.0, -0.1, -0.25),
+            (Font, 1.0, 0.0, 0.0),
+            (Font, 2.0, 0.0, 0.0),
+        ] {
+            let cell = measure_cell(
+                &ts,
+                &f,
+                &cell_settings(12.0, 1.0, width, crate::settings::CellRounding::Outward),
+                scale,
+            );
+            let metrics = cell_metrics(&ts, &f, cell, 12.0, scale);
+            assert!(
+                (f32::from(metrics.face_width) - 7.2).abs() < 1e-3,
+                "{:?}",
+                metrics.face_width
+            );
+            assert!(
+                (f32::from(metrics.glyph_x) - dx).abs() < 1e-5,
+                "{width:?} at {scale}x: {:?}",
+                metrics.glyph_x
+            );
+            // A fitted fallback is placed on the cell by its ink (`fit_ink`), so it stays inside it.
+            let run = TextRun {
+                len: 1,
+                font: f.clone(),
+                ..Default::default()
+            };
+            let fitted = ts.shape_line("x".into(), px(12.0), &[run], None);
+            let offset = point(px(1.), px(2.));
+            let placed = text_origin(&fitted, point(px(0.), px(0.)), Some(offset), metrics);
+            assert_eq!(placed, offset);
+            // (text, the byte each cell starts at, wide)
+            for (text, starts, wide) in [
+                ("gHg", vec![0, 1, 2], false),
+                ("あ", vec![0], true),
+                ("x\u{301}b", vec![0, 3], false),
+            ] {
+                let run = TextRun {
+                    len: text.len(),
+                    font: f.clone(),
+                    ..Default::default()
+                };
+                let shaped = ts.shape_line(text.into(), px(12.0), &[run], None);
+                let positions: Vec<_> = starts
+                    .iter()
+                    .enumerate()
+                    .map(|(i, b)| (*b, cell.width * i as f32))
+                    .collect();
+                let line = shaped.clone().with_cell_positions(
+                    &positions,
+                    cell.width * if wide { 2.0 } else { starts.len() as f32 },
+                );
+                let origin = text_origin(&line, point(px(0.), px(0.)), None, metrics).x;
+                let column = |index: usize| positions.partition_point(|(b, _)| *b <= index) - 1;
+                let glyphs: Vec<_> = line
+                    .runs
+                    .iter()
+                    .flat_map(|r| &r.glyphs)
+                    .zip(shaped.runs.iter().flat_map(|r| &r.glyphs))
+                    .collect();
+                assert!(
+                    text != "x\u{301}b" || glyphs.len() == 3,
+                    "fixture must shape a separate combining mark"
+                );
+                for (glyph, natural) in &glyphs {
+                    // A cell's first glyph is the cell's; the rest keep their shaped offset from it.
+                    let (_, base) = glyphs
+                        .iter()
+                        .find(|(g, _)| column(g.index) == column(glyph.index))
+                        .unwrap();
+                    let x = origin + glyph.position.x;
+                    let cell_x = cell.width * column(glyph.index) as f32
+                        + (natural.position.x - base.position.x);
+                    assert!(
+                        f32::from(x - cell_x - metrics.glyph_x).abs() < 1e-4,
+                        "{text:?} {width:?} {scale}x glyph {}: {x:?} from {cell_x:?}",
+                        glyph.index
+                    );
+                    if std::ptr::eq(*base, *natural) {
+                        let placed =
+                            quarter(f32::from(x) * scale) - quarter(f32::from(cell_x) * scale);
+                        assert_eq!(
+                            placed, device,
+                            "{text:?} {width:?} {scale}x glyph {}: device px moved once placed",
+                            glyph.index
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// The rule, against each font's own metrics from CoreText: at "nearest"
