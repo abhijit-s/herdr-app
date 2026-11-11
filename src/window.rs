@@ -679,8 +679,8 @@ pub struct AppWindow {
     /// The last terminal `terminal.popup` started, shown or hidden, until it is
     /// ended or gone: closing the peek overlay, or the next popup, ends its program.
     popped: Option<Popped>,
-    /// A popup on its way into a tab (`terminal.keep`), until the keep lands.
-    keeping_popup: Option<Popped>,
+    /// Popups on their way into a tab (`terminal.keep`), until the keep lands.
+    keeping_popups: HashMap<String, Popped>,
     /// Whether the first listing's orphaned popups (`POPUP_LABEL`) were ended.
     reaped_orphans: bool,
     /// Connection epoch: ignore replies from an old connection.
@@ -827,7 +827,7 @@ impl AppWindow {
             waits: HashMap::new(),
             peeked: None,
             popped: None,
-            keeping_popup: None,
+            keeping_popups: HashMap::new(),
             reaped_orphans: false,
             core_generation: 0,
             checking_closed: false,
@@ -3796,12 +3796,14 @@ impl AppWindow {
     fn start_terminal_change(&mut self, address: String, change: TerminalChange, window: &mut Window, cx: &mut Context<Self>) {
         let machine = address.split_once('/').map(|(m, _)| m);
         let (keep, labels) = match &change {
-            // Kept, a popup is a popup no more: parked later, it stays (`orphan_popups`).
             TerminalChange::Keep { space, tab, .. } => (true, json!({
-                "herdr.space":crate::mirror::local(space, machine), "herdr.tab":crate::mirror::local(tab, machine), POPUP_LABEL: "",
+                "herdr.space":crate::mirror::local(space, machine), "herdr.tab":crate::mirror::local(tab, machine),
             })),
             TerminalChange::Park => (false, json!({"herdr.space":"","herdr.tab":""})),
         };
+        // Kept, a popup is a popup no more: parked later, it stays (`orphan_popups`).
+        // Only once the keep took, so a failed one can still be cleaned up.
+        let was_popup = keep && self.live.get(&address).and_then(|r| r.pointer(&format!("/labels/{POPUP_LABEL}"))).is_some();
         let (tx, rx) = std::sync::mpsc::channel();
         self.changing_terminals.insert(address.clone());
         self.pending_terminals.insert(address.clone(), PendingTerminalChange { change, reply: rx });
@@ -3812,6 +3814,10 @@ impl AppWindow {
             let result = (|| {
                 core.call("terminal.label", json!({"terminal":addr,"labels":labels}))?;
                 core.call("terminal.keep", json!({"terminal":addr,"keep":keep}))?;
+                // Kept either way: a label left behind only matters if it's parked later.
+                if was_popup && let Err(e) = core.call("terminal.label", json!({"terminal":addr,"labels":{ POPUP_LABEL: "" }})) {
+                    tracing::warn!("popup label for kept {addr}: {e:#}");
+                }
                 anyhow::Ok(())
             })().map_err(|e| format!("{e:#}"));
             let _ = tx.send(result);
@@ -3829,7 +3835,7 @@ impl AppWindow {
 
     fn apply_terminal_change(&mut self, address: String, change: TerminalChange, result: Result<(), String>, window: &mut Window, cx: &mut Context<Self>) {
         self.changing_terminals.remove(&address);
-        let kept_popup = self.keeping_popup.take_if(|p| p.address == address);
+        let kept_popup = self.keeping_popups.remove(&address);
         if let Err(error) = result {
             tracing::error!("terminal change for {address} failed: {error}");
             if !self.draining { self.layout_notice("Could not change terminal pane", &error, window, cx); }
@@ -4394,15 +4400,18 @@ impl AppWindow {
             "terminal.keep" => {
                 let t = Self::arg(a, "terminal").unwrap_or_default();
                 let r = self.keep_terminal(t, Self::arg(a, "place").unwrap_or("tab"), window, cx);
-                if r.is_ok() {
-                    // A popup kept as a tab is the person's now; it comes back
-                    // as a popup if the keep fails (`apply_terminal_change`).
-                    if self.popped.as_ref().is_some_and(|p| p.address == t) {
-                        self.keeping_popup = self.popped.take();
+                if let Ok(reply) = &r {
+                    // A popup kept as a tab is the person's now; one on its way
+                    // comes back as a popup if the keep fails (`apply_terminal_change`).
+                    if let Some(p) = self.popped.take_if(|p| p.address == t)
+                        && reply["pending"] == Value::Bool(true)
+                    {
+                        self.keeping_popups.insert(p.address.clone(), p);
                     }
-                    // Kept: the peek of it has done its job. A failed keep leaves it up.
+                    // Kept: the peek of it has done its job, closed as any close
+                    // does (a popup hidden under it ends). A failed keep leaves it up.
                     if self.peeked.as_deref() == Some(t) {
-                        self.remove_overlay("terminal-peek", window, cx);
+                        self.close_overlay("terminal-peek", window, cx);
                     }
                 }
                 self.answer(r);
@@ -5176,11 +5185,17 @@ impl AppWindow {
     }
 
     /// A keep of a popup that failed: it is a popup again, shown, so closing
-    /// it still ends it. It replaces a popup opened meanwhile (one at a time).
+    /// it still ends it. With another popup up meanwhile, that one stays and
+    /// this one ends: nothing would show it (the "could not change" notice says why).
     fn reshow_popup(&mut self, popup: Option<Popped>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(popup) = popup.filter(|p| !self.draining && self.live.get(&p.address).is_some_and(|t| p.is(t))) else { return };
         let address = popup.address.clone();
-        self.replace_popped(popup, cx);
+        if self.popped.as_ref().is_some_and(|p| p.address != address) {
+            let rm = !self.waits.contains_key(&address);
+            self.end_terminal(address, rm, cx);
+            return;
+        }
+        self.popped = Some(popup);
         self.open_peek(&address, (0.8, 0.8), window, cx);
     }
 
@@ -12204,7 +12219,7 @@ export default class Probe extends View {
                 Ok(json!({ "address": format!("t{n}"), "created_ms": n }))
             }
             // The core turns one keep down: it comes back as a popup.
-            "terminal.label" if params["terminal"] == "t28" => Err(json!({ "message": "the core said no" })),
+            "terminal.label" if params["terminal"] == "t28" || params["terminal"] == "t32" => Err(json!({ "message": "the core said no" })),
             "terminal.rm" | "terminal.kill" | "terminal.label" | "terminal.keep" => Ok(json!({})),
             _ => Err(json!({ "message": "not in this test" })),
         });
@@ -12442,7 +12457,7 @@ export default class Probe extends View {
         // ↗ keep: the popup is the person's tab now, and closing the peek leaves it.
         popup(json!({ "argv": ["htop"] }), cx);
         take("terminal.run");
-        view.update(cx, |this, _| this.live.insert("t26".into(), json!({ "address": "t26", "created_ms": 26 })));
+        view.update(cx, |this, _| this.live.insert("t26".into(), json!({ "address": "t26", "created_ms": 26, "labels": { super::POPUP_LABEL: "1" } })));
         let keep = |t: &str, cx: &mut gpui::VisualTestContext| cx.update(|window, cx| view.update(cx, |this, cx| this.run_as("terminal.keep", json!({ "terminal": t }), false, window, cx)));
         let popped_is = |t: &str, cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.popped.as_ref().is_some_and(|p| p.address == t));
         // Turned down at once (no layout to keep it in): still the popup, still up.
@@ -12460,9 +12475,14 @@ export default class Probe extends View {
         hide(cx);
         assert_eq!(ends(cx), (vec![], vec![]), "kept t26 (on its way into a pane) is never ended");
         assert!(view.update(cx, |this, _| this.model.pane_of("t26").is_some()), "in a pane once the keep took");
-        let keep_label = calls.lock().unwrap().iter().find(|(m, p)| m == "terminal.label" && p["terminal"] == "t26").map(|(_, p)| p["labels"].clone());
-        assert_eq!(keep_label.as_ref().map(|l| &l[super::POPUP_LABEL]), Some(&json!("")), "kept, it's a popup no more: {keep_label:?}");
+        // Its popup label goes once the keep took, not before (a failed keep can still be cleaned up).
+        let t26: Vec<(String, serde_json::Value)> = calls.lock().unwrap().iter().filter(|(m, p)| p["terminal"] == "t26" && (m == "terminal.keep" || (m == "terminal.label" && (p["labels"].get("herdr.space").is_some() || p["labels"].get(super::POPUP_LABEL).is_some())))).cloned().collect();
+        let methods: Vec<&str> = t26.iter().map(|(m, _)| m.as_str()).collect();
+        assert_eq!(methods, ["terminal.label", "terminal.keep", "terminal.label"], "{t26:?}");
+        assert!(t26[0].1["labels"].get(super::POPUP_LABEL).is_none(), "{t26:?}");
+        assert_eq!(t26[2].1["labels"], json!({ super::POPUP_LABEL: "" }), "kept, it's a popup no more");
         take("terminal.label");
+        take("terminal.keep");
 
         // A kept wait popup survives the window closing; its pane shows how it ended.
         popup(json!({ "argv": ["make"], "wait": true }), cx);
@@ -12494,6 +12514,27 @@ export default class Probe extends View {
         view.update(cx, |this, _| this.live.insert("t30".into(), json!({ "address": "t30", "created_ms": 30, "keep": true })));
         hide(cx);
         assert_eq!(ends(cx), (vec![], vec![]), "t29 is swapped into a pane, t30 kept by the core");
+
+        // Keeping the terminal a link's peek shows over a popup: the peek
+        // closes as any close does, and the hidden popup under it ends.
+        popup(json!({ "argv": ["tail", "-F", "x"] }), cx);
+        view.update(cx, |this, _| this.live.insert("t5".into(), json!({ "address": "t5" })));
+        peek_t5(cx);
+        assert_eq!(keep("t5", cx)["pending"], json!(true));
+        assert!(!peek_open(cx));
+        let (killed, removed) = ends(cx);
+        assert_eq!((killed, removed), (vec![json!("t31")], vec![json!("t31")]), "the hidden t31 ends, the kept t5 does not");
+        take("terminal.label");
+        take("terminal.keep");
+
+        // A keep turned down later while another popup is up: that one stays,
+        // and the one whose keep failed, which nothing would show, ends.
+        popup(json!({ "argv": ["htop"] }), cx);
+        view.update(cx, |this, _| this.live.insert("t32".into(), json!({ "address": "t32", "created_ms": 32 })));
+        assert_eq!(keep("t32", cx)["pending"], json!(true));
+        popup(json!({ "argv": ["htop"] }), cx);
+        assert_eq!(ends(cx), (vec![json!("t32")], vec![json!("t32")]), "t32's keep failed with t33 up");
+        assert!(popped_is("t33", cx) && peeked(cx).0.to_string().contains(r#"{"terminal":"t33"}"#), "t33 is still the popup shown");
     }
 
     /// Which popup terminals are orphans: local, unkept, labelled with an app
