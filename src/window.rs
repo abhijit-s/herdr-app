@@ -625,6 +625,10 @@ pub struct AppWindow {
     copies: HashMap<String, Copy>,
     overlays: Vec<Overlay>,
     folders: BTreeMap<String, Found>,
+    /// Each look at the mod folders counts here, so a background look that
+    /// started before a newer one is dropped (`sync_folders_later`).
+    folder_scans: u64,
+    folder_scan_running: bool,
     /// Mods placed once; later the layout decides where (or whether) they show.
     seen: BTreeSet<String>,
     bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
@@ -798,7 +802,9 @@ impl AppWindow {
             terms: HashMap::new(),
             copies: HashMap::new(),
             overlays: Vec::new(),
-            folders: scan_folders().0,
+            folders: scan_folders(mods::scan()).0,
+            folder_scans: 0,
+            folder_scan_running: false,
             seen,
             bounds: Default::default(),
             top_chrome: Default::default(),
@@ -4625,7 +4631,8 @@ impl AppWindow {
                 if let Err(e) = mods::clone_mod(name, &to) {
                     return self.fail(format!("cannot clone mod: {e}"));
                 }
-                let (folders, actions_changed) = scan_folders();
+                self.folder_scans += 1;
+                let (folders, actions_changed) = scan_folders(mods::scan());
                 self.folders = folders;
                 if actions_changed {
                     self.refresh_snapshot_mods(cx);
@@ -5720,7 +5727,7 @@ impl AppWindow {
         if self.file_events.is_none() || self.polls.is_multiple_of(25) {
             self.reload_config(window, cx);
             self.check_layout_file(window, cx);
-            self.sync_folders(window, cx);
+            self.sync_folders_later(window, cx);
         }
         let now = Instant::now();
         let expired: Vec<String> = self.overlays.iter().filter(|o| o.expires.is_some_and(|e| e <= now) && !self.waiting_banner(o)).map(|o| o.id.clone()).collect();
@@ -5788,7 +5795,35 @@ impl AppWindow {
         if self.runtime.is_none() {
             return;
         }
-        let (found, actions_changed) = scan_folders();
+        self.folder_scans += 1;
+        self.apply_folders(mods::scan(), window, cx);
+    }
+
+    /// `sync_folders` for the poll, which looks in case a file event was missed
+    /// (or with no file events at all): reading ~60 folders takes 15–25 ms, so
+    /// it reads them off the main thread. A look begun since (an edit's
+    /// `sync_folders`) wins over this one's older answer.
+    fn sync_folders_later(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.runtime.is_none() || self.folder_scan_running {
+            return;
+        }
+        self.folder_scan_running = true;
+        self.folder_scans += 1;
+        let scan = self.folder_scans;
+        cx.spawn_in(window, async move |this, cx| {
+            let found = cx.background_executor().spawn(async { mods::scan() }).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.folder_scan_running = false;
+                if this.folder_scans == scan {
+                    this.apply_folders(found, window, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn apply_folders(&mut self, scanned: Vec<Found>, window: &mut Window, cx: &mut Context<Self>) {
+        let (found, actions_changed) = scan_folders(scanned);
         let edited: BTreeSet<String> = found.values().filter(|f| self.folders.get(&f.id).is_some_and(|o| o.stamp != f.stamp)).map(|f| f.id.clone()).collect();
         let added = found.keys().any(|k| !self.folders.contains_key(k));
         let removed = self.folders.keys().any(|k| !found.contains_key(k));
@@ -6718,8 +6753,8 @@ fn home() -> String {
 
 /// Every mod folder by id, with their palette actions and terminal menu items
 /// published for `modActions()` and `menuItems()`; and whether either changed.
-fn scan_folders() -> (BTreeMap<String, Found>, bool) {
-    let found: BTreeMap<String, Found> = mods::scan().into_iter().map(|f| (f.id.clone(), f)).collect();
+fn scan_folders(scanned: Vec<Found>) -> (BTreeMap<String, Found>, bool) {
+    let found: BTreeMap<String, Found> = scanned.into_iter().map(|f| (f.id.clone(), f)).collect();
     let actions = mods::publish_actions(Value::Array(mods::actions(found.values()).0));
     let items = mods::publish_menu_items(Value::Array(mods::menu_items(found.values()).0));
     (found, actions || items)
@@ -12887,6 +12922,121 @@ export default class SystemToast extends View {
             this.sync(window, cx);
         });
         check_handlers(cx);
+    }
+
+    #[test]
+    fn the_polls_folder_look_finds_new_edited_and_removed_mods_off_the_main_thread() {
+        in_own_process("folder_poll");
+    }
+
+    /// The poll's look at the mod folders reads them in the background and
+    /// applies what it found on the next turn: a new mod appears (and is placed),
+    /// an edited mod.json's actions are listed, a removed mod goes. A look the
+    /// window starts meanwhile (a file event's) wins over the older answer.
+    #[gpui::test]
+    fn folder_poll(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("folder_poll") {
+            return;
+        }
+        let (view, cx) = open_window(
+            cx,
+            "base",
+            "",
+            json!({ "id": "root", "type": "row", "children": [] }),
+        );
+        let folder = crate::mods::app_dir().join("mods/later");
+        let poll = |cx: &mut gpui::VisualTestContext| {
+            let before = view.update_in(cx, |this, window, cx| {
+                this.sync_folders_later(window, cx);
+                this.folders.contains_key("later")
+            });
+            cx.run_until_parked();
+            (
+                before,
+                view.update(cx, |this, _| {
+                    (this.folders.contains_key("later"), this.folder_scan_running)
+                }),
+            )
+        };
+        let actions = || {
+            crate::mods::published_actions()
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|a| a["mod"] == "later")
+                .count()
+        };
+
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("mod.json"), r#"{"place":"top"}"#).unwrap();
+        std::fs::write(folder.join("main.js"), "").unwrap();
+        assert_eq!(
+            poll(cx),
+            (false, (true, false)),
+            "found on the next turn, not while the poll runs"
+        );
+        assert!(
+            view.update(cx, |this, _| this.chrome.walk().iter().any(|n| matches!(
+                n.content(), Some(crate::layout::Content::Mod { name, .. }) if name == "later"
+            ))),
+            "a new mod goes where it asked"
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(
+            folder.join("mod.json"),
+            json!({ "place": "top", "actions": [{ "title": "Later", "command": "mod.open" }] })
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(actions(), 0);
+        let stamp = view.update(cx, |this, _| this.folders["later"].stamp);
+        poll(cx);
+        assert!(
+            view.update(cx, |this, _| this.folders["later"].stamp) > stamp,
+            "the edit is seen"
+        );
+        assert_eq!(actions(), 1, "the edited mod.json's actions are listed");
+
+        // A file event's look starts while the poll's is out: the poll's older answer is dropped.
+        std::fs::remove_dir_all(&folder).unwrap();
+        view.update_in(cx, |this, window, cx| {
+            this.sync_folders_later(window, cx);
+            this.sync_folders(window, cx);
+            assert!(
+                !this.folders.contains_key("later"),
+                "the file event's look applies at once"
+            );
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join("main.js"), "").unwrap();
+        });
+        cx.run_until_parked();
+        assert!(
+            !view.update(cx, |this, _| this.folders.contains_key("later")),
+            "the poll's look, begun before, is dropped"
+        );
+        assert!(
+            !view.update(cx, |this, _| this.folder_scan_running),
+            "and the next poll can look again"
+        );
+        assert_eq!(poll(cx), (false, (true, false)));
+
+        std::fs::remove_dir_all(&folder).unwrap();
+        assert_eq!(poll(cx), (true, (false, false)), "a removed mod goes");
+        assert_eq!(actions(), 0, "and so do its actions");
+
+        // The poll itself looks this way, on its 25th turn (each one without file events).
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("main.js"), "").unwrap();
+        let polled = view.update_in(cx, |this, window, cx| {
+            this.polls = 24;
+            this.poll(window, cx);
+            (this.folders.contains_key("later"), this.folder_scan_running)
+        });
+        assert_eq!(polled, (false, true), "the poll's look is out, not done on the main thread");
+        cx.run_until_parked();
+        assert!(view.update(cx, |this, _| this.folders.contains_key("later")));
     }
 
     #[test]
