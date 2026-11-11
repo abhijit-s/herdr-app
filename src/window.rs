@@ -3354,6 +3354,12 @@ impl AppWindow {
                 if record["keep"].as_bool() != Some(true) {
                     core.call("terminal.keep", json!({"terminal":address,"keep":true}))?;
                 }
+                // A popup whose keep failed halfway, adopted all the same: a tab now, not a popup.
+                if record.pointer(&format!("/labels/{POPUP_LABEL}")).is_some()
+                    && let Err(e) = core.call("terminal.label", json!({"terminal":address,"labels":{ POPUP_LABEL: "" }}))
+                {
+                    tracing::warn!("popup label for adopted {address}: {e:#}");
+                }
                 anyhow::Ok(true)
             }).await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -3850,7 +3856,7 @@ impl AppWindow {
                 if self.model.space(&space).is_none() {
                     // A popup kept into a space that closed meanwhile goes with
                     // the space: parked, nothing would ever show it again.
-                    if kept_popup.is_some() {
+                    if kept_popup.is_some() && !self.held_elsewhere(&address) {
                         let rm = !self.waits.contains_key(&address);
                         self.end_terminal(address, rm, cx);
                     } else if let Err(error) = self.park_terminal(&address, window, cx) {
@@ -5191,6 +5197,9 @@ impl AppWindow {
         let Some(popup) = popup.filter(|p| !self.draining && self.live.get(&p.address).is_some_and(|t| p.is(t))) else { return };
         let address = popup.address.clone();
         if self.popped.as_ref().is_some_and(|p| p.address != address) {
+            if self.held_elsewhere(&address) {
+                return;
+            }
             let rm = !self.waits.contains_key(&address);
             self.end_terminal(address, rm, cx);
             return;
