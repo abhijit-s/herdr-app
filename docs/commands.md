@@ -197,7 +197,7 @@ Run a program on this computer in a popup over the tab (terminal.peek's, with ke
 
 ## `terminal.keep`
 
-Give a running terminal without a pane (a sub-agent) a pane: a new tab, or "right"/"down".
+Give a running terminal without a pane (a sub-agent) a pane: a new tab, or "right"/"down". A peek of it closes; a popup kept is the person's and no longer ends with the popup.
 
 | Argument | Required |
 |---|---|
