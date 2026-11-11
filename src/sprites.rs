@@ -873,6 +873,26 @@ mod tests {
     }
 
     #[test]
+    fn blocks_land_on_device_pixels_at_fractional_origins() {
+        // paint maps a block's device rectangle to (dx + x0) / scale and
+        // snaps it back: every edge must come back as that exact device pixel.
+        for scale in [1.0f32, 1.25, 1.5, 2.0, 3.0] {
+            for i in 0..200 {
+                let (x, y) = (7.3 + i as f32 * 7.13, 5.7 + i as f32 * 16.37);
+                let (dx, dy, dw, dh) = device_cell(Bounds::new(point(px(x), px(y)), size(px(7.13), px(16.37))), scale);
+                for c in BLOCKS {
+                    for [x0, y0, x1, y1] in blocks(c, dw as i32, dh as i32).unwrap().0 {
+                        for (origin, edge) in [(dx, x0), (dy, y0), (dx, x1), (dy, y1)] {
+                            let logical = (origin + edge as f32) / scale;
+                            assert_eq!((logical * scale).round(), origin + edge as f32, "{c} at {scale}x, cell {i}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn blocks_stay_disjoint_in_any_cell() {
         for w in 0..40 {
             for h in 0..80 {
