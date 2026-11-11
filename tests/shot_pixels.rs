@@ -1,8 +1,9 @@
 //! Real GPU readback, not a mocked image. Linux CI uses Vulkan software rendering.
 use gpui::{prelude::*, *};
 
+// Without the test harness, sprites' own test helpers go unused here.
 #[path = "../src/sprites.rs"]
-#[allow(unused_imports)]
+#[allow(unused_imports, dead_code)]
 mod sprites;
 
 struct Scene;
@@ -64,6 +65,7 @@ impl Render for Scene {
                                         point(px(x), px(4. + row as f32 * 24.)),
                                         size(px(width), px(24.)),
                                     ),
+                                    px(1.),
                                     rgb(0xffffff).into(),
                                     window,
                                 );

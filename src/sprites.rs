@@ -172,8 +172,25 @@ pub fn is_sprite(text: &str) -> bool {
     }
 }
 
-/// Paints `text` (one sprite character) into `cell`, snapped to device pixels.
-pub fn paint(text: &str, cell: Bounds<Pixels>, color: Hsla, window: &mut Window) {
+/// The cell on whole device pixels: origin and size.
+fn device_cell(cell: Bounds<Pixels>, scale: f32) -> (f32, f32, f32, f32) {
+    let (x, y, w, h) = (f32::from(cell.origin.x), f32::from(cell.origin.y), f32::from(cell.size.width), f32::from(cell.size.height));
+    let (dx, dy) = ((x * scale).round(), (y * scale).round());
+    (dx, dy, ((x + w) * scale).round() - dx, ((y + h) * scale).round() - dy)
+}
+
+/// The centre of a stroke `t` px thick across `len` device pixels from
+/// `origin`, as Ghostty places it: its near edge on device pixel
+/// floor((len - t) / 2), so a light line sits above or left of the middle
+/// when the two don't share parity.
+fn centre(origin: f32, len: f32, t: f32, scale: f32) -> f32 {
+    (origin + ((len - t * scale).max(0.0) / 2.0).floor()) / scale + t / 2.0
+}
+
+/// Paints `text` (one sprite character) into `cell`, snapped to device
+/// pixels. `thickness` is a light line's, Ghostty's box thickness: the
+/// font's underline thickness on whole device pixels.
+pub fn paint(text: &str, cell: Bounds<Pixels>, thickness: Pixels, color: Hsla, window: &mut Window) {
     let Some(c) = text.chars().next() else { return };
     let scale = window.scale_factor();
     let snap = |v: f32| (v * scale).round() / scale;
@@ -185,8 +202,7 @@ pub fn paint(text: &str, cell: Bounds<Pixels>, color: Hsla, window: &mut Window)
         }
     };
 
-    let (dx, dy) = ((x * scale).round(), (y * scale).round());
-    let (dw, dh) = (((x + w) * scale).round() - dx, ((y + h) * scale).round() - dy);
+    let (dx, dy, dw, dh) = device_cell(cell, scale);
     if let Some(dots) = braille(c, dw as i32, dh as i32) {
         for [x0, y0, x1, y1] in dots {
             rect((dx + x0 as f32) / scale, (dy + y0 as f32) / scale,
@@ -213,19 +229,15 @@ pub fn paint(text: &str, cell: Bounds<Pixels>, color: Hsla, window: &mut Window)
         }
         return;
     }
-    let light = (w / 8.0).round().max(1.0 / scale);
-    let (cx, cy) = (snap(x + w / 2.0), snap(y + h / 2.0));
+    let light = light_thickness(thickness, scale);
     if let Some((sx, sy)) = arc(c) {
-        // Like Ghostty, center the stroke between its pixel-aligned edges.
-        // The solid arms snap both edges, not the path center.
-        let (x0, x1) = (snap(cx - light / 2.0), snap(cx + light / 2.0));
-        let (y0, y1) = (snap(cy - light / 2.0), snap(cy + light / 2.0));
-        let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        // Centred as the solid arms are, so the stroke meets them exactly.
+        let (cx, cy) = (centre(dx, dw, light, scale), centre(dy, dh, light, scale));
         let ex = snap(if sx > 0.0 { x + w } else { x });
         let ey = snap(if sy > 0.0 { y + h } else { y });
         // Keep the turn inside the snapped cell, without doubling back.
         let (r, k) = ((ex - cx).abs().min((ey - cy).abs()), 0.25);
-        let mut path = PathBuilder::stroke(px(x1 - x0));
+        let mut path = PathBuilder::stroke(px(light));
         path.move_to(point(px(cx), px(ey)));
         path.line_to(point(px(cx), px(cy + sy * r)));
         path.cubic_bezier_to(point(px(cx + sx * r), px(cy)), point(px(cx), px(cy + sy * k * r)), point(px(cx + sx * k * r), px(cy)));
@@ -235,36 +247,68 @@ pub fn paint(text: &str, cell: Bounds<Pixels>, color: Hsla, window: &mut Window)
         }
         return;
     }
+    strokes(c, cell, scale, light, |x0, y0, x1, y1| rect(x0, y0, x1, y1, color));
+}
+
+/// A light line's thickness: `thickness` on whole device pixels, at least one.
+fn light_thickness(thickness: Pixels, scale: f32) -> f32 {
+    (f32::from(thickness) * scale).round().max(1.0) / scale
+}
+
+/// The rectangles (x0, y0, x1, y1) of a straight or dashed box-drawing
+/// character, before snapping. Each stroke is centred as Ghostty centres it
+/// (`centre`), so a stroke's edges fall on device pixels.
+fn strokes(c: char, cell: Bounds<Pixels>, scale: f32, light: f32, mut rect: impl FnMut(f32, f32, f32, f32)) {
+    let (dx, dy, dw, dh) = device_cell(cell, scale);
+    let (left, top, right, bottom) = (dx / scale, dy / scale, (dx + dw) / scale, (dy + dh) / scale);
+    // Centres of a vertical (cx) or horizontal (cy) stroke `t` thick.
+    let cx = |t: f32| centre(dx, dw, t, scale);
+    let cy = |t: f32| centre(dy, dh, t, scale);
     if let Some((n, heavy, horizontal)) = dashes(c) {
-        // Gaps are at most half the cell. A horizontal line keeps half a gap
-        // at each end and a vertical one its gap below, so neighbors tile evenly.
-        let t = if heavy { light * 2.0 } else { light };
-        let (len, from) = if horizontal { (w, x) } else { (h, y) };
-        let gap = (len / (2.0 * n as f32)).min(light.max(4.0 / scale));
-        let dash = (len - gap * n as f32) / n as f32;
-        let mut at = from + if horizontal { gap / 2.0 } else { 0.0 };
-        for _ in 0..n {
+        // Ghostty's layout, on whole device pixels: gaps of 4px (or a light
+        // line, if wider) but at most half the cell, and leftover pixels added
+        // to the first dashes. A horizontal line keeps half a gap at its left
+        // end and a vertical one its gap below, so neighbors tile evenly. A
+        // cell too small for them gets a solid light line.
+        let (origin, len, n) = if horizontal { (dx, dw, n as f32) } else { (dy, dh, n as f32) };
+        let (t, count, gap) = if len < 2.0 * n {
+            (light, 1.0, 0.0)
+        } else {
+            (if heavy { light * 2.0 } else { light }, n, (light * scale).max(4.0).min((len / (2.0 * n)).floor()))
+        };
+        let dash = ((len - count * gap) / count).floor();
+        let mut extra = (len - count * gap) - dash * count;
+        let mut at = if horizontal { (gap / 2.0).floor() } else { 0.0 };
+        for _ in 0..count as usize {
+            let end = at + dash + if extra > 0.0 { 1.0 } else { 0.0 };
+            extra -= 1.0;
+            let (a0, a1) = ((origin + at) / scale, (origin + end) / scale);
             if horizontal {
-                rect(at, cy - t / 2.0, at + dash, cy + t / 2.0, color);
+                rect(a0, cy(t) - t / 2.0, a1, cy(t) + t / 2.0);
             } else {
-                rect(cx - t / 2.0, at, cx + t / 2.0, at + dash, color);
+                rect(cx(t) - t / 2.0, a0, cx(t) + t / 2.0, a1);
             }
-            at += dash + gap;
+            at = end + gap;
         }
         return;
     }
     let Some(dirs) = lines(c) else { return };
     let thick = |k: u8| if k == 2 { light * 2.0 } else { light };
-    // Where a line along an arm starts, measured from the center toward the
-    // arm: `before` and `after` are the crossing arms on this line's side and
-    // the other side. Negative reaches past the center so joins close.
+    // Where a line along an arm starts, measured toward the arm from the
+    // centre of the crossing stroke it reaches (the second value's thickness):
+    // `before` and `after` are the crossing arms on this line's side and the
+    // other side. Negative reaches past the centre so joins close.
     let cover = |k: u8| if k == 3 { light * 1.5 } else { thick(k) / 2.0 };
-    let start = |before: u8, after: u8, double: bool| -> f32 {
+    let start = |before: u8, after: u8, double: bool, opposite_differs: bool| -> (f32, f32) {
         match (before, after) {
             // A double line stops at a double crossing on its side (inner corner).
-            (3, _) if double => light / 2.0,
-            (0, 0) => 0.0,
-            (0, k) | (k, _) => -cover(k),
+            (3, _) if double => (light / 2.0, light),
+            // With nothing crossing, arms overlap by a light line's width, as in Ghostty.
+            (0, 0) => (-light / 2.0, light),
+            // A T onto a matching pair of crossing lines stops at their near
+            // edge, as in Ghostty, so ╧ and ╟ keep the double line's gap open.
+            (k, j) if k == j && k != 2 && opposite_differs => (light / 2.0, light),
+            (0, k) | (k, _) => (-cover(k), thick(k)),
         }
     };
     // Arms: (direction, sign along the axis, horizontal?).
@@ -275,21 +319,19 @@ pub fn paint(text: &str, cell: Bounds<Pixels>, color: Hsla, window: &mut Window)
         }
         // The crossing arms on each side of this arm (up/down for a horizontal arm).
         let (side_a, side_b) = if horizontal { (dirs[0], dirs[2]) } else { (dirs[3], dirs[1]) };
-        let lines: Vec<(f32, f32, u8, u8)> = if k == 3 {
-            vec![(-light, light, side_a, side_b), (light, light, side_b, side_a)]
-        } else {
-            let (a, b) = if side_a >= side_b { (side_a, side_b) } else { (side_b, side_a) };
-            vec![(0.0, thick(k), a, b)]
-        };
-        for (off, t, before, after) in lines {
-            let near = start(before, after, k == 3);
-            let (c, edge) = if horizontal { (cx, if sign > 0.0 { x + w } else { x }) } else { (cy, if sign > 0.0 { y + h } else { y }) };
+        let (a, b) = if side_a >= side_b { (side_a, side_b) } else { (side_b, side_a) };
+        let doubled = [(-light, light, side_a, side_b), (light, light, side_b, side_a)];
+        let single = [(0.0, thick(k), a, b)];
+        let lines: &[(f32, f32, u8, u8)] = if k == 3 { &doubled } else { &single };
+        for &(off, t, before, after) in lines {
+            let (near, crossing) = start(before, after, k == 3, dirs[(i + 2) % 4] != k);
+            let (c, edge) = if horizontal { (cx(crossing), if sign > 0.0 { right } else { left }) } else { (cy(crossing), if sign > 0.0 { bottom } else { top }) };
             let from = c + sign * near;
             let (a0, a1) = if sign > 0.0 { (from, edge) } else { (edge, from) };
             if horizontal {
-                rect(a0, cy + off - t / 2.0, a1, cy + off + t / 2.0, color);
+                rect(a0, cy(t) + off - t / 2.0, a1, cy(t) + off + t / 2.0);
             } else {
-                rect(cx + off - t / 2.0, a0, cx + off + t / 2.0, a1, color);
+                rect(cx(t) + off - t / 2.0, a0, cx(t) + off + t / 2.0, a1);
             }
         }
     }
@@ -385,7 +427,7 @@ mod tests {
                         paint(&c.to_string(), Bounds::new(
                             point(px(7.3 + col as f32 * w), px(5.7)),
                             size(px(w), px(h)),
-                        ), rgb(0xffffff).into(), window);
+                        ), px(1.0), rgb(0xffffff).into(), window);
                     }
                 }).size_full())
             }
@@ -445,17 +487,17 @@ mod tests {
     fn rendered_rounded_corners_join_straight_lines() {
         use gpui::{prelude::*, *};
 
-        struct BoxScene { w: f32, h: f32 }
+        struct BoxScene { w: f32, h: f32, t: f32 }
         impl Render for BoxScene {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                let (w, h) = (self.w, self.h);
+                let (w, h, t) = (self.w, self.h, self.t);
                 div().size_full().bg(rgb(0)).child(canvas(|_, _, _| {}, move |_, _, window, _| {
                     for (row, text) in ["╭─╮", "│ │", "╰─╯"].iter().enumerate() {
                         for (col, c) in text.chars().enumerate() {
                             paint(&c.to_string(), Bounds::new(
                                 point(px(7.3 + col as f32 * w), px(5.7 + row as f32 * h)),
                                 size(px(w), px(h)),
-                            ), rgb(0xffffff).into(), window);
+                            ), px(t), rgb(0xffffff).into(), window);
                         }
                     }
                 }).size_full())
@@ -467,10 +509,9 @@ mod tests {
             std::sync::Arc::new(()),
             gpui_platform::current_headless_renderer,
         );
-        // The headless platform renders at 2x. Include half-sized cells to
-        // exercise the one-device-pixel strokes used at 14 and 18.2px.
-        for (w, h) in [(4.2, 11.), (5.46, 14.3), (8.4, 22.), (10.92, 28.6), (16., 32.)] {
-            let handle = cx.open_window(size(px(80.), px(120.)), |_, cx| cx.new(|_| BoxScene { w, h })).unwrap();
+        // The headless platform renders at 2x: a 0.5px line is one device pixel.
+        for (w, h, t) in [0.5, 1.0].into_iter().flat_map(|t| [(4.2, 11., t), (5.46, 14.3, t), (8.4, 22., t), (10.92, 28.6, t), (16., 32., t)]) {
+            let handle = cx.open_window(size(px(80.), px(120.)), |_, cx| cx.new(|_| BoxScene { w, h, t })).unwrap();
             cx.update_window(handle.into(), |_, window, cx| {
                 let scale = window.scale_factor();
                 let _ = window.draw(cx);
@@ -502,6 +543,99 @@ mod tests {
                 }
             }).unwrap();
         }
+    }
+
+    /// The device pixels `c`'s strokes cover in a `w` x `h` cell at `scale`,
+    /// row by row, with a light line `thickness` px thick.
+    fn stroke_mask(c: char, (w, h): (f32, f32), scale: f32, thickness: f32) -> Vec<Vec<bool>> {
+        let cell = Bounds::new(point(px(0.0), px(0.0)), size(px(w), px(h)));
+        let (_, _, dw, dh) = device_cell(cell, scale);
+        let mut mask = vec![vec![false; dw as usize]; dh as usize];
+        let at = |v: f32| (v * scale).round() as usize;
+        strokes(c, cell, scale, light_thickness(px(thickness), scale), |x0, y0, x1, y1| {
+            for row in &mut mask[at(y0)..at(y1)] {
+                row[at(x0)..at(x1)].fill(true);
+            }
+        });
+        mask
+    }
+
+    /// A mask of full-width rows `rows` and full-height columns `cols`.
+    fn cross_mask((dw, dh): (usize, usize), rows: std::ops::Range<usize>, cols: std::ops::Range<usize>) -> Vec<Vec<bool>> {
+        (0..dh).map(|y| (0..dw).map(|x| rows.contains(&y) || cols.contains(&x)).collect()).collect()
+    }
+
+    #[test]
+    fn lines_sit_on_ghosttys_device_pixels() {
+        // (cell, scale, light thickness px, light rows, light cols, heavy rows, heavy cols),
+        // from Ghostty's linesChar: a stroke's top/left edge at floor((cell - stroke) / 2).
+        let cases = [
+            ((7.0, 16.0), 1.0, 1.0, 7..8, 3..4, 7..9, 2..4),
+            ((7.0, 16.0), 2.0, 1.0, 15..17, 6..8, 14..18, 5..9),
+            ((14.0, 32.0), 1.0, 2.0, 15..17, 6..8, 14..18, 5..9),
+            ((14.0, 32.0), 2.0, 2.0, 30..34, 12..16, 28..36, 10..18),
+        ];
+        for (cell, scale, thickness, light_rows, light_cols, heavy_rows, heavy_cols) in cases {
+            let device = ((cell.0 * scale) as usize, (cell.1 * scale) as usize);
+            let check = |c: char, rows: std::ops::Range<usize>, cols: std::ops::Range<usize>| {
+                assert_eq!(stroke_mask(c, cell, scale, thickness), cross_mask(device, rows, cols), "{c} in {cell:?} at {scale}x");
+            };
+            check('─', light_rows.clone(), 0..0);
+            check('│', 0..0, light_cols.clone());
+            check('┼', light_rows.clone(), light_cols.clone());
+            check('━', heavy_rows.clone(), 0..0);
+            check('┃', 0..0, heavy_cols.clone());
+            check('╋', heavy_rows, heavy_cols);
+        }
+    }
+
+    /// A `dw` x `dh` mask lit where `on(x, y)`.
+    fn mask_of((dw, dh): (usize, usize), on: impl Fn(usize, usize) -> bool) -> Vec<Vec<bool>> {
+        (0..dh).map(|y| (0..dw).map(|x| on(x, y)).collect()).collect()
+    }
+
+    #[test]
+    fn dashes_follow_ghosttys_pixel_layout() {
+        // From Ghostty's dashHorizontal / dashVertical: whole-pixel gaps of
+        // min(max(4, light), cell / 2n), leftover pixels on the first dashes.
+        assert_eq!(stroke_mask('┄', (7.0, 16.0), 1.0, 1.0), mask_of((7, 16), |x, y| y == 7 && [0, 1, 3, 5].contains(&x)));
+        assert_eq!(stroke_mask('┄', (7.0, 16.0), 2.0, 1.0), mask_of((14, 32), |x, y| (15..17).contains(&y) && [1, 2, 3, 6, 7, 8, 11, 12].contains(&x)));
+        assert_eq!(stroke_mask('┆', (7.0, 16.0), 1.0, 1.0), mask_of((7, 16), |x, y| x == 3 && [0, 1, 2, 3, 6, 7, 8, 11, 12, 13].contains(&y)));
+        assert_eq!(stroke_mask('┅', (7.0, 16.0), 1.0, 1.0), mask_of((7, 16), |x, y| (7..9).contains(&y) && [0, 1, 3, 5].contains(&x)));
+        // Too narrow for four dashes and their gaps: a solid light line.
+        assert_eq!(stroke_mask('┉', (7.0, 16.0), 1.0, 1.0), mask_of((7, 16), |_, y| y == 7));
+    }
+
+    #[test]
+    fn a_t_onto_a_double_line_keeps_its_gap_open() {
+        // Ghostty stops ╧'s up arm at the upper of the two lines and ╟'s
+        // right arm at the right one. Only a crossing (╪ ╫) runs through.
+        let double_rows = |y: usize| y == 6 || y == 8;
+        assert_eq!(stroke_mask('╧', (7.0, 16.0), 1.0, 1.0), mask_of((7, 16), |x, y| double_rows(y) || (x == 3 && y < 7)));
+        assert_eq!(stroke_mask('╤', (7.0, 16.0), 1.0, 1.0), mask_of((7, 16), |x, y| double_rows(y) || (x == 3 && y > 8)));
+        assert_eq!(stroke_mask('╪', (7.0, 16.0), 1.0, 1.0), mask_of((7, 16), |x, y| double_rows(y) || x == 3));
+        let double_cols = |x: usize| x == 2 || x == 4;
+        assert_eq!(stroke_mask('╟', (7.0, 16.0), 1.0, 1.0), mask_of((7, 16), |x, y| double_cols(x) || (y == 7 && x > 4)));
+        assert_eq!(stroke_mask('╫', (7.0, 16.0), 1.0, 1.0), mask_of((7, 16), |x, y| double_cols(x) || y == 7));
+    }
+
+    #[test]
+    fn line_thickness_follows_the_fonts_underline() {
+        // A 12x24 cell's font can have a 1px underline, where an eighth of
+        // the cell would round to 2px: Ghostty draws its box lines 1px.
+        assert_eq!(stroke_mask('─', (12.0, 24.0), 1.0, 1.0), cross_mask((12, 24), 11..12, 0..0));
+        assert_eq!(stroke_mask('━', (12.0, 24.0), 1.0, 1.0), cross_mask((12, 24), 11..13, 0..0));
+        assert_eq!(stroke_mask('│', (12.0, 24.0), 1.0, 1.0), cross_mask((12, 24), 0..0, 5..6));
+        // Never thinner than a device pixel.
+        assert_eq!(stroke_mask('─', (12.0, 24.0), 2.0, 0.1), cross_mask((24, 48), 23..24, 0..0));
+    }
+
+    #[test]
+    fn half_lines_reach_past_the_centre_as_in_ghostty() {
+        // Ghostty ends a lone arm at the far edge of a light vertical line.
+        assert_eq!(stroke_mask('╴', (7.0, 16.0), 1.0, 1.0), (0..16).map(|y| (0..7).map(|x| y == 7 && x < 4).collect()).collect::<Vec<Vec<bool>>>());
+        assert_eq!(stroke_mask('╶', (7.0, 16.0), 1.0, 1.0), (0..16).map(|y| (0..7).map(|x| y == 7 && x >= 3).collect()).collect::<Vec<Vec<bool>>>());
+        assert_eq!(stroke_mask('╵', (7.0, 16.0), 1.0, 1.0), (0..16).map(|y| (0..7).map(|x| x == 3 && y < 8).collect()).collect::<Vec<Vec<bool>>>());
     }
 
     #[test]
