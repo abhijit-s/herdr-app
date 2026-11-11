@@ -149,6 +149,8 @@ test("failed pairing survives a sidebar restart and retries without removal", as
   await Promise.all(failed.tasks);
   const restarted = harness([], failed.storage);
   restarted.view.init({}, restarted.cx);
+  // init's own task waits for renders for good: only the reconnect's are awaited.
+  restarted.tasks.length = 0;
   expect(restarted.view.reconnecting.cloud.machine).toEqual(machine);
   expect(restarted.view.reconnecting.cloud.error).toBe("core too old");
   expect(restarted.view.reconnecting.cloud.busy).toBe(false);
@@ -332,4 +334,87 @@ test("no reconciliation without a rendered sidebar", () => {
   h.rows();
   h.flush();
   expect(h.order()).toEqual(["main", "topic"]);
+});
+
+test("looks come from renders and a slow timer, fast only while a new space waits", async () => {
+  const h = harness([], new Map(), [{ id: "old", folder: "/old" }]);
+  const intervals: number[] = [];
+  const later: { ms: number; fn: (cx: unknown) => void }[] = [];
+  let notified = 0;
+  const cx: any = {
+    timer: { every(ms: number) { intervals.push(ms); }, after(ms: number, fn: (cx: unknown) => void) { later.push({ ms, fn }); return { cancel() {} }; } },
+    notify() { notified++; },
+    spawn(fn: (cx: unknown) => Promise<unknown>) { h.tasks.push(fn(cx)); },
+  };
+  h.view.init({}, cx);
+  expect(intervals.every((ms) => ms >= 1000)).toBe(true);
+  const looks: boolean[] = [];
+  h.view.due = () => new Set();
+  const checkNew = h.view.checkNew.bind(h.view);
+  h.view.checkNew = (cx: unknown, drawn?: boolean) => { looks.push(Boolean(drawn)); checkNew(cx, drawn); };
+
+  // A render (what it reads changed) asks for one look, without a redraw of its own.
+  h.view.wake();
+  h.view.wake();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(looks).toEqual([true]);
+  expect(notified).toBe(0);
+  expect(later).toEqual([]);
+
+  // A new space waits for its git: looked at again soon (once), and redrawn then.
+  h.snapshot.push({ id: "new", folder: "/new" });
+  h.view.wake();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(later.map((l) => l.ms)).toEqual([250]);
+  h.view.checkNew(cx, true);
+  expect(later).toHaveLength(1);
+  expect(notified).toBe(0);
+  later.shift()!.fn(cx);
+  expect(notified).toBe(1);
+  expect(later).toHaveLength(1);
+
+  // Once shown, nothing more is scheduled and nothing redraws.
+  h.view.shown.add("new");
+  later.shift()!.fn(cx);
+  expect(later).toEqual([]);
+  expect(notified).toBe(1);
+});
+
+test("a copy that is never drawn stops the quick looks once a new space would show anyway", () => {
+  const now = spyOn(Date, "now").mockReturnValue(10000);
+  try {
+    const h = harness([], new Map(), [{ id: "old", folder: "/old" }, { id: "new", folder: "/new" }]);
+    Object.assign(h.view, { shown: new Set(["old"]), born: {}, due: () => new Set() });
+    const later: ((cx: unknown) => void)[] = [];
+    let notified = 0;
+    const cx: any = { timer: { after(_ms: number, fn: (cx: unknown) => void) { later.push(fn); return { cancel() {} }; } }, notify() { notified++; } };
+    h.view.checkNew(cx);
+    expect(later).toHaveLength(1);
+    now.mockReturnValue(11500);
+    later.shift()!(cx);
+    expect(later).toHaveLength(1);
+    now.mockReturnValue(11800);
+    later.shift()!(cx);
+    expect(later).toEqual([]);
+    // The 1 s timer still asks for the draw that would show it.
+    expect(notified).toBe(3);
+  } finally {
+    now.mockRestore();
+  }
+});
+
+test("a look that throws does not end the looks renders ask for", async () => {
+  const h = harness([], new Map(), []);
+  const cx: any = { timer: { every() {}, after() { return { cancel() {} }; } }, notify() {}, spawn(fn: (cx: unknown) => Promise<unknown>) { h.tasks.push(fn(cx)); } };
+  h.view.init({}, cx);
+  let looks = 0;
+  h.view.checkNew = () => { looks++; throw new Error("no window yet"); };
+  for (let i = 0; i < 2; i++) {
+    h.view.wake();
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+  expect(looks).toBe(2);
 });

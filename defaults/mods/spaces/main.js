@@ -33,6 +33,8 @@ const base = (path) => path.replace(/\/+$/, "").split("/").pop();
 // Changes made outside Herdr (an editor's save, a commit in another app): looked
 // for this often, in repos the list shows, while the window is in front.
 const FALLBACK = 60000;
+// How long a new space waits for its git before it shows anyway.
+const WAIT = 1500;
 
 // What a stored color name looks like on an avatar (the same in every mod
 // that draws space avatars): one strong color per hue, light and dark alike.
@@ -69,17 +71,33 @@ export default class Spaces extends View {
     this.folded = new Set(JSON.parse(localStorage.getItem("machines.folded") ?? "[]"));
     this.refreshMachines(cx);
     cx.timer.every(15000, cx => this.refreshMachines(cx));
-    // Refresh only when the refs could have changed (see `due`).
-    cx.timer.every(250, (cx) => this.checkNew(cx));
+    // Refresh only when the refs could have changed (see `due`). What could
+    // change them (a new space, a cd, a command ending) also changes what
+    // render reads, so render asks for a look at once; the timer is for what
+    // time alone decides (a fallback, a settled reorder).
+    cx.spawn(async (cx) => {
+      for (;;) {
+        await new Promise((resolve) => (this.wake = resolve));
+        // One failed look must not end the looks renders ask for (the timer looks again).
+        try { this.checkNew(cx, true); } catch {}
+      }
+    });
+    cx.timer.every(1000, (cx) => this.checkNew(cx));
   }
 
-  checkNew(cx) {
+  // `drawn`: render just ran, so no redraw is needed for what it shows.
+  checkNew(cx, drawn = false) {
     const now = Date.now();
     const sp = spaces();
     for (const s of sp) if (!this.shown.has(s.id)) this.born[s.id] ??= now;
     const due = this.due(now, sp, panes());
     if (due.size) this.refreshGit(due, cx);
-    if (sp.some((s) => !this.shown.has(s.id)) || this.orderingDue(now)) cx.notify();
+    const waiting = sp.some((s) => !this.shown.has(s.id));
+    if (!drawn && (waiting || this.orderingDue(now))) cx.notify();
+    // A new space waits at most a moment for its git (`ordered`): look again soon, not in a
+    // second, while it may still be waiting; a copy not drawn never shows it, so not for good.
+    const fresh = sp.some((s) => !this.shown.has(s.id) && now - this.born[s.id] <= WAIT + 250);
+    if (fresh && !this.soon) this.soon = cx.timer.after(250, (cx) => { this.soon = null; this.checkNew(cx); });
   }
 
   // Places whose git could have changed: new ones (a new space, a cd), where a
@@ -257,7 +275,7 @@ export default class Spaces extends View {
   // Spaces in order, each worktree space moved under its main checkout's.
   ordered() {
     const sp = spaces(), ps = panes();
-    const ready = (w) => this.shown.has(w.id) || where(w, ps) in this.git || Date.now() - (this.born[w.id] ??= Date.now()) > 1500;
+    const ready = (w) => this.shown.has(w.id) || where(w, ps) in this.git || Date.now() - (this.born[w.id] ??= Date.now()) > WAIT;
     for (const w of sp) if (!this.shown.has(w.id) && ready(w)) this.shown.add(w.id);
     const list = sp.map((w, i) => ({ w, i, g: this.git[where(w, ps)] ?? null }));
     const mains = new Set(list.filter((r) => r.g && !r.g.linked).map((r) => r.g.repo));
@@ -458,6 +476,7 @@ export default class Spaces extends View {
   }
 
   render() {
+    this.wake?.();
     const t = theme();
     const collapsed = narrow();
     const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
