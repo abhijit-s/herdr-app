@@ -34,12 +34,13 @@ function harness(names = ["a", "b", "c", "d"]) {
   let tabs: Tab[] = names.map((id, i) => ({ id, name: id, active: i === 0 }));
   const space = () => ({ id: "s1", active: true, tabs });
   const handle = { focused: false, focus() { this.focused = true; }, is_focused() { return this.focused; } };
-  const Tabs = new Function("View", "div", "svg", "image", "h_flex", "spaces", "panes", "run", "openOverlay", "theme", "window", "shared", "layout", "settings", "localStorage", `${tabsSource}; return { Tabs, slotOver, dropIndex };`)(
+  const Tabs = new Function("View", "div", "svg", "image", "h_flex", "spaces", "panes", "run", "openOverlay", "theme", "window", "shared", "layout", "settings", "localStorage", "ScrollHandle", `${tabsSource}; return { Tabs, slotOver, dropIndex };`)(
     class {}, element, element, element, element,
     () => [space()], () => [],
     (name: string, args: unknown) => { runs.push([name, args]); },
     () => null, () => new Proxy({}, { get: () => "#000" }), () => null, () => null, () => null, () => ({ ui_scale: 1 }),
     { getItem: () => null, setItem() {} },
+    { new: () => ({ scroll_to_item() {} }) },
   );
   const view = new Tabs.Tabs();
   const cx = { focus_handle: () => handle, notify() {}, stop_propagation() {} };

@@ -24,7 +24,7 @@ const program = { key: "claude", name: "Claude Code", agent: true };
 let pane: any;
 const values: Record<string, any> = {
   View: class {}, div: element, svg: (...src: any[]) => { const e = element(); e.calls.src = src; return e; }, image: element, h_flex: element,
-  panes: () => [pane], props: () => ({ pane: "p1" }), run: (...args: any[]) => ran.push(args), home: () => "/home/me",
+  panes: () => [pane], props: () => ({ pane: "p1" }), run: (...args: any[]) => ran.push(args), home: () => "/home/me", layout: () => null,
   theme: () => new Proxy({}, { get: () => "#000000" }), settings: () => ({ working_spinner: null }),
   fitHeaderInfo: (segments: any[]) => segments, headerTextWidth: (text: string, font: number) => [...text].length * font * 0.6,
 };

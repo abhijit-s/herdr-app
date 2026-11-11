@@ -42,7 +42,7 @@ const source = await readFile(new URL("../defaults/frame/settings/main.js", impo
 let composed: Record<string, any> = {};
 const values: Record<string, any> = {
   View: class {}, div: element, svg: element, image: element, v_flex: element, h_flex: element,
-  Scrollbar: { vertical: element }, Input: { new: element }, InputState: { new: () => fakeInput() },
+  Scrollbar: { vertical: element }, Input: { new: element }, InputState: { new: () => fakeInput() }, Popup: { new: element },
   // The theme grid's list: what it was given, and where its handle was asked to scroll.
   v_virtual_list: (...args: any[]) => { const list = element(); list.calls.v_virtual_list = args; return list; },
   VirtualListScrollHandle: { new: () => { const handle = { scrolls: [] as any[], scroll_to_item(i: number, how: string) { handle.scrolls.push([i, how]); } }; return handle; } },

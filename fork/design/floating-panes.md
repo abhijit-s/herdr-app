@@ -163,7 +163,7 @@ flowchart LR
   - **New build, old document:** no `floating` field, so no floats. Nothing to convert.
   - **Old build, new document:** serde ignores the unknown field on read. The old build's next write drops it, because `SharedTab` keeps no unknown fields. The float's terminal is still labelled `herdr.tab=<id>` and has no pane in the old build's model, so the orphan scan adopts it as a tiled pane, under a new pane id and without its name (verified by reading `src/window.rs:3042-3110`; not yet run). The terminal is never lost. Only its float placement, name and icon are.
   - **Precursor fix:** keep unknown fields in `SharedSpace` and `SharedTab` (`#[serde(flatten)] rest: Map<String, Value>`), as `focus_history` already does for its document ("unknown fields kept"). That is an A-verdict fix, worth offering upstream on its own, before floats ship. Machines on older builds then pass the field through untouched.
-- **Precursor (built):** `fix/doc-keep-unknown-fields` keeps unknown space and tab fields (`Space::rest`, `Tab::rest`), offered upstream on its own.
+- **Precursor (built):** `fix/doc-keep-unknown-fields` keeps unknown space and tab fields (`Space::rest`, `Tab::rest`), upstream as #729 since release 0.1.14.
 - **Restore:** on start, `Document::replace` rebuilds `floating`, then `View::apply` filters `focused`, `zoomed` and `hidden` to panes that still exist, now including floats. A lost terminal (core crash) gets a shell in its last folder at the same address, as a tiled one does, so the float survives in place.
 
 ## Commands
