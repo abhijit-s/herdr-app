@@ -844,6 +844,12 @@ pub fn published_agents() -> Value {
     SNAPSHOT.with(|s| s.borrow().agents.clone())
 }
 
+/// `modActions()` as last published, for tests.
+#[cfg(test)]
+pub fn published_actions() -> Value {
+    SNAPSHOT.with(|s| s.borrow().actions.clone())
+}
+
 pub fn publish_panes(v: Value) -> bool {
     publish("panes", |s| (std::mem::replace(&mut s.panes, v.clone()), v))
 }
