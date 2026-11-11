@@ -184,7 +184,7 @@ Start a terminal: as a new tab (place "tab", default), or "right"/"down" of the 
 
 ## `terminal.popup`
 
-Run a program on this computer in a popup over the tab (terminal.peek's, with keep-as-tab and close), started without a parent. It closes when the program ends, and the terminal goes with it unless wait is true, which keeps it until `{"wait": terminal}` on the control socket (as `herdr-app popup` sends) has read its exit code and signal (unread for a minute, it goes too). cwd: where it starts (default: home); hold: keep it up after the program ends until a key (not on Windows); width, height: the popup's size (px, or a fraction of the window up to 1; default 0.8). ✕ hides the popup and the program keeps running until the next popup, which ends the program the last popup started, open or hidden.
+Run a program on this computer in a popup over the tab (terminal.peek's, with keep-as-tab and close), started without a parent. It closes when the program ends, and the terminal goes with it unless wait is true, which keeps it until `{"wait": terminal}` on the control socket (as `herdr-app popup` sends) has read its exit code and signal (unread for a minute, it goes too). cwd: where it starts (default: home); hold: keep it up after the program ends until a key (not on Windows); width, height: the popup's size (px, or a fraction of the window up to 1; default 0.8). Closing the popup (✕, Esc, the backdrop) ends its program, and so does the next popup; keep-as-tab keeps it.
 
 | Argument | Required |
 |---|---|
@@ -197,7 +197,7 @@ Run a program on this computer in a popup over the tab (terminal.peek's, with ke
 
 ## `terminal.keep`
 
-Give a running terminal without a pane (a sub-agent) a pane: a new tab, or "right"/"down".
+Give a running terminal without a pane (a sub-agent) a pane: a new tab, or "right"/"down". A peek of it closes; a popup kept is the person's and no longer ends with the popup.
 
 | Argument | Required |
 |---|---|
