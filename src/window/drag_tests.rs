@@ -37,7 +37,7 @@ fn squeezed_layout_drag(cx: &mut gpui::TestAppContext) {
                         let a = &parent.children()[index];
                         let b = &parent.children()[index + 1];
                         let bounds = this.bounds.borrow();
-                        let total = f32::from(bounds[&a.id].size.height + bounds[&b.id].size.height) / super::settings::zoom();
+                        let total = f32::from(bounds[&a.id].size.height + bounds[&b.id].size.height) / super::settings::ui_scale();
                         drop(bounds);
                         let before = serde_json::to_value(parent).unwrap();
                         this.drag = Some(super::Drag { container: container.into(), index, axis: super::Axis::Column });

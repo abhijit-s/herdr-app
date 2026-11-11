@@ -140,6 +140,8 @@ struct Grid {
     /// Font size, cell size, cell font, loaded fonts, ligature, thickening and
     /// dimming settings used to draw.
     painted_with: PaintedWith,
+    /// Where text and its lines sit in the cell, and what they were measured with.
+    metrics: Option<(MetricsKey, CellMetrics)>,
 }
 
 pub struct TerminalView {
@@ -357,6 +359,7 @@ impl TerminalView {
                 track: None,
                 painted: Vec::new(),
                 painted_with: (0, Size::default(), font(""), 0, 0, 0, false, gpui::GlyphThicken::Auto, (Rgb::default(), 0)),
+                metrics: None,
             })),
             focus: cx.focus_handle(),
             was_focused: false,
@@ -1833,18 +1836,18 @@ fn measure_cell_at(ts: &gpui::WindowTextSystem, f: &Font, s: &crate::settings::S
     let fs = px(font);
     let advance = ts.advance(id, fs, 'M').map(|s| s.width).unwrap_or(fs * 0.6);
     let h = ts.ascent(id, fs) + ts.descent(id, fs).abs();
-    // Glyphs sit exactly on their cells (gpui-pre `apply_force_width_to_layout`),
-    // so any width works; boxes snap their edges (`snap_box`).
+    // Glyphs sit exactly on their cells (`ShapedLine::with_cell_positions` in
+    // `row_ops`), so any width works; boxes snap their edges (`snap_box`).
     let w = cell_width(advance, px(s.letter_spacing * zoom), s.cell_width, s.cell_rounding, scale);
     size(w, row_height(h, s.line_height, s.cell_rounding, scale))
 }
 
 /// The font's height times line_height, kept within the 0.8 to 2 settings.json
 /// allows (a 0 would make empty rows and endless grids), in whole device
-/// pixels (`cell_rounding`; outward is up). Text is centred in the row
-/// (gpui-pre's `ShapedLine::paint`), so a row rounded below the font's height
-/// lets ink reach past it by the same amount top and bottom; rows paint their
-/// backgrounds before any text, so that ink is not cut.
+/// pixels (`cell_rounding`; outward is up). The font's face is centred in the
+/// row on a whole device pixel (`cell_metrics`), so a row rounded below the
+/// font's height lets ink reach past it about equally top and bottom; rows
+/// paint their backgrounds before any text, so that ink is not cut.
 fn row_height(font_height: Pixels, line_height: f32, rounding: crate::settings::CellRounding, scale: f32) -> Pixels {
     px(rounding.whole(f32::from(font_height) * line_height.clamp(0.8, 2.0) * scale, f32::ceil) / scale)
 }
@@ -1862,39 +1865,39 @@ struct CellMetrics {
     strike_thickness: Pixels,
 }
 
-/// The metrics for a grid's cell at its text size: Ghostty's face metrics,
+/// What a grid's `CellMetrics` were measured with: the text size, the cell,
+/// the cell font (its family, weight and fallbacks) and the screen's scale.
+type MetricsKey = (u32, Size<Pixels>, Font, u32);
+
+/// The metrics for a cell of `font` at `text_size` px: Ghostty's face metrics,
 /// with the face centred in the cell the settings sized (`measure_cell`:
 /// line_height, cell_rounding and a pane's text zoom make it taller or
-/// shorter than the face), on whole device pixels.
-fn cell_metrics(window: &Window, cell: Size<Pixels>, text_size: f32) -> CellMetrics {
-    let ts = window.text_system();
-    let id = ts.resolve_font(&cell_font(false, false));
-    let scale = window.scale_factor();
-    // Asked for on every frame of every terminal; the answer only changes with
-    // the font, sizes or scale. A few are kept: panes zoomed on their own
-    // draw beside panes at the window's size.
-    type Key = (FontId, u32, u32, u32, u32);
-    thread_local!(static KEPT: RefCell<Vec<(Key, CellMetrics)>> = const { RefCell::new(Vec::new()) });
-    let key = (id, text_size.to_bits(), scale.to_bits(), f32::from(cell.width).to_bits(), f32::from(cell.height).to_bits());
-    if let Some(metrics) = KEPT.with_borrow(|kept| kept.iter().find(|(k, _)| *k == key).map(|(_, m)| *m)) {
-        return metrics;
-    }
-    let face = font_cell_metrics(ts, id, text_size, scale);
+/// shorter than the face), on whole device pixels. Reads the font's tables:
+/// each grid keeps its answer until its key changes (`Grid::metrics`).
+fn cell_metrics(ts: &WindowTextSystem, font: &Font, cell: Size<Pixels>, text_size: f32, scale: f32) -> CellMetrics {
+    let face = font_cell_metrics(ts, ts.resolve_font(font), text_size, scale);
     let offset = px(((f32::from(cell.height - face.size.height) * scale) / 2.0).round() / scale);
-    let metrics = CellMetrics {
+    CellMetrics {
         size: cell,
         baseline: face.baseline + offset,
         underline: face.underline + offset,
         strike: face.strike + offset,
         ..face
-    };
-    KEPT.with_borrow_mut(|kept| {
-        if kept.len() >= 4 {
-            kept.remove(0);
+    }
+}
+
+impl Grid {
+    /// This grid's `CellMetrics` for `key`, measured again only when it changed.
+    fn metrics_for(&mut self, key: MetricsKey, ts: &WindowTextSystem) -> CellMetrics {
+        if let Some((kept, metrics)) = &self.metrics
+            && *kept == key
+        {
+            return *metrics;
         }
-        kept.push((key, metrics));
-    });
-    metrics
+        let metrics = cell_metrics(ts, &key.2, key.1, f32::from_bits(key.0), f32::from_bits(key.3));
+        self.metrics = Some((key, metrics));
+        metrics
+    }
 }
 
 fn font_cell_metrics(ts: &WindowTextSystem, id: FontId, fs: f32, scale: f32) -> CellMetrics {
@@ -1975,9 +1978,9 @@ fn cell_width(advance: Pixels, spacing: Pixels, choice: crate::settings::CellWid
 }
 
 /// The font's advance plus letter_spacing, kept within half to one and a half
-/// advances. gpui-pre's force-width pass takes a glyph less than half a cell
-/// past the previous letter for a combining mark, so cells twice the advance
-/// would draw every other letter off the grid.
+/// advances: the range `letter_spacing` promises, since text of wider or
+/// narrower cells than that no longer reads as the font. (Rows place glyphs by
+/// `ShapedLine::with_cell_positions`, which has no width limit of its own.)
 fn spaced_width(advance: Pixels, spacing: Pixels) -> Pixels {
     (advance + spacing).max(advance * 0.5).min(advance * 1.5)
 }
@@ -2269,7 +2272,6 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, view: &WeakEntit
     crate::bench::count(&crate::bench::GRID);
     let mut g = grid.borrow_mut();
     let (cell, text_size) = (g.cell, g.font);
-    let metrics = cell_metrics(window, cell, text_size);
     let (pad_x, pad_y) = pad();
     // Rows rarely fill the height exactly: split what's left above and below.
     let spare = (f32::from(bounds.size.height) - 2.0 * pad_y - f32::from(cell.height) * g.vt.rows as f32).max(0.0);
@@ -2336,6 +2338,7 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, view: &WeakEntit
     let dim = if window.is_window_active() || settings.unfocused_dim_scope != crate::settings::DimScope::Text { 0.0 } else { settings.unfocused_dim };
     let fade = Fade { toward: frame.bg, dim };
     let with = painted_with(cell, text_size, fade);
+    let metrics = grid.borrow_mut().metrics_for((with.0, with.1, with.2.clone(), scale.to_bits()), window.text_system());
     let mut last = std::mem::take(&mut grid.borrow_mut().painted);
     if grid.borrow().painted_with != with {
         last.clear();
@@ -4073,48 +4076,43 @@ mod tests {
         assert!(reset.5.iter().all(|s| *s == px(plain.1)));
     }
 
-    /// In a row rounded below the font's height, the font's line box placed
-    /// as gpui-pre's `ShapedLine::paint` places it (centred: `padding_top`,
-    /// line.rs, which this test does not run) overhangs by at most a quarter
-    /// device pixel each side, and glyphs that reach the font's ascent or
-    /// descent (accents, descenders) keep their ink inside that box. Nerd
-    /// icons and symbols fit the cell itself.
+    /// In a row rounded below the font's height (`"nearest"`, line_height 1),
+    /// text painted at `cell_metrics`' baseline (the face centred in the row on
+    /// a whole device pixel, Ghostty's baseline inside it) keeps the ink of
+    /// glyphs that reach the font's ascent or descent (an accent, a descender)
+    /// within half a device pixel above and below the row, the overhang
+    /// FORK.md states ("Cell rounding"). Nerd icons and symbols fit the cell itself.
     #[cfg(target_os = "macos")]
     #[test]
-    fn a_shorter_row_overhangs_a_quarter_pixel_each_side_at_most() {
+    fn a_shorter_row_overhangs_half_a_device_pixel_each_side_at_most() {
         use super::*;
         use crate::settings::CellRounding::Nearest;
         use crate::settings::CellWidth::Pixel;
         let ts = core_text();
         let f = font(crate::settings::DEFAULT_FONT);
-        let mut shorter = 0;
+        let id = ts.resolve_font(&f);
+        let (mut shorter, mut worst) = (0, 0.0_f32);
         for size in [9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 18.0, 20.0, 24.0] {
             for scale in [1.0, 2.0] {
                 let cell = measure_cell(&ts, &f, &cell_settings(size, 1.0, Pixel, Nearest), scale);
-                let run = |text: &str| TextRun { len: text.len(), font: f.clone(), ..Default::default() };
-                let line = ts.shape_line("Ég".into(), px(size), &[run("Ég")], None);
-                let font_height = line.ascent + line.descent;
-                if cell.height >= font_height {
+                let metrics = cell_metrics(&ts, &f, cell, size, scale);
+                if cell.height >= ts.ascent(id, px(size)) + ts.descent(id, px(size)).abs() {
                     continue;
                 }
                 shorter += 1;
-                let over = f32::from(font_height - cell.height);
-                assert!(over * scale <= 0.5 + 1e-4, "{size} at {scale}x: {over}");
-                // The line box (ascent above the baseline, descent below) about the row.
-                let baseline = f32::from((cell.height - line.ascent - line.descent) / 2. + line.ascent);
-                let top = baseline - f32::from(line.ascent);
-                let bottom = baseline + f32::from(line.descent) - f32::from(cell.height);
-                assert!((top + bottom).abs() < 1e-4 && (-top - over / 2.0).abs() < 1e-4, "{size} at {scale}x: {top} above, {bottom} below");
-                // Ink of the accent and the descender stays within the line box's overhang.
                 for c in ['É', 'g'] {
-                    let text = c.to_string();
-                    let one = ts.shape_line(text.clone().into(), px(size), &[run(&text)], None);
-                    let ink = glyph_ink(&one, c, cell.height, &ts).unwrap();
-                    assert!(f32::from(ink.top()) >= top - 1e-3 && f32::from(ink.bottom()) <= f32::from(cell.height) + bottom + 1e-3, "{c} at {size}, {scale}x: {ink:?}");
+                    // Ink about the baseline: `origin.y` is its bottom, up from the baseline.
+                    let b = ts.typographic_bounds(id, px(size), c).unwrap();
+                    let top = metrics.baseline - b.origin.y - b.size.height;
+                    let bottom = metrics.baseline - b.origin.y;
+                    let (above, below) = (f32::from(-top) * scale, f32::from(bottom - cell.height) * scale);
+                    worst = worst.max(above).max(below);
+                    assert!(above <= 0.5 + 1e-3 && below <= 0.5 + 1e-3, "{c} at {size}, {scale}x: {above} device px above, {below} below the {cell:?} row");
                 }
             }
         }
         assert!(shorter > 0, "no size rounds the row down: nothing was checked");
+        eprintln!("shorter rows: {shorter}, worst overhang {worst:.2} device px");
     }
 
     // CoreText itself (not MacPlatform, which needs the main thread), with
