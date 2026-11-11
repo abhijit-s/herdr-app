@@ -82,13 +82,22 @@ fn blocks(c: char, w: i32, h: i32) -> Option<(Vec<[i32; 4]>, u8)> {
     // len - round(len / 2), so on an odd cell both halves cover the middle pixel.
     let (left_end, right_start) = (size(w, 0.5), w - size(w, 0.5));
     let (top_end, bottom_start) = (size(h, 0.5), h - size(h, 0.5));
+    // The halves overlap on an odd cell's middle row and column, and Ghostty's
+    // coverage mask counts those pixels once, so the quadrants are emitted as
+    // disjoint bands (above, on and below the middle row) for a translucent
+    // (faint) colour to blend once.
     let quads = |tl: bool, tr: bool, bl: bool, br: bool| {
-        let mut v = Vec::with_capacity(4);
-        if tl { v.push([0, 0, left_end, top_end]) }
-        if tr { v.push([right_start, 0, w, top_end]) }
-        if bl { v.push([0, bottom_start, left_end, h]) }
-        if br { v.push([right_start, bottom_start, w, h]) }
-        (disjoint(&v), 0xff)
+        let mut v = Vec::with_capacity(6);
+        for (y0, y1, l, r) in [(0, bottom_start, tl, tr), (bottom_start, top_end, tl || bl, tr || br), (top_end, h, bl, br)] {
+            if l && r {
+                v.push([0, y0, w, y1]);
+            } else if l {
+                v.push([0, y0, left_end, y1]);
+            } else if r {
+                v.push([right_start, y0, w, y1]);
+            }
+        }
+        (v, 0xff)
     };
     let full = |shade: u8| (vec![[0, 0, w, h]], shade);
     let (mut rects, shade) = match c {
@@ -120,30 +129,6 @@ fn blocks(c: char, w: i32, h: i32) -> Option<(Vec<[i32; 4]>, u8)> {
     Some((rects, shade))
 }
 
-/// The pixels `rects` cover, as disjoint rectangles in horizontal bands.
-/// Ghostty's quadrants overlap on an odd cell's middle row and column, and
-/// its coverage mask counts each pixel once, so a translucent (faint)
-/// colour must not blend twice there.
-fn disjoint(rects: &[[i32; 4]]) -> Vec<[i32; 4]> {
-    let mut ys: Vec<i32> = rects.iter().flat_map(|r| [r[1], r[3]]).collect();
-    ys.sort_unstable();
-    ys.dedup();
-    let mut out = Vec::new();
-    for band in ys.windows(2) {
-        let (y0, y1) = (band[0], band[1]);
-        let mut spans: Vec<[i32; 2]> = rects.iter().filter(|r| r[1] <= y0 && y1 <= r[3] && r[0] < r[2]).map(|r| [r[0], r[2]]).collect();
-        spans.sort_unstable();
-        let mut merged: Vec<[i32; 2]> = Vec::new();
-        for [a, b] in spans {
-            match merged.last_mut() {
-                Some(m) if a <= m[1] => m[1] = m[1].max(b),
-                _ => merged.push([a, b]),
-            }
-        }
-        out.extend(merged.into_iter().map(|[x0, x1]| [x0, y0, x1, y1]));
-    }
-    out
-}
 
 /// Ghostty's dot sizing, with vertical spacing even across adjacent cells.
 /// Bit order is 1,2,3,7 down the left, 4,5,6,8 down the right.
