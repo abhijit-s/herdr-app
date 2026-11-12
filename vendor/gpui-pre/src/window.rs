@@ -3654,7 +3654,8 @@ impl Window {
         #[cfg(feature = "profiler")]
         let present_start = Instant::now();
         let now = spin_clock_ms();
-        crate::frame_counts::presented(self.spin_due.filter(|due| now >= *due).map(|due| now - due));
+        // A step held back while the window was hidden isn't a late one.
+        crate::frame_counts::presented(self.spin_due.map(|due| now - due).filter(|late| (0.0..1000.0).contains(late)));
         self.spin_due = self.rendered_frame.scene.turn_spinners(now);
         #[cfg(any(test, feature = "test-support"))]
         {
@@ -3698,7 +3699,13 @@ impl Window {
                     }
                     window.spin_step_due = None;
                     // A draw since took the spinners away, or the window went out of sight.
-                    if window.spin_due.is_none() || !window.visibility.is_visible() {
+                    let Some(next) = window.spin_due.filter(|_| window.visibility.is_visible()) else {
+                        return;
+                    };
+                    // A draw since turned the spinners and moved the next
+                    // step later: wait for that one instead.
+                    if next > due {
+                        window.schedule_spin_step(cx);
                         return;
                     }
                     if window.platform_window.presents_between_frames()

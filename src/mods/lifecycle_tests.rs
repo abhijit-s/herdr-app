@@ -173,6 +173,21 @@ export default class extends View {
     assert_eq!(renders.get(), drawn + 1, "the frame drew");
     assert_eq!(presents(cx), dirty + 1, "one present, the frame's");
 
+    // A frame presented between steps moves the next step later: the timer
+    // it superseded presents nothing, and the next one steps.
+    window.update(cx, |_, _, cx| cx.notify()).unwrap();
+    cx.simulate_window_frame_request(handle);
+    cx.run_until_parked();
+    let framed = presents(cx);
+    std::thread::sleep(std::time::Duration::from_millis(15));
+    cx.executor().advance_clock(gpui::SPIN_STEP);
+    cx.run_until_parked();
+    assert_eq!(presents(cx), framed, "a superseded step presented");
+    std::thread::sleep(std::time::Duration::from_millis(15));
+    cx.executor().advance_clock(gpui::SPIN_STEP);
+    cx.run_until_parked();
+    assert_eq!(presents(cx), framed + 1, "the next step presented");
+
     // Without the platform's leave, a step wakes the frame source as before.
     cx.set_window_presents_between_frames(handle, false);
     let wakes = cx.window_frame_wakes(handle);
