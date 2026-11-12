@@ -974,6 +974,11 @@ impl TerminalView {
         self.grid.borrow().vt.has_last_output()
     }
 
+    pub fn select_all(&mut self, cx: &mut Context<Self>) {
+        self.grid.borrow_mut().vt.select_all();
+        cx.notify();
+    }
+
     pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
         self.grid.borrow_mut().vt.clear_selection();
         cx.notify();
@@ -1112,7 +1117,7 @@ impl TerminalView {
     fn scroll(&mut self, ev: &ScrollWheelEvent, _w: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         let mut g = self.grid.borrow_mut();
-        let steps = scroll_delta_steps(&mut self.scrolled, ev.delta, ev.touch_phase, g.cell, g.vt.cols, g.vt.rows);
+        let steps = scroll_delta_steps(&mut self.scrolled, ev.delta, ev.touch_phase, g.cell, g.vt.cols, g.vt.rows, crate::settings::get().terminal_scroll_speed);
         let n = steps.y.unsigned_abs() as usize;
         if steps.x == 0 && n == 0 {
             return;
@@ -1569,14 +1574,20 @@ fn local(g: &Grid, p: Point<Pixels>) -> (f32, f32) {
     (f32::from(p.x - g.origin.x).max(0.0), f32::from(p.y - g.origin.y).max(0.0))
 }
 
-fn scroll_delta_steps(scrolled: &mut Point<f32>, delta: ScrollDelta, phase: TouchPhase, cell: Size<Pixels>, cols: u16, rows: u16) -> Point<i32> {
+fn scroll_delta_steps(scrolled: &mut Point<f32>, delta: ScrollDelta, phase: TouchPhase, cell: Size<Pixels>, cols: u16, rows: u16, speed: f32) -> Point<i32> {
     let lines = match delta {
         // As in Ghostty, a sideways notch moves one column; a vertical one, three lines.
-        ScrollDelta::Lines(p) if cfg!(target_os = "macos") => return point(macos_wheel_steps(p.x) / 3, macos_wheel_steps(p.y)),
+        ScrollDelta::Lines(p) if cfg!(target_os = "macos") => {
+            if speed == 1.0 {
+                return point(macos_wheel_steps(p.x) / 3, macos_wheel_steps(p.y));
+            }
+            let y = if p.y == 0.0 { 0.0 } else { p.y.signum() * p.y.abs().max(1.0) * 3.0 * speed };
+            return point(macos_wheel_steps(p.x) / 3, scroll_steps(&mut scrolled.y, phase, y, rows as f32));
+        },
         ScrollDelta::Lines(p) => p,
         ScrollDelta::Pixels(p) => point(p.x / cell.width, p.y / cell.height),
     };
-    point(scroll_steps(&mut scrolled.x, phase, lines.x, cols as f32), scroll_steps(&mut scrolled.y, phase, lines.y, rows as f32))
+    point(scroll_steps(&mut scrolled.x, phase, lines.x, cols as f32), scroll_steps(&mut scrolled.y, phase, lines.y * speed, rows as f32))
 }
 
 fn scroll_mouse_bytes(vt: &mut Vt, steps: Point<i32>, mods: Modifiers, x: f32, y: f32, size: (u32, u32, f32, f32)) -> Vec<u8> {
@@ -3480,6 +3491,33 @@ mod tests {
     }
 
     #[gpui::test]
+    fn select_all_waits_for_copy_and_typing_clears_it(cx: &mut gpui::TestAppContext) {
+        use gpui::*;
+
+        let terminal = cx.new(|cx| super::TerminalView::attach(crate::hc::offline(), "t1".into(), (20, 3), cx));
+        let (_, cx) = cx.add_window_view(|_, _| gpui::Empty);
+        cx.update(|window, app| {
+            app.write_to_clipboard(ClipboardItem::new_string("untouched".into()));
+            terminal.update(app, |terminal, cx| {
+                terminal.grid.borrow_mut().vt.write(b"history\r\nscreen");
+                terminal.select_all(cx);
+                assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some("untouched"));
+                assert!(terminal.copy(cx));
+                assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some("history\nscreen"));
+                terminal.clear_selection(cx);
+                assert!(!terminal.copy(cx));
+                terminal.select_all(cx);
+                terminal.key_down(&KeyDownEvent {
+                    keystroke: Keystroke::parse("x").unwrap(),
+                    is_held: false,
+                    prefer_character_input: false,
+                }, window, cx);
+                assert_eq!(terminal.grid.borrow().vt.selection_text(), None);
+            });
+        });
+    }
+
+    #[gpui::test]
     fn shipped_clipboard_aliases_edit_find_without_terminal_input(cx: &mut gpui::TestAppContext) {
         use gpui::*;
 
@@ -3917,6 +3955,41 @@ mod tests {
         for ((index, x), glyph) in original.iter().zip(&glyphs) {
             if *index < 3 { assert_eq!(glyph.position.x - glyphs[0].position.x, *x - original[0].1); }
             else { assert_eq!(glyph.position.x, px(8.)); }
+        }
+    }
+
+    /// Text painted on a cell starts `glyph_x` across from it, every glyph of the line
+    /// with it (their cell positions come from `with_cell_positions`). gpui places a
+    /// glyph on the nearest quarter device pixel, ties toward zero (`Window::paint_glyph`),
+    /// so JetBrains Mono 12 pt's -0.1 px CoreText move disappears at 1x and is -0.25
+    /// device px at 2x, as in Ghostty.
+    #[test]
+    fn cell_text_paints_glyph_x_across_from_its_cell() {
+        use super::*;
+        let quarter = |v: f32| (v.abs() * 4.0 - 0.5).ceil().copysign(v) / 4.0;
+        let line = ShapedLine::default();
+        for (scale, device) in [(1.0, 0.0), (2.0, -0.25)] {
+            let metrics = CellMetrics {
+                size: size(px(7.0), px(17.0)),
+                face_width: px(7.2),
+                glyph_x: glyph_x(px(7.0), px(7.2), scale),
+                baseline: px(13.0),
+                underline: px(15.0),
+                underline_thickness: px(1.0),
+                strike: px(9.0),
+                strike_thickness: px(1.0),
+            };
+            for column in [0.0, 1.0, 5.0] {
+                let cell = point(px(7.0 * column), px(34.0));
+                let at = text_origin(&line, cell, None, metrics);
+                assert!(f32::from(at.x - cell.x - metrics.glyph_x).abs() < 1e-4, "column {column} at {scale}x: {:?}", at.x);
+                if cfg!(target_os = "macos") {
+                    let placed = quarter(f32::from(at.x) * scale) - quarter(f32::from(cell.x) * scale);
+                    assert_eq!(placed, device, "column {column} at {scale}x");
+                } else {
+                    assert_eq!(at.x, cell.x, "FreeType keeps glyphs on a cell narrower than the face");
+                }
+            }
         }
     }
 
@@ -4871,6 +4944,30 @@ mod tests {
     }
 
     #[test]
+    fn scroll_speed_accumulates_wheel_and_trackpad_remainders_in_mouse_reports() {
+        use gpui::{point, px, size, ScrollDelta, TouchPhase};
+        let cell = size(px(10.0), px(20.0));
+        for (delta, expected) in [
+            (ScrollDelta::Lines(point(0.0, 1.0)), if cfg!(target_os = "macos") { vec![1, 2, 1, 2] } else { vec![0, 1, 0, 1] }),
+            (ScrollDelta::Pixels(point(px(0.0), px(10.0))), vec![0, 0, 0, 1]),
+        ] {
+            let mut scrolled = point(0.0, 0.0);
+            let mut vt = Vt::new(80, 24);
+            vt.write(b"\x1b[?1000h\x1b[?1006h");
+            for count in expected {
+                let steps = super::scroll_delta_steps(&mut scrolled, delta, TouchPhase::Moved, cell, 80, 24, 0.5);
+                assert_eq!(steps, point(0, count));
+                assert_eq!(super::scroll_mouse_bytes(&mut vt, steps, Modifiers::default(), 15.0, 25.0, (80, 24, 10.0, 20.0)),
+                    b"\x1b[<64;2;2M".repeat(count as usize));
+            }
+        }
+        // Ghostty's multiplier affects the vertical axis only.
+        let mut scrolled = point(0.0, 0.0);
+        assert_eq!(super::scroll_delta_steps(&mut scrolled, ScrollDelta::Lines(point(1.0, 0.0)), TouchPhase::Moved, cell, 80, 24, 0.5), point(1, 0));
+        assert_eq!(super::scroll_delta_steps(&mut scrolled, ScrollDelta::Pixels(point(px(10.0), px(-40.0))), TouchPhase::Moved, cell, 80, 24, 0.5), point(1, -1));
+    }
+
+    #[test]
     fn touchpad_moves_add_up_to_whole_lines() {
         use gpui::TouchPhase::*;
         let mut s = 0.0;
@@ -4896,10 +4993,10 @@ mod tests {
             (point(0.0, -20.0), b"\x1b[<65;2;2M".as_slice()),
             (point(-10.0, 20.0), b"\x1b[<64;2;2M\x1b[<67;2;2M".as_slice()),
         ] {
-            let steps = super::scroll_delta_steps(&mut scrolled, ScrollDelta::Pixels(point(px(delta.x), px(delta.y))), TouchPhase::Moved, cell, 80, 24);
+            let steps = super::scroll_delta_steps(&mut scrolled, ScrollDelta::Pixels(point(px(delta.x), px(delta.y))), TouchPhase::Moved, cell, 80, 24, 1.0);
             assert_eq!(super::scroll_mouse_bytes(&mut vt, steps, Modifiers::default(), 15.0, 25.0, (80, 24, 10.0, 20.0)), expected);
         }
-        let steps = super::scroll_delta_steps(&mut scrolled, ScrollDelta::Lines(point(1.0, -1.0)), TouchPhase::Moved, cell, 80, 24);
+        let steps = super::scroll_delta_steps(&mut scrolled, ScrollDelta::Lines(point(1.0, -1.0)), TouchPhase::Moved, cell, 80, 24, 1.0);
         let count = if cfg!(target_os = "macos") { 3 } else { 1 };
         assert_eq!(steps, point(1, -count));
         assert_eq!(super::scroll_mouse_bytes(&mut vt, steps, Modifiers::default(), 15.0, 25.0, (80, 24, 10.0, 20.0)), [b"\x1b[<65;2;2M".repeat(count as usize), b"\x1b[<66;2;2M".to_vec()].concat());
@@ -4909,7 +5006,7 @@ mod tests {
     fn scroll_axes_accumulate_independently_and_reset_together() {
         use gpui::{point, px, size, ScrollDelta, TouchPhase::*};
         let mut scrolled = point(0.0, 0.0);
-        let mut steps = |phase, x, y| super::scroll_delta_steps(&mut scrolled, ScrollDelta::Pixels(point(px(x), px(y))), phase, size(px(10.0), px(20.0)), 80, 24);
+        let mut steps = |phase, x, y| super::scroll_delta_steps(&mut scrolled, ScrollDelta::Pixels(point(px(x), px(y))), phase, size(px(10.0), px(20.0)), 80, 24, 1.0);
         assert_eq!(steps(Moved, 6.0, 8.0), point(0, 0));
         assert_eq!(steps(Moved, 5.0, 8.0), point(1, 0));
         assert_eq!(steps(Moved, 0.0, 8.0), point(0, 1));

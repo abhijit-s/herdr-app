@@ -164,7 +164,13 @@ pub struct Look {
     pub font_size: Option<f32>,
     /// The terminals' row height, as a multiple of the font's height.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_line_height: Option<f32>,
+    /// `terminal_line_height` by its other name, used when that is unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_height: Option<f32>,
+    /// Wheel and trackpad scroll multiplier, 0.1..5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_scroll_speed: Option<f32>,
     /// The terminals' text weight, 100 to 900.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font_weight: Option<u16>,

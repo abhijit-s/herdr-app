@@ -92,6 +92,7 @@ export function playSound(sound: string): null;
  *   terminal.show {terminal?, pane?} (shown in the pane for now, in place of its own), terminal.copy, terminal.paste,
  *   terminal.copy_all (the screen and kept history as text), terminal.copy_path (the terminal's folder),
  *   terminal.popup {argv, cwd?, hold?, wait?, width?, height?} (a program on this computer in a popup),
+ *   terminal.select_all {terminal?} (whole screen and scrollback, or only the alternate screen; Cmd+A on macOS).
  *   terminal.right_click {to: "program" | "menu", terminal?} (right-clicks to a program that takes the mouse; Shift: the menu).
  *   terminal.scroll {lines | pages | to: "top" | "bottom", terminal?} (Herdr's view of the history: negative goes up; pages may be fractional).
  * Agents: agent.next, agent.prev (the agents list's order), agent.focus {terminal} (sub-agents too).
@@ -520,7 +521,9 @@ export function feedbackClearImages(): null;
 export function sendFeedback(body: import("gpui-kit").HostValue, images?: string[]): Promise<string | null>;
 
 /** What the app runs with: the shown layout's look (theme name, fonts, sizes, terminal
- *  padding and opacity) with the person's zoom and sounds. `ui_scale` is what a mod's px
+ *  padding and opacity, terminal_line_height and terminal_scroll_speed) with the person's zoom and sounds.
+ *  terminal_line_height: number, default 1.15, within 0.8..2 (also given as line_height);
+ *  terminal_scroll_speed: number, default 1, clamped to 0.1..5. Layout values override settings.json. `ui_scale` is what a mod's px
  *  are drawn at (zoom × ui_zoom): divide window px by it; `ui_scale_ranges` is
  *  `{ ui_zoom: [min, max], ui_text_scale: [min, max] }`. `panels_in_use` is the panel
  *  derivation drawing now ("tinted" or "classic"): `panel_colors`, or classic for a theme
@@ -656,11 +659,21 @@ export function nextCommand(): Promise<string>;
  * above 4096 non-ignored directories reject the watch, so use a timer fallback.
  * macOS and Windows watch recursively, including ignored directories.
  * Pending paths are bounded: a batch containing the root means refresh everything.
- * Shared by every mod. Files also refreshes on its 10-second timer.
+ * Shared by every mod, with at most 64 folders awaiting changes at once.
+ * Idle watches may be reclaimed to make room; reload when starting a watch.
+ * Call cancel() on the returned promise when you stop showing the folder.
+ * It resolves with [] and releases this call; other callers keep watching.
+ * Closing a mod copy cancels its pending calls. Files also refreshes on its 10-second timer.
  *   cx.spawn(async (cx) => { for (;;) { await watchFolder(dir); this.reload(); cx.notify(); } });
  * Watch what you show, not a whole home folder (node_modules is a lot of events).
  */
-export function watchFolder(path: string): Promise<string[]>;
+export function watchFolder(path: string): FolderWatch;
+
+/** One pending watch. Keep this handle while the folder is shown. */
+export interface FolderWatch extends Promise<string[]> {
+  /** Resolves with [] and releases this call's watch. Safe to call again or after settlement. */
+  cancel(): void;
+}
 
 export interface GitStatus {
   /** The work tree's top folder (a linked worktree's own). */

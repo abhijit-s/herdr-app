@@ -89,6 +89,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("focus.toggle_follows_mouse", &[], "Turn focus follows mouse on or off (settings.json's focus_follows_mouse): the pointer resting on a terminal pane focuses it."),
     cmd("terminal.peek", &[req("terminal")], "Peek at a running terminal over the tab, with keep-as-tab and close controls."),
     cmd("terminal.show", &[opt("terminal"), opt("pane")], "Show a terminal in a pane for now, in place of its own (no terminal: back)."),
+    cmd("terminal.select_all", &[opt("terminal")], "Select a terminal's whole screen and scrollback (default: the focused one), ready to copy. On the alternate screen, select only that screen."),
     cmd("terminal.copy", &[opt("terminal")], "Copy a terminal's selection (default: the focused terminal's). With nothing selected, that key goes to the program."),
     cmd("terminal.copy_all", &[opt("terminal")], "Copy a terminal's screen and all the history the core keeps (default: the focused terminal), as plain text without the blank lines below the last text: what `hc read` prints. A full-screen program's history is read by scrolling it (typed keys wait meanwhile; up to 1000 lines). It answers at once; a toast says how it went."),
     cmd("terminal.copy_path", &[opt("terminal")], "Copy the folder a terminal is in (default: the focused terminal)."),

@@ -32,7 +32,7 @@ pub const DEFAULTS: &str = include_str!("../defaults/keys.json");
 #[cfg(target_os = "macos")]
 pub const DEFAULTS: &str = include_str!("../defaults/keys.macos.json");
 
-// Exact originals from release tags, deduplicated across v0.1.4–v0.1.12.
+// Exact originals from release tags, deduplicated across v0.1.4–v0.1.15.
 // Keep these when defaults change: only untouched shipped files may migrate.
 #[cfg(any(not(target_os = "macos"), test))]
 const SHIPPED_KEYS: &[&str] = &[
@@ -52,6 +52,9 @@ const SHIPPED_MACOS_KEYS: &[&str] = &[
     include_str!("keys/shipped/fork-07fcfec-keys.macos.json"),
     // The fork's defaults before the tab move keys (master 0990622).
     include_str!("keys/shipped/fork-0990622-keys.macos.json"),
+    include_str!("keys/shipped/v0.1.15-keys.macos.json"),
+    // The fork's defaults before Cmd+A selects a terminal (master 41ed086).
+    include_str!("keys/shipped/fork-41ed086-keys.macos.json"),
 ];
 
 #[derive(serde::Deserialize)]
