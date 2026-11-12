@@ -15,6 +15,10 @@
 //! drew (its tail's corners, a comet's tail point, a block's old end), as
 //! kitty's corners keep chasing a cursor that moves on.
 //!
+//! While the system asks for reduced motion (macOS: Accessibility > Display >
+//! Reduce motion, followed as it changes; GPUI's `App::reduce_motion`), no
+//! effect starts and one running ends.
+//!
 //! Nothing runs in the terminals' output paths, and their paint takes one
 //! branch on `cursor_trail`; only `"all"` adds work there (cursor_jumps.rs: a
 //! compare of the drawn cursor and at most one settle timer per terminal). With
@@ -24,10 +28,8 @@
 //! effect ends: its duration is clamped and its progress only grows.
 
 use super::cursor_shapes;
+use super::trail_paint::paint_layers;
 use super::*;
-
-/// How far the comet's core color is mixed toward white.
-const CORE_WHITE: f32 = 0.45;
 
 /// The effect being drawn at the terminal `pane` shows: a trail from `from`
 /// when `style` is set, and an `arrival` pulse.
@@ -144,14 +146,6 @@ pub(super) fn progress(elapsed: Duration, duration: Duration) -> Option<f32> {
     (elapsed < duration).then(|| elapsed.as_secs_f32() / duration.as_secs_f32())
 }
 
-/// The core's color: the trail's mixed `CORE_WHITE` toward white.
-fn paler(c: Hsla) -> Hsla {
-    Hsla {
-        l: c.l + (1.0 - c.l) * CORE_WHITE,
-        ..c
-    }
-}
-
 impl AppWindow {
     /// Starts an effect when the shown tab's focused pane changed since the
     /// last draw: a trail from where the pane it left last drew its cursor,
@@ -191,6 +185,7 @@ impl AppWindow {
                 let from = start_from(live.as_ref(), seen.anchor)
                     .filter(|_| s.cursor_trail != settings::CursorTrail::Off);
                 if seen.tab == tab
+                    && !cx.reduce_motion()
                     && self.pane_term(&pane).is_some()
                     && (from.is_some() || s.cursor_arrival != settings::Arrival::Off)
                 {
@@ -215,6 +210,7 @@ impl AppWindow {
         let s = settings::get();
         let focused = self.model.active_tab().and_then(|t| t.focused_pane());
         if s.cursor_trail != settings::CursorTrail::All
+            || cx.reduce_motion()
             || focused.as_deref() != Some(pane)
             || (from.is_none() && s.cursor_arrival == settings::Arrival::Off)
         {
@@ -234,6 +230,10 @@ impl AppWindow {
     /// The live effect's shapes now and their color, asking nothing of the
     /// window; None (and the effect dropped) once it's over or its pane is gone.
     pub(super) fn trail_frame(&mut self, cx: &App) -> Option<(Vec<cursor_shapes::Layer>, Hsla)> {
+        if cx.reduce_motion() {
+            self.trail = None;
+            return None;
+        }
         let to = self
             .pane_term(&self.trail.as_ref()?.pane)
             .map(|term| term.view.clone());
@@ -294,23 +294,7 @@ impl Render for TrailLayer {
                 };
                 crate::bench::count(&crate::bench::TRAIL);
                 window.request_animation_frame();
-                for layer in layers {
-                    let mut path = match layer.stroke {
-                        Some(w) => PathBuilder::stroke(px(w)),
-                        None => PathBuilder::fill().with_style(PathStyle::Fill(
-                            FillOptions::default().with_fill_rule(FillRule::EvenOdd),
-                        )),
-                    };
-                    path.add_polygon(&layer.outline, true);
-                    // Filled even-odd: the hole, inside the outline, stays clear.
-                    if let Some(hole) = &layer.hole {
-                        path.add_polygon(hole, true);
-                    }
-                    if let Ok(path) = path.build() {
-                        let tint = if layer.core { paler(color) } else { color };
-                        window.paint_path(path, tint.opacity(layer.alpha));
-                    }
-                }
+                paint_layers(&layers, color, window);
             },
         )
         .absolute()
@@ -320,7 +304,8 @@ impl Render for TrailLayer {
 
 #[cfg(test)]
 mod tests {
-    use super::{paler, progress};
+    use super::super::trail_paint::paler;
+    use super::progress;
     use std::time::Duration;
 
     /// A tail that has caught up stays ended while its pulse runs on, though
@@ -395,6 +380,6 @@ mod tests {
         let yellow = gpui::hsla(0.11, 1.0, 0.7, 1.0);
         let core = paler(yellow);
         assert_eq!((core.h, core.s, core.a), (yellow.h, yellow.s, yellow.a));
-        assert!((core.l - (0.7 + 0.3 * 0.45)).abs() < 1e-6);
+        assert!((core.l - (0.7 + 0.3 * 0.25)).abs() < 1e-6);
     }
 }

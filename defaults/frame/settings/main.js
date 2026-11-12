@@ -1852,7 +1852,23 @@ export default class Settings extends View {
       return [clampTo(this.person[key] ?? def), (_e, cx) => go(-by, cx), (_e, cx) => go(by, cx)];
     };
     const [settle, settleLess, settleMore] = within("cursor_trail_settle_ms", SETTLE_MS, SETTLE_MS_DEFAULT, 10);
-    const [cells, cellsLess, cellsMore] = within("cursor_trail_min_cells", MIN_CELLS, MIN_CELLS_DEFAULT, 1);
+    // cursor_trail_min_cells: one number for both axes, or [columns, rows];
+    // written back as one number while they're equal, left out at the default.
+    const cellsKey = "cursor_trail_min_cells";
+    const cellsOf = (v) => {
+      const keep = (n) => (Number.isFinite(n) ? Math.max(MIN_CELLS[0], Math.min(MIN_CELLS[1], Math.round(n))) : MIN_CELLS_DEFAULT);
+      const [x, y] = Array.isArray(v) ? v : [v ?? MIN_CELLS_DEFAULT, v ?? MIN_CELLS_DEFAULT];
+      return [keep(x ?? MIN_CELLS_DEFAULT), keep(y ?? MIN_CELLS_DEFAULT)];
+    };
+    const cells = cellsOf(this.person[cellsKey]);
+    const cellStep = (axis, d) => (_e, cx) =>
+      this.change((q) => {
+        const pair = cellsOf(q[cellsKey]);
+        pair[axis] = Math.max(MIN_CELLS[0], Math.min(MIN_CELLS[1], pair[axis] + d));
+        if (pair[0] === pair[1] && pair[0] === MIN_CELLS_DEFAULT) delete q[cellsKey];
+        else q[cellsKey] = pair[0] === pair[1] ? pair[0] : pair;
+      }, cx);
+    const cellsLabel = (n) => `${n} ${n === 1 ? "cell" : "cells"}`;
     return v_flex()
       .w_full()
       .child(this.heading(t, "Cursor effects"))
@@ -1861,7 +1877,8 @@ export default class Settings extends View {
       .when(jumps, (el) =>
         el
           .child(this.row(t, "Settle time", "How long the program leaves the cursor still before a jump counts, so streaming output draws nothing until it pauses.", this.stepper(t, "st-cursor_trail_settle_ms", `${settle} ms`, settleLess, settleMore), "cursor_trail_settle_ms"))
-          .child(this.row(t, "Ignore moves up to", "Moves of this many cells or fewer from where the cursor last settled draw nothing, so typing never does, as in kitty. 0 draws every move.", this.stepper(t, "st-cursor_trail_min_cells", `${cells} ${cells === 1 ? "cell" : "cells"}`, cellsLess, cellsMore), "cursor_trail_min_cells")),
+          .child(this.row(t, "Ignore moves across up to", "Moves of this many columns or fewer, and no more rows than below, from where the cursor last settled draw nothing, so typing never does, as in kitty. 0 draws every move.", this.stepper(t, "st-cursor_trail_min_cells_x", cellsLabel(cells[0]), cellStep(0, -1), cellStep(0, 1)), cellsKey))
+          .child(this.row(t, "Ignore moves down up to", "The same for rows: a move of more rows than this draws, however few columns it crosses.", this.stepper(t, "st-cursor_trail_min_cells_y", cellsLabel(cells[1]), cellStep(1, -1), cellStep(1, 1)), cellsKey)),
       )
       .child(this.row(t, "Arrival effect", "A pulse at the cursor as the focus lands in another pane, with the trail or without it; with Panes and jumps, also after a jump or a cursor shape change.", this.choicePicker(t, "st-ca", "cursor_arrival", ARRIVALS), "cursor_arrival"))
       .when(on || pulse, (el) =>

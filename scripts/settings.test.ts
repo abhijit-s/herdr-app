@@ -402,10 +402,34 @@ test("settle time and ignored moves show only for Panes and jumps, within their 
   expect(step({ ...all, cursor_trail_settle_ms: 0 }, "st-cursor_trail_settle_ms-minus")).toEqual({ ...all, cursor_trail_settle_ms: 0 });
   expect(step({ ...all, cursor_trail_settle_ms: 500 }, "st-cursor_trail_settle_ms-plus")).toEqual({ ...all, cursor_trail_settle_ms: 500 });
   expect(step({ ...all, cursor_trail_settle_ms: 20 }, "st-cursor_trail_settle_ms-minus")).toEqual(all);
-  expect(step(all, "st-cursor_trail_min_cells-plus")).toEqual({ ...all, cursor_trail_min_cells: 3 });
-  expect(step({ ...all, cursor_trail_min_cells: 1 }, "st-cursor_trail_min_cells-minus")).toEqual({ ...all, cursor_trail_min_cells: 0 });
-  expect(step({ ...all, cursor_trail_min_cells: 0 }, "st-cursor_trail_min_cells-minus")).toEqual({ ...all, cursor_trail_min_cells: 0 });
-  expect(step({ ...all, cursor_trail_min_cells: 3 }, "st-cursor_trail_min_cells-minus")).toEqual(all);
+  // Ignored moves, across and down: one number while they're equal, else [x, y].
+  expect(step(all, "st-cursor_trail_min_cells_x-plus")).toEqual({ ...all, cursor_trail_min_cells: [3, 2] });
+  expect(step(all, "st-cursor_trail_min_cells_y-minus")).toEqual({ ...all, cursor_trail_min_cells: [2, 1] });
+  expect(step({ ...all, cursor_trail_min_cells: 6 }, "st-cursor_trail_min_cells_x-plus")).toEqual({ ...all, cursor_trail_min_cells: [7, 6] });
+  expect(step({ ...all, cursor_trail_min_cells: [7, 6] }, "st-cursor_trail_min_cells_x-minus")).toEqual({ ...all, cursor_trail_min_cells: 6 });
+  expect(step({ ...all, cursor_trail_min_cells: [3, 2] }, "st-cursor_trail_min_cells_x-minus")).toEqual(all);
+  expect(step({ ...all, cursor_trail_min_cells: 0 }, "st-cursor_trail_min_cells_y-minus")).toEqual({ ...all, cursor_trail_min_cells: 0 });
+  expect(step({ ...all, cursor_trail_min_cells: [50, 0] }, "st-cursor_trail_min_cells_x-plus")).toEqual({ ...all, cursor_trail_min_cells: [50, 0] });
+  // What the app would reject steps to what it reads: whole cells, both axes.
+  expect(step({ ...all, cursor_trail_min_cells: [4] }, "st-cursor_trail_min_cells_x-plus")).toEqual({ ...all, cursor_trail_min_cells: [5, 2] });
+  expect(step({ ...all, cursor_trail_min_cells: 2.5 }, "st-cursor_trail_min_cells_y-plus")).toEqual({ ...all, cursor_trail_min_cells: [3, 4] });
+  expect(step({ ...all, cursor_trail_min_cells: "abc" }, "st-cursor_trail_min_cells_x-plus")).toEqual({ ...all, cursor_trail_min_cells: [3, 2] });
+});
+
+test("ignored moves show both axes of a pair or a single number", () => {
+  const drawn = (person: Record<string, any>) => {
+    composed = {};
+    const view = new Settings();
+    view.person = person;
+    return texts(view.page("cursor", new Proxy({}, { get: () => "#000000" }), {}));
+  };
+  const cells = (person: Record<string, any>) => {
+    const t = drawn(person);
+    return [t[t.indexOf("Ignore moves across up to") + 3], t[t.indexOf("Ignore moves down up to") + 3]];
+  };
+  expect(cells({ cursor_trail: "all" })).toEqual(["2 cells", "2 cells"]);
+  expect(cells({ cursor_trail: "all", cursor_trail_min_cells: 6 })).toEqual(["6 cells", "6 cells"]);
+  expect(cells({ cursor_trail: "all", cursor_trail_min_cells: [8, 1] })).toEqual(["8 cells", "1 cell"]);
 });
 
 test("focus border picks a theme color into colors.focus and from theme takes it out", () => {

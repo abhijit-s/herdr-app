@@ -30,6 +30,10 @@ pub(super) struct Layer {
     pub(super) stroke: Option<f32>,
     pub(super) alpha: f32,
     pub(super) core: bool,
+    /// Brightness along the outline: none at the first point, `alpha` at the second.
+    pub(super) fade: Option<(P, P)>,
+    /// Not an outline but a soft round glow: its middle, radius and blur, px.
+    pub(super) glow: Option<(P, f32, f32)>,
 }
 
 fn fill(outline: Vec<Point<Pixels>>, alpha: f32) -> Layer {
@@ -39,6 +43,8 @@ fn fill(outline: Vec<Point<Pixels>>, alpha: f32) -> Layer {
         stroke: None,
         alpha,
         core: false,
+        fade: None,
+        glow: None,
     }
 }
 
@@ -210,84 +216,80 @@ pub(super) fn trail(
     }
 }
 
-/// Comet: the tail's decay time against the duration, its layers back to
-/// front (width against the cell's height, opacity, paler core), and how its
-/// width falls off: a spindle that narrows to a needle point.
-const COMET_TAIL: f32 = 1.0 / 3.0;
-const COMET_LAYERS: [(f32, f32, bool); 4] = [
-    (2.4, 0.06, false),
-    (1.7, 0.15, false),
-    (1.0, 0.35, false),
-    (0.45, 1.0, true),
-];
-const COMET_TAPER: f32 = 0.6;
-const COMET_SIDE: usize = 6;
+/// Comet, as Rex draws it: the glow round the head (radius and blur
+/// against the cell height, opacity), then back to front the outer streak and
+/// the core, each (its half width at the head against the cell height,
+/// opacity, paler core), narrowing to `COMET_END` of that width at the tail
+/// end and brightening from none at the tail to full `COMET_FULL` of the way
+/// to the head (1 / 1.55, where Rex's core and glow on the axis reach 1).
+const COMET_LAYERS: [(f32, f32, bool); 2] = [(0.30, 0.35, false), (0.14, 1.0, true)];
+const COMET_END: f32 = 0.2;
+const COMET_FULL: f32 = 0.65;
+const COMET_GLOW: (f32, f32, f32) = (0.3, 0.3, 1.0);
+const ROUND: usize = 16;
 
-/// A glowing streak, as Rex draws: its head a round nose a cell high on the
-/// new cursor from the first frame, tapering to a point at the tail, which
-/// decays into the head from `from`.
+/// A glowing streak, as Rex draws: the whole streak from the first frame,
+/// its round nose on the cursor and its tail end rounded at a fifth of its
+/// width; the tail retracts into the head easing out (cubic), the streak
+/// brightest at the head and fading to nothing at the tail, all of it fading
+/// as it goes, and a soft glow round the head.
 fn comet(from: P, to: Bounds<Pixels>, h: f32, t: f32) -> (Vec<Layer>, Option<Quad>) {
-    let k = settle(t, COMET_TAIL);
+    let k = (1.0 - t.clamp(0.0, 1.0)).powi(3);
+    let fade = 1.0 - t.clamp(0.0, 1.0);
+    if fade <= 0.0 {
+        return (Vec::new(), None);
+    }
     let head = mid(to);
     let tail = (
         head.0 + (from.0 - head.0) * k,
         head.1 + (from.1 - head.1) * k,
     );
-    let layers: Vec<Layer> = COMET_LAYERS
-        .iter()
-        .filter_map(|&(widen, alpha, core)| {
-            streak(from, head, h, k, widen).map(|outline| Layer {
-                outline,
-                hole: None,
-                stroke: None,
-                alpha: alpha * k,
-                core,
-            })
-        })
-        .collect();
-    let back = (!layers.is_empty()).then_some([tail; 4]);
-    (layers, back)
+    // Full strength from `COMET_FULL` of the way to the head, as Rex's
+    // `(core + glow) × along`, clamped at 1, is on its axis.
+    let full = (
+        tail.0 + (head.0 - tail.0) * COMET_FULL,
+        tail.1 + (head.1 - tail.1) * COMET_FULL,
+    );
+    let (radius, blur, alpha) = COMET_GLOW;
+    let glow = Layer {
+        outline: Vec::new(),
+        hole: None,
+        stroke: None,
+        alpha: alpha * fade,
+        core: false,
+        fade: None,
+        glow: Some((head, radius * h, blur * h)),
+    };
+    let streaks = COMET_LAYERS.iter().map(|&(half, alpha, core)| Layer {
+        outline: streak(tail, head, half * h),
+        hole: None,
+        stroke: None,
+        alpha: alpha * fade,
+        core,
+        fade: Some((tail, full)),
+        glow: None,
+    });
+    (
+        std::iter::once(glow).chain(streaks).collect(),
+        Some([tail; 4]),
+    )
 }
 
-/// The comet's outline from `from` to `head` with `k` of its tail's way
-/// left, `widen` cell heights (`h`) across at the head: from the tail point
-/// along one side, round the nose and back along the other.
-pub(super) fn streak(from: P, head: P, h: f32, k: f32, widen: f32) -> Option<Vec<Point<Pixels>>> {
-    let (dx, dy) = ((from.0 - head.0) * k, (from.1 - head.1) * k);
-    let len = dx.hypot(dy);
-    if len.is_nan() || len < CAUGHT_UP {
-        return None;
-    }
-    // u points from the head back to the tail; n across it.
-    let (u, n) = ((dx / len, dy / len), (-dy / len, dx / len));
-    let half = h * widen / 2.0;
-    let at = |along: f32, across: f32| {
-        pt((
-            head.0 + u.0 * along + n.0 * across,
-            head.1 + u.1 * along + n.1 * across,
-        ))
+/// The comet's outline from `tail` to `head`, `half` px either side at the
+/// head and `COMET_END` of that at the tail, both ends round: the hull of the
+/// two end circles.
+pub(super) fn streak(tail: P, head: P, half: f32) -> Vec<Point<Pixels>> {
+    let circle = |c: P, r: f32| {
+        (0..ROUND).map(move |i| {
+            let a = i as f32 * std::f32::consts::TAU / ROUND as f32;
+            (c.0 + r * a.cos(), c.1 + r * a.sin())
+        })
     };
-    let width = |s: f32| half * (1.0 - s).powf(COMET_TAPER);
-    let mut outline = Vec::with_capacity(2 * COMET_SIDE + 6);
-    outline.push(at(len, 0.0));
-    outline.extend(
-        (1..COMET_SIDE)
-            .rev()
-            .map(|i| i as f32 / COMET_SIDE as f32)
-            .map(|s| at(s * len, width(s))),
-    );
-    outline.extend(
-        [0.0f32, 0.5, 0.85, 1.0, 0.85, 0.5, 0.0]
-            .iter()
-            .zip([1.0f32, 0.87, 0.5, 0.0, -0.5, -0.87, -1.0])
-            .map(|(ahead, side)| at(-half * ahead, half * side)),
-    );
-    outline.extend(
-        (1..COMET_SIDE)
-            .map(|i| i as f32 / COMET_SIDE as f32)
-            .map(|s| at(s * len, -width(s))),
-    );
-    Some(outline)
+    hull(
+        circle(tail, half * COMET_END)
+            .chain(circle(head, half))
+            .collect(),
+    )
 }
 
 /// Tail: kitty's `cursor_trail_decay 0.1 0.4` ratio, the fastest corner's
@@ -402,6 +404,8 @@ impl Chase {
             stroke: None,
             alpha: self.opacity,
             core: false,
+            fade: None,
+            glow: None,
         }]
     }
 }
@@ -468,6 +472,8 @@ pub(super) fn arrival(kind: Arrival, at: Bounds<Pixels>, t: f32) -> Vec<Layer> {
         stroke: Some(1.0 + 1.5 * fade),
         alpha: fade,
         core: false,
+        fade: None,
+        glow: None,
     };
     match kind {
         Arrival::Off => Vec::new(),
@@ -576,6 +582,13 @@ mod tests {
                         ((dir.1 * len).min(0.0) - 20.0, (dir.1 * len).max(0.0) + 36.0);
                     for t in [0.0, 0.1, 0.3, 0.6, 0.9] {
                         for layer in trail(style, quad(from), to, H, t).0 {
+                            if let Some((c, r, blur)) = layer.glow {
+                                assert!(
+                                    c.0.is_finite() && c.1.is_finite() && r > 0.0 && blur > 0.0,
+                                    "{style:?}"
+                                );
+                                continue;
+                            }
                             assert!(
                                 convex(&layer.outline) && layer.hole.is_none(),
                                 "{style:?} {dir:?} {len} {t}: {:?}",
@@ -641,11 +654,17 @@ mod tests {
     #[test]
     fn every_trail_says_what_it_draws_so_a_new_one_starts_there() {
         let (from, to) = (cell(0.0, 0.0), cell(400.0, 0.0));
-        // The comet's back end is its tail point, as `streak` draws it.
+        // The comet's back end is its tail point, at the streak's far end.
         let (layers, back) = trail(TrailStyle::Comet, quad(from), to, H, 0.2);
+        let back = back.unwrap()[0];
+        let far = layers[2]
+            .outline
+            .iter()
+            .map(|p| xy(*p).0)
+            .fold(f32::MAX, f32::min);
         assert!(
-            dist(back.unwrap()[0], xy(layers[0].outline[0])) < 1e-3,
-            "{back:?}"
+            (far - (back.0 - 16.0 * 0.14 * COMET_END)).abs() < 0.01,
+            "{back:?} {far}"
         );
         // The sweep's and the warp's are their old ends, between the cells, moving on.
         for style in [TrailStyle::Sweep, TrailStyle::Warp] {
@@ -666,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn the_comet_layers_are_the_glow_then_the_core() {
+    fn the_comet_is_a_glow_a_core_and_a_glow_round_the_head() {
         let layers = trail(
             TrailStyle::Comet,
             quad(cell(0.0, 0.0)),
@@ -676,9 +695,14 @@ mod tests {
         )
         .0;
         assert_eq!(
-            layers.iter().map(|l| (l.alpha, l.core)).collect::<Vec<_>>(),
-            vec![(0.06, false), (0.15, false), (0.35, false), (1.0, true)]
+            layers
+                .iter()
+                .map(|l| (l.alpha, l.core, l.glow.is_some()))
+                .collect::<Vec<_>>(),
+            vec![(1.0, false, true), (0.35, false, false), (1.0, true, false)],
+            "one glow behind two streaks, not four stacked fills"
         );
+        assert_eq!(layers[0].glow, Some(((404.0, 8.0), 16.0 * 0.3, 16.0 * 0.3)));
     }
 
     #[test]
@@ -686,12 +710,17 @@ mod tests {
         let from = cell(0.0, 0.0);
         // A beam in the cell at (400, 0): the comet's nose rounds the beam's middle.
         let comet = trail(TrailStyle::Comet, quad(from), beam(400.0, 0.0), H, 0.0).0;
-        let nose = comet[3]
+        let nose = comet[2]
             .outline
             .iter()
             .map(|p| xy(*p).0)
             .fold(f32::MIN, f32::max);
-        assert!((nose - (401.0 + 16.0 * 0.45 / 2.0)).abs() < 0.01, "{nose}");
+        assert!((nose - (401.0 + 16.0 * 0.14)).abs() < 0.01, "{nose}");
+        assert_eq!(
+            comet[0].glow.map(|g| g.0),
+            Some((401.0, 8.0)),
+            "the glow round the beam"
+        );
         // The sweep's block narrows into the beam, or into an underline's 2 px.
         let sweep =
             |to: Bounds<Pixels>| trail(TrailStyle::Sweep, quad(from), to, H, 0.99).0[0].clone();
@@ -935,153 +964,141 @@ mod tests {
         );
     }
 
-    /// The comet's outline at progress `t`, as the trail draws it.
-    fn streak_t(
-        from: Bounds<Pixels>,
-        to: Bounds<Pixels>,
-        t: f32,
-        widen: f32,
-    ) -> Option<Vec<Point<Pixels>>> {
-        streak(
-            mid(from),
-            mid(to),
-            f32::from(to.size.height),
-            settle(t, COMET_TAIL),
-            widen,
+    fn comet_at(t: f32) -> Vec<Layer> {
+        trail(
+            TrailStyle::Comet,
+            quad(cell(0.0, 0.0)),
+            cell(400.0, 0.0),
+            H,
+            t,
         )
+        .0
     }
 
-    fn comet_fade(t: f32) -> f32 {
-        settle(t, COMET_TAIL)
-    }
-
-    #[test]
-    fn comet_the_trail_fades_as_it_shortens() {
-        assert!((comet_fade(0.0) - 1.0).abs() < 1e-6);
-        assert!(comet_fade(0.5) < comet_fade(0.25) && comet_fade(0.25) < comet_fade(0.1));
-        assert!(comet_fade(0.1) < 0.8, "it eases out from the start");
-        assert_eq!(comet_fade(1.0), 0.0);
-        assert_eq!(comet_fade(2.0), 0.0);
-    }
-
-    #[test]
-    fn comet_the_head_is_on_the_cursor_a_cell_high_and_the_tail_a_point() {
-        let (from, to) = (cell(0.0, 0.0), cell(400.0, 0.0));
-        let head = (404.0, 8.0);
-        let first = streak_t(from, to, 0.0, 1.0).unwrap();
-        assert_eq!(
-            xy(first[0]),
-            (4.0, 8.0),
-            "the tail starts on the old cursor's middle, a single point"
-        );
-        // The widest pair of points straddles the head, a cell high (16 px) apart.
-        let widest = first
-            .iter()
-            .map(|p| xy(*p))
-            .filter(|p| (p.0 - head.0).abs() < 0.01)
-            .map(|p| p.1)
-            .fold((f32::MAX, f32::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
-        assert!((widest.1 - widest.0 - 16.0).abs() < 0.01, "{widest:?}");
-        // Narrower toward the tail: the width at each sample falls off.
-        let side: Vec<f32> = first[1..6].iter().map(|p| (xy(*p).1 - 8.0).abs()).collect();
-        assert!(side.windows(2).all(|w| w[0] < w[1]), "{side:?}");
-        // Nothing reaches past the head's nose (half a cell height ahead).
-        assert!(first.iter().all(|p| xy(*p).0 <= head.0 + 8.0 + 0.01));
+    /// How far the outline reaches either side of the line y = 8 at `x`.
+    fn half_width_at(o: &[Point<Pixels>], x: f32) -> f32 {
+        let pts: Vec<P> = o.iter().map(|p| xy(*p)).collect();
+        (0..pts.len())
+            .filter_map(|i| {
+                let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+                ((a.0 - x) * (b.0 - x) <= 0.0 && a.0 != b.0)
+                    .then(|| (a.1 + (b.1 - a.1) * (x - a.0) / (b.0 - a.0) - 8.0).abs())
+            })
+            .fold(0.0f32, f32::max)
     }
 
     #[test]
-    fn comet_the_tail_retracts_into_the_head() {
-        let (from, to) = (cell(0.0, 0.0), cell(400.0, 0.0));
-        let tail = |t: f32| xy(streak_t(from, to, t, 1.0).unwrap()[0]).0;
-        let (a, b, c) = (tail(0.1), tail(0.2), tail(0.3));
-        assert!(4.0 < a && a < b && b < c && c < 404.0, "{a} {b} {c}");
-        assert!(b - a < a - 4.0, "fast at first, then slower: {a} {b}");
-        let last = streak_t(from, to, 0.95, 1.0).unwrap();
-        assert!(
-            dist(xy(last[0]), (404.0, 8.0)) < 4.0,
-            "the last frame is all but in the cursor: {last:?}"
-        );
-        assert_eq!(streak_t(from, to, 1.0, 1.0), None, "and gone at the end");
-    }
-
-    #[test]
-    fn comet_the_glow_layers_share_the_tail_and_widen() {
-        let (from, to) = (cell(0.0, 0.0), cell(-200.0, 150.0));
-        let core = streak_t(from, to, 0.2, 0.45).unwrap();
-        let glow = streak_t(from, to, 0.2, 2.4).unwrap();
-        assert_eq!(core[0], glow[0], "one tail point");
-        // How far the outline reaches from the line through head and tail.
-        let (head, tail) = ((-196.0f32, 158.0f32), xy(core[0]));
-        let len = dist(head, tail);
-        let across = |o: &Vec<Point<Pixels>>| {
-            o.iter()
-                .map(|p| {
-                    let (x, y) = xy(*p);
-                    ((tail.0 - head.0) * (y - head.1) - (tail.1 - head.1) * (x - head.0)).abs()
-                        / len
-                })
-                .fold(0.0f32, f32::max)
+    fn comet_the_whole_streak_shows_at_once_then_the_tail_eases_into_the_head() {
+        let tail = |t: f32| {
+            trail(
+                TrailStyle::Comet,
+                quad(cell(0.0, 0.0)),
+                cell(400.0, 0.0),
+                H,
+                t,
+            )
+            .1
+            .unwrap()[0]
+                .0
         };
+        assert_eq!(
+            tail(0.0),
+            4.0,
+            "from the old cursor's middle on the first frame"
+        );
+        // Cubic ease-out: 1 - (1 - t)^3 of the way, as Rex's shader and its recording.
+        for t in [0.1f32, 0.3, 0.5, 0.8] {
+            let want = 4.0 + 400.0 * (1.0 - (1.0 - t).powi(3));
+            assert!((tail(t) - want).abs() < 0.01, "{t}: {} vs {want}", tail(t));
+        }
         assert!(
-            (across(&core) - 16.0 * 0.45 / 2.0).abs() < 0.01,
-            "the core is 0.45 of a cell high"
+            tail(0.2) - tail(0.1) > tail(0.6) - tail(0.5),
+            "fast at first, then slower"
+        );
+        assert!(comet_at(1.0).is_empty(), "gone at the end");
+        // It fades as it goes: everything at (1 - t).
+        let alphas = |t: f32| comet_at(t).iter().map(|l| l.alpha).collect::<Vec<_>>();
+        assert_eq!(alphas(0.5), vec![0.5, 0.35 * 0.5, 0.5]);
+    }
+
+    #[test]
+    fn comet_thin_with_a_round_nose_and_a_rounded_tail_end_brightest_at_the_head() {
+        let layers = comet_at(0.0);
+        let (glow, core) = (&layers[1], &layers[2]);
+        // Thin: the core is 0.28 of a cell high at the head, the glow 0.6; Rex's
+        // core is a quarter to a third of the cell.
+        assert!((half_width_at(&core.outline, 404.0) - 16.0 * 0.14).abs() < 0.05);
+        assert!((half_width_at(&glow.outline, 404.0) - 16.0 * 0.30).abs() < 0.05);
+        // Rounded at the tail end, a fifth as wide as at the head, not a needle.
+        let end = half_width_at(&core.outline, 4.0);
+        assert!((end - 16.0 * 0.14 * COMET_END).abs() < 0.05, "{end}");
+        let far = core
+            .outline
+            .iter()
+            .map(|p| xy(*p).0)
+            .fold(f32::MAX, f32::min);
+        assert!(
+            (far - (4.0 - 16.0 * 0.14 * COMET_END)).abs() < 0.01,
+            "round past the tail point: {far}"
+        );
+        // A round nose half its width ahead of the head, no further.
+        let nose = core
+            .outline
+            .iter()
+            .map(|p| xy(*p).0)
+            .fold(f32::MIN, f32::max);
+        assert!((nose - (404.0 + 16.0 * 0.14)).abs() < 0.01, "{nose}");
+        // Narrowing steadily from head to tail.
+        let widths: Vec<f32> = [380.0, 300.0, 200.0, 100.0, 20.0]
+            .iter()
+            .map(|x| half_width_at(&core.outline, *x))
+            .collect();
+        assert!(widths.windows(2).all(|w| w[0] > w[1]), "{widths:?}");
+        // Brightest at the head, none at the tail.
+        assert_eq!(
+            core.fade,
+            Some(((4.0, 8.0), (4.0 + 400.0 * COMET_FULL, 8.0)))
         );
         assert!(
-            (across(&glow) - 16.0 * 2.4 / 2.0).abs() < 0.01,
-            "the outer glow 2.4"
+            layers
+                .iter()
+                .all(|l| l.glow.is_some() || convex(&l.outline))
         );
     }
 
     #[test]
-    fn comet_the_streak_points_any_way_and_is_finite() {
+    fn comet_points_any_way_and_a_glint_stays_at_the_cursor_to_the_end() {
         for to in [
             cell(0.0, -300.0),
             cell(-300.0, 0.0),
             cell(0.0, 300.0),
             cell(37.0, 211.0),
+            cell(0.0, 0.0),
         ] {
             for t in [-1.0, 0.0, 0.01, 0.5, 0.99, f32::NAN] {
-                if let Some(o) = streak_t(cell(0.0, 0.0), to, t, 2.4) {
+                for l in trail(TrailStyle::Comet, quad(cell(0.0, 0.0)), to, H, t).0 {
                     assert!(
-                        o.iter()
+                        l.outline
+                            .iter()
                             .all(|p| xy(*p).0.is_finite() && xy(*p).1.is_finite()),
-                        "{to:?} {t}: {o:?}"
-                    );
-                    // The tail is on the way back to the old cursor, settle(t) of it.
-                    let (head, from) = (xy(to.center()), (4.0, 8.0));
-                    let k = settle(t, COMET_TAIL);
-                    let want = (
-                        head.0 + (from.0 - head.0) * k,
-                        head.1 + (from.1 - head.1) * k,
+                        "{to:?} {t}"
                     );
                     assert!(
-                        dist(xy(o[0]), want) < 0.01,
-                        "{to:?} {t}: {:?} not {want:?}",
-                        xy(o[0])
+                        l.glow.is_some() || convex(&l.outline),
+                        "{to:?} {t}: {:?}",
+                        l.outline
                     );
-                    assert!(dist(xy(o[0]), head) >= CAUGHT_UP);
                 }
             }
         }
-    }
-
-    #[test]
-    fn comet_every_layer_is_a_convex_outline_at_any_length() {
-        for dir in DIRS {
-            for len in [0.6f32, 1.0, 5.0, 10.0, 400.0] {
-                let to = cell(dir.0 * len, dir.1 * len);
-                for (widen, _, _) in COMET_LAYERS {
-                    let o = streak_t(cell(0.0, 0.0), to, 0.0, widen).unwrap();
-                    assert!(convex(&o), "{dir:?} {len} {widen}: {o:?}");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn comet_nothing_is_drawn_for_the_same_cell() {
-        for t in [0.0, 0.3, 0.99] {
-            assert_eq!(streak_t(cell(10.0, 10.0), cell(10.0, 10.0), t, 1.0), None);
-        }
+        // Its last frames: the tail all but in the head, a small round glint.
+        let last = comet_at(0.98);
+        let reach = last[2]
+            .outline
+            .iter()
+            .map(|p| dist(xy(*p), (404.0, 8.0)))
+            .fold(0.0f32, f32::max);
+        assert!(reach < 16.0 * 0.14 + 0.1, "{reach}");
+        assert!(last[2].alpha > 0.0);
     }
 }

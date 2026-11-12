@@ -42,6 +42,11 @@ sha2 = "0.10"
 memmap2 = "0.9"
 
 [[test]]
+name = "trail_pixels"
+path = "tests/trail_pixels.rs"
+harness = false
+
+[[test]]
 name = "shot_pixels"
 path = "tests/shot_pixels.rs"
 harness = false
@@ -87,8 +92,9 @@ gpui_linux = { package = "gpui-pre-linux", version = "=0.3.8", features = ["rend
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_macos = { package = "gpui-pre-macos", version = "=0.3.8", features = ["render-to-image"] }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSDockTile", "NSImage", "NSResponder"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSAccessibility", "NSApplication", "NSDockTile", "NSImage", "NSResponder", "NSWorkspace"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData", "NSNotification", "NSOperation", "NSString", "block2"] }
+block2 = "0.6"
 dispatch2 = "0.3"
 
 [target.'cfg(unix)'.dependencies]

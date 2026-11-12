@@ -2367,7 +2367,7 @@ fn glyph_thicken() -> gpui::GlyphThicken {
 /// The one settle timer of a terminal whose cursor moved (`cursor_trail:
 /// "all"`): waits until the cursor has been still for `settle`, then tells the
 /// window if it jumped (`TerminalEvent::CursorJump`).
-fn settle_jumps(grid: Rc<RefCell<Grid>>, view: WeakEntity<TerminalView>, settle: Duration, min_cells: u16, window: &mut Window, cx: &mut App) {
+fn settle_jumps(grid: Rc<RefCell<Grid>>, view: WeakEntity<TerminalView>, settle: Duration, min_cells: crate::settings::MinCells, window: &mut Window, cx: &mut App) {
     use crate::cursor_jumps::{Due, Jump};
     window
         .spawn(cx, async move |cx| {
