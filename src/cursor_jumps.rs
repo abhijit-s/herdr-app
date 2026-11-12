@@ -33,7 +33,11 @@ pub struct Spot {
 pub enum Jump {
     /// It moved far enough: a trail from `from` (where it had `shape`) to
     /// `to` (cells).
-    Moved { from: Cell, to: Cell, shape: CursorShape },
+    Moved {
+        from: Cell,
+        to: Cell,
+        shape: CursorShape,
+    },
     /// It stayed (or moved too little) but changed shape: a pulse only.
     Reshaped,
 }

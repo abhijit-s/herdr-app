@@ -111,10 +111,19 @@ pub struct TrailEnd {
 /// What a cursor of `shape` covers in the cell(s) at `at`, `width` wide: a
 /// block or a hollow box the whole cell, a beam 2 px at its left, an underline
 /// 2 px at its foot. The terminal paints these; a cursor trail ends on them.
-pub(crate) fn cursor_rect(at: Point<Pixels>, width: Pixels, cell: Size<Pixels>, shape: CursorShape, focused: bool) -> Bounds<Pixels> {
+pub(crate) fn cursor_rect(
+    at: Point<Pixels>,
+    width: Pixels,
+    cell: Size<Pixels>,
+    shape: CursorShape,
+    focused: bool,
+) -> Bounds<Pixels> {
     match (focused, shape) {
         (true, CursorShape::Bar) => Bounds::new(at, size(px(2.0), cell.height)),
-        (true, CursorShape::Underline) => Bounds::new(at + point(px(0.0), cell.height - px(2.0)), size(width, px(2.0))),
+        (true, CursorShape::Underline) => Bounds::new(
+            at + point(px(0.0), cell.height - px(2.0)),
+            size(width, px(2.0)),
+        ),
         _ => Bounds::new(at, size(width, cell.height)),
     }
 }
@@ -1199,7 +1208,11 @@ impl TerminalView {
     pub fn trail_end(&self) -> Option<TrailEnd> {
         let cell = self.trail_anchor()?;
         let drawn = self.grid.borrow().cursor_drawn;
-        Some(TrailEnd { cell, cursor: drawn.unwrap_or(cell), shown: drawn.is_some() })
+        Some(TrailEnd {
+            cell,
+            cursor: drawn.unwrap_or(cell),
+            shown: drawn.is_some(),
+        })
     }
 
     /// Where a cursor trail meets this terminal, in window coordinates from
@@ -2367,9 +2380,17 @@ fn settle_jumps(grid: Rc<RefCell<Grid>>, view: WeakEntity<TerminalView>, settle:
                     Due::Wait(more) => wait = more,
                     Due::Fire(jump) => {
                         let from = match jump {
-                            Some(Jump::Moved { from: (x, y), shape, .. }) => {
+                            Some(Jump::Moved {
+                                from: (x, y),
+                                shape,
+                                ..
+                            }) => {
                                 let g = grid.borrow();
-                                let at = g.origin + point(g.cell.width * f32::from(x), g.cell.height * f32::from(y));
+                                let at = g.origin
+                                    + point(
+                                        g.cell.width * f32::from(x),
+                                        g.cell.height * f32::from(y),
+                                    );
                                 Some(Some(cursor_rect(at, g.cell.width, g.cell, shape, true)))
                             }
                             Some(Jump::Reshaped) => Some(None),
@@ -2552,7 +2573,9 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, view: &WeakEntit
                     paint_cell_text(&line, p, None, metrics, window, cx);
                 }
             }
-            (true, CursorShape::Bar | CursorShape::Underline) => window.paint_quad(fill(snap_box(drawn), color)),
+            (true, CursorShape::Bar | CursorShape::Underline) => {
+                window.paint_quad(fill(snap_box(drawn), color))
+            }
             _ => window.paint_quad(outline(snap_box(drawn), color, BorderStyle::Solid)),
         }
     }

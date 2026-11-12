@@ -83,7 +83,9 @@ pub(super) fn quad(b: Bounds<Pixels>) -> Quad {
 /// The smallest rect holding `q`.
 fn enclosing(q: Quad) -> Bounds<Pixels> {
     let xs = q.iter().map(|p| p.0);
-    let (x0, x1) = xs.clone().fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
+    let (x0, x1) = xs
+        .clone()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
     let ys = q.iter().map(|p| p.1);
     let (y0, y1) = ys.fold((f32::MAX, f32::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
     Bounds::new(point(px(x0), px(y0)), gpui::size(px(x1 - x0), px(y1 - y0)))
@@ -227,7 +229,10 @@ const COMET_SIDE: usize = 6;
 fn comet(from: P, to: Bounds<Pixels>, h: f32, t: f32) -> (Vec<Layer>, Option<Quad>) {
     let k = settle(t, COMET_TAIL);
     let head = mid(to);
-    let tail = (head.0 + (from.0 - head.0) * k, head.1 + (from.1 - head.1) * k);
+    let tail = (
+        head.0 + (from.0 - head.0) * k,
+        head.1 + (from.1 - head.1) * k,
+    );
     let layers: Vec<Layer> = COMET_LAYERS
         .iter()
         .filter_map(|&(widen, alpha, core)| {
@@ -324,7 +329,12 @@ impl Chase {
         let (target, center) = (quad(to), mid(to));
         let diag = (f32::from(to.size.width).hypot(f32::from(to.size.height)) / 2.0).max(1e-3);
         let gap: Vec<P> = (0..4)
-            .map(|i| (target[i].0 - self.corners[i].0, target[i].1 - self.corners[i].1))
+            .map(|i| {
+                (
+                    target[i].0 - self.corners[i].0,
+                    target[i].1 - self.corners[i].1,
+                )
+            })
             .collect();
         // How far each corner's move points the way its target faces from the
         // cursor's middle: the corners ahead of the move score highest.
@@ -338,21 +348,32 @@ impl Chase {
                 (gap[i].0 * out.0 + gap[i].1 * out.1) / diag / len
             })
             .collect();
-        let (lo, hi) = facing.iter().fold((f32::MAX, f32::MIN), |(lo, hi), f| (lo.min(*f), hi.max(*f)));
+        let (lo, hi) = facing
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(lo, hi), f| (lo.min(*f), hi.max(*f)));
         let fast = decay * TAIL_FAST;
         for i in 0..4 {
             if gap[i].0.hypot(gap[i].1) < 1e-6 {
                 continue;
             }
-            let k = if hi > lo { decay + (fast - decay) * (facing[i] - lo) / (hi - lo) } else { decay };
+            let k = if hi > lo {
+                decay + (fast - decay) * (facing[i] - lo) / (hi - lo)
+            } else {
+                decay
+            };
             let step = 1.0 - (-10.0 * dt / k.max(1e-6)).exp2();
             self.corners[i].0 += gap[i].0 * step;
             self.corners[i].1 += gap[i].1 * step;
         }
         let fade = dt / decay.max(1e-6);
-        self.opacity = if shown { (self.opacity + fade).min(1.0) } else { (self.opacity - fade).max(0.0) };
+        self.opacity = if shown {
+            (self.opacity + fade).min(1.0)
+        } else {
+            (self.opacity - fade).max(0.0)
+        };
         let far = (0..4).any(|i| {
-            (target[i].0 - self.corners[i].0).abs() >= CAUGHT_UP || (target[i].1 - self.corners[i].1).abs() >= CAUGHT_UP
+            (target[i].0 - self.corners[i].0).abs() >= CAUGHT_UP
+                || (target[i].1 - self.corners[i].1).abs() >= CAUGHT_UP
         });
         far && self.opacity > 0.0 && now < decay * TAIL_CAP
     }
@@ -365,7 +386,8 @@ impl Chase {
             return Vec::new();
         }
         let cut = clipped(&quad(to), &outer);
-        let hole = (cut.len() >= 3 && area(&cut).abs() > 1e-3).then(|| cut.into_iter().map(pt).collect());
+        let hole =
+            (cut.len() >= 3 && area(&cut).abs() > 1e-3).then(|| cut.into_iter().map(pt).collect());
         vec![Layer {
             outline: outer.into_iter().map(pt).collect(),
             hole,
@@ -384,7 +406,10 @@ fn sweep(from: Bounds<Pixels>, to: Bounds<Pixels>, t: f32) -> (Vec<Layer>, Optio
         return (Vec::new(), None);
     }
     let end = toward(from, to, k);
-    (vec![fill(span(end, to, 0.0), 0.8 * (1.0 - k))], Some(quad(end)))
+    (
+        vec![fill(span(end, to, 0.0), 0.8 * (1.0 - k))],
+        Some(quad(end)),
+    )
 }
 
 /// Warp: the decay time of its old end, and its soft edges as (grown by this
@@ -440,7 +465,9 @@ pub(super) fn arrival(kind: Arrival, at: Bounds<Pixels>, t: f32) -> Vec<Layer> {
         Arrival::Off => Vec::new(),
         Arrival::Ripple => vec![stroked(ring(h * (0.5 + PULSE_REACH * e)))],
         Arrival::Boom => vec![fill(ring(h * (0.25 + PULSE_REACH * e)), 0.45 * fade)],
-        Arrival::RippleRect => vec![stroked(corners(at, h * BOX_REACH * e).into_iter().map(pt).collect())],
+        Arrival::RippleRect => vec![stroked(
+            corners(at, h * BOX_REACH * e).into_iter().map(pt).collect(),
+        )],
         Arrival::BoomRect => vec![fill(
             corners(at, h * BOX_REACH * e).into_iter().map(pt).collect(),
             0.4 * fade,
@@ -490,7 +517,9 @@ mod tests {
     /// Whether `p` is inside the convex outline `o` (or on its edge).
     fn within(o: &[Point<Pixels>], p: P) -> bool {
         let pts: Vec<P> = o.iter().map(|q| xy(*q)).collect();
-        let sides: Vec<f32> = (0..pts.len()).map(|i| cross(pts[i], pts[(i + 1) % pts.len()], p)).collect();
+        let sides: Vec<f32> = (0..pts.len())
+            .map(|i| cross(pts[i], pts[(i + 1) % pts.len()], p))
+            .collect();
         sides.iter().all(|s| *s >= -1e-3) || sides.iter().all(|s| *s <= 1e-3)
     }
 
@@ -535,14 +564,25 @@ mod tests {
                     let (from, to) = (cell(0.0, 0.0), cell(dir.0 * len, dir.1 * len));
                     // Within the cells' box, grown by the widest glow (2.4 cell heights / 2).
                     let (lo, hi) = ((dir.0 * len).min(0.0) - 20.0, (dir.0 * len).max(0.0) + 28.0);
-                    let (top, bottom) = ((dir.1 * len).min(0.0) - 20.0, (dir.1 * len).max(0.0) + 36.0);
+                    let (top, bottom) =
+                        ((dir.1 * len).min(0.0) - 20.0, (dir.1 * len).max(0.0) + 36.0);
                     for t in [0.0, 0.1, 0.3, 0.6, 0.9] {
                         for layer in trail(style, quad(from), to, H, t).0 {
-                            assert!(convex(&layer.outline) && layer.hole.is_none(), "{style:?} {dir:?} {len} {t}: {:?}", layer.outline);
-                            assert!(layer.stroke.is_none() && (0.0..=1.0).contains(&layer.alpha), "{style:?}");
+                            assert!(
+                                convex(&layer.outline) && layer.hole.is_none(),
+                                "{style:?} {dir:?} {len} {t}: {:?}",
+                                layer.outline
+                            );
+                            assert!(
+                                layer.stroke.is_none() && (0.0..=1.0).contains(&layer.alpha),
+                                "{style:?}"
+                            );
                             for p in layer.outline.iter().map(|p| xy(*p)) {
                                 assert!(
-                                    p.0.is_finite() && p.1.is_finite() && (lo..=hi).contains(&p.0) && (top..=bottom).contains(&p.1),
+                                    p.0.is_finite()
+                                        && p.1.is_finite()
+                                        && (lo..=hi).contains(&p.0)
+                                        && (top..=bottom).contains(&p.1),
                                     "{style:?} {dir:?} {len} {t}: {p:?}"
                                 );
                             }
@@ -557,13 +597,36 @@ mod tests {
     fn every_trail_starts_drawn_and_is_gone_at_its_end() {
         let (from, to) = (cell(0.0, 0.0), cell(300.0, 120.0));
         for style in STYLES {
-            assert!(!trail(style, quad(from), to, H, 0.05).0.is_empty(), "{style:?} draws as it starts");
-            assert_eq!(trail(style, quad(from), to, H, 1.0), (Vec::new(), None), "{style:?} is gone at the end");
-            assert!(trail(style, quad(cell(5.0, 5.0)), cell(5.0, 5.0), H, 0.2).0.is_empty(), "{style:?}: nothing for the same cell");
+            assert!(
+                !trail(style, quad(from), to, H, 0.05).0.is_empty(),
+                "{style:?} draws as it starts"
+            );
+            assert_eq!(
+                trail(style, quad(from), to, H, 1.0),
+                (Vec::new(), None),
+                "{style:?} is gone at the end"
+            );
+            assert!(
+                trail(style, quad(cell(5.0, 5.0)), cell(5.0, 5.0), H, 0.2)
+                    .0
+                    .is_empty(),
+                "{style:?}: nothing for the same cell"
+            );
             assert!(trail(style, quad(from), to, H, f32::NAN).0.is_empty());
             // It fades: the strongest layer at 0.8 is fainter than at 0.1.
-            let peak = |t: f32| trail(style, quad(from), to, H, t).0.iter().map(|l| l.alpha).fold(0.0f32, f32::max);
-            assert!(peak(0.8) < peak(0.1), "{style:?}: {} then {}", peak(0.1), peak(0.8));
+            let peak = |t: f32| {
+                trail(style, quad(from), to, H, t)
+                    .0
+                    .iter()
+                    .map(|l| l.alpha)
+                    .fold(0.0f32, f32::max)
+            };
+            assert!(
+                peak(0.8) < peak(0.1),
+                "{style:?}: {} then {}",
+                peak(0.1),
+                peak(0.8)
+            );
         }
     }
 
@@ -572,7 +635,10 @@ mod tests {
         let (from, to) = (cell(0.0, 0.0), cell(400.0, 0.0));
         // The comet's back end is its tail point, as `streak` draws it.
         let (layers, back) = trail(TrailStyle::Comet, quad(from), to, H, 0.2);
-        assert!(dist(back.unwrap()[0], xy(layers[0].outline[0])) < 1e-3, "{back:?}");
+        assert!(
+            dist(back.unwrap()[0], xy(layers[0].outline[0])) < 1e-3,
+            "{back:?}"
+        );
         // The sweep's and the warp's are their old ends, between the cells, moving on.
         for style in [TrailStyle::Sweep, TrailStyle::Warp] {
             let x = centroid(&trail(style, quad(from), to, H, 0.2).1.unwrap()).0;
@@ -582,13 +648,25 @@ mod tests {
         }
         // A trail from a comet's tail point (a quad of one point) draws too.
         for style in STYLES {
-            assert!(!trail(style, [(200.0, 8.0); 4], cell(0.0, 100.0), H, 0.1).0.is_empty(), "{style:?}");
+            assert!(
+                !trail(style, [(200.0, 8.0); 4], cell(0.0, 100.0), H, 0.1)
+                    .0
+                    .is_empty(),
+                "{style:?}"
+            );
         }
     }
 
     #[test]
     fn the_comet_layers_are_the_glow_then_the_core() {
-        let layers = trail(TrailStyle::Comet, quad(cell(0.0, 0.0)), cell(400.0, 0.0), H, 0.0).0;
+        let layers = trail(
+            TrailStyle::Comet,
+            quad(cell(0.0, 0.0)),
+            cell(400.0, 0.0),
+            H,
+            0.0,
+        )
+        .0;
         assert_eq!(
             layers.iter().map(|l| (l.alpha, l.core)).collect::<Vec<_>>(),
             vec![(0.06, false), (0.15, false), (0.35, false), (1.0, true)]
@@ -600,22 +678,45 @@ mod tests {
         let from = cell(0.0, 0.0);
         // A beam in the cell at (400, 0): the comet's nose rounds the beam's middle.
         let comet = trail(TrailStyle::Comet, quad(from), beam(400.0, 0.0), H, 0.0).0;
-        let nose = comet[3].outline.iter().map(|p| xy(*p).0).fold(f32::MIN, f32::max);
+        let nose = comet[3]
+            .outline
+            .iter()
+            .map(|p| xy(*p).0)
+            .fold(f32::MIN, f32::max);
         assert!((nose - (401.0 + 16.0 * 0.45 / 2.0)).abs() < 0.01, "{nose}");
         // The sweep's block narrows into the beam, or into an underline's 2 px.
-        let sweep = |to: Bounds<Pixels>| trail(TrailStyle::Sweep, quad(from), to, H, 0.99).0[0].clone();
-        let right = sweep(beam(400.0, 0.0)).outline.iter().map(|p| xy(*p).0).fold(f32::MIN, f32::max);
+        let sweep =
+            |to: Bounds<Pixels>| trail(TrailStyle::Sweep, quad(from), to, H, 0.99).0[0].clone();
+        let right = sweep(beam(400.0, 0.0))
+            .outline
+            .iter()
+            .map(|p| xy(*p).0)
+            .fold(f32::MIN, f32::max);
         assert!(right <= 402.01, "{right}");
-        let top = sweep(underline(400.0, 0.0)).outline.iter().map(|p| xy(*p).1).fold(f32::MAX, f32::min);
+        let top = sweep(underline(400.0, 0.0))
+            .outline
+            .iter()
+            .map(|p| xy(*p).1)
+            .fold(f32::MAX, f32::min);
         assert!(top > 13.0, "into the underline: {top}");
         // The warp ends on the beam, its soft edges a share of the cell's height.
         let warp = trail(TrailStyle::Warp, quad(from), beam(400.0, 0.0), H, 0.1).0;
-        let top = warp[0].outline.iter().map(|p| xy(*p).1).fold(f32::MAX, f32::min);
+        let top = warp[0]
+            .outline
+            .iter()
+            .map(|p| xy(*p).1)
+            .fold(f32::MAX, f32::min);
         assert!((top + 8.0).abs() < 0.01, "grown half a cell height: {top}");
         // The tail's corners settle on the beam's.
         let frames = chase(from, beam(400.0, 0.0), 0.12, 1.0 / 60.0);
         let last = &frames.last().unwrap()[0];
-        assert!(last.outline.iter().all(|p| (397.0..402.6).contains(&xy(*p).0)), "{:?}", last.outline);
+        assert!(
+            last.outline
+                .iter()
+                .all(|p| (397.0..402.6).contains(&xy(*p).0)),
+            "{:?}",
+            last.outline
+        );
     }
 
     #[test]
@@ -625,16 +726,28 @@ mod tests {
         assert!(frames.len() > 3);
         for (i, f) in frames.iter().enumerate() {
             let l = &f[0];
-            assert_eq!(l.alpha, 1.0, "frame {i}: full strength while the cursor shows");
+            assert_eq!(
+                l.alpha, 1.0,
+                "frame {i}: full strength while the cursor shows"
+            );
             assert!(convex(&l.outline), "frame {i}: {:?}", l.outline);
             for p in [(404.0, 8.0), (401.0, 1.0), (407.0, 15.0)] {
-                assert!(!paints(l, p), "frame {i}: the cursor's own cell is cut out, {p:?}");
+                assert!(
+                    !paints(l, p),
+                    "frame {i}: the cursor's own cell is cut out, {p:?}"
+                );
             }
             if let Some(hole) = &l.hole {
-                assert!(convex(hole) && hole.iter().all(|p| within(&l.outline, xy(*p))), "frame {i}: a hole inside the quad");
+                assert!(
+                    convex(hole) && hole.iter().all(|p| within(&l.outline, xy(*p))),
+                    "frame {i}: a hole inside the quad"
+                );
             }
         }
-        assert!(paints(&frames[1][0], (200.0, 8.0)), "the stretch between the cells is drawn");
+        assert!(
+            paints(&frames[1][0], (200.0, 8.0)),
+            "the stretch between the cells is drawn"
+        );
         // Hidden, it fades over the slowest decay; shown again, it comes back.
         let mut c = Chase::new(quad(from));
         c.step(to, true, 0.0, 0.4);
@@ -643,7 +756,10 @@ mod tests {
         c.step(to, true, 0.15, 0.4);
         assert!((c.layers(to)[0].alpha - 0.875).abs() < 1e-4);
         let mut c = Chase::new(quad(from));
-        assert!(!c.step(to, false, 0.5, 0.4), "hidden long enough, it's gone");
+        assert!(
+            !c.step(to, false, 0.5, 0.4),
+            "hidden long enough, it's gone"
+        );
     }
 
     #[test]
@@ -657,19 +773,35 @@ mod tests {
         // fast decay (a quarter of the slowest), eased rather than snapped.
         let (lead, back) = (c.corners[1].0, c.corners[0].0);
         let want = 8.0 + 400.0 * (1.0 - (-10.0f32 / 60.0 / 0.1).exp2());
-        assert!((lead - want).abs() < 0.01 && lead < 400.0, "{lead} vs {want}");
+        assert!(
+            (lead - want).abs() < 0.01 && lead < 400.0,
+            "{lead} vs {want}"
+        );
         let want = 400.0 * (1.0 - (-10.0f32 / 60.0 / 0.4).exp2());
-        assert!((back - want).abs() < 0.01, "the trailing corners at the slow decay: {back} vs {want}");
+        assert!(
+            (back - want).abs() < 0.01,
+            "the trailing corners at the slow decay: {back} vs {want}"
+        );
         // It runs until every corner is within half a px of the cursor's.
         let frames = chase(from, to, 0.4, 1.0 / 60.0);
         let secs = frames.len() as f32 / 60.0;
-        assert!((0.3..0.45).contains(&secs), "about the slowest decay for a long jump: {secs}");
+        assert!(
+            (0.3..0.45).contains(&secs),
+            "about the slowest decay for a long jump: {secs}"
+        );
         let mut c = Chase::new(quad(from));
         let mut now = 0.0;
         while c.step(to, true, now, 0.4) {
             now += 1.0 / 60.0;
         }
-        assert!(c.corners.iter().zip(quad(to)).all(|(a, b)| (a.0 - b.0).abs() < 0.5 && (a.1 - b.1).abs() < 0.5), "{:?}", c.corners);
+        assert!(
+            c.corners
+                .iter()
+                .zip(quad(to))
+                .all(|(a, b)| (a.0 - b.0).abs() < 0.5 && (a.1 - b.1).abs() < 0.5),
+            "{:?}",
+            c.corners
+        );
         // At 30 frames a second too: time, not frames, sets its pace.
         let slow = chase(from, to, 0.4, 1.0 / 30.0).len() as f32 / 30.0;
         assert!((slow - secs).abs() < 0.05, "{slow} vs {secs}");
@@ -686,8 +818,14 @@ mod tests {
         c.step(cell(400.0, 0.0), true, 0.05, 0.4);
         let mut next = Chase::new(c.corners);
         assert!(next.step(cell(0.0, 300.0), true, 0.0, 0.4));
-        assert_eq!(next.corners, c.corners, "it starts exactly where the last one was");
-        assert_eq!(next.layers(cell(0.0, 300.0))[0].outline, c.layers(cell(400.0, 0.0))[0].outline);
+        assert_eq!(
+            next.corners, c.corners,
+            "it starts exactly where the last one was"
+        );
+        assert_eq!(
+            next.layers(cell(0.0, 300.0))[0].outline,
+            c.layers(cell(400.0, 0.0))[0].outline
+        );
     }
 
     #[test]
@@ -696,7 +834,8 @@ mod tests {
         let width = |t: f32| {
             let o = &trail(TrailStyle::Sweep, quad(from), to, H, t).0[0].outline;
             let xs: Vec<f32> = o.iter().map(|p| xy(*p).0).collect();
-            xs.iter().cloned().fold(f32::MIN, f32::max) - xs.iter().cloned().fold(f32::MAX, f32::min)
+            xs.iter().cloned().fold(f32::MIN, f32::max)
+                - xs.iter().cloned().fold(f32::MAX, f32::min)
         };
         assert!((width(0.0) - 408.0).abs() < 0.01, "both cells at first");
         assert!(width(0.2) > width(0.5) && width(0.5) > width(0.9) && width(0.9) >= 8.0);
@@ -709,9 +848,15 @@ mod tests {
         assert_eq!(layers.len(), 4);
         // The soft edges reach past the block, the last layer (the half nearer the cursor) doesn't reach the old end.
         let reach_left = |l: &Layer| l.outline.iter().map(|p| xy(*p).0).fold(f32::MAX, f32::min);
-        assert!(reach_left(&layers[0]) < reach_left(&layers[2]) && reach_left(&layers[2]) < reach_left(&layers[3]));
+        assert!(
+            reach_left(&layers[0]) < reach_left(&layers[2])
+                && reach_left(&layers[2]) < reach_left(&layers[3])
+        );
         let top = |l: &Layer| l.outline.iter().map(|p| xy(*p).1).fold(f32::MAX, f32::min);
-        assert!((top(&layers[0]) + 8.0).abs() < 0.01, "grown half a cell height");
+        assert!(
+            (top(&layers[0]) + 8.0).abs() < 0.01,
+            "grown half a cell height"
+        );
     }
 
     #[test]
@@ -720,22 +865,42 @@ mod tests {
         let c = (104.0, 108.0);
         for kind in PULSES {
             let size = |t: f32| trail_reach(&arrival(kind, at, t), c);
-            assert!(size(0.0) < size(0.5) && size(0.5) < size(0.9), "{kind:?} grows");
-            assert!(size(0.99) <= 16.0 * (0.5 + 2.0) * 1.5 + 1.0, "{kind:?} stays within its reach");
-            assert!(arrival(kind, at, 0.5)[0].alpha > arrival(kind, at, 0.9)[0].alpha, "{kind:?} fades");
-            assert!(arrival(kind, at, 1.0).is_empty() && arrival(kind, at, f32::NAN).is_empty(), "{kind:?} ends");
+            assert!(
+                size(0.0) < size(0.5) && size(0.5) < size(0.9),
+                "{kind:?} grows"
+            );
+            assert!(
+                size(0.99) <= 16.0 * (0.5 + 2.0) * 1.5 + 1.0,
+                "{kind:?} stays within its reach"
+            );
+            assert!(
+                arrival(kind, at, 0.5)[0].alpha > arrival(kind, at, 0.9)[0].alpha,
+                "{kind:?} fades"
+            );
+            assert!(
+                arrival(kind, at, 1.0).is_empty() && arrival(kind, at, f32::NAN).is_empty(),
+                "{kind:?} ends"
+            );
             for t in [0.0, 0.4, 0.95] {
                 let l = &arrival(kind, at, t)[0];
                 assert!(convex(&l.outline), "{kind:?} {t}");
                 let rings = matches!(kind, Arrival::Ripple | Arrival::RippleRect);
-                assert_eq!(l.stroke.is_some(), rings, "{kind:?}: rings are stroked, booms filled");
+                assert_eq!(
+                    l.stroke.is_some(),
+                    rings,
+                    "{kind:?}: rings are stroked, booms filled"
+                );
             }
         }
         assert!(arrival(Arrival::Off, at, 0.3).is_empty());
     }
 
     fn trail_reach(layers: &[Layer], c: P) -> f32 {
-        layers.iter().flat_map(|l| l.outline.iter()).map(|p| dist(xy(*p), c)).fold(0.0f32, f32::max)
+        layers
+            .iter()
+            .flat_map(|l| l.outline.iter())
+            .map(|p| dist(xy(*p), c))
+            .fold(0.0f32, f32::max)
     }
 
     #[test]
@@ -751,14 +916,31 @@ mod tests {
     #[test]
     fn clipping_keeps_the_part_inside() {
         let square = hull_points(vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
-        let half = clipped(&[(5.0, -5.0), (20.0, -5.0), (20.0, 20.0), (5.0, 20.0)], &square);
+        let half = clipped(
+            &[(5.0, -5.0), (20.0, -5.0), (20.0, 20.0), (5.0, 20.0)],
+            &square,
+        );
         assert!((area(&half).abs() - 100.0).abs() < 1e-3, "{half:?}");
-        assert!(clipped(&[(20.0, 20.0), (30.0, 20.0), (30.0, 30.0)], &square).is_empty(), "outside: nothing");
+        assert!(
+            clipped(&[(20.0, 20.0), (30.0, 20.0), (30.0, 30.0)], &square).is_empty(),
+            "outside: nothing"
+        );
     }
 
     /// The comet's outline at progress `t`, as the trail draws it.
-    fn streak_t(from: Bounds<Pixels>, to: Bounds<Pixels>, t: f32, widen: f32) -> Option<Vec<Point<Pixels>>> {
-        streak(mid(from), mid(to), f32::from(to.size.height), settle(t, COMET_TAIL), widen)
+    fn streak_t(
+        from: Bounds<Pixels>,
+        to: Bounds<Pixels>,
+        t: f32,
+        widen: f32,
+    ) -> Option<Vec<Point<Pixels>>> {
+        streak(
+            mid(from),
+            mid(to),
+            f32::from(to.size.height),
+            settle(t, COMET_TAIL),
+            widen,
+        )
     }
 
     fn comet_fade(t: f32) -> f32 {
@@ -779,7 +961,11 @@ mod tests {
         let (from, to) = (cell(0.0, 0.0), cell(400.0, 0.0));
         let head = (404.0, 8.0);
         let first = streak_t(from, to, 0.0, 1.0).unwrap();
-        assert_eq!(xy(first[0]), (4.0, 8.0), "the tail starts on the old cursor's middle, a single point");
+        assert_eq!(
+            xy(first[0]),
+            (4.0, 8.0),
+            "the tail starts on the old cursor's middle, a single point"
+        );
         // The widest pair of points straddles the head, a cell high (16 px) apart.
         let widest = first
             .iter()
@@ -803,7 +989,10 @@ mod tests {
         assert!(4.0 < a && a < b && b < c && c < 404.0, "{a} {b} {c}");
         assert!(b - a < a - 4.0, "fast at first, then slower: {a} {b}");
         let last = streak_t(from, to, 0.95, 1.0).unwrap();
-        assert!(dist(xy(last[0]), (404.0, 8.0)) < 4.0, "the last frame is all but in the cursor: {last:?}");
+        assert!(
+            dist(xy(last[0]), (404.0, 8.0)) < 4.0,
+            "the last frame is all but in the cursor: {last:?}"
+        );
         assert_eq!(streak_t(from, to, 1.0, 1.0), None, "and gone at the end");
     }
 
@@ -820,25 +1009,48 @@ mod tests {
             o.iter()
                 .map(|p| {
                     let (x, y) = xy(*p);
-                    ((tail.0 - head.0) * (y - head.1) - (tail.1 - head.1) * (x - head.0)).abs() / len
+                    ((tail.0 - head.0) * (y - head.1) - (tail.1 - head.1) * (x - head.0)).abs()
+                        / len
                 })
                 .fold(0.0f32, f32::max)
         };
-        assert!((across(&core) - 16.0 * 0.45 / 2.0).abs() < 0.01, "the core is 0.45 of a cell high");
-        assert!((across(&glow) - 16.0 * 2.4 / 2.0).abs() < 0.01, "the outer glow 2.4");
+        assert!(
+            (across(&core) - 16.0 * 0.45 / 2.0).abs() < 0.01,
+            "the core is 0.45 of a cell high"
+        );
+        assert!(
+            (across(&glow) - 16.0 * 2.4 / 2.0).abs() < 0.01,
+            "the outer glow 2.4"
+        );
     }
 
     #[test]
     fn comet_the_streak_points_any_way_and_is_finite() {
-        for to in [cell(0.0, -300.0), cell(-300.0, 0.0), cell(0.0, 300.0), cell(37.0, 211.0)] {
+        for to in [
+            cell(0.0, -300.0),
+            cell(-300.0, 0.0),
+            cell(0.0, 300.0),
+            cell(37.0, 211.0),
+        ] {
             for t in [-1.0, 0.0, 0.01, 0.5, 0.99, f32::NAN] {
                 if let Some(o) = streak_t(cell(0.0, 0.0), to, t, 2.4) {
-                    assert!(o.iter().all(|p| xy(*p).0.is_finite() && xy(*p).1.is_finite()), "{to:?} {t}: {o:?}");
+                    assert!(
+                        o.iter()
+                            .all(|p| xy(*p).0.is_finite() && xy(*p).1.is_finite()),
+                        "{to:?} {t}: {o:?}"
+                    );
                     // The tail is on the way back to the old cursor, settle(t) of it.
                     let (head, from) = (xy(to.center()), (4.0, 8.0));
                     let k = settle(t, COMET_TAIL);
-                    let want = (head.0 + (from.0 - head.0) * k, head.1 + (from.1 - head.1) * k);
-                    assert!(dist(xy(o[0]), want) < 0.01, "{to:?} {t}: {:?} not {want:?}", xy(o[0]));
+                    let want = (
+                        head.0 + (from.0 - head.0) * k,
+                        head.1 + (from.1 - head.1) * k,
+                    );
+                    assert!(
+                        dist(xy(o[0]), want) < 0.01,
+                        "{to:?} {t}: {:?} not {want:?}",
+                        xy(o[0])
+                    );
                     assert!(dist(xy(o[0]), head) >= CAUGHT_UP);
                 }
             }

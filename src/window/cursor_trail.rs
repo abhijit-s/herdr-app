@@ -56,22 +56,39 @@ impl Trail {
             color: s.trail_color().unwrap_or_else(|| settings::color("cursor")),
             style,
             arrival: s.cursor_arrival,
-            chase: from.filter(|_| style == Some(settings::TrailStyle::Tail)).map(cursor_shapes::Chase::new),
+            chase: from
+                .filter(|_| style == Some(settings::TrailStyle::Tail))
+                .map(cursor_shapes::Chase::new),
             drawn: None,
         }
     }
 
     /// The trail's shapes and the pulse's at `elapsed`, toward `end`, noting
     /// what the trail drew; None once both are over.
-    fn shapes(&mut self, end: crate::terminal::TrailEnd, elapsed: Duration) -> Option<Vec<cursor_shapes::Layer>> {
+    fn shapes(
+        &mut self,
+        end: crate::terminal::TrailEnd,
+        elapsed: Duration,
+    ) -> Option<Vec<cursor_shapes::Layer>> {
         let t = elapsed.as_secs_f32() / self.duration.as_secs_f32();
         let h = f32::from(end.cell.size.height);
         let (mut layers, drawn) = match (&mut self.chase, self.style, self.from) {
             (Some(chase), _, _) => {
-                let live = chase.step(end.cursor, end.shown, elapsed.as_secs_f32(), self.duration.as_secs_f32());
-                if live { (chase.layers(end.cursor), Some(chase.corners)) } else { (Vec::new(), None) }
+                let live = chase.step(
+                    end.cursor,
+                    end.shown,
+                    elapsed.as_secs_f32(),
+                    self.duration.as_secs_f32(),
+                );
+                if live {
+                    (chase.layers(end.cursor), Some(chase.corners))
+                } else {
+                    (Vec::new(), None)
+                }
             }
-            (None, Some(style), Some(from)) if t < 1.0 => cursor_shapes::trail(style, from, end.cursor, h, t),
+            (None, Some(style), Some(from)) if t < 1.0 => {
+                cursor_shapes::trail(style, from, end.cursor, h, t)
+            }
             _ => (Vec::new(), None),
         };
         self.drawn = drawn;
@@ -95,7 +112,8 @@ pub(super) struct Seen {
 
 /// Where a trail starts: from what the live one drew, else from `cursor`.
 fn start_from(live: Option<&Trail>, cursor: Option<Bounds<Pixels>>) -> Option<cursor_shapes::Quad> {
-    live.and_then(|t| t.drawn).or(cursor.map(cursor_shapes::quad))
+    live.and_then(|t| t.drawn)
+        .or(cursor.map(cursor_shapes::quad))
 }
 
 /// How far along an effect is, 0 to 1, after `elapsed` of `duration`; None once it's over.
@@ -187,7 +205,9 @@ impl AppWindow {
     /// The live effect's shapes now and their color, asking nothing of the
     /// window; None (and the effect dropped) once it's over or its pane is gone.
     pub(super) fn trail_frame(&mut self, cx: &App) -> Option<(Vec<cursor_shapes::Layer>, Hsla)> {
-        let to = self.pane_term(&self.trail.as_ref()?.pane).map(|term| term.view.clone());
+        let to = self
+            .pane_term(&self.trail.as_ref()?.pane)
+            .map(|term| term.view.clone());
         let trail = self.trail.as_mut()?;
         let elapsed = trail.start.elapsed();
         let Some(to) = to else {
@@ -248,7 +268,9 @@ impl Render for TrailLayer {
                 for layer in layers {
                     let mut path = match layer.stroke {
                         Some(w) => PathBuilder::stroke(px(w)),
-                        None => PathBuilder::fill().with_style(PathStyle::Fill(FillOptions::default().with_fill_rule(FillRule::EvenOdd))),
+                        None => PathBuilder::fill().with_style(PathStyle::Fill(
+                            FillOptions::default().with_fill_rule(FillRule::EvenOdd),
+                        )),
                     };
                     path.add_polygon(&layer.outline, true);
                     // Filled even-odd: the hole, inside the outline, stays clear.
