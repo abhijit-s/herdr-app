@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 
 const source = (await readFile(new URL("../defaults/mods/crosstalk/main.js", import.meta.url), "utf8"))
   .replace(/^import [\s\S]*?;\n/gm, "").replace("export default class Crosstalk", "class Crosstalk");
@@ -25,19 +25,22 @@ function load(rpc: Record<string, Reply | ((params: any) => Reply)> = {}, watche
     return Promise.resolve({ stdout: "", stderr: "", ...reply });
   };
   const input = { v: "", on() {}, value() { return this.v; }, set_value(v: string) { this.v = v; } };
+  // Key commands: each nextCommand() call waits until the test sends one.
+  const keys = { asked: 0, waiting: [] as ((c: string) => void)[], send(c: string) { this.waiting.shift()?.(c); } };
+  const nextCommand = () => { keys.asked++; return new Promise<string>((r) => keys.waiting.push(r)); };
   // The mod's clock: tests move it to cross back-off delays and merge windows.
   const clock = { now: 1_000_000 };
   class FakeDate extends Date { static now() { return clock.now; } }
   const stubs: Record<string, unknown> = {
     View: class {}, div: () => ({}), v_flex: () => ({}), h_flex: () => ({}), Input: { new: () => ({}) },
-    InputState: { new: () => input }, exec, theme: () => ({}), Date: FakeDate, nextCommand: () => new Promise(() => {}),
+    InputState: { new: () => input }, exec, theme: () => ({}), Date: FakeDate, nextCommand,
     setShared: (k: string, v: unknown) => { shared[k] = v; }, notify: (n: unknown) => { toasts.push(n); }, run: (...a: unknown[]) => { runs.push(a); },
   };
   const mod = new Function(...Object.keys(stubs), `${source}; return { ${NAMES.join(", ")} };`)(...Object.values(stubs));
   const cx: any = { notify() {}, spawn: (f: (cx: any) => Promise<unknown>) => { void f(cx); }, timer: { every() {} }, stop_propagation() {} };
   // A watch with nothing scripted never returns, so settling waits on the event loop, not on every task.
   const settle = async () => { for (let i = 0; i < 50; i++) await new Promise((r) => setTimeout(r, 0)); };
-  return { mod, calls, shared, toasts, runs, cx, input, settle, clock };
+  return { mod, calls, shared, toasts, runs, cx, input, settle, clock, keys };
 }
 
 const ok = (result: unknown): Reply => ({ code: 0, stdout: JSON.stringify({ jsonrpc: "2.0", id: 1, result }) });
@@ -491,4 +494,33 @@ test("a close during a Status read stops it before the next call", async () => {
   h.view.show("status", h.cx); await h.settle();
   expect(reads(h.calls)).toEqual(["health {}"]);
   expect(h.view.health).toBe(null);
+});
+
+test("key commands reach the panel until close, and the command loop ends there", async () => {
+  const h = await started(observer());
+  expect(h.keys.asked).toBe(1);
+  h.keys.send("status"); await h.settle();
+  expect(h.view.tab).toBe("status");
+  expect(reads(h.calls)).toHaveLength(3);
+  expect(h.keys.asked).toBe(2);
+  await h.view.close();
+  h.keys.send("refresh"); await h.settle();
+  expect(reads(h.calls)).toHaveLength(3);
+  expect(h.keys.asked).toBe(2); // the loop saw close and stopped asking
+});
+
+// Nothing in Herdr starts the mod before mod.open: mod.json docks it nowhere,
+// and no shipped layout, frame mod or key binding names it.
+test("nothing shipped opens the inbox or binds a key to it", async () => {
+  const defaults = new URL("../defaults/", import.meta.url);
+  expect(JSON.parse(await readFile(new URL("mods/crosstalk/mod.json", defaults), "utf8")).place).toBe("none");
+  const files = (await readdir(defaults, { recursive: true, withFileTypes: true }))
+    .filter((f) => f.isFile()).map((f) => `${f.parentPath ?? (f as any).path}/${f.name}`.replace(defaults.pathname, ""))
+    .filter((f) => !f.startsWith("mods/crosstalk/") && f !== "AGENTS.md");
+  expect(files).toContain("keys.json");
+  expect(files).toContain("keys.macos.json");
+  expect(files).toContain("layouts/main.json");
+  const naming: string[] = [];
+  for (const f of files) if ((await readFile(new URL(f, defaults), "utf8")).includes("crosstalk")) naming.push(f);
+  expect(naming).toEqual([]);
 });
