@@ -43,44 +43,84 @@ pub(super) struct Trail {
     color: Hsla,
     pub(super) style: Option<settings::TrailStyle>,
     pub(super) arrival: settings::Arrival,
-    /// The tail's corners as they chase the cursor (`TrailStyle::Tail`).
+    /// When the pulse started: the trail's start, or a later shape change.
+    pulse: Instant,
+    /// The tail's corners as they chase the cursor (`TrailStyle::Tail`),
+    /// None again once they have caught up.
     chase: Option<cursor_shapes::Chase>,
     /// What the trail drew last, where one started meanwhile begins.
     pub(super) drawn: Option<cursor_shapes::Quad>,
 }
 
 impl Trail {
-    fn new(from: Option<cursor_shapes::Quad>, pane: &str, s: &settings::Settings) -> Self {
+    /// A trail from `from` (None: the pulse alone); a tail steered from a
+    /// tail (`live`) keeps its fade, as kitty's one opacity does.
+    fn new(
+        from: Option<cursor_shapes::Quad>,
+        live: Option<&Trail>,
+        pane: &str,
+        s: &settings::Settings,
+    ) -> Self {
         let style = from.map(|_| s.cursor_trail_style);
+        let opacity = live
+            .and_then(|t| t.chase.as_ref())
+            .map_or(1.0, |c| c.opacity);
+        let now = Instant::now();
         Trail {
             from,
             pane: pane.to_owned(),
-            start: Instant::now(),
+            start: now,
             duration: s.trail_duration(),
             color: s.trail_color().unwrap_or_else(|| settings::color("cursor")),
             style,
             arrival: s.cursor_arrival,
-            chase: from.filter(|_| style == Some(settings::TrailStyle::Tail)).map(cursor_shapes::Chase::new),
+            pulse: now,
+            chase: from
+                .filter(|_| style == Some(settings::TrailStyle::Tail))
+                .map(|from| cursor_shapes::Chase::new(from).faded(opacity)),
             drawn: None,
         }
     }
 
     /// The trail's shapes and the pulse's at `elapsed`, toward `end`, noting
     /// what the trail drew; None once both are over.
-    fn shapes(&mut self, end: crate::terminal::TrailEnd, elapsed: Duration) -> Option<Vec<cursor_shapes::Layer>> {
+    fn shapes(
+        &mut self,
+        end: crate::terminal::TrailEnd,
+        elapsed: Duration,
+    ) -> Option<Vec<cursor_shapes::Layer>> {
         let t = elapsed.as_secs_f32() / self.duration.as_secs_f32();
         let h = f32::from(end.cell.size.height);
-        let (mut layers, drawn) = match (&mut self.chase, self.style, self.from) {
+        let tail = self.style == Some(settings::TrailStyle::Tail);
+        let (mut layers, drawn, chasing) = match (&mut self.chase, self.style, self.from) {
             (Some(chase), _, _) => {
-                let live = chase.step(end.cursor, end.shown, elapsed.as_secs_f32(), self.duration.as_secs_f32());
-                if live { (chase.layers(end.cursor), Some(chase.corners)) } else { (Vec::new(), None) }
+                let live = chase.step(
+                    end.cursor,
+                    end.shown,
+                    elapsed.as_secs_f32(),
+                    self.duration.as_secs_f32(),
+                );
+                if live {
+                    (chase.layers(end.cursor), Some(chase.corners), true)
+                } else {
+                    (Vec::new(), None, false)
+                }
             }
-            (None, Some(style), Some(from)) if t < 1.0 => cursor_shapes::trail(style, from, end.cursor, h, t),
-            _ => (Vec::new(), None),
+            (None, Some(style), Some(from)) if t < 1.0 && !tail => {
+                let (layers, drawn) = cursor_shapes::trail(style, from, end.cursor, h, t);
+                (layers, drawn, false)
+            }
+            _ => (Vec::new(), None, false),
         };
+        // Caught up, a tail stays ended, however the cursor moves on.
+        if !chasing {
+            self.chase = None;
+        }
         self.drawn = drawn;
-        let pulse = cursor_shapes::arrival(self.arrival, end.cell, t);
-        if layers.is_empty() && pulse.is_empty() {
+        let since = self.pulse.saturating_duration_since(self.start);
+        let pulse_t = elapsed.saturating_sub(since).as_secs_f32() / self.duration.as_secs_f32();
+        let pulse = cursor_shapes::arrival(self.arrival, end.cell, pulse_t);
+        if layers.is_empty() && pulse.is_empty() && !chasing {
             return None;
         }
         layers.extend(pulse);
@@ -99,7 +139,8 @@ pub(super) struct Seen {
 
 /// Where a trail starts: from what the live one drew, else from `cursor`.
 fn start_from(live: Option<&Trail>, cursor: Option<Bounds<Pixels>>) -> Option<cursor_shapes::Quad> {
-    live.and_then(|t| t.drawn).or(cursor.map(cursor_shapes::quad))
+    live.and_then(|t| t.drawn)
+        .or(cursor.map(cursor_shapes::quad))
 }
 
 /// How far along an effect is, 0 to 1, after `elapsed` of `duration`; None once it's over.
@@ -158,7 +199,7 @@ impl AppWindow {
                     && self.pane_term(&pane).is_some()
                     && (from.is_some() || s.cursor_arrival != settings::Arrival::Off)
                 {
-                    self.trail = Some(Trail::new(from, &pane, &s));
+                    self.trail = Some(Trail::new(from, live.as_ref(), &pane, &s));
                 }
             }
             None => {}
@@ -185,8 +226,14 @@ impl AppWindow {
         {
             return;
         }
-        let from = from.and_then(|cursor| start_from(self.trail.as_ref(), Some(cursor)));
-        self.trail = Some(Trail::new(from, pane, &s));
+        let reshaped = from.is_none() && self.trail.as_ref().is_some_and(|t| t.pane == pane);
+        if let Some(live) = self.trail.as_mut().filter(|_| reshaped) {
+            // A shape change while a trail runs: it runs on, the pulse anew.
+            (live.arrival, live.pulse) = (s.cursor_arrival, Instant::now());
+        } else {
+            let start = from.and_then(|cursor| start_from(self.trail.as_ref(), Some(cursor)));
+            self.trail = Some(Trail::new(start, self.trail.as_ref(), pane, &s));
+        }
         self.trail_layer.update(cx, |_, cx| cx.notify());
     }
 
@@ -197,7 +244,9 @@ impl AppWindow {
             self.trail = None;
             return None;
         }
-        let to = self.pane_term(&self.trail.as_ref()?.pane).map(|term| term.view.clone());
+        let to = self
+            .pane_term(&self.trail.as_ref()?.pane)
+            .map(|term| term.view.clone());
         let trail = self.trail.as_mut()?;
         let elapsed = trail.start.elapsed();
         let Some(to) = to else {
@@ -283,7 +332,9 @@ pub(super) fn paint_layers(layers: &[cursor_shapes::Layer], color: Hsla, window:
         }
         let mut path = match layer.stroke {
             Some(w) => PathBuilder::stroke(px(w)),
-            None => PathBuilder::fill().with_style(PathStyle::Fill(FillOptions::default().with_fill_rule(FillRule::EvenOdd))),
+            None => PathBuilder::fill().with_style(PathStyle::Fill(
+                FillOptions::default().with_fill_rule(FillRule::EvenOdd),
+            )),
         };
         path.add_polygon(&layer.outline, true);
         if let Some(hole) = &layer.hole {
@@ -294,7 +345,11 @@ pub(super) fn paint_layers(layers: &[cursor_shapes::Layer], color: Hsla, window:
             // CSS angles: 0 points up, 90 right; from the tail toward the head.
             Some(((x0, y0), (x1, y1))) if (x1 - x0).hypot(y1 - y0) >= 1.0 => {
                 let angle = (y1 - y0).atan2(x1 - x0).to_degrees() + 90.0;
-                let fade = linear_gradient(angle, linear_color_stop(tint.opacity(0.0), 0.0), linear_color_stop(tint.opacity(layer.alpha), 1.0));
+                let fade = linear_gradient(
+                    angle,
+                    linear_color_stop(tint.opacity(0.0), 0.0),
+                    linear_color_stop(tint.opacity(layer.alpha), 1.0),
+                );
                 window.paint_path(path, fade);
             }
             _ => window.paint_path(path, tint.opacity(layer.alpha)),
@@ -307,6 +362,55 @@ mod tests {
     use super::{paler, progress};
     use std::time::Duration;
 
+    /// A tail that has caught up stays ended while its pulse runs on, though
+    /// the cursor moves on (typing must never draw one).
+    #[test]
+    fn a_caught_up_tail_stays_ended_while_the_pulse_runs() {
+        use crate::settings::{Arrival, Settings, TrailStyle};
+        use gpui::{Bounds, point, px, size};
+        let cell = |x: f32| Bounds::new(point(px(x), px(0.0)), size(px(8.0), px(16.0)));
+        let end = |x: f32| crate::terminal::TrailEnd {
+            cell: cell(x),
+            cursor: cell(x),
+            shown: true,
+        };
+        let s = Settings {
+            cursor_trail_style: TrailStyle::Tail,
+            cursor_arrival: Arrival::Ripple,
+            cursor_trail_duration_ms: 400,
+            ..Settings::default()
+        };
+        let mut trail =
+            super::Trail::new(Some(super::cursor_shapes::quad(cell(0.0))), None, "a", &s);
+        let filled = |layers: &[super::cursor_shapes::Layer]| {
+            layers.iter().filter(|l| l.stroke.is_none()).count()
+        };
+        let mut ms = 0;
+        while trail.chase.is_some() {
+            let layers = trail
+                .shapes(end(16.0), std::time::Duration::from_millis(ms))
+                .expect("the tail or the pulse runs");
+            assert!(
+                ms > 0 || filled(&layers) == 1,
+                "the tail draws as it starts"
+            );
+            ms += 16;
+            assert!(ms < 400, "a short tail ends before the pulse does");
+        }
+        let later = trail
+            .shapes(end(400.0), std::time::Duration::from_millis(ms))
+            .expect("the pulse runs on");
+        assert_eq!(
+            filled(&later),
+            0,
+            "no tail after the cursor moved on: {later:?}"
+        );
+        assert!(
+            trail.drawn.is_none(),
+            "and nothing for a next trail to steer from"
+        );
+    }
+
     /// Renders `layers` in white on black, really, on the GPU (headless) and
     /// reads the pixels back: each pixel's brightness at px (x, y).
     #[cfg(not(windows))]
@@ -316,11 +420,25 @@ mod tests {
         impl Render for Scene {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
                 let layers = self.0.clone();
-                div().size_full().bg(rgb(0)).child(canvas(|_, _, _| {}, move |_, _, window, _| super::paint_layers(&layers, hsla(0.0, 0.0, 1.0, 1.0), window)).size_full())
+                div().size_full().bg(rgb(0)).child(
+                    canvas(
+                        |_, _, _| {},
+                        move |_, _, window, _| {
+                            super::paint_layers(&layers, hsla(0.0, 0.0, 1.0, 1.0), window)
+                        },
+                    )
+                    .size_full(),
+                )
             }
         }
-        let mut cx = HeadlessAppContext::with_platform(gpui_platform::current_platform(true).text_system(), std::sync::Arc::new(()), gpui_platform::current_headless_renderer);
-        let handle = cx.open_window(size(px(400.), px(80.)), |_, cx| cx.new(|_| Scene(layers))).unwrap();
+        let mut cx = HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            std::sync::Arc::new(()),
+            gpui_platform::current_headless_renderer,
+        );
+        let handle = cx
+            .open_window(size(px(400.), px(80.)), |_, cx| cx.new(|_| Scene(layers)))
+            .unwrap();
         let (image, scale) = cx
             .update_window(handle.into(), |_, window, cx| {
                 let _ = window.draw(cx);
@@ -336,10 +454,24 @@ mod tests {
     #[test]
     fn the_comet_streak_renders_brightest_at_its_head() {
         let streak = super::cursor_shapes::streak((20.0, 40.0), (320.0, 40.0), 8.0);
-        let layer = super::cursor_shapes::Layer { outline: streak, hole: None, stroke: None, alpha: 1.0, core: false, fade: Some(((20.0, 40.0), (320.0, 40.0))), glow: None };
+        let layer = super::cursor_shapes::Layer {
+            outline: streak,
+            hole: None,
+            stroke: None,
+            alpha: 1.0,
+            core: false,
+            fade: Some(((20.0, 40.0), (320.0, 40.0))),
+            glow: None,
+        };
         let at = rendered(vec![layer]);
-        let along: Vec<u8> = [30.0, 100.0, 170.0, 240.0, 310.0].iter().map(|x| at(*x, 40.0)).collect();
-        assert!(along.windows(2).all(|w| w[0] < w[1]), "brighter toward the head: {along:?}");
+        let along: Vec<u8> = [30.0, 100.0, 170.0, 240.0, 310.0]
+            .iter()
+            .map(|x| at(*x, 40.0))
+            .collect();
+        assert!(
+            along.windows(2).all(|w| w[0] < w[1]),
+            "brighter toward the head: {along:?}"
+        );
         assert!(along[0] < 40 && along[4] > 200, "{along:?}");
         assert_eq!(at(200.0, 60.0), 0, "nothing off the streak");
     }
@@ -349,13 +481,24 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn the_comet_glow_renders_soft_and_round() {
-        let glow = super::cursor_shapes::Layer { outline: Vec::new(), hole: None, stroke: None, alpha: 1.0, core: false, fade: None, glow: Some(((200.0, 40.0), 4.0, 10.0)) };
+        let glow = super::cursor_shapes::Layer {
+            outline: Vec::new(),
+            hole: None,
+            stroke: None,
+            alpha: 1.0,
+            core: false,
+            fade: None,
+            glow: Some(((200.0, 40.0), 4.0, 10.0)),
+        };
         let at = rendered(vec![glow]);
         let (middle, near, far) = (at(200.0, 40.0), at(208.0, 40.0), at(230.0, 40.0));
         assert!(middle > 150, "bright in the middle, not a hole: {middle}");
         assert!(0 < near && near < middle, "soft past its radius: {near}");
         assert_eq!(far, 0, "and gone beyond its blur");
-        assert!((i16::from(at(200.0, 48.0)) - i16::from(near)).abs() <= 8, "round: as bright below as beside");
+        assert!(
+            (i16::from(at(200.0, 48.0)) - i16::from(near)).abs() <= 8,
+            "round: as bright below as beside"
+        );
     }
 
     #[test]
@@ -381,6 +524,6 @@ mod tests {
         let yellow = gpui::hsla(0.11, 1.0, 0.7, 1.0);
         let core = paler(yellow);
         assert_eq!((core.h, core.s, core.a), (yellow.h, yellow.s, yellow.a));
-        assert!((core.l - (0.7 + 0.3 * 0.25)).abs() < 1e-6, "a quarter of the way to white, as Rex");
+        assert!((core.l - (0.7 + 0.3 * 0.25)).abs() < 1e-6);
     }
 }

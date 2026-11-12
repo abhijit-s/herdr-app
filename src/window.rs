@@ -9467,10 +9467,20 @@ export default class Recent extends View {
         // Steered: a move while a trail is drawn starts from what it drew.
         focus(cx, "b");
         assert!(layer(cx));
-        let drawn = view.update(cx, |this, _| this.trail.as_ref().and_then(|t| t.drawn)).expect("a live trail notes what it drew");
-        assert_ne!(drawn, anchor(cx, "a"), "the comet's tail, partway back to a");
+        let drawn = view
+            .update(cx, |this, _| this.trail.as_ref().and_then(|t| t.drawn))
+            .expect("a live trail notes what it drew");
+        assert_ne!(
+            drawn,
+            anchor(cx, "a"),
+            "the comet's tail, partway back to a"
+        );
         focus(cx, "a");
-        assert_eq!(state(cx).0, Some((drawn, "a".into())), "b to a, mid-trail, starts from the trail as drawn, not b's cursor");
+        assert_eq!(
+            state(cx).0,
+            Some((drawn, "a".into())),
+            "b to a, mid-trail, starts from the trail as drawn, not b's cursor"
+        );
         expire(cx);
         draw(cx);
 
@@ -9680,14 +9690,34 @@ export default class Recent extends View {
         clear(cx);
         feed(cx, "a", "\x1b[12;40H");
         wait(cx, 200);
-        let (from, end) = view.update(cx, |this, cx| (this.trail.as_ref().and_then(|t| t.from), this.terms["a"].view.read(cx).trail_end()));
+        let (from, end) = view.update(cx, |this, cx| {
+            (
+                this.trail.as_ref().and_then(|t| t.from),
+                this.terms["a"].view.read(cx).trail_end(),
+            )
+        });
         let (from, end) = (from.expect("a trail from the beam"), end.unwrap());
         let width = |q: super::cursor_shapes::Quad| q[1].0 - q[0].0;
         assert_eq!(width(from), 2.0, "from the beam: {from:?}");
-        assert_eq!(from[3].1 - from[0].1, f32::from(end.cell.size.height), "a cell high");
-        assert_eq!((f32::from(end.cursor.size.width), end.shown), (2.0, true), "to the beam");
+        assert_eq!(
+            from[3].1 - from[0].1,
+            f32::from(end.cell.size.height),
+            "a cell high"
+        );
+        assert_eq!(
+            (f32::from(end.cursor.size.width), end.shown),
+            (2.0, true),
+            "to the beam"
+        );
+        // A shape change while that trail runs: the trail runs on, the pulse anew.
+        let started = view.update(cx, |this, _| this.trail.as_ref().map(|t| t.start));
         feed(cx, "a", "\x1b[2 q");
         wait(cx, 200);
+        assert_eq!(
+            view.update(cx, |this, _| this.trail.as_ref().map(|t| (t.from, t.start))),
+            Some((Some(from), started.unwrap())),
+            "the reshape kept the trail"
+        );
         clear(cx);
 
         // b doesn't have the keyboard: its cursor moving draws nothing.

@@ -1235,7 +1235,7 @@ pub struct Window {
     pub(crate) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
     pub(crate) dirty_views: FxHashSet<EntityId>,
     // HERDR: the views notified since the last draw, before their ancestors
-    // were marked dirty with them (`view_notified`).
+    // were marked dirty with them (`only_view_notified`).
     notified_views: FxHashSet<EntityId>,
     focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
     pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
