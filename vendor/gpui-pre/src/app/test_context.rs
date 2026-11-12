@@ -479,8 +479,13 @@ impl TestAppContext {
 
     /// HERDR: whether the test window lets GPUI present outside a frame
     /// request, as macOS does.
-    pub fn set_window_presents_between_frames(&self, window_handle: AnyWindowHandle, presents: bool) {
-        self.test_window(window_handle).set_presents_between_frames(presents);
+    pub fn set_window_presents_between_frames(
+        &self,
+        window_handle: AnyWindowHandle,
+        presents: bool,
+    ) {
+        self.test_window(window_handle)
+            .set_presents_between_frames(presents);
     }
 
     /// HERDR: how often the window has woken its frame source.
