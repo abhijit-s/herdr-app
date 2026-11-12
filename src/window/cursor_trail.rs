@@ -163,7 +163,10 @@ impl AppWindow {
             (Some(style), Some(from)) => cursor_shapes::trail(style, from, head, t),
             _ => Vec::new(),
         };
-        let layers = shapes.into_iter().chain(cursor_shapes::arrival(trail.arrival, head, t)).collect();
+        let layers = shapes
+            .into_iter()
+            .chain(cursor_shapes::arrival(trail.arrival, head, t))
+            .collect();
         Some((layers, trail.color))
     }
 }
@@ -181,7 +184,9 @@ impl Render for TrailLayer {
         canvas(
             |_, _, _| {},
             move |_, _, window, cx| {
-                let Some((layers, color)) = app.update(cx, |app, cx| app.trail_frame(cx)).ok().flatten() else {
+                let Some((layers, color)) =
+                    app.update(cx, |app, cx| app.trail_frame(cx)).ok().flatten()
+                else {
                     return;
                 };
                 crate::bench::count(&crate::bench::TRAIL);
