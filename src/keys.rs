@@ -297,7 +297,8 @@ mod tests {
             (include_str!("../defaults/keys.macos.json"), super::SHIPPED_MACOS_KEYS),
         ] {
             for original in originals {
-                assert!(serde_json::from_str::<serde_json::Value>(original).is_ok_and(|v| v.is_object()), "a shipped original is a keys file");                std::fs::write(&path, original).unwrap();
+                assert!(serde_json::from_str::<serde_json::Value>(original).is_ok_and(|v| v.is_object()), "a shipped original is a keys file");
+                std::fs::write(&path, original).unwrap();
                 assert_eq!(super::load_text(&path, defaults, originals).unwrap(), defaults);
                 assert_eq!(std::fs::read_to_string(&path).unwrap(), defaults);
 
