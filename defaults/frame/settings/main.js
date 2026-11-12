@@ -2147,6 +2147,13 @@ export default class Settings extends View {
     const own = (key, composed, def) => !same(p[key] ?? def, composed);
     const size = (key, value, d, cx) => this.change((q) => (q[key] = Math.max(8, Math.min(32, (q[key] ?? value) + d))), cx);
     const step = (key, value, d, lo, hi, cx) => this.change((q) => (q[key] = Math.round(Math.max(lo, Math.min(hi, (q[key] ?? value) + d)) * 100) / 100), cx);
+    // 100% is the default, left out of settings.json.
+    const scrollStep = (d, cx) =>
+      this.change((q) => {
+        const next = Math.round(Math.max(0.1, Math.min(5, (q.terminal_scroll_speed ?? s.terminal_scroll_speed) + d)) * 10) / 10;
+        if (next === 1) delete q.terminal_scroll_speed;
+        else q.terminal_scroll_speed = next;
+      }, cx);
     // Writes terminal_line_height, taking line_height (its other name) with it.
     const lineStep = (d, cx) =>
       this.change((q) => {
@@ -2296,7 +2303,7 @@ export default class Settings extends View {
               t,
               "Scroll speed",
               ownFraction("terminal_scroll_speed", s.terminal_scroll_speed, 1) ? "This layout sets its own; yours shows in the others." : "Wheel and trackpad scrolling, mouse reports to programs included.",
-              this.stepper(t, "st-terminal_scroll_speed", `${Math.round(s.terminal_scroll_speed * 100)}%`, (_e, cx) => step("terminal_scroll_speed", s.terminal_scroll_speed, -0.1, 0.1, 5, cx), (_e, cx) => step("terminal_scroll_speed", s.terminal_scroll_speed, 0.1, 0.1, 5, cx)),
+              this.stepper(t, "st-terminal_scroll_speed", `${Math.round(s.terminal_scroll_speed * 100)}%`, (_e, cx) => scrollStep(-0.1, cx), (_e, cx) => scrollStep(0.1, cx)),
               "terminal_scroll_speed",
             ),
           )
