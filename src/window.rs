@@ -9489,6 +9489,18 @@ export default class Recent extends View {
         assert!(!layer(cx), "a trail whose terminal is gone ends");
         assert_eq!(state(cx).0, None);
 
+        // Reduce motion: a running trail ends and none starts until it's off.
+        focus(cx, "b");
+        assert!(state(cx).0.is_some());
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        assert!(!layer(cx), "a running trail ends");
+        assert_eq!(state(cx).0, None);
+        focus(cx, "a");
+        assert_eq!(state(cx).0, None, "none starts while motion is reduced");
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+        focus(cx, "b");
+        assert!(state(cx).0.is_some(), "and trails come back with it off");
+
         focus(cx, "b");
         focus(cx, "a");
         assert!(state(cx).0.is_some());
@@ -9642,6 +9654,16 @@ export default class Recent extends View {
             this.person.cursor_trail_settle_ms = 80;
             this.apply_look(window, cx);
         });
+
+        // Reduce motion: a settled jump draws nothing.
+        feed(cx, "a", "\x1b[1;1H");
+        wait(cx, 200);
+        clear(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        feed(cx, "a", "\x1b[15;40H");
+        wait(cx, 200);
+        assert_eq!(effect(cx), None, "no jump trail or pulse while motion is reduced");
+        cx.update(|_, cx| cx.set_reduce_motion(false));
 
         // A one-cell step is under the threshold.
         feed(cx, "a", "\x1b[1;1H");

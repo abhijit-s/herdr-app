@@ -2,11 +2,10 @@
 //! paint tells `Jumps` where its cursor is drawn, and one settle timer per
 //! terminal asks it, once the cursor has been still for
 //! `cursor_trail_settle_ms`, whether that was a jump worth an effect, as
-//! kitty's cursor trail decides (`kitty/cursor_trail.c`): more than
-//! `cursor_trail_min_cells` from the last settled place in either axis
-//! (Chebyshev distance, so a diagonal step is one cell; kitty's start
-//! threshold, moves of that many cells or fewer are ignored), or the cursor's
-//! shape changed. Stillness is measured from when the program last moved the
+//! kitty's cursor trail decides (`kitty/cursor_trail.c`): more columns or
+//! more rows from the last settled place than `cursor_trail_min_cells` allows
+//! across or down (kitty's two-value start threshold: a move within both is
+//! ignored, so a diagonal step is one cell), or the cursor's shape changed. Stillness is measured from when the program last moved the
 //! cursor (the output path calls `program_moved` after a chunk that moved it),
 //! as kitty measures from `position_changed_by_client_at`, not from when a
 //! frame drew it: frames come up to ~50 ms apart while output streams, so
@@ -16,6 +15,7 @@
 //!
 //! A hidden cursor forgets where it was, so it reappearing isn't a jump.
 
+use crate::settings::MinCells;
 use crate::vt::CursorShape;
 use std::time::{Duration, Instant};
 
@@ -76,11 +76,6 @@ const CATCH_UP_STEP: Duration = Duration::from_millis(8);
 /// covered window): a pending timer gives up rather than wake on as its output
 /// streams.
 const LOST: Duration = Duration::from_millis(500);
-
-/// Cells between two cells, a diagonal step counting one.
-pub fn chebyshev(a: Cell, b: Cell) -> u16 {
-    a.0.abs_diff(b.0).max(a.1.abs_diff(b.1))
-}
 
 impl Jumps {
     /// Program output moved the cursor at `at` (the output path, once per
@@ -144,7 +139,8 @@ impl Jumps {
     /// `settle` (by paint's last sight or the program's last move, whichever is
     /// later, so a move not yet drawn still counts), else settle it and say
     /// whether it jumped.
-    pub fn due(&mut self, now: Instant, settle: Duration, min_cells: u16) -> Due {
+    pub fn due(&mut self, now: Instant, settle: Duration, min_cells: impl Into<MinCells>) -> Due {
+        let min = min_cells.into();
         let Some((spot, at)) = self.moved else {
             self.timer = false;
             return Due::Fire(None);
@@ -174,7 +170,7 @@ impl Jumps {
         (self.moved, self.catching) = (None, None);
         let before = self.settled.replace(spot);
         Due::Fire(before.and_then(|b| {
-            if chebyshev(b.cell, spot.cell) > min_cells {
+            if b.cell.0.abs_diff(spot.cell.0) > min.x || b.cell.1.abs_diff(spot.cell.1) > min.y {
                 Some(Jump::Moved {
                     from: b.cell,
                     to: spot.cell,
@@ -673,14 +669,18 @@ mod tests {
     }
 
     #[test]
-    fn chebyshev_counts_a_diagonal_step_as_one() {
-        assert_eq!(
-            (
-                chebyshev((0, 0), (1, 1)),
-                chebyshev((3, 0), (0, 2)),
-                chebyshev((5, 5), (5, 5))
-            ),
-            (1, 3, 0)
-        );
+    fn a_move_counts_when_it_passes_either_threshold_and_one_number_is_both() {
+        let jump = |to: Cell, min: MinCells| {
+            let (mut j, t0) = (Jumps::default(), Instant::now());
+            j.observe(at(10, 10), V, t0);
+            j.observe(at(to.0, to.1), V, ms(t0, 1));
+            matches!(j.due(ms(t0, 100), SETTLE, min), Due::Fire(Some(Jump::Moved { .. })))
+        };
+        let (across, down) = (MinCells { x: 6, y: 2 }, MinCells { x: 2, y: 6 });
+        assert!(!jump((16, 12), across), "six across and two down: within both");
+        assert!(jump((17, 10), across), "seven across: past the columns'");
+        assert!(jump((10, 13), across), "three down: past the rows'");
+        assert!(!jump((12, 16), down) && jump((13, 10), down));
+        assert!(!jump((11, 11), MinCells::from(2)) && jump((13, 11), MinCells::from(2)), "one number for both, a diagonal step is one cell");
     }
 }

@@ -1503,11 +1503,11 @@ pub struct Person {
     /// jump counts, in ms (read through `trail_settle`).
     #[serde(skip_serializing_if = "is_settle_ms_default")]
     pub cursor_trail_settle_ms: u32,
-    /// With `cursor_trail: "all"`, kitty's start threshold: a move of this
-    /// many cells (Chebyshev) or fewer from where the cursor last settled is
+    /// With `cursor_trail: "all"`, kitty's start threshold: a move of at
+    /// most this many columns and rows from where the cursor last settled is
     /// ignored; 0 draws every move.
     #[serde(skip_serializing_if = "is_min_cells_default")]
-    pub cursor_trail_min_cells: u16,
+    pub cursor_trail_min_cells: MinCells,
     /// How long the trail and the arrival pulse take, in ms (read through `trail_duration`).
     #[serde(skip_serializing_if = "is_trail_ms_default")]
     pub cursor_trail_duration_ms: u32,
@@ -1837,15 +1837,52 @@ pub const SETTLE_MS_DEFAULT: u32 = 10;
 pub const SETTLE_MS: std::ops::RangeInclusive<u32> = 0..=500;
 /// kitty's start threshold: moves of this many cells or fewer are ignored, so
 /// typing never draws; 0 draws every move.
-pub const MIN_CELLS_DEFAULT: u16 = 2;
+pub const MIN_CELLS_DEFAULT: MinCells = MinCells { x: 2, y: 2 };
 pub const MIN_CELLS: std::ops::RangeInclusive<u16> = 0..=50;
 
 fn is_settle_ms_default(ms: &u32) -> bool {
     *ms == SETTLE_MS_DEFAULT
 }
 
-fn is_min_cells_default(n: &u16) -> bool {
+fn is_min_cells_default(n: &MinCells) -> bool {
     *n == MIN_CELLS_DEFAULT
+}
+
+/// `cursor_trail_min_cells`: the columns (`x`) and rows (`y`) a move may
+/// cover and still be ignored, as kitty's two-value
+/// `cursor_trail_start_threshold`. settings.json holds one number for both
+/// (and is written so while they're equal) or `[x, y]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MinCells {
+    pub x: u16,
+    pub y: u16,
+}
+
+impl From<u16> for MinCells {
+    fn from(n: u16) -> Self {
+        MinCells { x: n, y: n }
+    }
+}
+
+impl Serialize for MinCells {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        if self.x == self.y { self.x.serialize(s) } else { [self.x, self.y].serialize(s) }
+    }
+}
+
+impl<'de> Deserialize<'de> for MinCells {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Given {
+            Both(u16),
+            Each([u16; 2]),
+        }
+        Ok(match Given::deserialize(d).map_err(|_| serde::de::Error::custom("cursor_trail_min_cells is a number of cells or [columns, rows]"))? {
+            Given::Both(n) => MinCells { x: n, y: n },
+            Given::Each([x, y]) => MinCells { x, y },
+        })
+    }
 }
 
 pub const TRAIL_MS_DEFAULT: u32 = 120;
@@ -2632,7 +2669,7 @@ pub struct Settings {
     pub cursor_trail_style: TrailStyle,
     pub cursor_arrival: Arrival,
     pub cursor_trail_settle_ms: u32,
-    pub cursor_trail_min_cells: u16,
+    pub cursor_trail_min_cells: MinCells,
     pub cursor_trail_duration_ms: u32,
     pub cursor_trail_color: Option<String>,
     /// Space between a terminal's edge and its text, in px: [x, y].
@@ -2960,8 +2997,10 @@ impl Settings {
         if !SETTLE_MS.contains(&self.cursor_trail_settle_ms) {
             out.push(format!("cursor_trail_settle_ms {} is outside {}..{}", self.cursor_trail_settle_ms, SETTLE_MS.start(), SETTLE_MS.end()));
         }
-        if !MIN_CELLS.contains(&self.cursor_trail_min_cells) {
-            out.push(format!("cursor_trail_min_cells {} is outside {}..{}", self.cursor_trail_min_cells, MIN_CELLS.start(), MIN_CELLS.end()));
+        let MinCells { x, y } = self.cursor_trail_min_cells;
+        if !MIN_CELLS.contains(&x) || !MIN_CELLS.contains(&y) {
+            let given = if x == y { x.to_string() } else { format!("[{x}, {y}]") };
+            out.push(format!("cursor_trail_min_cells {given} is outside {}..{}", MIN_CELLS.start(), MIN_CELLS.end()));
         }
         if !TRAIL_MS.contains(&self.cursor_trail_duration_ms) {
             out.push(format!("cursor_trail_duration_ms {} is outside {}..{}", self.cursor_trail_duration_ms, TRAIL_MS.start(), TRAIL_MS.end()));
@@ -3422,9 +3461,10 @@ impl Settings {
         self.focus_border_width.map(|w| w.clamp(*FOCUS_BORDER_WIDTH.start(), *FOCUS_BORDER_WIDTH.end()))
     }
 
-    /// `cursor_trail_min_cells`, within `MIN_CELLS`.
-    pub fn trail_min_cells(&self) -> u16 {
-        self.cursor_trail_min_cells.clamp(*MIN_CELLS.start(), *MIN_CELLS.end())
+    /// `cursor_trail_min_cells`, each within `MIN_CELLS`.
+    pub fn trail_min_cells(&self) -> MinCells {
+        let keep = |n: u16| n.clamp(*MIN_CELLS.start(), *MIN_CELLS.end());
+        MinCells { x: keep(self.cursor_trail_min_cells.x), y: keep(self.cursor_trail_min_cells.y) }
     }
 
     /// `cursor_trail_settle_ms`, within `SETTLE_MS`.
@@ -4362,7 +4402,7 @@ mod tests {
     fn cursor_trail_all_with_its_settle_time_and_threshold() {
         let p: Person = serde_json::from_str(r#"{"cursor_trail": "all"}"#).unwrap();
         let s = Settings::compose(&p, &crate::layout::Look::default(), true);
-        assert_eq!((s.cursor_trail, s.trail_settle(), s.trail_min_cells()), (CursorTrail::All, std::time::Duration::from_millis(10), 2));
+        assert_eq!((s.cursor_trail, s.trail_settle(), s.trail_min_cells()), (CursorTrail::All, std::time::Duration::from_millis(10), MinCells { x: 2, y: 2 }));
         assert_eq!(s.for_mods()["cursor_trail"], "all");
         let json = serde_json::to_value(&p).unwrap();
         assert!(json.get("cursor_trail_settle_ms").is_none() && json.get("cursor_trail_min_cells").is_none(), "{json}");
@@ -4372,6 +4412,25 @@ mod tests {
             assert_eq!(s.trail_settle(), std::time::Duration::from_millis(ms), "{settle}");
             assert_eq!(s.problems().is_empty(), ok, "{settle} {min}: {:?}", s.problems());
         }
+    }
+
+    #[test]
+    fn cursor_trail_min_cells_takes_one_number_for_both_axes_or_a_pair() {
+        let read = |v: serde_json::Value| serde_json::from_value::<Person>(serde_json::json!({ "cursor_trail_min_cells": v }));
+        let cells = |v: serde_json::Value| Settings::compose(&read(v).unwrap(), &crate::layout::Look::default(), true).trail_min_cells();
+        assert_eq!(cells(serde_json::json!(6)), MinCells { x: 6, y: 6 }, "a number, as settings.json has held: both axes");
+        assert_eq!(cells(serde_json::json!([8, 2])), MinCells { x: 8, y: 2 }, "a pair: columns, then rows");
+        assert_eq!(cells(serde_json::json!([60, 3])), MinCells { x: 50, y: 3 }, "each kept within range");
+        let s = Settings::compose(&read(serde_json::json!([60, 3])).unwrap(), &crate::layout::Look::default(), true);
+        assert!(s.problems().iter().any(|p| p.contains("cursor_trail_min_cells [60, 3]")), "{:?}", s.problems());
+        for bad in [serde_json::json!([1]), serde_json::json!([1, 2, 3]), serde_json::json!("6"), serde_json::json!(-1)] {
+            assert!(read(bad.clone()).is_err(), "{bad}");
+        }
+        // Written back as it reads: one number while both are equal, else the pair.
+        for (given, written) in [(serde_json::json!(6), serde_json::json!(6)), (serde_json::json!([4, 4]), serde_json::json!(4)), (serde_json::json!([8, 2]), serde_json::json!([8, 2]))] {
+            assert_eq!(serde_json::to_value(read(given).unwrap()).unwrap()["cursor_trail_min_cells"], written);
+        }
+        assert_eq!(Settings::compose(&read(serde_json::json!([8, 2])).unwrap(), &crate::layout::Look::default(), true).for_mods()["cursor_trail_min_cells"], serde_json::json!([8, 2]));
     }
 
     #[test]
@@ -4610,7 +4669,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, pane_header_info: Some(String::new()), agents_card_info: Some(String::new()), cursor_trail: CursorTrail::Panes, cursor_trail_style: TrailStyle::Warp, cursor_arrival: Arrival::Ripple, cursor_trail_settle_ms: 40, cursor_trail_min_cells: 3, cursor_trail_duration_ms: 300, cursor_trail_color: Some("#ff8800".into()), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, pane_header_info: Some(String::new()), agents_card_info: Some(String::new()), cursor_trail: CursorTrail::Panes, cursor_trail_style: TrailStyle::Warp, cursor_arrival: Arrival::Ripple, cursor_trail_settle_ms: 40, cursor_trail_min_cells: MinCells { x: 3, y: 1 }, cursor_trail_duration_ms: 300, cursor_trail_color: Some("#ff8800".into()), ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();
