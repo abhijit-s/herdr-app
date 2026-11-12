@@ -1234,6 +1234,9 @@ pub struct Window {
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
     pub(crate) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
     pub(crate) dirty_views: FxHashSet<EntityId>,
+    // HERDR: the views notified since the last draw, before their ancestors
+    // were marked dirty with them (`only_view_notified`).
+    notified_views: FxHashSet<EntityId>,
     focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
     pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
     focus_lost_path: SmallVec<[FocusId; 8]>,
@@ -2144,6 +2147,7 @@ impl Window {
             next_tooltip_id: TooltipId::default(),
             tooltip_bounds: None,
             dirty_views: FxHashSet::default(),
+            notified_views: FxHashSet::default(),
             focus_listeners: SubscriberSet::new(),
             focus_lost_listeners: SubscriberSet::new(),
             focus_lost_path: SmallVec::new(),
@@ -2255,6 +2259,24 @@ pub fn spin_clock_ms() -> f64 {
 }
 
 impl Window {
+    /// HERDR: whether this draw is for `view` alone: it is the one view (or
+    /// entity) notified since the last draw, not only an ancestor of one.
+    pub fn only_view_notified(&self, view: EntityId) -> bool {
+        self.notified_views.len() == 1 && self.notified_views.contains(&view)
+    }
+
+    /// HERDR: whether `view` draws again this frame rather than reusing its
+    /// last drawing (if cached): it or a view under it was notified.
+    pub fn view_dirty(&self, view: EntityId) -> bool {
+        self.dirty_views.contains(&view)
+    }
+
+    /// HERDR: makes a cached `view` draw again this frame, as if notified;
+    /// for its parent's render, before the view is laid out.
+    pub fn redraw_view(&mut self, view: EntityId) {
+        self.mark_view_dirty(view);
+    }
+
     fn mark_view_dirty(&mut self, view_id: EntityId) {
         // Mark ancestor views as dirty. If already in the `dirty_views` set, then all its ancestors
         // should already be dirty.
@@ -3618,6 +3640,7 @@ impl Window {
 
     fn invalidate_entities(&mut self) {
         let mut views = self.invalidator.take_views();
+        self.notified_views.clone_from(&views);
         for entity in views.drain() {
             self.mark_view_dirty(entity);
         }

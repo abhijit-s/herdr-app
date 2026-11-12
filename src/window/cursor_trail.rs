@@ -144,61 +144,80 @@ impl AppWindow {
             style: from.map(|_| s.cursor_trail_style),
             arrival: s.cursor_arrival,
         });
-        cx.notify();
+        self.trail_layer.update(cx, |_, cx| cx.notify());
     }
 
-    /// The layer the live effect paints on, asking for the next frame while
-    /// it runs; None (and the effect dropped) once it's over or its pane is gone.
-    pub(super) fn cursor_trail_layer(&mut self) -> Option<AnyElement> {
+    /// The live effect's shapes now and their color, asking nothing of the
+    /// window; None (and the effect dropped) once it's over or its pane is gone.
+    pub(super) fn trail_frame(&mut self, cx: &App) -> Option<(Vec<cursor_shapes::Layer>, Hsla)> {
         let trail = self.trail.as_ref()?;
-        let view = self.pane_term(&trail.pane).map(|term| term.view.clone());
-        let (Some(to), Some(_)) = (view, progress(trail.start.elapsed(), trail.duration)) else {
+        let to = self.pane_term(&trail.pane).map(|term| term.view.clone());
+        let (Some(to), Some(t)) = (to, progress(trail.start.elapsed(), trail.duration)) else {
             self.trail = None;
             return None;
         };
-        let (from, start, duration, color, style, arrival) = (
-            trail.from,
-            trail.start,
-            trail.duration,
-            trail.color,
-            trail.style,
-            trail.arrival,
-        );
-        Some(
-            canvas(
-                |_, _, _| {},
-                move |_, _, window, cx| {
-                    let Some(t) = progress(start.elapsed(), duration) else {
-                        return;
-                    };
-                    window.request_animation_frame();
-                    let Some(head) = to.read(cx).trail_anchor() else {
-                        return;
-                    };
-                    let trail = match (style, from) {
-                        (Some(style), Some(from)) => cursor_shapes::trail(style, from, head, t),
-                        _ => Vec::new(),
-                    };
-                    for layer in trail
-                        .into_iter()
-                        .chain(cursor_shapes::arrival(arrival, head, t))
-                    {
-                        let mut path = match layer.stroke {
-                            Some(w) => PathBuilder::stroke(px(w)),
-                            None => PathBuilder::fill(),
-                        };
-                        path.add_polygon(&layer.outline, true);
-                        if let Ok(path) = path.build() {
-                            let tint = if layer.core { paler(color) } else { color };
-                            window.paint_path(path, tint.opacity(layer.alpha));
-                        }
+        let Some(head) = to.read(cx).trail_anchor() else {
+            return Some((Vec::new(), trail.color));
+        };
+        let shapes = match (trail.style, trail.from) {
+            (Some(style), Some(from)) => cursor_shapes::trail(style, from, head, t),
+            _ => Vec::new(),
+        };
+        let layers = shapes
+            .into_iter()
+            .chain(cursor_shapes::arrival(trail.arrival, head, t))
+            .collect();
+        Some((layers, trail.color))
+    }
+}
+
+/// The layer the live effect paints on, a view of its own between the
+/// window's two drawings: the frames it asks for while the effect runs
+/// notify it alone, so they draw it again and reuse the rest of the window.
+pub(super) struct TrailLayer {
+    pub(super) app: WeakEntity<AppWindow>,
+}
+
+impl Render for TrailLayer {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let app = self.app.clone();
+        canvas(
+            |_, _, _| {},
+            move |_, _, window, cx| {
+                let Ok((live, frame)) =
+                    app.update(cx, |app, cx| (app.trail.is_some(), app.trail_frame(cx)))
+                else {
+                    return;
+                };
+                let Some((layers, color)) = frame else {
+                    // Ended: the window draws once more in full, so anything that
+                    // changed unnotified while trail frames reused it shows, as
+                    // a full draw each frame used to show it.
+                    if live {
+                        let app = app.clone();
+                        window.on_next_frame(move |_, cx| {
+                            let _ = app.update(cx, |_, cx| cx.notify());
+                        });
                     }
-                },
-            )
-            .absolute()
-            .size_full()
-            .into_any_element(),
+                    return;
+                };
+                crate::bench::count(&crate::bench::TRAIL);
+                window.request_animation_frame();
+                for layer in layers {
+                    let mut path = match layer.stroke {
+                        Some(w) => PathBuilder::stroke(px(w)),
+                        None => PathBuilder::fill(),
+                    };
+                    path.add_polygon(&layer.outline, true);
+                    if let Ok(path) = path.build() {
+                        let tint = if layer.core { paler(color) } else { color };
+                        window.paint_path(path, tint.opacity(layer.alpha));
+                    }
+                }
+            },
         )
+        .absolute()
+        .size_full()
     }
 }
 
