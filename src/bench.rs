@@ -12,7 +12,8 @@ pub static BODY: AtomicU64 = AtomicU64::new(0);
 pub static TRAIL: AtomicU64 = AtomicU64::new(0);
 /// Terminal rows whose drawing was built again (the rest were kept).
 pub static ROWS: AtomicU64 = AtomicU64::new(0);
-/// Microseconds spent in the window's own render.
+/// Microseconds spent in the window's renders: its root, and its layout and
+/// overlays when drawn.
 pub static WINDOW_US: AtomicU64 = AtomicU64::new(0);
 
 /// Microseconds from the window's render to the end of its paint: the

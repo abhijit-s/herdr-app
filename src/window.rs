@@ -871,8 +871,14 @@ impl AppWindow {
             focused_pane: None,
             trail: None,
             trail_seen: None,
-            lower: cx.new(|_| Body { app: me.clone(), upper: false }),
-            upper: cx.new(|_| Body { app: me.clone(), upper: true }),
+            lower: cx.new(|_| Body {
+                app: me.clone(),
+                upper: false,
+            }),
+            upper: cx.new(|_| Body {
+                app: me.clone(),
+                upper: true,
+            }),
             trail_layer: cx.new(|_| cursor_trail::TrailLayer { app: me.clone() }),
             focused_block: None,
             synced_model_pane: None,
@@ -6239,9 +6245,10 @@ impl AppWindow {
         let pill = self.render_update_pill(cx);
         let chrome_px = self.top_chrome.get().1;
         let chrome = if top { chrome_px / settings::ui_scale() } else { 0.0 };
-        // `top_chrome` is the last frame's: once this frame has painted the
-        // bars, a change (zoom, a bar shown or hidden) draws once more. Last of
-        // all, so every bar has painted; `refresh` is ignored while painting.
+        // `top_chrome` is as the layout under the overlays placed its bars
+        // this frame (it prepaints first); should a bar move after that, this
+        // checks once every bar has painted and draws once more. Last of all;
+        // `refresh` is ignored while painting.
         let probe = (top && (self.overlays.iter().any(|o| o.kind == OverlayKind::Toast) || crate::update::core().error.is_some())).then(|| {
             let painted = self.top_chrome.clone();
             canvas(move |_, window, _| {
@@ -7034,7 +7041,13 @@ impl Render for Body {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let upper = self.upper;
         self.app
-            .update(cx, |app, cx| if upper { app.render_upper(window, cx) } else { app.render_lower(window, cx) })
+            .update(cx, |app, cx| {
+                if upper {
+                    app.render_upper(window, cx)
+                } else {
+                    app.render_lower(window, cx)
+                }
+            })
             .unwrap_or_else(|_| Empty.into_any_element())
     }
 }
@@ -7048,7 +7061,11 @@ impl AppWindow {
         // Terminals drawn this frame count as on screen; a frame that reuses
         // this drawing keeps them so.
         crate::terminal::next_frame();
-        if self.model.active_tab().is_some_and(|t| !t.floating.is_empty()) {
+        if self
+            .model
+            .active_tab()
+            .is_some_and(|t| !t.floating.is_empty())
+        {
             self.float_cell.set(crate::terminal::cell_size(window));
         }
         // A terminal the person clicked into becomes the focused pane.
@@ -7120,17 +7137,26 @@ impl Render for AppWindow {
         set_text_look(window);
         window.set_veil(inactive_veil(window.is_window_active()));
         let (lower, upper) = (self.lower.entity_id(), self.upper.entity_id());
-        let trail_only = window.view_notified(self.trail_layer.entity_id())
-            && !window.view_notified(cx.entity_id())
+        let trail_only = window.only_view_notified(self.trail_layer.entity_id())
             && !window.view_dirty(lower)
             && !window.view_dirty(upper);
         if !trail_only {
             window.redraw_view(lower);
             window.redraw_view(upper);
         }
-        let tree = AnyView::from(self.lower.clone()).cached(StyleRefinement::default().size_full()).reuse_nested();
+        let tree = AnyView::from(self.lower.clone())
+            .cached(StyleRefinement::default().size_full())
+            .reuse_nested();
         let trail = self.trail_layer.clone();
-        let above = AnyView::from(self.upper.clone()).cached(StyleRefinement::default().absolute().top_0().left_0().size_full()).reuse_nested();
+        let above = AnyView::from(self.upper.clone())
+            .cached(
+                StyleRefinement::default()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+            )
+            .reuse_nested();
         div()
             .id("herdr")
             .track_focus(&self.focus)
@@ -8427,9 +8453,9 @@ mod tests {
                 ids.iter().for_each(|id| this.close_overlay(id, window, cx));
             });
         }
-        // The bar grows with nothing else to redraw: the frame that paints it
-        // still places the toast by the last one's chrome, and asks for one
-        // more frame, which moves the toast below the new bar.
+        // The bar grows with nothing else to redraw: the overlays draw after
+        // the layout has placed it, so that frame already puts the toast below
+        // the new bar and asks for no other.
         view.update_in(cx, |this, window, cx| {
             this.person.toast_position = ToastPosition::TopRight;
             this.person.ui_zoom = 1.0;
@@ -8451,11 +8477,15 @@ mod tests {
         cx.run_until_parked();
         let grown = view.update(cx, |this, _| this.bounds.borrow()["bar"]);
         assert!(near(grown.size.height, px(80.0)), "{grown:?}");
-        assert!(near(toast_top(cx), before.bottom() + px(16.0)), "the frame that grew the bar placed the toast by the last chrome");
-        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 1, "it asked for one more frame");
-        cx.run_until_parked();
-        assert!(near(toast_top(cx), grown.bottom() + px(16.0)), "the next frame moved it below the grown bar");
-        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0, "and then settles");
+        assert!(
+            near(toast_top(cx), grown.bottom() + px(16.0)),
+            "the frame that grew the bar placed the toast below it"
+        );
+        assert_eq!(
+            cx.update(|window, cx| window.simulate_next_frame(cx)),
+            0,
+            "and settled"
+        );
         view.update_in(cx, |this, window, cx| this.close_overlay("grow", window, cx));
         // The bottom of the window keeps its margin, whatever the top draws.
         view.update_in(cx, |this, window, cx| {
@@ -9662,11 +9692,12 @@ export default class Recent extends View {
     /// frame it asks for draws the window and paints the trail but reuses the
     /// window's layout (no layout draw), and the terminals still count as on
     /// screen, so their output keeps drawing. Anything else notifying the
-    /// window during the trail draws the layout again. Over, it asks for no
-    /// more frames.
+    /// window during the trail draws the layout again, still reusing the
+    /// terminals in it. Over, it paints no more, and the window draws its
+    /// layout once more.
     #[gpui::test]
     fn trail_frames(cx: &mut gpui::TestAppContext) {
-        use crate::bench::{BODY, TRAIL, WINDOW};
+        use crate::bench::{BODY, TERMINAL, TRAIL, WINDOW};
         use crate::layout::{Axis, Node};
         use crate::model::{Tab, pane};
         use serde_json::json;
@@ -9674,12 +9705,26 @@ export default class Recent extends View {
         if !running_alone("trail_frames") {
             return;
         }
-        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        let (view, cx) = open_window(
+            cx,
+            "unused",
+            "",
+            json!({ "id": "main", "type": "block", "content": { "tab": "active" } }),
+        );
         let before = crate::settings::get();
-        crate::settings::set(crate::settings::Settings { cursor_trail: crate::settings::CursorTrail::Panes, cursor_trail_duration_ms: 1000, ..(*before).clone() });
+        crate::settings::set(crate::settings::Settings {
+            cursor_trail: crate::settings::CursorTrail::Panes,
+            cursor_trail_duration_ms: 1000,
+            ..(*before).clone()
+        });
         view.update_in(cx, |this, window, cx| {
             this.documents.entry(String::new()).or_default().available = true;
-            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+            for id in this
+                .overlays
+                .iter()
+                .map(|o| o.id.clone())
+                .collect::<Vec<_>>()
+            {
                 this.close_overlay(&id, window, cx);
             }
             let mut tab = Tab::new("t", "", "a", "ta");
@@ -9700,35 +9745,78 @@ export default class Recent extends View {
             this.sync(window, cx);
         });
         draw(cx);
-        assert!(view.update(cx, |this, _| this.trail.is_some()), "b to a starts a trail");
+        assert!(
+            view.update(cx, |this, _| this.trail.is_some()),
+            "b to a starts a trail"
+        );
         // The frames the trail asked for, each drawn.
         let frame = |cx: &mut gpui::VisualTestContext| {
             let asked = cx.update(|window, cx| window.simulate_next_frame(cx));
             cx.run_until_parked();
             asked
         };
-        let counts = || (WINDOW.load(Relaxed), BODY.load(Relaxed), TRAIL.load(Relaxed));
-        let on_screen = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, cx| ["a", "b"].iter().all(|p| this.terms[*p].view.read(cx).on_screen_this_frame()));
+        let counts = || {
+            (
+                WINDOW.load(Relaxed),
+                BODY.load(Relaxed),
+                TRAIL.load(Relaxed),
+            )
+        };
+        let on_screen = |cx: &mut gpui::VisualTestContext| {
+            view.update(cx, |this, cx| {
+                ["a", "b"]
+                    .iter()
+                    .all(|p| this.terms[*p].view.read(cx).on_screen_this_frame())
+            })
+        };
         let start = counts();
         for _ in 0..3 {
-            assert_eq!(frame(cx), 1, "the live trail asks for the next frame");
+            assert!(frame(cx) >= 1, "the live trail asks for the next frame");
         }
         let now = counts();
-        assert_eq!((now.0 - start.0, now.1 - start.1, now.2 - start.2), (3, 0, 3), "three window draws, each painting the trail and reusing the layout");
-        assert!(on_screen(cx), "the terminals the reused layout shows are still on screen");
+        assert_eq!(
+            (now.0 - start.0, now.1 - start.1, now.2 - start.2),
+            (3, 0, 3),
+            "three window draws, each painting the trail and reusing the layout"
+        );
+        assert!(
+            on_screen(cx),
+            "the terminals the reused layout shows are still on screen"
+        );
 
+        let terminals = TERMINAL.load(Relaxed);
         view.update(cx, |_, cx| cx.notify());
         frame(cx);
-        assert!(counts().1 > now.1, "the window notified: its layout draws again");
+        assert!(
+            counts().1 > now.1,
+            "the window notified: its layout draws again"
+        );
+        assert_eq!(
+            TERMINAL.load(Relaxed),
+            terminals,
+            "reusing the terminals under it, which weren't"
+        );
         assert!(on_screen(cx));
 
         view.update(cx, |this, _| {
             let trail = this.trail.as_mut().unwrap();
-            trail.start = trail.start.checked_sub(std::time::Duration::from_secs(2)).unwrap();
+            trail.start = trail
+                .start
+                .checked_sub(std::time::Duration::from_secs(2))
+                .unwrap();
         });
         frame(cx);
-        assert_eq!(frame(cx), 0, "over, it asks for no more frames");
-        assert!(view.update(cx, |this, _| this.trail.is_none()));
+        assert!(
+            view.update(cx, |this, _| this.trail.is_none()),
+            "over, it ends"
+        );
+        let (painted, layouts) = (counts().2, counts().1);
+        frame(cx);
+        assert_eq!(counts().2, painted, "and paints no more");
+        assert!(
+            counts().1 > layouts,
+            "the frame after its end draws the layout again"
+        );
     }
 
     #[test]

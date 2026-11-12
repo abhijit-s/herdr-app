@@ -288,8 +288,11 @@ impl<V: View> ViewElement<V> {
 
     /// HERDR: when this cached view draws again, the cached views under it
     /// that weren't notified reuse their last drawing, as they do under a
-    /// view that isn't cached; by default they all draw again with it. For a
-    /// view cached only so that frames other views ask for can skip it.
+    /// view that isn't cached; by default they all draw again with it. Sound
+    /// only for a view its parent redraws whenever the parent itself draws
+    /// (so the context outside the cache key, such as opacity or rem size,
+    /// and the parent's own state are as an uncached child would see them):
+    /// one cached only so that frames other views ask for can skip it.
     pub fn reuse_nested(mut self) -> Self {
         self.reuse_nested = true;
         self

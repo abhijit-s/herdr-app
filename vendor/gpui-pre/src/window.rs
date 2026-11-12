@@ -2259,10 +2259,10 @@ pub fn spin_clock_ms() -> f64 {
 }
 
 impl Window {
-    /// HERDR: whether this draw is for `view` itself: it was notified since
-    /// the last draw, not only marked dirty as the ancestor of a view that was.
-    pub fn view_notified(&self, view: EntityId) -> bool {
-        self.notified_views.contains(&view)
+    /// HERDR: whether this draw is for `view` alone: it is the one view (or
+    /// entity) notified since the last draw, not only an ancestor of one.
+    pub fn only_view_notified(&self, view: EntityId) -> bool {
+        self.notified_views.len() == 1 && self.notified_views.contains(&view)
     }
 
     /// HERDR: whether `view` draws again this frame rather than reusing its
