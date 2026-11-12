@@ -410,6 +410,10 @@ test("settle time and ignored moves show only for Panes and jumps, within their 
   expect(step({ ...all, cursor_trail_min_cells: [3, 2] }, "st-cursor_trail_min_cells_x-minus")).toEqual(all);
   expect(step({ ...all, cursor_trail_min_cells: 0 }, "st-cursor_trail_min_cells_y-minus")).toEqual({ ...all, cursor_trail_min_cells: 0 });
   expect(step({ ...all, cursor_trail_min_cells: [50, 0] }, "st-cursor_trail_min_cells_x-plus")).toEqual({ ...all, cursor_trail_min_cells: [50, 0] });
+  // What the app would reject steps to what it reads: whole cells, both axes.
+  expect(step({ ...all, cursor_trail_min_cells: [4] }, "st-cursor_trail_min_cells_x-plus")).toEqual({ ...all, cursor_trail_min_cells: [5, 2] });
+  expect(step({ ...all, cursor_trail_min_cells: 2.5 }, "st-cursor_trail_min_cells_y-plus")).toEqual({ ...all, cursor_trail_min_cells: [3, 4] });
+  expect(step({ ...all, cursor_trail_min_cells: "abc" }, "st-cursor_trail_min_cells_x-plus")).toEqual({ ...all, cursor_trail_min_cells: [3, 2] });
 });
 
 test("ignored moves show both axes of a pair or a single number", () => {

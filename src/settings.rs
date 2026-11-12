@@ -1885,7 +1885,7 @@ impl<'de> Deserialize<'de> for MinCells {
         Ok(
             match Given::deserialize(d).map_err(|_| {
                 serde::de::Error::custom(
-                    "cursor_trail_min_cells is a number of cells or [columns, rows]",
+                    "cursor_trail_min_cells is a whole number of cells (0 to 50) or [columns, rows]",
                 )
             })? {
                 Given::Both(n) => MinCells { x: n, y: n },

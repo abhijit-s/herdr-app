@@ -1856,7 +1856,7 @@ export default class Settings extends View {
     // written back as one number while they're equal, left out at the default.
     const cellsKey = "cursor_trail_min_cells";
     const cellsOf = (v) => {
-      const keep = (n) => Math.max(MIN_CELLS[0], Math.min(MIN_CELLS[1], n));
+      const keep = (n) => (Number.isFinite(n) ? Math.max(MIN_CELLS[0], Math.min(MIN_CELLS[1], Math.round(n))) : MIN_CELLS_DEFAULT);
       const [x, y] = Array.isArray(v) ? v : [v ?? MIN_CELLS_DEFAULT, v ?? MIN_CELLS_DEFAULT];
       return [keep(x ?? MIN_CELLS_DEFAULT), keep(y ?? MIN_CELLS_DEFAULT)];
     };

@@ -216,12 +216,15 @@ pub(super) fn trail(
     }
 }
 
-/// Comet, as Rex draws it: back to front, the glow then the core, each
-/// (its half width at the head against the cell height, opacity, paler
-/// core), narrowing to `COMET_END` of that width at the tail end; and the
-/// glow round the head (radius and blur against the cell height, opacity).
+/// Comet, as Rex draws it: the glow round the head (radius and blur
+/// against the cell height, opacity), then back to front the outer streak and
+/// the core, each (its half width at the head against the cell height,
+/// opacity, paler core), narrowing to `COMET_END` of that width at the tail
+/// end and brightening from none at the tail to full `COMET_FULL` of the way
+/// to the head (1 / 1.55, where Rex's core and glow on the axis reach 1).
 const COMET_LAYERS: [(f32, f32, bool); 2] = [(0.30, 0.35, false), (0.14, 1.0, true)];
 const COMET_END: f32 = 0.2;
+const COMET_FULL: f32 = 0.65;
 const COMET_GLOW: (f32, f32, f32) = (0.3, 0.3, 1.0);
 const ROUND: usize = 16;
 
@@ -241,20 +244,14 @@ fn comet(from: P, to: Bounds<Pixels>, h: f32, t: f32) -> (Vec<Layer>, Option<Qua
         head.0 + (from.0 - head.0) * k,
         head.1 + (from.1 - head.1) * k,
     );
-    let mut layers: Vec<Layer> = COMET_LAYERS
-        .iter()
-        .map(|&(half, alpha, core)| Layer {
-            outline: streak(tail, head, half * h),
-            hole: None,
-            stroke: None,
-            alpha: alpha * fade,
-            core,
-            fade: Some((tail, head)),
-            glow: None,
-        })
-        .collect();
+    // Full strength from `COMET_FULL` of the way to the head, as Rex's
+    // `(core + glow) × along`, clamped at 1, is on its axis.
+    let full = (
+        tail.0 + (head.0 - tail.0) * COMET_FULL,
+        tail.1 + (head.1 - tail.1) * COMET_FULL,
+    );
     let (radius, blur, alpha) = COMET_GLOW;
-    layers.push(Layer {
+    let glow = Layer {
         outline: Vec::new(),
         hole: None,
         stroke: None,
@@ -262,8 +259,20 @@ fn comet(from: P, to: Bounds<Pixels>, h: f32, t: f32) -> (Vec<Layer>, Option<Qua
         core: false,
         fade: None,
         glow: Some((head, radius * h, blur * h)),
+    };
+    let streaks = COMET_LAYERS.iter().map(|&(half, alpha, core)| Layer {
+        outline: streak(tail, head, half * h),
+        hole: None,
+        stroke: None,
+        alpha: alpha * fade,
+        core,
+        fade: Some((tail, full)),
+        glow: None,
     });
-    (layers, Some([tail; 4]))
+    (
+        std::iter::once(glow).chain(streaks).collect(),
+        Some([tail; 4]),
+    )
 }
 
 /// The comet's outline from `tail` to `head`, `half` px either side at the
@@ -648,7 +657,7 @@ mod tests {
         // The comet's back end is its tail point, at the streak's far end.
         let (layers, back) = trail(TrailStyle::Comet, quad(from), to, H, 0.2);
         let back = back.unwrap()[0];
-        let far = layers[1]
+        let far = layers[2]
             .outline
             .iter()
             .map(|p| xy(*p).0)
@@ -690,10 +699,10 @@ mod tests {
                 .iter()
                 .map(|l| (l.alpha, l.core, l.glow.is_some()))
                 .collect::<Vec<_>>(),
-            vec![(0.35, false, false), (1.0, true, false), (1.0, false, true)],
-            "two streaks and one glow, not four stacked fills"
+            vec![(1.0, false, true), (0.35, false, false), (1.0, true, false)],
+            "one glow behind two streaks, not four stacked fills"
         );
-        assert_eq!(layers[2].glow, Some(((404.0, 8.0), 16.0 * 0.3, 16.0 * 0.3)));
+        assert_eq!(layers[0].glow, Some(((404.0, 8.0), 16.0 * 0.3, 16.0 * 0.3)));
     }
 
     #[test]
@@ -701,14 +710,14 @@ mod tests {
         let from = cell(0.0, 0.0);
         // A beam in the cell at (400, 0): the comet's nose rounds the beam's middle.
         let comet = trail(TrailStyle::Comet, quad(from), beam(400.0, 0.0), H, 0.0).0;
-        let nose = comet[1]
+        let nose = comet[2]
             .outline
             .iter()
             .map(|p| xy(*p).0)
             .fold(f32::MIN, f32::max);
         assert!((nose - (401.0 + 16.0 * 0.14)).abs() < 0.01, "{nose}");
         assert_eq!(
-            comet[2].glow.map(|g| g.0),
+            comet[0].glow.map(|g| g.0),
             Some((401.0, 8.0)),
             "the glow round the beam"
         );
@@ -1009,13 +1018,13 @@ mod tests {
         assert!(comet_at(1.0).is_empty(), "gone at the end");
         // It fades as it goes: everything at (1 - t).
         let alphas = |t: f32| comet_at(t).iter().map(|l| l.alpha).collect::<Vec<_>>();
-        assert_eq!(alphas(0.5), vec![0.35 * 0.5, 0.5, 0.5]);
+        assert_eq!(alphas(0.5), vec![0.5, 0.35 * 0.5, 0.5]);
     }
 
     #[test]
     fn comet_thin_with_a_round_nose_and_a_rounded_tail_end_brightest_at_the_head() {
         let layers = comet_at(0.0);
-        let (glow, core) = (&layers[0], &layers[1]);
+        let (glow, core) = (&layers[1], &layers[2]);
         // Thin: the core is 0.28 of a cell high at the head, the glow 0.6; Rex's
         // core is a quarter to a third of the cell.
         assert!((half_width_at(&core.outline, 404.0) - 16.0 * 0.14).abs() < 0.05);
@@ -1046,7 +1055,10 @@ mod tests {
             .collect();
         assert!(widths.windows(2).all(|w| w[0] > w[1]), "{widths:?}");
         // Brightest at the head, none at the tail.
-        assert_eq!(core.fade, Some(((4.0, 8.0), (404.0, 8.0))));
+        assert_eq!(
+            core.fade,
+            Some(((4.0, 8.0), (4.0 + 400.0 * COMET_FULL, 8.0)))
+        );
         assert!(
             layers
                 .iter()
@@ -1081,12 +1093,12 @@ mod tests {
         }
         // Its last frames: the tail all but in the head, a small round glint.
         let last = comet_at(0.98);
-        let reach = last[1]
+        let reach = last[2]
             .outline
             .iter()
             .map(|p| dist(xy(*p), (404.0, 8.0)))
             .fold(0.0f32, f32::max);
         assert!(reach < 16.0 * 0.14 + 0.1, "{reach}");
-        assert!(last[1].alpha > 0.0);
+        assert!(last[2].alpha > 0.0);
     }
 }
