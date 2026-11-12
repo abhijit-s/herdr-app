@@ -35,12 +35,14 @@ fn follow_reduce_motion(cx: &mut App) {
     // SAFETY: the name is AppKit's constant, there is no object to filter on,
     // and the block runs on the main queue; it only sends on a channel.
     let observer = unsafe {
-        NSWorkspace::sharedWorkspace().notificationCenter().addObserverForName_object_queue_usingBlock(
-            Some(NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
-            None,
-            Some(&NSOperationQueue::mainQueue()),
-            &changed,
-        )
+        NSWorkspace::sharedWorkspace()
+            .notificationCenter()
+            .addObserverForName_object_queue_usingBlock(
+                Some(NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
+                None,
+                Some(&NSOperationQueue::mainQueue()),
+                &changed,
+            )
     };
     // Observed until the app quits.
     std::mem::forget(observer);

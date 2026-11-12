@@ -3703,6 +3703,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "base64",
+ "block2 0.6.2",
  "dispatch2",
  "fancy-regex 0.19.2",
  "ghostty-sys",

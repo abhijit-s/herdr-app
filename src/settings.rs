@@ -1866,7 +1866,11 @@ impl From<u16> for MinCells {
 
 impl Serialize for MinCells {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        if self.x == self.y { self.x.serialize(s) } else { [self.x, self.y].serialize(s) }
+        if self.x == self.y {
+            self.x.serialize(s)
+        } else {
+            [self.x, self.y].serialize(s)
+        }
     }
 }
 
@@ -1878,10 +1882,16 @@ impl<'de> Deserialize<'de> for MinCells {
             Both(u16),
             Each([u16; 2]),
         }
-        Ok(match Given::deserialize(d).map_err(|_| serde::de::Error::custom("cursor_trail_min_cells is a number of cells or [columns, rows]"))? {
-            Given::Both(n) => MinCells { x: n, y: n },
-            Given::Each([x, y]) => MinCells { x, y },
-        })
+        Ok(
+            match Given::deserialize(d).map_err(|_| {
+                serde::de::Error::custom(
+                    "cursor_trail_min_cells is a number of cells or [columns, rows]",
+                )
+            })? {
+                Given::Both(n) => MinCells { x: n, y: n },
+                Given::Each([x, y]) => MinCells { x, y },
+            },
+        )
     }
 }
 
@@ -3464,7 +3474,10 @@ impl Settings {
     /// `cursor_trail_min_cells`, each within `MIN_CELLS`.
     pub fn trail_min_cells(&self) -> MinCells {
         let keep = |n: u16| n.clamp(*MIN_CELLS.start(), *MIN_CELLS.end());
-        MinCells { x: keep(self.cursor_trail_min_cells.x), y: keep(self.cursor_trail_min_cells.y) }
+        MinCells {
+            x: keep(self.cursor_trail_min_cells.x),
+            y: keep(self.cursor_trail_min_cells.y),
+        }
     }
 
     /// `cursor_trail_settle_ms`, within `SETTLE_MS`.
@@ -4416,21 +4429,68 @@ mod tests {
 
     #[test]
     fn cursor_trail_min_cells_takes_one_number_for_both_axes_or_a_pair() {
-        let read = |v: serde_json::Value| serde_json::from_value::<Person>(serde_json::json!({ "cursor_trail_min_cells": v }));
-        let cells = |v: serde_json::Value| Settings::compose(&read(v).unwrap(), &crate::layout::Look::default(), true).trail_min_cells();
-        assert_eq!(cells(serde_json::json!(6)), MinCells { x: 6, y: 6 }, "a number, as settings.json has held: both axes");
-        assert_eq!(cells(serde_json::json!([8, 2])), MinCells { x: 8, y: 2 }, "a pair: columns, then rows");
-        assert_eq!(cells(serde_json::json!([60, 3])), MinCells { x: 50, y: 3 }, "each kept within range");
-        let s = Settings::compose(&read(serde_json::json!([60, 3])).unwrap(), &crate::layout::Look::default(), true);
-        assert!(s.problems().iter().any(|p| p.contains("cursor_trail_min_cells [60, 3]")), "{:?}", s.problems());
-        for bad in [serde_json::json!([1]), serde_json::json!([1, 2, 3]), serde_json::json!("6"), serde_json::json!(-1)] {
+        let read = |v: serde_json::Value| {
+            serde_json::from_value::<Person>(serde_json::json!({ "cursor_trail_min_cells": v }))
+        };
+        let cells = |v: serde_json::Value| {
+            Settings::compose(&read(v).unwrap(), &crate::layout::Look::default(), true)
+                .trail_min_cells()
+        };
+        assert_eq!(
+            cells(serde_json::json!(6)),
+            MinCells { x: 6, y: 6 },
+            "a number, as settings.json has held: both axes"
+        );
+        assert_eq!(
+            cells(serde_json::json!([8, 2])),
+            MinCells { x: 8, y: 2 },
+            "a pair: columns, then rows"
+        );
+        assert_eq!(
+            cells(serde_json::json!([60, 3])),
+            MinCells { x: 50, y: 3 },
+            "each kept within range"
+        );
+        let s = Settings::compose(
+            &read(serde_json::json!([60, 3])).unwrap(),
+            &crate::layout::Look::default(),
+            true,
+        );
+        assert!(
+            s.problems()
+                .iter()
+                .any(|p| p.contains("cursor_trail_min_cells [60, 3]")),
+            "{:?}",
+            s.problems()
+        );
+        for bad in [
+            serde_json::json!([1]),
+            serde_json::json!([1, 2, 3]),
+            serde_json::json!("6"),
+            serde_json::json!(-1),
+        ] {
             assert!(read(bad.clone()).is_err(), "{bad}");
         }
         // Written back as it reads: one number while both are equal, else the pair.
-        for (given, written) in [(serde_json::json!(6), serde_json::json!(6)), (serde_json::json!([4, 4]), serde_json::json!(4)), (serde_json::json!([8, 2]), serde_json::json!([8, 2]))] {
-            assert_eq!(serde_json::to_value(read(given).unwrap()).unwrap()["cursor_trail_min_cells"], written);
+        for (given, written) in [
+            (serde_json::json!(6), serde_json::json!(6)),
+            (serde_json::json!([4, 4]), serde_json::json!(4)),
+            (serde_json::json!([8, 2]), serde_json::json!([8, 2])),
+        ] {
+            assert_eq!(
+                serde_json::to_value(read(given).unwrap()).unwrap()["cursor_trail_min_cells"],
+                written
+            );
         }
-        assert_eq!(Settings::compose(&read(serde_json::json!([8, 2])).unwrap(), &crate::layout::Look::default(), true).for_mods()["cursor_trail_min_cells"], serde_json::json!([8, 2]));
+        assert_eq!(
+            Settings::compose(
+                &read(serde_json::json!([8, 2])).unwrap(),
+                &crate::layout::Look::default(),
+                true
+            )
+            .for_mods()["cursor_trail_min_cells"],
+            serde_json::json!([8, 2])
+        );
     }
 
     #[test]

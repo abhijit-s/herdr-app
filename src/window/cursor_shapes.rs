@@ -222,7 +222,7 @@ pub(super) fn trail(
 /// glow round the head (radius and blur against the cell height, opacity).
 const COMET_LAYERS: [(f32, f32, bool); 2] = [(0.30, 0.35, false), (0.14, 1.0, true)];
 const COMET_END: f32 = 0.2;
-const COMET_GLOW: (f32, f32, f32) = (0.14, 0.5, 0.5);
+const COMET_GLOW: (f32, f32, f32) = (0.3, 0.3, 1.0);
 const ROUND: usize = 16;
 
 /// A glowing streak, as Rex draws: the whole streak from the first frame,
@@ -690,13 +690,10 @@ mod tests {
                 .iter()
                 .map(|l| (l.alpha, l.core, l.glow.is_some()))
                 .collect::<Vec<_>>(),
-            vec![(0.35, false, false), (1.0, true, false), (0.5, false, true)],
+            vec![(0.35, false, false), (1.0, true, false), (1.0, false, true)],
             "two streaks and one glow, not four stacked fills"
         );
-        assert_eq!(
-            layers[2].glow,
-            Some(((404.0, 8.0), 16.0 * 0.14, 16.0 * 0.5))
-        );
+        assert_eq!(layers[2].glow, Some(((404.0, 8.0), 16.0 * 0.3, 16.0 * 0.3)));
     }
 
     #[test]
@@ -1012,7 +1009,7 @@ mod tests {
         assert!(comet_at(1.0).is_empty(), "gone at the end");
         // It fades as it goes: everything at (1 - t).
         let alphas = |t: f32| comet_at(t).iter().map(|l| l.alpha).collect::<Vec<_>>();
-        assert_eq!(alphas(0.5), vec![0.35 * 0.5, 0.5, 0.25]);
+        assert_eq!(alphas(0.5), vec![0.35 * 0.5, 0.5, 0.5]);
     }
 
     #[test]

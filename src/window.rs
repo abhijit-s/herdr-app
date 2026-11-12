@@ -8,6 +8,7 @@ use crate::git_status;
 use crate::hc::Core;
 mod cursor_shapes;
 mod cursor_trail;
+mod trail_paint;
 mod floats;
 mod follow_mouse;
 mod pane_floats;

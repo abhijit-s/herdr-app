@@ -42,6 +42,11 @@ sha2 = "0.10"
 memmap2 = "0.9"
 
 [[test]]
+name = "trail_pixels"
+path = "tests/trail_pixels.rs"
+harness = false
+
+[[test]]
 name = "shot_pixels"
 path = "tests/shot_pixels.rs"
 harness = false

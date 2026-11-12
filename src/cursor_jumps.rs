@@ -697,13 +697,22 @@ mod tests {
             let (mut j, t0) = (Jumps::default(), Instant::now());
             j.observe(at(10, 10), V, t0);
             j.observe(at(to.0, to.1), V, ms(t0, 1));
-            matches!(j.due(ms(t0, 100), SETTLE, min), Due::Fire(Some(Jump::Moved { .. })))
+            matches!(
+                j.due(ms(t0, 100), SETTLE, min),
+                Due::Fire(Some(Jump::Moved { .. }))
+            )
         };
         let (across, down) = (MinCells { x: 6, y: 2 }, MinCells { x: 2, y: 6 });
-        assert!(!jump((16, 12), across), "six across and two down: within both");
+        assert!(
+            !jump((16, 12), across),
+            "six across and two down: within both"
+        );
         assert!(jump((17, 10), across), "seven across: past the columns'");
         assert!(jump((10, 13), across), "three down: past the rows'");
         assert!(!jump((12, 16), down) && jump((13, 10), down));
-        assert!(!jump((11, 11), MinCells::from(2)) && jump((13, 11), MinCells::from(2)), "one number for both, a diagonal step is one cell");
+        assert!(
+            !jump((11, 11), MinCells::from(2)) && jump((13, 11), MinCells::from(2)),
+            "one number for both, a diagonal step is one cell"
+        );
     }
 }

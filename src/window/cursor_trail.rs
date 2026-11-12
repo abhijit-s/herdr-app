@@ -28,10 +28,8 @@
 //! effect ends: its duration is clamped and its progress only grows.
 
 use super::cursor_shapes;
+use super::trail_paint::paint_layers;
 use super::*;
-
-/// How far the comet's core color is mixed toward white, as Rex mixes it.
-const CORE_WHITE: f32 = 0.25;
 
 /// The effect being drawn at the terminal `pane` shows: a trail from `from`
 /// when `style` is set, and an `arrival` pulse.
@@ -146,14 +144,6 @@ fn start_from(live: Option<&Trail>, cursor: Option<Bounds<Pixels>>) -> Option<cu
 /// How far along an effect is, 0 to 1, after `elapsed` of `duration`; None once it's over.
 pub(super) fn progress(elapsed: Duration, duration: Duration) -> Option<f32> {
     (elapsed < duration).then(|| elapsed.as_secs_f32() / duration.as_secs_f32())
-}
-
-/// The core's color: the trail's mixed `CORE_WHITE` toward white.
-fn paler(c: Hsla) -> Hsla {
-    Hsla {
-        l: c.l + (1.0 - c.l) * CORE_WHITE,
-        ..c
-    }
 }
 
 impl AppWindow {
@@ -312,54 +302,10 @@ impl Render for TrailLayer {
     }
 }
 
-/// Paints `layers` back to front in `color`: filled (even-odd, so a hole
-/// stays clear) or stroked outlines, brightening along a `fade`, and soft
-/// round glows (a blurred shadow with nothing under it).
-pub(super) fn paint_layers(layers: &[cursor_shapes::Layer], color: Hsla, window: &mut Window) {
-    for layer in layers {
-        let tint = if layer.core { paler(color) } else { color };
-        if let Some(((x, y), radius, blur)) = layer.glow {
-            let at = Bounds::new(point(px(x), px(y)), size(px(0.0), px(0.0)));
-            let shadow = BoxShadow {
-                color: tint.opacity(layer.alpha),
-                offset: point(px(0.0), px(0.0)),
-                blur_radius: px(blur),
-                spread_radius: px(radius),
-                inset: false,
-            };
-            window.paint_drop_shadows(at, Corners::all(px(radius)), &[shadow]);
-            continue;
-        }
-        let mut path = match layer.stroke {
-            Some(w) => PathBuilder::stroke(px(w)),
-            None => PathBuilder::fill().with_style(PathStyle::Fill(
-                FillOptions::default().with_fill_rule(FillRule::EvenOdd),
-            )),
-        };
-        path.add_polygon(&layer.outline, true);
-        if let Some(hole) = &layer.hole {
-            path.add_polygon(hole, true);
-        }
-        let Ok(path) = path.build() else { continue };
-        match layer.fade {
-            // CSS angles: 0 points up, 90 right; from the tail toward the head.
-            Some(((x0, y0), (x1, y1))) if (x1 - x0).hypot(y1 - y0) >= 1.0 => {
-                let angle = (y1 - y0).atan2(x1 - x0).to_degrees() + 90.0;
-                let fade = linear_gradient(
-                    angle,
-                    linear_color_stop(tint.opacity(0.0), 0.0),
-                    linear_color_stop(tint.opacity(layer.alpha), 1.0),
-                );
-                window.paint_path(path, fade);
-            }
-            _ => window.paint_path(path, tint.opacity(layer.alpha)),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{paler, progress};
+    use super::super::trail_paint::paler;
+    use super::progress;
     use std::time::Duration;
 
     /// A tail that has caught up stays ended while its pulse runs on, though
@@ -408,96 +354,6 @@ mod tests {
         assert!(
             trail.drawn.is_none(),
             "and nothing for a next trail to steer from"
-        );
-    }
-
-    /// Renders `layers` in white on black, really, on the GPU (headless) and
-    /// reads the pixels back: each pixel's brightness at px (x, y).
-    #[cfg(not(windows))]
-    fn rendered(layers: Vec<super::cursor_shapes::Layer>) -> impl Fn(f32, f32) -> u8 {
-        use gpui::{prelude::*, *};
-        struct Scene(Vec<super::cursor_shapes::Layer>);
-        impl Render for Scene {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                let layers = self.0.clone();
-                div().size_full().bg(rgb(0)).child(
-                    canvas(
-                        |_, _, _| {},
-                        move |_, _, window, _| {
-                            super::paint_layers(&layers, hsla(0.0, 0.0, 1.0, 1.0), window)
-                        },
-                    )
-                    .size_full(),
-                )
-            }
-        }
-        let mut cx = HeadlessAppContext::with_platform(
-            gpui_platform::current_platform(true).text_system(),
-            std::sync::Arc::new(()),
-            gpui_platform::current_headless_renderer,
-        );
-        let handle = cx
-            .open_window(size(px(400.), px(80.)), |_, cx| cx.new(|_| Scene(layers)))
-            .unwrap();
-        let (image, scale) = cx
-            .update_window(handle.into(), |_, window, cx| {
-                let _ = window.draw(cx);
-                (window.render_to_image().unwrap(), window.scale_factor())
-            })
-            .unwrap();
-        move |x: f32, y: f32| image.get_pixel((x * scale) as u32, (y * scale) as u32).0[0]
-    }
-
-    /// The comet's brightness falling along its streak renders: a GPUI linear
-    /// gradient on a path, brightest at the head, nothing at the tail.
-    #[cfg(not(windows))]
-    #[test]
-    fn the_comet_streak_renders_brightest_at_its_head() {
-        let streak = super::cursor_shapes::streak((20.0, 40.0), (320.0, 40.0), 8.0);
-        let layer = super::cursor_shapes::Layer {
-            outline: streak,
-            hole: None,
-            stroke: None,
-            alpha: 1.0,
-            core: false,
-            fade: Some(((20.0, 40.0), (320.0, 40.0))),
-            glow: None,
-        };
-        let at = rendered(vec![layer]);
-        let along: Vec<u8> = [30.0, 100.0, 170.0, 240.0, 310.0]
-            .iter()
-            .map(|x| at(*x, 40.0))
-            .collect();
-        assert!(
-            along.windows(2).all(|w| w[0] < w[1]),
-            "brighter toward the head: {along:?}"
-        );
-        assert!(along[0] < 40 && along[4] > 200, "{along:?}");
-        assert_eq!(at(200.0, 60.0), 0, "nothing off the streak");
-    }
-
-    /// The head's glow renders: one blurred shadow, round and soft, with
-    /// nothing cut out of its middle.
-    #[cfg(not(windows))]
-    #[test]
-    fn the_comet_glow_renders_soft_and_round() {
-        let glow = super::cursor_shapes::Layer {
-            outline: Vec::new(),
-            hole: None,
-            stroke: None,
-            alpha: 1.0,
-            core: false,
-            fade: None,
-            glow: Some(((200.0, 40.0), 4.0, 10.0)),
-        };
-        let at = rendered(vec![glow]);
-        let (middle, near, far) = (at(200.0, 40.0), at(208.0, 40.0), at(230.0, 40.0));
-        assert!(middle > 150, "bright in the middle, not a hole: {middle}");
-        assert!(0 < near && near < middle, "soft past its radius: {near}");
-        assert_eq!(far, 0, "and gone beyond its blur");
-        assert!(
-            (i16::from(at(200.0, 48.0)) - i16::from(near)).abs() <= 8,
-            "round: as bright below as beside"
         );
     }
 
