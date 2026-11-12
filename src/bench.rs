@@ -6,6 +6,10 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 pub static WINDOW: AtomicU64 = AtomicU64::new(0);
 pub static TERMINAL: AtomicU64 = AtomicU64::new(0);
 pub static GRID: AtomicU64 = AtomicU64::new(0);
+/// Draws of the window's layout and overlays (a frame only the cursor trail
+/// asked for reuses them), and frames a cursor trail or arrival painted.
+pub static BODY: AtomicU64 = AtomicU64::new(0);
+pub static TRAIL: AtomicU64 = AtomicU64::new(0);
 /// Terminal rows whose drawing was built again (the rest were kept).
 pub static ROWS: AtomicU64 = AtomicU64::new(0);
 /// Microseconds spent in the window's own render.
@@ -74,12 +78,14 @@ pub fn start() {
             last = now;
             let _ = writeln!(
                 f,
-                r#"{{"t":{t},"scripts":{},"script_ms":{},"materialize":{},"materialize_ms":{},"window":{},"terminal":{},"grid":{},"rows":{},"window_ms":{},"frame_ms":{}}}"#,
+                r#"{{"t":{t},"scripts":{},"script_ms":{},"materialize":{},"materialize_ms":{},"window":{},"body":{},"trail":{},"terminal":{},"grid":{},"rows":{},"window_ms":{},"frame_ms":{}}}"#,
                 d[0],
                 d[1] as f64 / 1000.0,
                 d[2],
                 d[3] as f64 / 1000.0,
                 WINDOW.swap(0, Relaxed),
+                BODY.swap(0, Relaxed),
+                TRAIL.swap(0, Relaxed),
                 TERMINAL.swap(0, Relaxed),
                 GRID.swap(0, Relaxed),
                 ROWS.swap(0, Relaxed),

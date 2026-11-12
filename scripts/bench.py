@@ -4,13 +4,14 @@
     scripts/bench.py [--bin target/release/herdr-app] [--seconds 20] [--sample]
 
 Runs the app on its own temporary home and core session, so nothing of yours
-is touched; prints the artifact folder and keeps it after cleanup. Requires hc
-on PATH and the Python running this script. Every scenario set uses only Python
+is touched; prints the artifact folder (under --tmp) and keeps it after cleanup.
+Requires hc (on PATH, or --hc) and the Python running this script. Every scenario set uses only Python
 fixture programs. It sets HERDR_BENCH_DRAW_OCCLUDED, so on macOS the
 window draws even behind other windows (unset, a covered window isn't drawn,
 which flatters the numbers); keep the screen unlocked. Per scenario: CPU % of the app, the core and its holder
 (averaged over the run, 100 = one core), and draws per second (window
-renders, terminal renders, terminal grid paints). --sample also takes a
+renders, layout and overlay draws, cursor trail frames, terminal renders, terminal
+grid paints). --sample also takes a
 macOS `sample` profile per scenario into the bench folder.
 """
 
@@ -28,6 +29,7 @@ import threading
 
 ROOT = None
 SESSION = None
+HC = "hc"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Like an agent: a spinner line redrawn in place, text streaming below it.
@@ -114,6 +116,21 @@ while True:
         w(f"\033]7501;state=clear:id=agent/a{n - 3}\033\\")
     sys.stdout.flush()
     time.sleep(0.5)
+"""
+
+# The cursor leaping across the screen and back every 300 ms and staying put
+# between, as a full-screen program moving its cursor would: each leap draws a
+# cursor trail with `cursor_trail: "all"`.
+LEAPS = r"""
+import sys, time
+w = sys.stdout.write
+w("\033[2J")
+n = 0
+while True:
+    n += 1
+    w("\033[3;5H" if n % 2 else "\033[20;70H")
+    sys.stdout.flush()
+    time.sleep(0.3)
 """
 
 # A shell running bursts of commands: twenty prompts and outputs as fast as they
@@ -286,7 +303,7 @@ def rss_mb(pid):
 
 
 def core_pids():
-    out = subprocess.run(["hc", "server", "status", "--json"], env=env(), capture_output=True, text=True).stdout
+    out = subprocess.run([HC, "server", "status", "--json"], env=env(), capture_output=True, text=True).stdout
     s = json.loads(out or "{}")
     holders = [h["pid"] for h in s.get("holders", [])]
     return s.get("pid"), holders
@@ -295,9 +312,9 @@ def core_pids():
 def end_terminals():
     """Every terminal of the bench's core: they outlive `server stop` (their
     holder keeps them), and runs piling up end in too many open files."""
-    out = subprocess.run(["hc", "ls", "--json"], env=env(), capture_output=True, text=True).stdout
+    out = subprocess.run([HC, "ls", "--json"], env=env(), capture_output=True, text=True).stdout
     for t in json.loads(out or "{}").get("terminals", []):
-        subprocess.run(["hc", "kill", t["address"]], env=env(), capture_output=True)
+        subprocess.run([HC, "kill", t["address"]], env=env(), capture_output=True)
 
 
 def frames_since(offset):
@@ -305,7 +322,7 @@ def frames_since(offset):
         lines = f.readlines()[offset:]
     rows = [json.loads(l) for l in lines if l.strip()]
     n = max(len(rows), 1)
-    totals = {k: sum(r.get(k, 0) for r in rows) for k in ("window", "terminal", "grid", "rows", "window_ms", "frame_ms", "scripts", "script_ms", "materialize", "materialize_ms")}
+    totals = {k: sum(r.get(k, 0) for r in rows) for k in ("window", "body", "trail", "terminal", "grid", "rows", "window_ms", "frame_ms", "scripts", "script_ms", "materialize", "materialize_ms")}
     result = {k: round(v / n, 1) for k, v in totals.items()}
     result["render_to_paint_ms"] = round(totals["frame_ms"] / totals["window"], 3) if totals["window"] else None
     return result
@@ -363,7 +380,7 @@ def measure(name, app, seconds, sample):
               f"app: user {row['app_user_ms']} ms/s, kernel {row['app_system_ms']} ms/s", flush=True)
     print(f"{name:16} window {row['window_end']} render-to-paint elapsed {row['render_to_paint_ms']} ms/draw", flush=True)
     print(f"{name:16} app {row['app_cpu']:5.1f}%  core {row['core_cpu']:5.1f}%  holder {row['holder_cpu']:5.1f}%  "
-          f"draws/s window {row['window']:5.1f} terminal {row['terminal']:5.1f} grid {row['grid']:5.1f} rows {row['rows']:6.1f}  "
+          f"draws/s window {row['window']:5.1f} body {row['body']:5.1f} trail {row['trail']:5.1f} terminal {row['terminal']:5.1f} grid {row['grid']:5.1f} rows {row['rows']:6.1f}  "
           f"render {row['window_ms']:5.1f} frame {row['frame_ms']:5.1f} ms/s  "
           f"mods: js {row['scripts']:4.1f}/s {row['script_ms']:5.1f} ms/s, native {row['materialize']:4.1f}/s {row['materialize_ms']:5.1f} ms/s  "
           f"{row['app_mb']} MB",
@@ -431,6 +448,20 @@ def trail(bin, app, a, agent):
         hopper.join()
 
 
+def leaps(bin, app, a, leap):
+    """Cursor trails alone: one pane whose cursor leaps far every 300 ms, with
+    `cursor_trail` off and then "all" (the difference is what the trail frames
+    cost)."""
+    rows = ROWS_OUT
+    do(bin, "space.new", {"name": "bench", "folder": ROOT, "argv": leap})
+    for trail in ("off", "all"):
+        settings = json.load(open(f"{ROOT}/home/settings.json"))
+        settings["cursor_trail"] = trail
+        with open(f"{ROOT}/home/settings.json", "w") as f:
+            json.dump(settings, f)
+        rows.append(measure(f"leaps-{trail}", app, a.seconds, a.sample))
+
+
 def jumps(bin, app, a, agent, burst):
     """Cursor jumps in the focused pane (cursor_trail "all"): a shell at rest,
     an agent streaming in the focused pane, then a shell bursting commands in
@@ -453,20 +484,22 @@ def main():
     ap.add_argument("--seconds", type=int, default=20)
     ap.add_argument("--sample", action="store_true")
     ap.add_argument("--zoom", type=float, default=1.0)
-    ap.add_argument("--set", choices=["all", "spinners", "toasts", "subagents", "floats", "trail", "jumps", "titles"], default="all",
+    ap.add_argument("--set", choices=["all", "spinners", "toasts", "subagents", "floats", "trail", "jumps", "leaps", "titles"], default="all",
                     help="spinners: many spaces of idle agents, one agent working on screen; toasts: agents finishing in waves and in a storm, raising toasts; subagents: agents whose in-process sub-agents come and go (OSC 7501 child records); "
-                         "floats: floating panes over streaming agents, still and moving; trail: the focus hopping between panes beside streaming agents; jumps: the focused pane's cursor streaming and bursting; "
+                         "floats: floating panes over streaming agents, still and moving; trail: the focus hopping between panes beside streaming agents; jumps: the focused pane's cursor streaming and bursting; leaps: the cursor leaping every 300 ms with cursor trails off, then on; "
                          "titles: eight agents whose titles spin after a prefix")
+    ap.add_argument("--hc", default="hc", help="the hc command to start and stop the bench's core with")
+    ap.add_argument("--tmp", default=None, help="where the bench folder goes (default /var/tmp; the system's on Windows)")
     ap.add_argument("--only", help="measure only this scenario, e.g. spinners+stream")
     ap.add_argument("--settings", default="{}", help="JSON merged into the test home's settings.json, e.g. '{\"toast_duration\": \"long\"}'")
     a = ap.parse_args()
     if a.seconds <= 0:
         ap.error("--seconds must be positive")
-    global ONLY, ROOT, SESSION
-    ONLY = a.only
+    global ONLY, ROOT, SESSION, HC
+    ONLY, HC = a.only, a.hc
     bin = os.path.abspath(a.bin)
 
-    ROOT = tempfile.mkdtemp(prefix="herdr-app-bench-", dir=None if sys.platform == "win32" else "/var/tmp")
+    ROOT = tempfile.mkdtemp(prefix="herdr-app-bench-", dir=a.tmp or (None if sys.platform == "win32" else "/var/tmp"))
     SESSION = "hb" + os.path.basename(ROOT)[-6:]
     print(f"bench: {ROOT}", flush=True)
     with open(f"{ROOT}/run.json", "w") as f:
@@ -490,6 +523,8 @@ def main():
         f.write(SUBAGENTS)
     with open(f"{ROOT}/burst.py", "w") as f:
         f.write(BURST)
+    with open(f"{ROOT}/leaps.py", "w") as f:
+        f.write(LEAPS)
     cycle = lambda start, busy, rest: [sys.executable, "-u", f"{ROOT}/cycle.py", str(start), str(busy), str(rest)]
     agent = [sys.executable, "-u", f"{ROOT}/agent.py"]
     tui = [sys.executable, "-u", f"{ROOT}/tui.py"]
@@ -499,7 +534,7 @@ def main():
     app = awake = None
     rows = ROWS_OUT
     try:
-        core = subprocess.run(["hc", "server", "start"], env=env(), capture_output=True, text=True)
+        core = subprocess.run([HC, "server", "start"], env=env(), capture_output=True, text=True)
         if core.returncode:
             sys.exit(f"bench: core startup failed: {core.stdout}{core.stderr}")
         app = subprocess.Popen([bin], env=env(), stdin=subprocess.DEVNULL, stdout=log, stderr=log)
@@ -537,6 +572,9 @@ def main():
             return
         if a.set == "trail":
             trail(bin, app.pid, a, agent)
+            return
+        if a.set == "leaps":
+            leaps(bin, app.pid, a, [sys.executable, "-u", f"{ROOT}/leaps.py"])
             return
         if a.set == "jumps":
             jumps(bin, app.pid, a, agent, [sys.executable, "-u", f"{ROOT}/burst.py"])
@@ -606,7 +644,7 @@ def main():
             awake.terminate()
             awake.wait()
         end_terminals()
-        subprocess.run(["hc", "server", "stop"], env=env(), capture_output=True)
+        subprocess.run([HC, "server", "stop"], env=env(), capture_output=True)
         print(f"results: {ROOT}/results.json", flush=True)
 
 

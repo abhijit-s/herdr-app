@@ -195,7 +195,8 @@ pub struct TerminalView {
 thread_local! {
     /// Terminals with output waiting for the next tick of the output clock.
     static OUTPUT_CLOCK: RefCell<Vec<WeakEntity<TerminalView>>> = const { RefCell::new(Vec::new()) };
-    /// The window's frame number, counted where the window renders. Per thread:
+    /// The window's frame number, counted where the window draws its layout (a
+    /// frame only the cursor trail asked for reuses it, so it counts none). Per thread:
     /// the app renders on one, and each GPUI test on its own, so a test's
     /// frames are not bumped by a window another test is rendering.
     static FRAME: Cell<u64> = const { Cell::new(0) };

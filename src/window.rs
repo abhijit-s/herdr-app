@@ -718,6 +718,12 @@ pub struct AppWindow {
     /// The cursor trail being drawn, and the (tab, pane) focused at the last draw (window/cursor_trail.rs).
     trail: Option<cursor_trail::Trail>,
     trail_seen: Option<cursor_trail::Seen>,
+    /// The window's drawing below the trail and above it, each drawn again
+    /// only when the window is (a frame the trail alone asked for reuses
+    /// them), and the trail's own layer between them.
+    lower: Entity<Body>,
+    upper: Entity<Body>,
+    trail_layer: Entity<cursor_trail::TrailLayer>,
     /// The mod block holding the keyboard for directional navigation.
     focused_block: Option<String>,
     synced_model_pane: Option<String>,
@@ -779,6 +785,7 @@ impl AppWindow {
         }
         mods::note_fonts(cx);
         let seen = std::fs::read_to_string(file("seen.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let me = cx.weak_entity();
         let mut w = AppWindow {
             core,
             runtime,
@@ -864,6 +871,9 @@ impl AppWindow {
             focused_pane: None,
             trail: None,
             trail_seen: None,
+            lower: cx.new(|_| Body { app: me.clone(), upper: false }),
+            upper: cx.new(|_| Body { app: me.clone(), upper: true }),
+            trail_layer: cx.new(|_| cursor_trail::TrailLayer { app: me.clone() }),
             focused_block: None,
             synced_model_pane: None,
             window_terminal: None,
@@ -7014,15 +7024,30 @@ pub(crate) fn set_text_look(window: &mut Window) {
     window.set_terminal_text(Some(crate::terminal::terminal_text()));
 }
 
-impl Render for AppWindow {
+/// One of the window's two cached drawings (`AppWindow::lower`, `upper`).
+pub(crate) struct Body {
+    app: WeakEntity<AppWindow>,
+    upper: bool,
+}
+
+impl Render for Body {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::bench::count(&crate::bench::WINDOW);
+        let upper = self.upper;
+        self.app
+            .update(cx, |app, cx| if upper { app.render_upper(window, cx) } else { app.render_lower(window, cx) })
+            .unwrap_or_else(|_| Empty.into_any_element())
+    }
+}
+
+impl AppWindow {
+    /// What the window draws under the cursor trail: the layout, its panes
+    /// and the window's frame; first the checks each draw makes.
+    fn render_lower(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        crate::bench::count(&crate::bench::BODY);
         let _timed = crate::bench::timed(&crate::bench::WINDOW_US);
-        crate::bench::frame_start();
+        // Terminals drawn this frame count as on screen; a frame that reuses
+        // this drawing keeps them so.
         crate::terminal::next_frame();
-        window.set_rem_size(settings::ui_rem());
-        set_text_look(window);
-        window.set_veil(inactive_veil(window.is_window_active()));
         if self.model.active_tab().is_some_and(|t| !t.floating.is_empty()) {
             self.float_cell.set(crate::terminal::cell_size(window));
         }
@@ -7060,12 +7085,52 @@ impl Render for AppWindow {
         self.painting_main.set(true);
         let tree = self.render_node(&self.chrome, &focused, None, cx);
         self.painting_main.set(false);
-        let tree = self.window_frame(tree, window, cx);
-        let trail = self.cursor_trail_layer();
+        self.window_frame(tree, window, cx)
+    }
+
+    /// What the window draws over the cursor trail: overlays (windows,
+    /// dialogs, popups, toasts) and what follows a drag.
+    fn render_upper(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let _timed = crate::bench::timed(&crate::bench::WINDOW_US);
         let overlays = self.render_overlays(window.viewport_size(), cx);
         let tracker = self.float_tracker(cx);
         let win_tracker = self.window_tracker(cx);
         let pane_drag = self.pane_drag_layer(cx);
+        div()
+            .size_full()
+            .relative()
+            .children(overlays)
+            .children(tracker)
+            .children(win_tracker)
+            .child(pane_drag)
+            .into_any_element()
+    }
+}
+
+impl Render for AppWindow {
+    /// Every draw: the window's settings for the frame and its handlers, over
+    /// the two drawings either side of the cursor trail. A frame the trail
+    /// alone asked for (nothing else notified) reuses both; any other draws
+    /// both again, as one drawing would be.
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::bench::count(&crate::bench::WINDOW);
+        let _timed = crate::bench::timed(&crate::bench::WINDOW_US);
+        crate::bench::frame_start();
+        window.set_rem_size(settings::ui_rem());
+        set_text_look(window);
+        window.set_veil(inactive_veil(window.is_window_active()));
+        let (lower, upper) = (self.lower.entity_id(), self.upper.entity_id());
+        let trail_only = window.view_notified(self.trail_layer.entity_id())
+            && !window.view_notified(cx.entity_id())
+            && !window.view_dirty(lower)
+            && !window.view_dirty(upper);
+        if !trail_only {
+            window.redraw_view(lower);
+            window.redraw_view(upper);
+        }
+        let tree = AnyView::from(self.lower.clone()).cached(StyleRefinement::default().size_full()).reuse_nested();
+        let trail = self.trail_layer.clone();
+        let above = AnyView::from(self.upper.clone()).cached(StyleRefinement::default().absolute().top_0().left_0().size_full()).reuse_nested();
         div()
             .id("herdr")
             .track_focus(&self.focus)
@@ -7154,11 +7219,8 @@ impl Render for AppWindow {
                 }
             }))
             .child(tree)
-            .children(trail)
-            .children(overlays)
-            .children(tracker)
-            .children(win_tracker)
-            .child(pane_drag)
+            .child(trail)
+            .child(above)
             .child(crate::bench::frame_end())
     }
 }
@@ -9351,7 +9413,7 @@ export default class Recent extends View {
             let trail = this.trail.as_mut().unwrap();
             trail.start = trail.start.checked_sub(std::time::Duration::from_secs(2)).unwrap();
         });
-        let layer = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.cursor_trail_layer().is_some());
+        let layer = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, cx| this.trail_frame(cx).is_some());
 
         focus(cx, "b");
         assert_eq!(state(cx), (None, None), "off: nothing kept");
@@ -9563,6 +9625,84 @@ export default class Recent extends View {
     }
 
     #[test]
+    fn trail_frames_draw_the_trail_and_reuse_the_rest_of_the_window() {
+        in_own_process("trail_frames");
+    }
+
+    /// Tab t: a | b, `cursor_trail: "panes"`. b to a starts a trail; each
+    /// frame it asks for draws the window and paints the trail but reuses the
+    /// window's layout (no layout draw), and the terminals still count as on
+    /// screen, so their output keeps drawing. Anything else notifying the
+    /// window during the trail draws the layout again. Over, it asks for no
+    /// more frames.
+    #[gpui::test]
+    fn trail_frames(cx: &mut gpui::TestAppContext) {
+        use crate::bench::{BODY, TRAIL, WINDOW};
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use serde_json::json;
+        use std::sync::atomic::Ordering::Relaxed;
+        if !running_alone("trail_frames") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        let before = crate::settings::get();
+        crate::settings::set(crate::settings::Settings { cursor_trail: crate::settings::CursorTrail::Panes, cursor_trail_duration_ms: 1000, ..(*before).clone() });
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                this.close_overlay(&id, window, cx);
+            }
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.select_tab("t");
+            this.model.focus_pane("b");
+            this.sync(window, cx);
+        });
+        cx.run_until_parked();
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+        draw(cx);
+        view.update_in(cx, |this, window, cx| {
+            this.model.focus_pane("a");
+            this.sync(window, cx);
+        });
+        draw(cx);
+        assert!(view.update(cx, |this, _| this.trail.is_some()), "b to a starts a trail");
+        // The frames the trail asked for, each drawn.
+        let frame = |cx: &mut gpui::VisualTestContext| {
+            let asked = cx.update(|window, cx| window.simulate_next_frame(cx));
+            cx.run_until_parked();
+            asked
+        };
+        let counts = || (WINDOW.load(Relaxed), BODY.load(Relaxed), TRAIL.load(Relaxed));
+        let on_screen = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, cx| ["a", "b"].iter().all(|p| this.terms[*p].view.read(cx).on_screen_this_frame()));
+        let start = counts();
+        for _ in 0..3 {
+            assert_eq!(frame(cx), 1, "the live trail asks for the next frame");
+        }
+        let now = counts();
+        assert_eq!((now.0 - start.0, now.1 - start.1, now.2 - start.2), (3, 0, 3), "three window draws, each painting the trail and reusing the layout");
+        assert!(on_screen(cx), "the terminals the reused layout shows are still on screen");
+
+        view.update(cx, |_, cx| cx.notify());
+        frame(cx);
+        assert!(counts().1 > now.1, "the window notified: its layout draws again");
+        assert!(on_screen(cx));
+
+        view.update(cx, |this, _| {
+            let trail = this.trail.as_mut().unwrap();
+            trail.start = trail.start.checked_sub(std::time::Duration::from_secs(2)).unwrap();
+        });
+        frame(cx);
+        assert_eq!(frame(cx), 0, "over, it asks for no more frames");
+        assert!(view.update(cx, |this, _| this.trail.is_none()));
+    }
+
+    #[test]
     fn cursor_arrival_pulses_with_the_trail_off_or_on() {
         in_own_process("cursor_arrival");
     }
@@ -9610,7 +9750,7 @@ export default class Recent extends View {
         };
         // (has a trail's start, its style, the pulse, toward which pane), and whether it has a layer.
         let state = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail.as_ref().map(|t| (t.from.is_some(), t.style, t.arrival, t.pane.clone())));
-        let layer = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.cursor_trail_layer().is_some());
+        let layer = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, cx| this.trail_frame(cx).is_some());
 
         set(CursorTrail::Off, TrailStyle::Comet, Arrival::Ripple);
         draw(cx);

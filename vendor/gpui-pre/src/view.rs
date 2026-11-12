@@ -8,7 +8,6 @@ use crate::{Empty, Window};
 use anyhow::Result;
 use collections::FxHashSet;
 use refineable::Refineable;
-use std::mem;
 use std::{
     any::{TypeId, type_name},
     fmt,
@@ -251,6 +250,9 @@ pub struct ViewElement<V: View> {
     view: Option<V>,
     entity_id: Option<EntityId>,
     cached_style: Option<StyleRefinement>,
+    // HERDR: drawn again, this cached view still reuses the cached views under
+    // it that weren't notified (`reuse_nested`).
+    reuse_nested: bool,
     #[cfg(debug_assertions)]
     source: &'static core::panic::Location<'static>,
 }
@@ -263,6 +265,7 @@ impl<V: View> ViewElement<V> {
         ViewElement {
             entity_id,
             cached_style: None,
+            reuse_nested: false,
             view: Some(view),
             #[cfg(debug_assertions)]
             source: core::panic::Location::caller(),
@@ -280,6 +283,15 @@ impl<V: View> ViewElement<V> {
     /// entity-backed by construction.
     pub(crate) fn cached(mut self, style: StyleRefinement) -> Self {
         self.cached_style = Some(style);
+        self
+    }
+
+    /// HERDR: when this cached view draws again, the cached views under it
+    /// that weren't notified reuse their last drawing, as they do under a
+    /// view that isn't cached; by default they all draw again with it. For a
+    /// view cached only so that frames other views ask for can skip it.
+    pub fn reuse_nested(mut self) -> Self {
+        self.reuse_nested = true;
         self
     }
 }
@@ -363,6 +375,7 @@ impl<V: View> Element for ViewElement<V> {
             // Stateful path.
             prepaint_view(
                 entity_id,
+                self.reuse_nested,
                 global_id,
                 bounds,
                 element,
@@ -397,6 +410,7 @@ impl<V: View> Element for ViewElement<V> {
             paint_view(
                 entity_id,
                 self.cached_style.is_some(),
+                self.reuse_nested,
                 global_id,
                 element,
                 window,
@@ -461,6 +475,7 @@ fn request_layout_component(
 #[inline(never)]
 fn prepaint_view(
     entity_id: EntityId,
+    reuse_nested: bool,
     global_id: Option<&GlobalElementId>,
     bounds: Bounds<Pixels>,
     element: &mut Option<AnyElement>,
@@ -498,7 +513,8 @@ fn prepaint_view(
                     return (None, element_state);
                 }
 
-                let refreshing = mem::replace(&mut window.refreshing, true);
+                let refreshing = window.refreshing;
+                window.refreshing |= !reuse_nested;
                 let prepaint_start = window.prepaint_index();
                 let (element, accessed_entities) = cx.detect_accessed_entities(|cx| {
                     let mut element = render(window, cx);
@@ -545,6 +561,7 @@ fn prepaint_component(
 fn paint_view(
     entity_id: EntityId,
     cached: bool,
+    reuse_nested: bool,
     global_id: Option<&GlobalElementId>,
     element: &mut Option<AnyElement>,
     window: &mut Window,
@@ -561,7 +578,8 @@ fn paint_view(
                     let paint_start = window.paint_index();
 
                     if let Some(element) = element {
-                        let refreshing = mem::replace(&mut window.refreshing, true);
+                        let refreshing = window.refreshing;
+                        window.refreshing |= !reuse_nested;
                         element.paint(window, cx);
                         window.refreshing = refreshing;
                     } else {
