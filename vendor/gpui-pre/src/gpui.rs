@@ -23,6 +23,8 @@ mod elements;
 mod executor;
 mod platform_scheduler;
 pub(crate) use platform_scheduler::PlatformScheduler;
+/// HERDR: frame counters for benchmarks.
+pub mod frame_counts;
 mod geometry;
 mod gestures;
 mod global;

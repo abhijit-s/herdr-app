@@ -842,6 +842,8 @@ impl MacWindowState {
 
     fn start_display_link(&mut self) {
         self.stop_display_link();
+        // HERDR: a link started for any reason is no longer parked.
+        self.parked = false;
         if !presented(self.native_window) {
             return;
         }
@@ -2141,6 +2143,15 @@ impl PlatformWindow for MacWindow {
     fn draw(&self, scene: &gpui::Scene) {
         let mut this = self.0.lock();
         this.renderer.draw(scene);
+    }
+
+    // HERDR: Core Animation shows a drawable presented between display link
+    // callbacks at the next vsync, so a spinner step needn't restart a parked
+    // link (each start spawns a CoreVideo thread and re-reads display timing).
+    // Only while parked: a running link presents the step on its next
+    // callback, and around `display_layer` the link is stopped, not parked.
+    fn presents_between_frames(&self) -> bool {
+        self.0.lock().parked
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {

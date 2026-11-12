@@ -248,6 +248,8 @@ fn subscribe(
     };
 
     if let Some(mut link) = link_to_start {
+        // HERDR: bench counter (each start spawns a CoreVideo thread).
+        gpui::frame_counts::link_started();
         if let Err(error) = unsafe { link.start() } {
             let mut registry = lock_registry();
             if let Some(entry) = registry.displays.get_mut(&display_id) {

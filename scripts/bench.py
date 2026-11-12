@@ -322,8 +322,11 @@ def frames_since(offset):
         lines = f.readlines()[offset:]
     rows = [json.loads(l) for l in lines if l.strip()]
     n = max(len(rows), 1)
-    totals = {k: sum(r.get(k, 0) for r in rows) for k in ("window", "body", "trail", "terminal", "grid", "rows", "window_ms", "frame_ms", "scripts", "script_ms", "materialize", "materialize_ms")}
+    totals = {k: sum(r.get(k, 0) for r in rows) for k in ("window", "body", "trail", "terminal", "grid", "rows", "window_ms", "frame_ms", "scripts", "script_ms", "materialize", "materialize_ms", "presents", "spin_steps", "spin_late_ms", "link_starts")}
     result = {k: round(v / n, 1) for k, v in totals.items()}
+    # How late spinner steps reached the screen: mean and worst (spin clock, ms).
+    result["spin_late_mean_ms"] = round(totals["spin_late_ms"] / totals["spin_steps"], 2) if totals["spin_steps"] else None
+    result["spin_late_max_ms"] = max((r.get("spin_late_max_ms", 0) for r in rows), default=0)
     result["render_to_paint_ms"] = round(totals["frame_ms"] / totals["window"], 3) if totals["window"] else None
     return result
 
@@ -385,6 +388,7 @@ def measure(name, app, seconds, sample):
           f"mods: js {row['scripts']:4.1f}/s {row['script_ms']:5.1f} ms/s, native {row['materialize']:4.1f}/s {row['materialize_ms']:5.1f} ms/s  "
           f"{row['app_mb']} MB",
           flush=True)
+    print(f"{name:16} presents/s {row['presents']:5.1f} spinner steps/s {row['spin_steps']:5.1f} late mean {row['spin_late_mean_ms']} max {row['spin_late_max_ms']} ms  display link starts/s {row['link_starts']:5.1f}", flush=True)
     return row
 
 

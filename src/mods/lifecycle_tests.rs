@@ -119,6 +119,106 @@ export default class extends View {{
     }
 }
 
+// On a platform that can present between frames (macOS), a spinner step with
+// nothing else to draw presents from its own timer: no frame request, no wake
+// of a parked frame source. Anything dirty still goes through a frame.
+#[gpui::test]
+fn spinner_steps_present_without_waking_the_frame_source(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    gpui_shell::policy::set_default(Policy::new());
+    let fixture = Fixture::new(
+        r#"
+import { View, div, svg } from "gpui-kit";
+export default class extends View {
+  render() { return div().size_full().child(svg("ring.svg").size(12).spin(900)); }
+}"#,
+    );
+    std::fs::write(fixture.0.join("ring.svg"), r#"<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><path d="M6 1a5 5 0 0 1 5 5"/></svg>"#).unwrap();
+    cx.set_asset_source(gpui_shell::AppAssets::new(fixture.0.clone()));
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let renders = Rc::new(Cell::new(0));
+    let counted = renders.clone();
+    let window = cx.add_window(|window, cx| {
+        Counted(runtime.try_load(&fixture.0, window, cx).unwrap(), counted)
+    });
+    let handle: gpui::AnyWindowHandle = window.into();
+    cx.set_window_presents_between_frames(handle, true);
+    for _ in 0..3 {
+        cx.simulate_window_frame_request(handle);
+        cx.run_until_parked();
+    }
+    let presents =
+        |cx: &mut TestAppContext| handle.update(cx, |_, window, _| window.presents()).unwrap();
+    let spinners = |cx: &mut TestAppContext| {
+        handle
+            .update(cx, |_, window, _| window.presented_spinners())
+            .unwrap()
+    };
+    let (wakes, drawn, before) = (cx.window_frame_wakes(handle), renders.get(), presents(cx));
+    let mut last = spinners(cx);
+    for step in 1..=5 {
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        cx.executor().advance_clock(gpui::SPIN_STEP);
+        cx.run_until_parked();
+        assert_eq!(
+            presents(cx),
+            before + step,
+            "step {step} presented from its timer"
+        );
+        let now = spinners(cx);
+        assert_ne!(now, last, "step {step} turned the spinner");
+        last = now;
+    }
+    assert_eq!(
+        cx.window_frame_wakes(handle),
+        wakes,
+        "a spinner step woke the frame source"
+    );
+    assert_eq!(renders.get(), drawn, "a spinner step rendered the window");
+
+    // A draw between steps (test mode draws a notified window at once): the
+    // next step presents the new frame, once.
+    window.update(cx, |_, _, cx| cx.notify()).unwrap();
+    let dirty = presents(cx);
+    std::thread::sleep(std::time::Duration::from_millis(15));
+    cx.executor().advance_clock(gpui::SPIN_STEP);
+    cx.run_until_parked();
+    if renders.get() == drawn {
+        cx.simulate_window_frame_request(handle);
+        cx.run_until_parked();
+    }
+    assert_eq!(renders.get(), drawn + 1, "the frame drew");
+    assert_eq!(presents(cx), dirty + 1, "one present, the frame's");
+
+    // A frame presented between steps moves the next step later: the timer
+    // it superseded presents nothing, and the next one steps.
+    window.update(cx, |_, _, cx| cx.notify()).unwrap();
+    cx.simulate_window_frame_request(handle);
+    cx.run_until_parked();
+    let framed = presents(cx);
+    std::thread::sleep(std::time::Duration::from_millis(15));
+    cx.executor().advance_clock(gpui::SPIN_STEP);
+    cx.run_until_parked();
+    assert_eq!(presents(cx), framed, "a superseded step presented");
+    std::thread::sleep(std::time::Duration::from_millis(15));
+    cx.executor().advance_clock(gpui::SPIN_STEP);
+    cx.run_until_parked();
+    assert_eq!(presents(cx), framed + 1, "the next step presented");
+
+    // Without the platform's leave, a step wakes the frame source as before.
+    cx.set_window_presents_between_frames(handle, false);
+    let wakes = cx.window_frame_wakes(handle);
+    std::thread::sleep(std::time::Duration::from_millis(15));
+    cx.executor().advance_clock(gpui::SPIN_STEP * 2);
+    cx.run_until_parked();
+    assert!(
+        cx.window_frame_wakes(handle) > wakes,
+        "the step didn't wake the frame source"
+    );
+    let _ = handle.update(cx, |_, window, _| window.remove_window());
+    cx.run_until_parked();
+}
+
 // A `frames` spinner steps as a ring does: each present shows the frame the
 // shared clock is on, with no window render, no script and no rebuild of the
 // mod. CoreText shapes it, so its glyphs are real sprites.

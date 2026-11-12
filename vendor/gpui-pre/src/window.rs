@@ -3653,7 +3653,14 @@ impl Window {
         let _foreground_turn = profiler::journal::foreground_turn();
         #[cfg(feature = "profiler")]
         let present_start = Instant::now();
-        self.spin_due = self.rendered_frame.scene.turn_spinners(spin_clock_ms());
+        let now = spin_clock_ms();
+        // A step held back while the window was hidden isn't a late one.
+        crate::frame_counts::presented(
+            self.spin_due
+                .map(|due| now - due)
+                .filter(|late| (0.0..1000.0).contains(late)),
+        );
+        self.spin_due = self.rendered_frame.scene.turn_spinners(now);
         #[cfg(any(test, feature = "test-support"))]
         {
             self.presents += 1;
@@ -3674,7 +3681,10 @@ impl Window {
     /// presents it again (no draw) when the next step is due: [`SPIN_STEP`]
     /// for a spinner, a cycle's next frame. A draw in between steps them as
     /// well, and a sooner step replaces a later one already scheduled. A
-    /// hidden window steps again once it is visible.
+    /// hidden window steps again once it is visible. With nothing else to
+    /// draw, a platform that can present between frames presents the step
+    /// here, so it needn't restart a parked frame source (on macOS each
+    /// display link start spawns a CoreVideo thread).
     fn schedule_spin_step(&mut self, cx: &mut App) {
         let Some(due) = self.spin_due else { return };
         if self.spin_step_due.is_some_and(|scheduled| scheduled <= due) || !self.visibility.is_visible() {
@@ -3686,14 +3696,29 @@ impl Window {
         cx.spawn(async move |cx| {
             cx.background_executor().timer(delay).await;
             handle
-                .update(cx, |_, window, _| {
+                .update(cx, |_, window, cx| {
                     // A sooner step took this one's place.
                     if window.spin_step_due != Some(due) {
                         return;
                     }
                     window.spin_step_due = None;
                     // A draw since took the spinners away, or the window went out of sight.
-                    if window.spin_due.is_none() || !window.visibility.is_visible() {
+                    let Some(next) = window.spin_due.filter(|_| window.visibility.is_visible())
+                    else {
+                        return;
+                    };
+                    // A draw since turned the spinners and moved the next
+                    // step later: wait for that one instead.
+                    if next > due {
+                        window.schedule_spin_step(cx);
+                        return;
+                    }
+                    if window.platform_window.presents_between_frames()
+                        && !window.invalidator.is_dirty()
+                        && window.next_frame_callbacks.borrow().is_empty()
+                    {
+                        window.present();
+                        window.schedule_spin_step(cx);
                         return;
                     }
                     window.needs_present.set(true);
