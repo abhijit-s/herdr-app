@@ -92,9 +92,31 @@ pub enum TerminalEvent {
     /// A mouse selection was copied on release.
     Copied,
     /// The focused terminal's cursor settled after a jump (`cursor_trail:
-    /// "all"`): from this cell (window coordinates) to where it is drawn now,
-    /// or None when only its shape changed.
+    /// "all"`): from the cursor as it was drawn where it last settled (window
+    /// coordinates) to where it is drawn now, or None when only its shape
+    /// changed.
     CursorJump(Option<Bounds<Pixels>>),
+}
+
+/// Where a cursor trail meets a terminal (`TerminalView::trail_end`), in
+/// window coordinates: the cursor's cell (`trail_anchor`), the cursor as drawn
+/// (its cell while hidden), and whether it shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrailEnd {
+    pub cell: Bounds<Pixels>,
+    pub cursor: Bounds<Pixels>,
+    pub shown: bool,
+}
+
+/// What a cursor of `shape` covers in the cell(s) at `at`, `width` wide: a
+/// block or a hollow box the whole cell, a beam 2 px at its left, an underline
+/// 2 px at its foot. The terminal paints these; a cursor trail ends on them.
+pub(crate) fn cursor_rect(at: Point<Pixels>, width: Pixels, cell: Size<Pixels>, shape: CursorShape, focused: bool) -> Bounds<Pixels> {
+    match (focused, shape) {
+        (true, CursorShape::Bar) => Bounds::new(at, size(px(2.0), cell.height)),
+        (true, CursorShape::Underline) => Bounds::new(at + point(px(0.0), cell.height - px(2.0)), size(width, px(2.0))),
+        _ => Bounds::new(at, size(width, cell.height)),
+    }
 }
 
 /// What the canvas closures need, shared outside the entity so prepaint can resize.
@@ -129,6 +151,8 @@ struct Grid {
     /// The cursor's cell in window coordinates, from the last paint: where the
     /// input method puts its candidate window.
     cursor_at: Option<Bounds<Pixels>>,
+    /// What the last paint drew of the cursor (`cursor_rect`), None while hidden.
+    cursor_drawn: Option<Bounds<Pixels>>,
     /// Where the focused terminal's cursor settled, for `cursor_trail: "all"`.
     jumps: crate::cursor_jumps::Jumps,
     /// The scroll thumb's grabbable lane from the last paint, in window
@@ -355,6 +379,7 @@ impl TerminalView {
                 link_spans: Vec::new(),
                 marked: None,
                 cursor_at: None,
+                cursor_drawn: None,
                 jumps: Default::default(),
                 thumb: None,
                 track: None,
@@ -1166,6 +1191,15 @@ impl TerminalView {
     /// The pointer is over the pane: pressing or letting go of the link key redraws it.
     pub fn hovered(&self) -> bool {
         self.grid.borrow().hover.is_some()
+    }
+
+    /// Where a cursor trail meets this terminal, from the last paint: the
+    /// cursor as drawn when it shows (a beam's or an underline's strip, a
+    /// block's cell), else `trail_anchor`.
+    pub fn trail_end(&self) -> Option<TrailEnd> {
+        let cell = self.trail_anchor()?;
+        let drawn = self.grid.borrow().cursor_drawn;
+        Some(TrailEnd { cell, cursor: drawn.unwrap_or(cell), shown: drawn.is_some() })
     }
 
     /// Where a cursor trail meets this terminal, in window coordinates from
@@ -2333,9 +2367,10 @@ fn settle_jumps(grid: Rc<RefCell<Grid>>, view: WeakEntity<TerminalView>, settle:
                     Due::Wait(more) => wait = more,
                     Due::Fire(jump) => {
                         let from = match jump {
-                            Some(Jump::Moved { from: (x, y), .. }) => {
+                            Some(Jump::Moved { from: (x, y), shape, .. }) => {
                                 let g = grid.borrow();
-                                Some(Some(Bounds::new(g.origin + point(g.cell.width * f32::from(x), g.cell.height * f32::from(y)), g.cell)))
+                                let at = g.origin + point(g.cell.width * f32::from(x), g.cell.height * f32::from(y));
+                                Some(Some(cursor_rect(at, g.cell.width, g.cell, shape, true)))
                             }
                             Some(Jump::Reshaped) => Some(None),
                             None => None,
@@ -2492,15 +2527,18 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, view: &WeakEntit
 
     paint_images(false, window);
 
+    let mut cursor_drawn = None;
     if let Some(cur) = frame.cursor {
         let (x, y) = (cur.x as usize, cur.y as usize);
         let wide = frame.rows.get(y).and_then(|r| r.get(x)).is_some_and(|c| c.wide);
         let w = cell.width * if wide { 2.0 } else { 1.0 };
         let color = hsla(cur.color);
         let p = at(x, y);
+        let drawn = cursor_rect(p, w, cell, cur.shape, focused);
+        cursor_drawn = Some(drawn);
         match (focused, cur.shape) {
             (true, CursorShape::Block) => {
-                window.paint_quad(fill(snap_box(Bounds::new(p, size(w, cell.height))), color));
+                window.paint_quad(fill(snap_box(drawn), color));
                 if let Some(c) = frame.rows.get(y).and_then(|r| r.get(x)).filter(|c| !c.text.is_empty()) {
                     let run = TextRun {
                         len: c.text.len(),
@@ -2514,12 +2552,8 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, view: &WeakEntit
                     paint_cell_text(&line, p, None, metrics, window, cx);
                 }
             }
-            (true, CursorShape::Bar) => window.paint_quad(fill(snap_box(Bounds::new(p, size(px(2.0), cell.height))), color)),
-            (true, CursorShape::Underline) => window.paint_quad(fill(
-                snap_box(Bounds::new(p + point(px(0.0), cell.height - px(2.0)), size(w, px(2.0)))),
-                color,
-            )),
-            _ => window.paint_quad(outline(snap_box(Bounds::new(p, size(w, cell.height))), color, BorderStyle::Solid)),
+            (true, CursorShape::Bar | CursorShape::Underline) => window.paint_quad(fill(snap_box(drawn), color)),
+            _ => window.paint_quad(outline(snap_box(drawn), color, BorderStyle::Solid)),
         }
     }
     // What an input method is composing, at the cursor (hidden or not):
@@ -2545,6 +2579,7 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, view: &WeakEntit
     {
         let mut g = grid.borrow_mut();
         g.cursor_at = frame.cursor_cell.map(|(x, y)| Bounds::new(at(x as usize, y as usize), cell));
+        g.cursor_drawn = cursor_drawn;
         // As in Herdr, hide on the alternate screen and below five columns.
         g.thumb = None;
         g.track = None;

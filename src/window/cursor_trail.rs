@@ -7,10 +7,13 @@
 //! (MIT). Every color is the theme's cursor color (or `cursor_trail_color`),
 //! the comet's core paler.
 //!
-//! Each end is the terminal's `trail_anchor`: its cursor cell, shown or
-//! hidden, else its middle cell. A pane that isn't a painted terminal (never
-//! drawn) gets no effect. The new end follows the pane's cursor live while the
-//! effect runs.
+//! Each end is the terminal's `trail_end`: its cursor as drawn (a block's
+//! cell, a beam's or an underline's strip), else its cursor cell when hidden,
+//! else its middle cell. A pane that isn't a painted terminal (never drawn)
+//! gets no effect. The new end follows the pane's cursor live while the effect
+//! runs. A trail that starts while another is drawn starts from what that one
+//! drew (its tail's corners, a comet's tail point, a block's old end), as
+//! kitty's corners keep chasing a cursor that moves on.
 //!
 //! Nothing runs in the terminals' output paths, and their paint takes one
 //! branch on `cursor_trail`; only `"all"` adds work there (cursor_jumps.rs: a
@@ -29,13 +32,56 @@ const CORE_WHITE: f32 = 0.45;
 /// The effect being drawn at the terminal `pane` shows: a trail from `from`
 /// when `style` is set, and an `arrival` pulse.
 pub(super) struct Trail {
-    pub(super) from: Option<Bounds<Pixels>>,
+    pub(super) from: Option<cursor_shapes::Quad>,
     pub(super) pane: String,
     pub(super) start: Instant,
     duration: Duration,
     color: Hsla,
     pub(super) style: Option<settings::TrailStyle>,
     pub(super) arrival: settings::Arrival,
+    /// The tail's corners as they chase the cursor (`TrailStyle::Tail`).
+    chase: Option<cursor_shapes::Chase>,
+    /// What the trail drew last, where one started meanwhile begins.
+    pub(super) drawn: Option<cursor_shapes::Quad>,
+}
+
+impl Trail {
+    fn new(from: Option<cursor_shapes::Quad>, pane: &str, s: &settings::Settings) -> Self {
+        let style = from.map(|_| s.cursor_trail_style);
+        Trail {
+            from,
+            pane: pane.to_owned(),
+            start: Instant::now(),
+            duration: s.trail_duration(),
+            color: s.trail_color().unwrap_or_else(|| settings::color("cursor")),
+            style,
+            arrival: s.cursor_arrival,
+            chase: from.filter(|_| style == Some(settings::TrailStyle::Tail)).map(cursor_shapes::Chase::new),
+            drawn: None,
+        }
+    }
+
+    /// The trail's shapes and the pulse's at `elapsed`, toward `end`, noting
+    /// what the trail drew; None once both are over.
+    fn shapes(&mut self, end: crate::terminal::TrailEnd, elapsed: Duration) -> Option<Vec<cursor_shapes::Layer>> {
+        let t = elapsed.as_secs_f32() / self.duration.as_secs_f32();
+        let h = f32::from(end.cell.size.height);
+        let (mut layers, drawn) = match (&mut self.chase, self.style, self.from) {
+            (Some(chase), _, _) => {
+                let live = chase.step(end.cursor, end.shown, elapsed.as_secs_f32(), self.duration.as_secs_f32());
+                if live { (chase.layers(end.cursor), Some(chase.corners)) } else { (Vec::new(), None) }
+            }
+            (None, Some(style), Some(from)) if t < 1.0 => cursor_shapes::trail(style, from, end.cursor, h, t),
+            _ => (Vec::new(), None),
+        };
+        self.drawn = drawn;
+        let pulse = cursor_shapes::arrival(self.arrival, end.cell, t);
+        if layers.is_empty() && pulse.is_empty() {
+            return None;
+        }
+        layers.extend(pulse);
+        Some(layers)
+    }
 }
 
 /// The shown tab's focused pane at the last draw, and where its trail would
@@ -45,6 +91,11 @@ pub(super) struct Seen {
     pub(super) tab: String,
     pub(super) pane: String,
     anchor: Option<Bounds<Pixels>>,
+}
+
+/// Where a trail starts: from what the live one drew, else from `cursor`.
+fn start_from(live: Option<&Trail>, cursor: Option<Bounds<Pixels>>) -> Option<cursor_shapes::Quad> {
+    live.and_then(|t| t.drawn).or(cursor.map(cursor_shapes::quad))
 }
 
 /// How far along an effect is, 0 to 1, after `elapsed` of `duration`; None once it's over.
@@ -84,7 +135,8 @@ impl AppWindow {
         };
         let anchor = self
             .pane_term(&pane)
-            .and_then(|term| term.view.read(cx).trail_anchor());
+            .and_then(|term| term.view.read(cx).trail_end())
+            .map(|end| end.cursor);
         match self.trail_seen.take() {
             Some(seen) if seen.tab == tab && seen.pane == pane => {
                 self.trail_seen = Some(Seen {
@@ -94,23 +146,14 @@ impl AppWindow {
                 return;
             }
             Some(seen) => {
-                self.trail = None;
-                let from = seen
-                    .anchor
+                let live = self.trail.take();
+                let from = start_from(live.as_ref(), seen.anchor)
                     .filter(|_| s.cursor_trail != settings::CursorTrail::Off);
                 if seen.tab == tab
                     && self.pane_term(&pane).is_some()
                     && (from.is_some() || s.cursor_arrival != settings::Arrival::Off)
                 {
-                    self.trail = Some(Trail {
-                        from,
-                        pane: pane.clone(),
-                        start: Instant::now(),
-                        duration: s.trail_duration(),
-                        color: s.trail_color().unwrap_or_else(|| settings::color("cursor")),
-                        style: from.map(|_| s.cursor_trail_style),
-                        arrival: s.cursor_arrival,
-                    });
+                    self.trail = Some(Trail::new(from, &pane, &s));
                 }
             }
             None => {}
@@ -119,8 +162,9 @@ impl AppWindow {
     }
 
     /// The focused pane's cursor settled after a jump (`cursor_trail: "all"`,
-    /// cursor_jumps.rs): a trail from `from` and the arrival pulse, or the
-    /// pulse alone when only its shape changed (`from` None).
+    /// cursor_jumps.rs): a trail from `from` (or from what a live trail
+    /// drew) and the arrival pulse, or the pulse alone when only its shape
+    /// changed (`from` None).
     pub(super) fn cursor_jump(
         &mut self,
         pane: &str,
@@ -135,36 +179,37 @@ impl AppWindow {
         {
             return;
         }
-        self.trail = Some(Trail {
-            from,
-            pane: pane.to_owned(),
-            start: Instant::now(),
-            duration: s.trail_duration(),
-            color: s.trail_color().unwrap_or_else(|| settings::color("cursor")),
-            style: from.map(|_| s.cursor_trail_style),
-            arrival: s.cursor_arrival,
-        });
+        let from = from.and_then(|cursor| start_from(self.trail.as_ref(), Some(cursor)));
+        self.trail = Some(Trail::new(from, pane, &s));
         self.trail_layer.update(cx, |_, cx| cx.notify());
     }
 
     /// The live effect's shapes now and their color, asking nothing of the
     /// window; None (and the effect dropped) once it's over or its pane is gone.
     pub(super) fn trail_frame(&mut self, cx: &App) -> Option<(Vec<cursor_shapes::Layer>, Hsla)> {
-        let trail = self.trail.as_ref()?;
-        let to = self.pane_term(&trail.pane).map(|term| term.view.clone());
-        let (Some(to), Some(t)) = (to, progress(trail.start.elapsed(), trail.duration)) else {
+        let to = self.pane_term(&self.trail.as_ref()?.pane).map(|term| term.view.clone());
+        let trail = self.trail.as_mut()?;
+        let elapsed = trail.start.elapsed();
+        let Some(to) = to else {
             self.trail = None;
             return None;
         };
-        let Some(head) = to.read(cx).trail_anchor() else {
+        let Some(end) = to.read(cx).trail_end() else {
+            // Not drawn yet: wait out its time, painting nothing.
+            if progress(elapsed, trail.duration).is_none() {
+                self.trail = None;
+                return None;
+            }
             return Some((Vec::new(), trail.color));
         };
-        let shapes = match (trail.style, trail.from) {
-            (Some(style), Some(from)) => cursor_shapes::trail(style, from, head, t),
-            _ => Vec::new(),
-        };
-        let layers = shapes.into_iter().chain(cursor_shapes::arrival(trail.arrival, head, t)).collect();
-        Some((layers, trail.color))
+        let color = trail.color;
+        match trail.shapes(end, elapsed) {
+            Some(layers) => Some((layers, color)),
+            None => {
+                self.trail = None;
+                None
+            }
+        }
     }
 }
 
@@ -189,9 +234,13 @@ impl Render for TrailLayer {
                 for layer in layers {
                     let mut path = match layer.stroke {
                         Some(w) => PathBuilder::stroke(px(w)),
-                        None => PathBuilder::fill(),
+                        None => PathBuilder::fill().with_style(PathStyle::Fill(FillOptions::default().with_fill_rule(FillRule::EvenOdd))),
                     };
                     path.add_polygon(&layer.outline, true);
+                    // Filled even-odd: the hole, inside the outline, stays clear.
+                    if let Some(hole) = &layer.hole {
+                        path.add_polygon(hole, true);
+                    }
                     if let Ok(path) = path.build() {
                         let tint = if layer.core { paler(color) } else { color };
                         window.paint_path(path, tint.opacity(layer.alpha));
