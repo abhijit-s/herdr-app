@@ -4,17 +4,18 @@ import { readFile } from "node:fs/promises";
 const source = (await readFile(new URL("../defaults/mods/crosstalk/main.js", import.meta.url), "utf8"))
   .replace(/^import [\s\S]*?;\n/gm, "").replace("export default class Crosstalk", "class Crosstalk");
 
-const NAMES = ["parseRpc", "parseWatch", "missingMethods", "clean", "preview", "replyEnvelope", "replyNote", "senderLabel", "retryNote", "Crosstalk", "METHODS"];
+const NAMES = ["parseRpc", "parseWatch", "missingMethods", "clean", "preview", "replyEnvelope", "replyNote", "senderLabel", "retryNote", "Crosstalk", "METHODS", "OBSERVER", "healthView", "statsView", "eventLine", "statusProblemText"];
 
 type Call = { command: string; args: string[]; options: unknown };
 type Reply = { code: number; stdout?: string; stderr?: string };
 
 // The mod's source with Herdr and gpui stubbed; exec answers from `rpc`
 // (per method) and `watches` (in order; none left: the watch never returns).
-function load(rpc: Record<string, Reply | ((params: any) => Reply)> = {}, watches: Reply[] = []) {
+function load(rpc: Record<string, Reply | ((params: any) => Reply)> = {}, watches: Reply[] = [], missing = false) {
   const calls: Call[] = [], shared: Record<string, unknown> = {}, toasts: any[] = [], runs: unknown[][] = [];
   const exec = (command: string, args: string[], options: unknown) => {
     calls.push({ command, args, options });
+    if (missing) return Promise.reject(new Error("No such file or directory (os error 2)"));
     if (args[0] === "watch") {
       const next = watches.shift();
       return next ? Promise.resolve({ stdout: "", stderr: "", ...next }) : new Promise(() => {});
@@ -29,7 +30,7 @@ function load(rpc: Record<string, Reply | ((params: any) => Reply)> = {}, watche
   class FakeDate extends Date { static now() { return clock.now; } }
   const stubs: Record<string, unknown> = {
     View: class {}, div: () => ({}), v_flex: () => ({}), h_flex: () => ({}), Input: { new: () => ({}) },
-    InputState: { new: () => input }, exec, theme: () => ({}), Date: FakeDate,
+    InputState: { new: () => input }, exec, theme: () => ({}), Date: FakeDate, nextCommand: () => new Promise(() => {}),
     setShared: (k: string, v: unknown) => { shared[k] = v; }, notify: (n: unknown) => { toasts.push(n); }, run: (...a: unknown[]) => { runs.push(a); },
   };
   const mod = new Function(...Object.keys(stubs), `${source}; return { ${NAMES.join(", ")} };`)(...Object.values(stubs));
@@ -348,4 +349,146 @@ test("an unknown watch event type re-arms without reading or crashing", async ()
 test("a delivery without from_verified, or with it as a string, never reads verified", () => {
   const { senderLabel } = load().mod;
   for (const e of [{}, { from_verified: "true" }, { from_verified: 1 }, { from_verified: null }]) expect(senderLabel(e)).toBe("unverified");
+});
+
+// --- the Status tab ---
+
+const healthy = { status: "ok", pid: 42, version: 1, started_at: "2026-11-12T08:00:00Z", checks: [{ name: "backend", ok: true }, { name: "host", ok: true }] };
+const statsResult = {
+  at: "2026-11-12T09:00:00Z", started_at: "2026-11-12T08:00:00Z", open_requests: 2, counters: {}, inbox_depth: { "data.person.abhi": 3 },
+  tasks: { open: 1, done: 4 }, streams: { watch: 2, audit: 0, presence: 1 },
+  ops: [
+    { op: "fetch", backend: "sqlite", outcome: "ok", count: 5, mean_ms: 1, p50_ms: 1, p95_ms: 2.25, p99_ms: 3, unit: "ms", overflow: 0, max_bound: 1000 },
+    { op: "publish", backend: "sqlite", outcome: "ok", count: 40, mean_ms: 4, p50_ms: 3, p95_ms: 12.4, p99_ms: 30.6, unit: "ms", overflow: 0, max_bound: 1000 },
+  ],
+  histograms: [{ op: "host.hello", backend: "", outcome: "ok", count: 3, mean_ms: 1, p50_ms: 1, p95_ms: 1, p99_ms: 1, unit: "ms", overflow: 0, max_bound: 100 }],
+};
+const event = (op: string, extra: Record<string, unknown> = {}) => ({ op, outcome: "ok", duration_ms: 1.5, verified_sender: true, at: "2026-11-12T09:00:01Z", ...extra });
+const observer = (extra: Record<string, Reply | ((p: any) => Reply)> = {}) => {
+  const { mod } = load();
+  return service([...mod.METHODS, ...mod.OBSERVER], { health: ok(healthy), stats: ok(statsResult), events: ok([event("publish"), event("ack")]), ...extra });
+};
+const reads = (calls: Call[]) => calls.filter((c) => c.args[0] === "rpc" && ["health", "stats", "events"].includes(c.args[1])).map((c) => `${c.args[1]} ${c.args[2] ?? ""}`.trim());
+
+test("the Status tab reads health, stats and the last 20 events only while shown, every 5 s", async () => {
+  const h = await started(observer());
+  expect(reads(h.calls)).toEqual([]);
+  h.view.show("status", h.cx); await h.settle();
+  expect(reads(h.calls)).toEqual(["health {}", "stats {}", 'events {"limit":20}']);
+  expect(h.view.events.map((e: any) => e.op)).toEqual(["ack", "publish"]); // newest first
+  h.clock.now += 4000; h.view.tick(h.cx); await h.settle();
+  expect(reads(h.calls)).toHaveLength(3);
+  h.clock.now += 1000; h.view.tick(h.cx); await h.settle();
+  expect(reads(h.calls)).toHaveLength(6);
+  h.view.show("inbox", h.cx);
+  h.clock.now += 60_000; h.view.tick(h.cx); await h.settle();
+  expect(reads(h.calls)).toHaveLength(6);
+});
+
+test("key commands switch tabs and refresh the Status tab at once", async () => {
+  const h = await started(observer());
+  h.view.command("status", h.cx); await h.settle();
+  expect(h.view.tab).toBe("status");
+  expect(reads(h.calls)).toHaveLength(3);
+  h.view.command("refresh", h.cx); await h.settle();
+  expect(reads(h.calls)).toHaveLength(6);
+  h.view.command("tasks", h.cx);
+  expect(h.view.tab).toBe("tasks");
+  h.view.command("nonsense", h.cx);
+  expect(h.view.tab).toBe("tasks");
+});
+
+test("degraded health names each failing check and why", () => {
+  const { healthView } = load().mod;
+  const v = healthView({ status: "degraded", pid: 1, version: 1, started_at: "x", checks: [{ name: "backend", ok: true }, { name: "host", ok: false, detail: "herdr-core\x1b[31m did not answer" }, { name: "audit", ok: "true" }] });
+  expect(v.ok).toBe(false);
+  expect(v.status).toBe("degraded");
+  expect(v.checks).toEqual([{ name: "backend", ok: true, detail: "" }, { name: "host", ok: false, detail: "herdr-core did not answer" }, { name: "audit", ok: false, detail: "" }]);
+  expect(healthView(healthy).ok).toBe(true);
+});
+
+test("stats show ops busiest first with p95 and p99, histograms, tasks, open requests and the start time", () => {
+  const { statsView } = load().mod;
+  const v = statsView(statsResult);
+  expect(v.ops).toEqual([{ name: "publish · sqlite · ok", value: "40 · p95 12 · p99 31 ms" }, { name: "fetch · sqlite · ok", value: "5 · p95 2.3 · p99 3.0 ms" }]);
+  expect(v.histograms).toEqual([{ name: "host.hello · ok", value: "3 · p95 1.0 · p99 1.0 ms" }]);
+  const by = Object.fromEntries(v.summary.map((r: any) => [r.name, r.value]));
+  expect(by).toEqual({ "up since": "2026-11-12T08:00:00Z", "open requests": "2", tasks: "done 4 · open 1", "inbox depth": "data.person.abhi 3", streams: "watch 2 · audit 0 · presence 1" });
+  const many = statsView({ ...statsResult, ops: Array.from({ length: 20 }, (_, i) => ({ ...statsResult.ops[0], op: `op${i}`, count: i })) });
+  expect(many.ops).toHaveLength(16);
+  expect(many.ops[0].name).toBe("op19 · sqlite · ok");
+  expect(many.ops[15].name).toBe("… 5 more");
+  expect(statsView({}).ops).toEqual([]);
+});
+
+test("an event shows its metadata only, cleaned, and never a body", () => {
+  const { eventLine } = load().mod;
+  const l = eventLine(event("publish", { from: "data.agent.mbp.a\x1b]0;x\x07", to: ["data.person.abhi"], kind: "core.request", body: { text: "SECRET body" }, text: "SECRET text", verified_sender: false }));
+  expect(l.at).toBe("09:00:01");
+  expect(l.text).toBe("publish ok · data.agent.mbp.a → data.person.abhi · request · 1.5 ms · unverified");
+  expect(l.text).not.toContain("SECRET");
+  expect(l.warn).toBe(false);
+  expect(eventLine(event("task.claim", { outcome: "conflict" })).warn).toBe(true);
+  expect(eventLine({ op: "missed", outcome: "noop", count: 7, at: "2026-11-12T09:00:02Z" })).toEqual({ at: "09:00:02", text: "missed 7 events", warn: true });
+  expect(eventLine(event("access.grant", { grantee: "data.agent.mbp.b", actions: ["join", "send"], policy: "invite", granted_by: "data.person.abhi" })).text)
+    .toBe("access.grant ok · grantee data.agent.mbp.b · join+send · policy invite · by data.person.abhi · 1.5 ms");
+});
+
+test("unauthorised says the observer view is the person's, keeps the last read, and retries", async () => {
+  let n = 0;
+  const h = await started(observer({ health: () => (++n === 1 ? ok(healthy) : fails("unauthorised", "you are data.agent.mbp.x")) }));
+  h.view.show("status", h.cx); await h.settle();
+  expect(h.view.statusProblem).toBe(null);
+  h.clock.now += 5000; h.view.tick(h.cx); await h.settle();
+  expect(h.view.statusProblem.kind).toBe("unauthorised");
+  expect(h.view.health).toEqual(healthy);
+  expect(h.mod.statusProblemText(h.view.statusProblem)).toContain("for the person only");
+  expect(h.mod.statusProblemText(h.view.statusProblem)).toContain("you are data.agent.mbp.x");
+  expect(reads(h.calls).filter((r) => r.startsWith("stats"))).toHaveLength(1); // stopped at the first failure
+  h.clock.now += 5000; h.view.tick(h.cx); await h.settle();
+  expect(n).toBe(3);
+});
+
+test("an unreachable service and a missing crosstalk say so on the Status tab and retry", async () => {
+  const down = await started(observer({ health: { code: 69, stderr: "cannot reach the service" } }));
+  down.view.show("status", down.cx); await down.settle();
+  expect(down.mod.statusProblemText(down.view.statusProblem)).toBe("crosstalk is not available · cannot reach the service · retrying");
+  const gone = load({}, [], true);
+  const view = new gone.mod.Crosstalk();
+  view.init({}, gone.cx); await gone.settle();
+  view.show("status", gone.cx); await gone.settle();
+  expect(view.statusProblem).toMatchObject({ kind: "unavailable", message: "crosstalk could not be started" });
+  expect(view.statusProblem.hint).toContain("No such file");
+  gone.clock.now += 5000; view.tick(gone.cx); await gone.settle();
+  expect(gone.calls.filter((c) => c.args[1] === "health")).toHaveLength(2);
+});
+
+test("a crosstalk without the observer methods still runs the inbox; the Status tab says what is missing and waits", async () => {
+  const { mod } = load();
+  const h = await started(service(mod.METHODS));
+  expect(h.view.ready).toBe(true);
+  h.view.show("status", h.cx); await h.settle();
+  expect(h.view.statusProblem).toMatchObject({ kind: "unsupported", hint: "missing: health, stats, events" });
+  h.clock.now += 3_600_000; h.view.tick(h.cx); await h.settle();
+  expect(reads(h.calls)).toEqual([]);
+});
+
+test("a Status tab bug is reported once; after close nothing is read", async () => {
+  const h = await started(observer({ stats: { code: 64, stderr: "unknown method" } }));
+  h.view.show("status", h.cx); await h.settle();
+  h.clock.now += 5000; h.view.tick(h.cx); await h.settle();
+  expect(h.toasts.filter((t: any) => t.title === "crosstalk inbox: bug")).toHaveLength(1);
+  await h.view.close();
+  const before = h.calls.length;
+  h.clock.now += 60_000; h.view.tick(h.cx); h.view.command("refresh", h.cx); await h.settle();
+  expect(h.calls.length).toBe(before);
+});
+
+test("a close during a Status read stops it before the next call", async () => {
+  const box: any = {};
+  const h = await started(observer({ health: () => { void box.view.close(); return ok(healthy); } }));
+  box.view = h.view;
+  h.view.show("status", h.cx); await h.settle();
+  expect(reads(h.calls)).toEqual(["health {}"]);
+  expect(h.view.health).toBe(null);
 });

@@ -1,15 +1,22 @@
 // crosstalk inbox: the person's messages, tasks and agents from the crosstalk
-// service. It is an ordinary crosstalk client: every call goes through the
-// `crosstalk` command (`rpc` and `watch --once`), never a socket, file or
+// service, and a read-only Status tab (health, stats, recent audit events).
+// It is an ordinary crosstalk client: every call goes through the `crosstalk`
+// command (`rpc` and `watch --once`), never a socket, file or
 // herdr-core document. Message bodies are untrusted text: cleaned, shown
 // plain, never typed into a terminal.
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { exec, theme, setShared, notify, run } from "herdr";
+import { exec, theme, setShared, notify, run, nextCommand } from "herdr";
 
 // The service API methods this mod calls (crosstalk spec v0 section 14).
 const METHODS = ["whoami", "fetch", "ack", "nack", "publish", "watch", "task.list", "task.claim", "task.done", "presence.list"];
+// The observer methods (people only) only the Status tab calls: a crosstalk
+// without them still runs the inbox.
+const OBSERVER = ["health", "stats", "events"];
+const TABS = ["inbox", "tasks", "agents", "status"];
+const STATUS_MS = 5000; // the Status tab re-reads this often while shown
+const EVENTS = 20, OPS_SHOWN = 15;
 // `crosstalk` exit codes: a response arrived (even an error), bad usage,
 // the service can't be reached or started, watch timed out.
 const EXIT = { ok: 0, usage: 64, unavailable: 69, timeout: 124 };
@@ -108,16 +115,107 @@ const retryNote = (problem) => (problem?.kind === "unsupported" ? " · reopen th
 
 const kindLabel = (kind) => ({ "core.request": "request", "core.mail": "mail", "core.message": "message" })[kind] ?? kind;
 
+// --- the Status tab: every value comes from the service and is cleaned ---
+
+const short = (v) => clean(v, 200);
+const ms = (n) => (typeof n === "number" && Number.isFinite(n) ? (n < 10 ? n.toFixed(1) : String(Math.round(n))) : "?");
+const clock = (at) => { const s = short(at); return /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/.test(s) ? s.slice(11, 19) : s; };
+
+// health: its status, and each check with why it fails.
+function healthView(h) {
+  const checks = Array.isArray(h?.checks) ? h.checks : [];
+  return {
+    ok: h?.status === "ok", status: short(h?.status ?? "unknown"),
+    checks: checks.map((c) => ({ name: short(c?.name), ok: c?.ok === true, detail: short(c?.detail ?? "") })),
+    about: `pid ${short(h?.pid)} · version ${short(h?.version)} · up since ${short(h?.started_at)}`,
+  };
+}
+
+// One line per op or histogram, the busiest first, at most OPS_SHOWN.
+function opLines(list) {
+  const rows = (Array.isArray(list) ? list : []).slice().sort((a, b) => (b?.count ?? 0) - (a?.count ?? 0));
+  const unit = (o) => (o?.unit && o.unit !== "ms" ? ` ${short(o.unit)}` : " ms");
+  const lines = rows.slice(0, OPS_SHOWN).map((o) => ({
+    name: [o?.op, o?.backend, o?.outcome].filter(Boolean).map(short).join(" · "),
+    value: `${short(o?.count ?? 0)} · p95 ${ms(o?.p95_ms)} · p99 ${ms(o?.p99_ms)}${unit(o)}`,
+  }));
+  if (rows.length > OPS_SHOWN) lines.push({ name: `… ${rows.length - OPS_SHOWN} more`, value: "" });
+  return lines;
+}
+
+const counts = (m) => {
+  const entries = Object.entries(m && typeof m === "object" ? m : {}).sort(([a], [b]) => (a < b ? -1 : 1));
+  return entries.length ? entries.map(([k, v]) => `${short(k)} ${short(v)}`).join(" · ") : "none";
+};
+
+// stats, summarised: what the person reads at a glance, then ops and histograms.
+function statsView(s) {
+  const st = s?.streams ?? {};
+  return {
+    summary: [
+      { name: "up since", value: short(s?.started_at ?? "?") },
+      { name: "open requests", value: short(s?.open_requests ?? 0) },
+      { name: "tasks", value: counts(s?.tasks) },
+      { name: "inbox depth", value: counts(s?.inbox_depth) },
+      { name: "streams", value: `watch ${short(st.watch ?? 0)} · audit ${short(st.audit ?? 0)} · presence ${short(st.presence ?? 0)}` },
+    ],
+    ops: opLines(s?.ops), histograms: opLines(s?.histograms), at: short(s?.at ?? ""),
+  };
+}
+
+// An audit event as one line, from its metadata fields only: an event never
+// carries a body, and a field this list does not name is never shown.
+function eventLine(ev) {
+  if (ev?.op === "missed") return { at: clock(ev?.at), text: `missed ${short(ev?.count ?? "?")} events`, warn: true };
+  const to = Array.isArray(ev?.to) ? ev.to.map(short).join(", ") : "";
+  const parts = [
+    `${short(ev?.op)} ${short(ev?.outcome)}`,
+    ev?.from ? `${short(ev.from)}${to ? ` → ${to}` : ""}` : to ? `→ ${to}` : "",
+    ev?.kind ? kindLabel(short(ev.kind)) : "",
+    ev?.grantee ? `grantee ${short(ev.grantee)}` : "",
+    Array.isArray(ev?.actions) && ev.actions.length ? ev.actions.map(short).join("+") : "",
+    ev?.policy ? `policy ${short(ev.policy)}` : "",
+    ev?.granted_by ? `by ${short(ev.granted_by)}` : "",
+    ev?.count ? `×${short(ev.count)}` : "",
+    `${ms(ev?.duration_ms)} ms`,
+    ev?.verified_sender === true ? "" : "unverified",
+  ];
+  return { at: clock(ev?.at), text: parts.filter(Boolean).join(" · "), warn: ev?.outcome !== "ok" && ev?.outcome !== "noop" };
+}
+
+// What the Status tab says when it cannot read.
+function statusProblemText(p) {
+  if (p.kind === "unauthorised") return `crosstalk did not take this panel for the person (unauthorised): stats, health and events are for the person only${p.hint ? ` · ${p.hint}` : ""}`;
+  if (p.kind === "unsupported") return `${p.message}${p.hint ? ` · ${p.hint}` : ""} · reopen the inbox after updating crosstalk`;
+  return `${p.message}${p.hint ? ` · ${p.hint}` : ""} · retrying`;
+}
+
 export default class Crosstalk extends View {
   init(_props, cx) {
     this.tab = "inbox"; this.me = null; this.problem = null; this.inbox = []; this.tasks = []; this.agents = [];
     this.open = null; this.watching = false; this.closed = false; this.retryAt = 0; this.delay = 1000;
     this.toasted = new Set(); this.pending = new Set(); this.lastToast = -Infinity; this.ready = false;
-    this.starting = false; this.reported = new Set();
+    this.starting = false; this.reported = new Set(); this.methods = null;
+    this.health = null; this.stats = null; this.events = []; this.statusProblem = null; this.statusAt = Infinity; this.statusLoading = false;
     this.input = InputState.new({ placeholder: "Reply…" });
     this.input.on("submit", (_e, cx) => this.reply(cx));
     cx.spawn(async (cx) => { await this.start(cx); });
     cx.timer.every(1000, (cx) => this.tick(cx));
+    // Key commands ("<key>": "crosstalk.<command>" in keys.json) while the panel is shown.
+    cx.spawn(async (cx) => { try { while (!this.closed) this.command(await nextCommand(), cx); } catch { /* no key commands here */ } });
+  }
+
+  command(c, cx) {
+    if (this.closed) return;
+    if (TABS.includes(c)) this.show(c, cx);
+    else if (c === "refresh") { if (this.tab === "status") this.statusAt = 0; this.tick(cx); }
+  }
+
+  show(tab, cx) {
+    this.tab = tab;
+    this.statusAt = tab === "status" ? 0 : Infinity;
+    if (tab === "status") this.tick(cx);
+    cx.notify();
   }
 
   async close() { this.closed = true; }
@@ -130,6 +228,7 @@ export default class Crosstalk extends View {
   async connect(cx) {
     const d = await rpc("rpc.discover");
     if (d.error) return this.fail(d.error, cx);
+    this.methods = new Set((d.result?.methods ?? []).map((m) => m.name));
     const missing = missingMethods(d.result);
     if (missing.length) return this.fail({ kind: "unsupported", message: "this crosstalk is too old for the inbox", hint: `missing: ${missing.join(", ")}` }, cx);
     const who = await rpc("whoami");
@@ -158,6 +257,7 @@ export default class Crosstalk extends View {
   tick(cx) {
     if (this.closed) return;
     this.flushToasts();
+    if (!this.statusLoading && Date.now() >= this.statusAt) cx.spawn(async (cx) => { await this.loadStatus(cx); });
     if (Date.now() < this.retryAt) return;
     if (!this.ready) { if (!this.starting) cx.spawn(async (cx) => { await this.start(cx); }); return; }
     this.arm(cx);
@@ -199,6 +299,44 @@ export default class Crosstalk extends View {
       if (!t.error) this.tasks = Array.isArray(t.result) ? t.result : t.result?.tasks ?? [];
     }
     if (!this.closed) cx.notify();
+  }
+
+  // The Status tab's read: health, stats, then the recent events, stopping
+  // at the first failure; the next read is STATUS_MS later, whatever happened.
+  async loadStatus(cx) {
+    if (this.closed || this.statusLoading) return;
+    this.statusLoading = true; this.statusAt = Date.now() + STATUS_MS;
+    try {
+      const missing = this.methods ? OBSERVER.filter((m) => !this.methods.has(m)) : [];
+      // No call is made for a too-old crosstalk: it waits for a reopen.
+      if (missing.length) return this.statusFail({ kind: "unsupported", message: "this crosstalk has no observer methods", hint: `missing: ${missing.join(", ")}` });
+      const h = await rpc("health");
+      if (this.closed) return;
+      if (h.error) return this.statusFail(h.error);
+      const s = await rpc("stats");
+      if (this.closed) return;
+      if (s.error) return this.statusFail(s.error);
+      const e = await rpc("events", { limit: EVENTS });
+      if (this.closed) return;
+      if (e.error) return this.statusFail(e.error);
+      this.health = h.result; this.stats = s.result;
+      this.events = (Array.isArray(e.result) ? e.result : []).slice(-EVENTS).reverse();
+      this.statusProblem = null;
+    } finally {
+      this.statusLoading = false;
+      if (!this.closed) cx.notify();
+    }
+  }
+
+  // The last good read stays, marked by its time.
+  statusFail(error) {
+    if (this.closed) return;
+    this.statusProblem = { kind: error.kind, message: clean(error.message, 300), hint: clean(error.hint, 300) };
+    const key = `${error.kind}:${error.message}`;
+    if (error.kind === "bug" && !this.reported.has(key)) {
+      this.reported.add(key);
+      notify({ title: "crosstalk inbox: bug", body: `${this.statusProblem.message} ${this.statusProblem.hint}`.trim(), level: "error" });
+    }
   }
 
   setInbox(deliveries) {
@@ -278,12 +416,50 @@ export default class Crosstalk extends View {
       .child(div().h(30).px(10).flex().items_center().rounded(8).border_1().border_color(t.border).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.input).h_full().text_size(12)));
   }
 
+  statusView(t) {
+    const head = (text) => div().px(10).pt(10).pb(2).text_size(11).font_semibold().text_color(t.muted).child(text);
+    const dim = (text) => div().px(10).py(2).text_size(12).text_color(t.dim).child(text);
+    const line = (id, name, value, color) => h_flex().id(id).px(10).py(2).gap(8)
+      .child(div().w(160).flex_none().truncate().text_size(11).text_color(t.muted).child(name))
+      .child(div().flex_1().truncate().text_size(12).text_color(color ?? t.foreground).child(value));
+    const lines = (prefix, rows) => (rows.length ? rows.map((r, i) => line(`${prefix}-${i}`, r.name, r.value)) : [dim("none yet")]);
+    const items = [];
+    const p = this.statusProblem;
+    if (p) items.push(div().p(10).text_size(12).text_color(p.kind === "unauthorised" ? t.blocked : t.dim).child(statusProblemText(p)));
+    if (!this.health && !this.stats) {
+      if (!p) items.push(dim("Reading crosstalk…"));
+      return v_flex().children(items);
+    }
+    if (this.health) {
+      const h = healthView(this.health);
+      items.push(h_flex().px(10).pt(10).gap(8).items_center()
+        .child(div().font_semibold().text_color(h.ok ? t.foreground : t.blocked).child(h.ok ? "Healthy" : `Health: ${h.status}`))
+        .child(div().text_size(10).text_color(t.dim).truncate().child(h.about)));
+      items.push(...h.checks.map((c, i) => line(`check-${i}`, c.name, c.ok ? "ok" : `failing${c.detail ? `: ${c.detail}` : ""}`, c.ok ? t.dim : t.blocked)));
+    }
+    if (this.stats) {
+      const s = statsView(this.stats);
+      items.push(head(`Stats${s.at ? ` · as of ${s.at}` : ""}`), ...lines("sum", s.summary));
+      items.push(head("Ops (count · p95 · p99)"), ...lines("op", s.ops));
+      items.push(head("Histograms"), ...lines("hist", s.histograms));
+    }
+    items.push(head("Recent events (newest first, metadata only)"));
+    items.push(...(this.events.length ? this.events.map((ev, i) => {
+      const l = eventLine(ev);
+      return h_flex().id(`event-${i}`).px(10).py(2).gap(8)
+        .child(div().w(60).flex_none().text_size(10).text_color(t.dim).child(l.at))
+        .child(div().flex_1().truncate().text_size(11).text_color(l.warn ? t.blocked : t.foreground).child(l.text));
+    }) : [dim("none yet")]));
+    return v_flex().children(items);
+  }
+
   render(cx) {
     const t = theme();
-    const tabBtn = (id, label) => div().id(`tab-${id}`).px(10).py(4).rounded(6).cursor_pointer().text_size(12).when(this.tab === id, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.tab = id; cx.notify(); }).child(label);
+    const tabBtn = (id, label) => div().id(`tab-${id}`).px(10).py(4).rounded(6).cursor_pointer().text_size(12).when(this.tab === id, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.show(id, cx)).child(label);
     const empty = (text) => div().p(10).text_color(t.dim).text_size(12).child(text);
     let body;
-    if (this.problem && !this.ready) body = empty(`${this.problem.message}${this.problem.hint ? ` · ${this.problem.hint}` : ""}${retryNote(this.problem)}`);
+    if (this.tab === "status") body = this.statusView(t);
+    else if (this.problem && !this.ready) body = empty(`${this.problem.message}${this.problem.hint ? ` · ${this.problem.hint}` : ""}${retryNote(this.problem)}`);
     else if (this.tab === "inbox") body = this.inbox.length ? v_flex().children(this.inbox.map((d) => this.row(d, t))) : empty(this.ready ? "No messages" : "Connecting…");
     else if (this.tab === "tasks") body = this.tasks.length ? v_flex().children(this.tasks.map((k) => h_flex().id(`task-${k.id}`).px(10).py(6).gap(8)
       .child(div().w(80).text_size(10).text_color(t.muted).child(clean(k.status, 20)))
@@ -300,7 +476,7 @@ export default class Crosstalk extends View {
         .child(div().font_semibold().child("crosstalk"))
         .child(div().text_size(10).text_color(t.dim).truncate().child(this.me ? `${clean(this.me.address, 200)}${this.me.verified ? "" : " (unverified)"}` : ""))
         .child(div().flex_1())
-        .child(tabBtn("inbox", this.inbox.length ? `Inbox ${this.inbox.length}` : "Inbox")).child(tabBtn("tasks", "Tasks")).child(tabBtn("agents", "Agents")))
+        .child(tabBtn("inbox", this.inbox.length ? `Inbox ${this.inbox.length}` : "Inbox")).child(tabBtn("tasks", "Tasks")).child(tabBtn("agents", "Agents")).child(tabBtn("status", "Status")))
       .child(div().id("crosstalk-body").flex_1().min_h(0).overflow_y_scroll().p(6).child(body))
       .when(this.tab === "inbox" && Boolean(this.open), (el) => el.child(this.openActions(t)))
       .when(Boolean(this.note), (el) => el.child(div().px(12).pb(8).text_size(11).text_color(t.ansi1).child(this.note)))

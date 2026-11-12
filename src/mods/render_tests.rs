@@ -911,3 +911,19 @@ fn status_bar_shows_the_real_palette_key(cx: &mut TestAppContext) {
     assert!(tree.contains("commands"), "unbound hint still offers commands: {tree}");
     assert!(!tree.contains("Shift P"), "unbound hint must not invent a key: {tree}");
 }
+
+#[gpui::test]
+fn crosstalk_status_tab_shows_health_stats_and_events_metadata_only(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let setup = "this.tab = 'status'; this.statusAt = Infinity; \
+        this.health = {status:'degraded', pid:7, version:1, started_at:'2026-11-12T08:00:00Z', checks:[{name:'backend', ok:true}, {name:'host', ok:false, detail:'herdr-core did not answer'}]}; \
+        this.stats = {at:'2026-11-12T09:00:00Z', started_at:'2026-11-12T08:00:00Z', open_requests:2, counters:{}, inbox_depth:{}, tasks:{open:1}, streams:{watch:1, audit:0, presence:0}, \
+          ops:[{op:'publish', backend:'sqlite', outcome:'ok', count:40, mean_ms:4, p50_ms:3, p95_ms:12, p99_ms:30, unit:'ms', overflow:0, max_bound:1000}], histograms:[]}; \
+        this.events = [{op:'publish', outcome:'ok', duration_ms:1.5, verified_sender:false, at:'2026-11-12T09:00:01Z', from:'data.agent.mbp.a', body:{text:'SECRET'}}];";
+    let tree = describe(cx, &staged, "mods/crosstalk", false, props(), updates("current", "current"), Some(setup)).unwrap();
+    for shown in ["Health: degraded", "failing: herdr-core did not answer", "open requests", "publish · sqlite · ok", "40 · p95 12 · p99 30 ms", "Recent events", "09:00:01", "publish ok · data.agent.mbp.a · 1.5 ms · unverified", "tab-status"] {
+        assert!(tree.contains(shown), "{shown}: {tree}");
+    }
+    assert!(!tree.contains("SECRET"), "an event body must never show: {tree}");
+}

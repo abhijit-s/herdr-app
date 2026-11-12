@@ -1022,7 +1022,7 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
   at its top; the
   `spaces` sidebar nests worktree spaces under their repo's and shows each
   space's repo, branch, ahead/behind and uncommitted changes),
-  and `crosstalk` (the person's crosstalk inbox, tasks and agents, opened with `mod.open {name: "crosstalk"}`; it only runs the `crosstalk` command, `rpc` and `watch --once`, shows message bodies as cleaned plain text, and puts the unread count in `shared("crosstalk.unread")`). Shipped mods
+  and `crosstalk` (the person's crosstalk inbox, tasks and agents, plus a read-only Status tab of crosstalk `health`, `stats` and recent audit `events`, opened with `mod.open {name: "crosstalk"}`; its tabs are key commands `crosstalk.inbox|tasks|agents|status|refresh`; it only runs the `crosstalk` command, `rpc` and `watch --once`, shows message bodies as cleaned plain text, and puts the unread count in `shared("crosstalk.unread")`). Shipped mods
   are Herdr's; duplicate with `mod.clone` before editing.
 
 ### Check before you finish
