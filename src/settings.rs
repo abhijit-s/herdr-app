@@ -1376,6 +1376,9 @@ pub struct Person {
     pub font_size: Option<f32>,
     /// The terminals' row height, as a multiple of the font's height.
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_line_height: Option<f32>,
+    /// `terminal_line_height` by its other name, used when that is unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub line_height: Option<f32>,
     /// The terminals' text weight, 100 to 900; bold text is at least 700.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1444,6 +1447,9 @@ pub struct Person {
     /// The display's color subpixels left to right, for subpixel smoothing.
     #[serde(skip_serializing_if = "SubpixelOrder::is_rgb")]
     pub subpixel_order: SubpixelOrder,
+    /// Wheel and trackpad scroll multiplier, 0.1..5.
+    #[serde(skip_serializing_if = "is_one")]
+    pub terminal_scroll_speed: f32,
     /// The panels' font (their sizes follow zoom).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_font: Option<String>,
@@ -2530,6 +2536,7 @@ impl Default for Person {
             core: None,
             font: None,
             font_size: None,
+            terminal_line_height: None,
             line_height: None,
             font_weight: None,
             font_weight_bold: None,
@@ -2550,6 +2557,7 @@ impl Default for Person {
             text_rendering: TextRendering::Grayscale,
             ui_text_rendering: TextRendering::Grayscale,
             subpixel_order: SubpixelOrder::Rgb,
+            terminal_scroll_speed: 1.0,
             ui_font: None,
             ui_font_weight: UI_FONT_WEIGHT_DEFAULT,
             telemetry: true,
@@ -2592,6 +2600,7 @@ pub struct Settings {
     pub font_family: String,
     pub font_size: f32,
     /// The terminals' row height, as a multiple of the font's height.
+    #[serde(rename = "terminal_line_height", alias = "line_height")]
     pub line_height: f32,
     /// The terminals' text weight (bold text is at least 700).
     pub font_weight: u16,
@@ -2630,6 +2639,8 @@ pub struct Settings {
     /// The panels' text's smoothing.
     pub ui_text_rendering: TextRendering,
     pub subpixel_order: SubpixelOrder,
+    /// Wheel and trackpad scroll multiplier, 0.1..5.
+    pub terminal_scroll_speed: f32,
     pub ui_font_family: String,
     pub ui_font_size: f32,
     /// The panels' regular text weight (see `ui_weight_shift`).
@@ -2774,6 +2785,7 @@ impl Default for Settings {
             text_rendering: TextRendering::Grayscale,
             ui_text_rendering: TextRendering::Grayscale,
             subpixel_order: SubpixelOrder::Rgb,
+            terminal_scroll_speed: 1.0,
             ui_font_family: "Geist".into(),
             ui_font_size: 13.0,
             ui_font_weight: UI_FONT_WEIGHT_DEFAULT,
@@ -2865,7 +2877,7 @@ impl Settings {
             // The layout's own, else the person's, else Herdr's.
             font_family: look.font.clone().or(person.font.clone()).unwrap_or(d.font_family),
             font_size: look.font_size.or(person.font_size).unwrap_or(d.font_size),
-            line_height: look.line_height.or(person.line_height).unwrap_or(d.line_height),
+            line_height: look.terminal_line_height.or(look.line_height).or(person.terminal_line_height).or(person.line_height).unwrap_or(d.line_height),
             font_weight: look.font_weight.or(person.font_weight).unwrap_or(d.font_weight),
             font_weight_bold: look.font_weight_bold.or(person.font_weight_bold),
             font_fallbacks: (!person.font_fallbacks.is_empty()).then(|| gpui::FontFallbacks::from_fonts(person.font_fallbacks.clone())),
@@ -2886,6 +2898,7 @@ impl Settings {
             text_rendering: person.text_rendering,
             ui_text_rendering: person.ui_text_rendering,
             subpixel_order: person.subpixel_order,
+            terminal_scroll_speed: look.terminal_scroll_speed.unwrap_or(person.terminal_scroll_speed).clamp(0.1, 5.0),
             ui_font_family: look.ui_font.clone().or(person.ui_font.clone()).unwrap_or(d.ui_font_family),
             ui_font_size: d.ui_font_size,
             ui_font_weight: person.ui_font_weight,
@@ -3068,7 +3081,7 @@ impl Settings {
             out.push(format!("font_size {} is outside 6..72", self.font_size));
         }
         if !(0.8..=2.0).contains(&self.line_height) {
-            out.push(format!("line_height {} is outside 0.8..2", self.line_height));
+            out.push(format!("terminal_line_height {} is outside 0.8..2", self.line_height));
         }
         let (ui_zoom, ui_text_scale) = self.asked_ui_scales;
         for (key, asked, (lo, hi), used) in [("ui_zoom", ui_zoom, UI_ZOOM_RANGE, self.ui_zoom), ("ui_text_scale", ui_text_scale, UI_TEXT_SCALE_RANGE, self.ui_text_scale)] {
@@ -3419,6 +3432,8 @@ impl Settings {
         let mut v = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
         if let Some(o) = v.as_object_mut() {
             o.insert("terminal_font".into(), self.terminal_font_for_mods());
+            // Mods written before `terminal_line_height` read it by this name.
+            o.insert("line_height".into(), serde_json::json!(self.line_height));
             o.insert("ui_scale".into(), serde_json::json!(self.ui_scale()));
             let in_use = PALETTE.with_borrow(|(p, own)| panels_in_use(self.panel_colors, p, own, self.look_paints_panels));
             o.insert("panels_in_use".into(), serde_json::json!(in_use));
@@ -3691,6 +3706,38 @@ mod tests {
             });
         }
         assert!(serde_json::from_str::<Person>(r#"{"font_thicken":1}"#).is_err());
+    }
+
+    #[test]
+    fn terminal_multipliers_default_inherit_override_and_clamp() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        let look = crate::layout::Look::default();
+        let s = Settings::compose(&default, &look, true);
+        assert_eq!((s.line_height, s.terminal_scroll_speed), (1.15, 1.0));
+        let person: Person = serde_json::from_str(r#"{"terminal_line_height":1.3,"terminal_scroll_speed":0.5}"#).unwrap();
+        let roundtrip: Person = serde_json::from_value(serde_json::to_value(&person).unwrap()).unwrap();
+        let s = Settings::compose(&roundtrip, &look, true);
+        assert_eq!((s.line_height, s.terminal_scroll_speed), (1.3, 0.5));
+        let look: crate::layout::Look = serde_json::from_str(r#"{"terminal_line_height":1.6,"terminal_scroll_speed":10}"#).unwrap();
+        let s = Settings::compose(&person, &look, true);
+        assert_eq!((s.line_height, s.terminal_scroll_speed), (1.6, 5.0));
+        let person = Person { terminal_scroll_speed: 0.0, ..default };
+        let s = Settings::compose(&person, &crate::layout::Look::default(), true);
+        assert_eq!(s.terminal_scroll_speed, 0.1);
+    }
+
+    #[test]
+    fn line_height_is_read_where_terminal_line_height_is_unset() {
+        let none = crate::layout::Look::default();
+        let both: Person = serde_json::from_str(r#"{"line_height":1.0,"terminal_line_height":1.4}"#).unwrap();
+        assert_eq!(Settings::compose(&both, &none, true).line_height, 1.4);
+        let old: Person = serde_json::from_str(r#"{"line_height":1.0}"#).unwrap();
+        assert_eq!(Settings::compose(&old, &none, true).line_height, 1.0);
+        assert_eq!(serde_json::to_value(&old).unwrap().get("terminal_line_height"), None);
+        let look: crate::layout::Look = serde_json::from_str(r#"{"line_height":1.2}"#).unwrap();
+        assert_eq!(Settings::compose(&both, &look, true).line_height, 1.2);
+        let look: crate::layout::Look = serde_json::from_str(r#"{"line_height":1.2,"terminal_line_height":1.5}"#).unwrap();
+        assert_eq!(Settings::compose(&old, &look, true).line_height, 1.5);
     }
 
     #[test]

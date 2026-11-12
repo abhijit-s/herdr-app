@@ -2142,9 +2142,24 @@ export default class Settings extends View {
   text(t, page) {
     const s = settings();
     const p = this.person;
-    const own = (key, composed, def) => (p[key] ?? def) !== composed;
+    // Numbers come back from the host as 32-bit floats: 1.1 reads as 1.100000023841858.
+    const same = (a, b) => (typeof a === "number" && typeof b === "number" ? Math.abs(a - b) < 1e-4 : a === b);
+    const own = (key, composed, def) => !same(p[key] ?? def, composed);
     const size = (key, value, d, cx) => this.change((q) => (q[key] = Math.max(8, Math.min(32, (q[key] ?? value) + d))), cx);
     const step = (key, value, d, lo, hi, cx) => this.change((q) => (q[key] = Math.round(Math.max(lo, Math.min(hi, (q[key] ?? value) + d)) * 100) / 100), cx);
+    // 100% is the default, left out of settings.json.
+    const scrollStep = (d, cx) =>
+      this.change((q) => {
+        const next = Math.round(Math.max(0.1, Math.min(5, (q.terminal_scroll_speed ?? s.terminal_scroll_speed) + d)) * 10) / 10;
+        if (next === 1) delete q.terminal_scroll_speed;
+        else q.terminal_scroll_speed = next;
+      }, cx);
+    // Writes terminal_line_height, taking line_height (its other name) with it.
+    const lineStep = (d, cx) =>
+      this.change((q) => {
+        q.terminal_line_height = Math.round(Math.max(0.8, Math.min(2, (q.terminal_line_height ?? q.line_height ?? s.terminal_line_height) + d)) * 100) / 100;
+        delete q.line_height;
+      }, cx);
     // Fractional settings arrive as f32 widened to f64 (1.15 as 1.1499999...).
     const ownFraction = (key, composed, def) => Math.abs((p[key] ?? def) - composed) > 0.001;
     const fraction = (v) => `${Math.round(v * 100) / 100}`;
@@ -2278,9 +2293,18 @@ export default class Settings extends View {
             this.row(
               t,
               "Line height",
-              ownFraction("line_height", s.line_height, 1.15) ? "This layout sets its own; yours shows in the others." : "Row height, as a multiple of the font's height.",
-              this.stepper(t, "st-line_height", fraction(s.line_height), (_e, cx) => step("line_height", s.line_height, -0.05, 0.8, 2, cx), (_e, cx) => step("line_height", s.line_height, 0.05, 0.8, 2, cx)),
-              "line_height",
+              Math.abs((p.terminal_line_height ?? p.line_height ?? 1.15) - s.terminal_line_height) > 0.001 ? "This layout sets its own; yours shows in the others." : "Row height, as a multiple of the font's height.",
+              this.stepper(t, "st-line_height", fraction(s.terminal_line_height), (_e, cx) => lineStep(-0.05, cx), (_e, cx) => lineStep(0.05, cx)),
+              "terminal_line_height",
+            ),
+          )
+          .child(
+            this.row(
+              t,
+              "Scroll speed",
+              ownFraction("terminal_scroll_speed", s.terminal_scroll_speed, 1) ? "This layout sets its own; yours shows in the others." : "Wheel and trackpad scrolling, mouse reports to programs included.",
+              this.stepper(t, "st-terminal_scroll_speed", `${Math.round(s.terminal_scroll_speed * 100)}%`, (_e, cx) => scrollStep(-0.1, cx), (_e, cx) => scrollStep(0.1, cx)),
+              "terminal_scroll_speed",
             ),
           )
           .child(
@@ -2606,6 +2630,9 @@ export default class Settings extends View {
         .child(v_flex().flex_1().min_w(0).gap(3)
           .child(div().text_size(14).text_color(t.foreground).child(m.name))
           .child(div().text_size(12.5).text_color(t.dim).child(`${m.target ?? ""} · ${state} · ${m.version ? `hc ${m.version}` : "hc version unknown"}`)))
+        .when(m.keeps_running_after_logout === false, el => el.child(div().id(`st-m-logout-${m.name}`)
+          .text_color(t.blocked).cursor_pointer().tooltip("Agents stop when you disconnect. Click for the fix.")
+          .on_click(() => run("mod.open", { name: "machine-add" })).child("⚠")))
         .child(controls.flex_none()));
     if (m.state === "needs_login") {
       const command = `hc machine login ${m.name}`;
@@ -2796,7 +2823,7 @@ export default class Settings extends View {
         : [result, check("st-check-app")];
     const c = u.core;
     const core = c.managed
-      ? [`Managed by ${c.managed}: update it there.`, null]
+      ? [`Managed by ${c.managed}: update it there.${c.ready ? ` ${c.ready} is available.` : ""}`, u.checks ? check("st-check-core") : null]
       : c.updating
         ? ["Updating\u2026 your terminals keep running.", null]
         : c.error

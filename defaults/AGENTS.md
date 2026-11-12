@@ -407,6 +407,8 @@ layout's look and a block can differ:
   A theme named like a layout (`themes/win98.json`) is
   that layout's own: Settings offers it only there.
   `herdr-app rex-themes` writes `themes/rex-<name>.json` for each theme of the installed Rex app (read from the app on every run, never shipped), replacing only `rex-*` files; `--dry-run` lists what it would write.
+- `terminal_scroll_speed`: wheel and trackpad multiplier (default 1, clamped
+  to 0.1..5), including mouse reports to programs. Small moves accumulate.
 - `font` / `font_size` / `letter_spacing`: the terminals' (px at zoom 1); `ui_font`: the mods'
   (their text sizes are their own, in px, and follow zoom, `ui_zoom` and `ui_text_scale`). Optional: without
   them a layout uses settings.json's, else Herdr's (JetBrains Mono 14, Geist).
@@ -418,8 +420,10 @@ layout's look and a block can differ:
   folder (or the home's `fonts/`) load at start and on the next look change,
   so a layout and its mod folder travel together (Herdr 98's do: its pixel
   fonts are in `mods/win98/fonts/`).
-- `line_height` (0.8..2): the terminals' row height, as a multiple of the
-  font's height. Default 1.15; 1 packs rows like most terminals do.
+- `terminal_line_height` (0.8..2): the terminals' row height, as a multiple of the
+  font's height (its ascent plus descent). Default 1.15; 1 packs rows like most terminals do.
+  Text stays centred in the row. `line_height` is the same setting by its other name, read
+  where `terminal_line_height` is unset.
 - `font_weight` (100..900): the terminals' text weight. Default 500
   (Medium); 400 is Regular, 300 Light, using the family's nearest face.
   Bold text uses 700, or `font_weight` when that is heavier.
@@ -727,7 +731,7 @@ The main ones:
   keeps the popup up until a key; closing the popup (✕, Esc, the backdrop) ends
   its program, and so does the next popup; keep-as-tab keeps it; `herdr-app popup` wraps it),
   `terminal.show {terminal?, pane?}`, `terminal.search` (screen and scrollback;
-  find bar state stays with that terminal), `terminal.copy {terminal?}` (the selection), `terminal.copy_all {terminal?}` (the screen and all the history the core keeps, as plain text: what `hc read` prints, without the blank lines below the last text; a toast says how many lines), `terminal.copy_path {terminal?}` (the folder the terminal is in), `terminal.copy_last_output {terminal?}` (the output of the last command that finished, wrapped lines joined, without trailing blank lines; see "Copy last output" below), `terminal.paste {terminal?}` (copied
+  find bar state stays with that terminal), `terminal.select_all {terminal?}` (selects the whole screen and scrollback for copying; only the alternate screen in vim and similar apps; Cmd+A on macOS, no default on Linux/Windows), `terminal.copy {terminal?}` (the selection), `terminal.copy_all {terminal?}` (the screen and all the history the core keeps, as plain text: what `hc read` prints, without the blank lines below the last text; a toast says how many lines), `terminal.copy_path {terminal?}` (the folder the terminal is in), `terminal.copy_last_output {terminal?}` (the output of the last command that finished, wrapped lines joined, without trailing blank lines; see "Copy last output" below), `terminal.paste {terminal?}` (copied
   files, such as Finder's or a clipboard manager's image, as if dropped; an image
   alone as `terminal.paste_image` pastes it), `terminal.paste_image` (Ctrl+V: an
   image, into a terminal on another machine: copied there, its path pasted; on
@@ -805,7 +809,12 @@ The main ones:
   Add machine lists all named ssh-config hosts in a scrollable list. Machines
   that need a password, a new host key or herdr-core installed show what to run
   in your own terminal; the picker updates once it is added. Other machines are
-  added quietly. Login guidance includes Copy. A machine that needs a login shows
+  added quietly. If a Linux server reports that programs stop at logout, its
+  added card warns that agents stop when you disconnect and offers the administrator's
+  `sudo loginctl enable-linger -- <user>` command with Copy. A warning mark in
+  Settings > Machines and the sidebar opens that card; it clears automatically
+  after the administrator enables lingering. Older cores show no warning.
+  Login guidance includes Copy. A machine that needs a login shows
   `hc machine login <name>` with Copy in Settings > Machines, its sidebar group,
   the welcome screen and the failed New space toast. If a remote machine was rebuilt
   or replaced and a different core answers there, its sidebar offers Connect:
@@ -956,7 +965,10 @@ What's about the user, never a look:
 - `core`: the herdr-core binary to use, when it isn't where Herdr looks
   (PATH, the login shell's PATH, `~/.local/bin`, Homebrew, mise, Nix,
   cargo). Read at start.
-- `font`, `font_size`, `line_height`, `font_weight`, `font_weight_bold`, `letter_spacing`, `ui_font`: used where the layout doesn't set its
+- `terminal_line_height` (default 1.15, 0.8..2; `line_height` is read where it is unset) and `terminal_scroll_speed`
+  (default 1, 0.1..5): terminal row height and wheel/trackpad speed, used
+  where the layout leaves them unset.
+- `font`, `font_size`, `font_weight`, `font_weight_bold`, `letter_spacing`, `ui_font`: used where the layout doesn't set its
   own. Herdr (main) leaves these unset. Bigger panels: `zoom`.
 - Mods that show code as the terminals do read `settings().terminal_font`: `{ family, size, weight, line_height, fallbacks }`, the terminals' resolved font (the layout's, else the person's, else Herdr's) in a mod's own units. `size` is for `text_size` or an `EditorState`'s `font_size`: it is the terminals' px divided by the panels' scale and text scale, so it draws at the terminals' size whatever `ui_zoom` and `ui_text_scale` are. `weight` is for `font_weight`: `font_weight` less the panels' `ui_font_weight` shift, so it draws at the terminals' weight; a weight whose shifted value would fall outside 100..900 is clamped there, so at the extremes the panel can draw lighter or heavier than the terminals. Both are worked out for the scales of the moment: read them at each render, not once. `line_height` is the terminals' multiple of the font's height (ascent plus descent), not of its size as an element's `line_height` takes it, so use it to size rows rather than passing it on. `fallbacks` is `font_fallbacks`, for information. Panel text takes the panels' `ui_font_thicken`, `ui_text_contrast` and `ui_text_rendering`; to draw text in the terminals' font and glyph rendering, style it `terminal_text()`: it and its children take the terminals' family, weight (with no `ui_font_weight` shift, so don't also pass `weight`), `font_fallbacks`, `font_ligatures`, `font_thicken`, `text_contrast` and `text_rendering`. It sets no size: give it `text_size(size)`. Font styles set on the same element or below still win, so `font_bold()` inside it is 700 (not `font_weight_bold`); inside gpui-base's text and markdown views an explicit default (`font_normal()`, weight 400) takes the terminals' weight instead. It is not the terminal grid: glyphs take their own advances, not cells (`letter_spacing` and `cell_width` don't apply), box and block characters are font glyphs, and faint and dimmed text are the mod's to draw. The Changes panel's diff is styled this way. `settings().font_family` is the same family, kept for mods that read it. On builds without `terminal_font`, `settings().terminal_font` is `undefined`.
 - `font_ligatures`: programming ligatures are off by default; set `true` to
@@ -1026,6 +1038,9 @@ What's about the user, never a look:
   waiting, the next launch installs it before opening a window. The first
   start after an app update also updates herdr-core
   to the latest release of the same generation, keeping terminals running.
+  Package-managed cores stay with their package manager; Settings shows available releases.
+  A core update error can be dismissed with its × or `overlay.close {id:"core-update-error"}`
+  until the error changes or the update recovers.
   Settings → Updates keeps app and core actions together;
   its What's new button opens the waiting update's release range, or this
   version's notes, in the What's new window. Reading never clears the waiting-update dot.
@@ -1451,6 +1466,12 @@ All of it is in `herdr.d.ts`. In short:
   and trees above 4096 non-ignored directories reject the watch; use a timer fallback.
   macOS and Windows watch recursively, including ignored directories.
   A returned root path means refresh everything (the pending paths are bounded).
+  At most 64 folders can have pending watches at once; further folders reject.
+  Idle watches can be reclaimed to make room, so reload when starting a watch.
+  The returned promise also has `cancel()`: keep it and cancel when you stop
+  showing the folder. Cancellation resolves with `[]` and releases this call
+  without stopping other callers: `const watch = watchFolder(dir); watch.cancel();`.
+  Closing a mod copy cancels its pending calls.
   Files also refreshes on its 10-second timer:
   `cx.spawn(async (cx) => { for (;;) { await watchFolder(dir); this.reload(); cx.notify(); } })`.
 - `notify({ ..., action: { name, args } })`: the toast runs the command when clicked.

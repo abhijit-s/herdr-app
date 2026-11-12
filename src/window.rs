@@ -762,6 +762,7 @@ pub struct AppWindow {
     /// What's waiting, in words (`update_label`).
     update_ready: Option<String>,
     update_dismissed: Option<String>,
+    core_update_error_dismissed: Option<String>,
     update_success: bool,
     update_status: String,
     /// The "Copied" toast on screen: the next copy replaces it.
@@ -896,6 +897,7 @@ impl AppWindow {
             polls: 0,
             update_ready: None,
             update_dismissed: None,
+            core_update_error_dismissed: None,
             update_success: false,
             update_status: String::new(),
             copied_toast: None,
@@ -4597,6 +4599,17 @@ impl AppWindow {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
                 self.show_copied_as(json!({ "title": format!("Copied {} {}", thousands(lines), if lines == 1 { "line" } else { "lines" }) }), window, cx);
             }
+            "terminal.select_all" => {
+                let view = match Self::owned(a, "terminal") {
+                    Some(address) => self.shown_terminal_view(&address, window, cx),
+                    None => self.focused_terminal(window, cx).map(|t| t.view.clone()).ok_or_else(|| "no focused terminal to select".into()),
+                };
+                match view {
+                    Ok(view) => view.update(cx, |view, cx| view.select_all(cx)),
+                    Err(error) => self.fail(error),
+                }
+                return;
+            }
             "terminal.scroll" => {
                 if let Err(error) = self.scroll_terminal(a, window, cx) {
                     self.fail(error);
@@ -5513,6 +5526,11 @@ impl AppWindow {
     /// The peek overlay closing (✕, Esc, the backdrop) ends the last popup's
     /// program, shown or hidden under it: nothing would show it again.
     fn close_overlay(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if id == "core-update-error" {
+            self.core_update_error_dismissed = crate::update::core().error;
+            cx.notify();
+            return;
+        }
         if let Some(k) = self.overlays.iter().find(|o| o.id == id).and_then(|o| o.key.clone()) {
             movable::forget(&self.layout_name, &k);
         }
@@ -5729,6 +5747,7 @@ impl AppWindow {
         // The settings screen shows versions and progress: redraw mods when they move.
         let status = crate::update::status().to_string();
         if status != self.update_status {
+            reconcile_core_update_error(&mut self.core_update_error_dismissed, &crate::update::core());
             self.update_status = status;
             self.refresh_mods(cx);
         }
@@ -6347,21 +6366,29 @@ impl AppWindow {
                 OverlayKind::Toast => out.push(place(body.into_any_element(), spots.next().unwrap_or(past))),
             }
         }
-        // Past the toasts, on their edge: it stays until an update goes through.
-        if let Some(error) = crate::update::core().error {
+        // Past the toasts, on their edge: it stays until an update goes through or
+        // it is dismissed; a managed core's updates are left to their manager.
+        let core = crate::update::core();
+        if let Some(error) = core.error.filter(|error| core.managed.is_none() && self.core_update_error_dismissed.as_ref() != Some(error)) {
             let terminal = design == settings::ToastDesign::Terminal;
             let mark = design.mark(s.toast_mark);
             let notice = toast_frame(div().when(banner, |d| d.w_full()).when(!banner, |d| d.max_w(settings::z(540.0))).flex().overflow_hidden(), design, s.toast_corners, "toast_error", top)
                 .text_size(settings::zt(13.0)).text_color(c("toast_foreground"))
                 .when(terminal, |d| d.font_family(s.font_family.clone()))
-                .id("core-update-error").cursor_pointer()
-                .on_click(cx.listener(|this, _, w, cx| this.run("app.settings", json!({ "section": "updates" }), w, cx)))
+                .occlude()
                 .when(mark == settings::ToastMark::Stripe, |d| d.child(div().w(settings::z(TOAST_STRIPE)).flex_none().bg(c("toast_error"))))
                 .when(mark == settings::ToastMark::Dot, |d| {
                     d.child(div().pl(settings::z(12.0)).flex().items_center().child(div().size(settings::z(8.0)).rounded(settings::z(4.0)).bg(c("toast_error"))))
                 })
                 .when(terminal, |d| d.child(div().pl(settings::z(12.0)).flex().items_center().text_color(c("toast_error")).child("[ERR]")))
-                .child(div().p(settings::z(12.0)).child(format!("herdr-core update failed: {error} · Open Updates")));
+                .child(div().id("core-update-error").flex_1().min_w_0().p(settings::z(12.0)).cursor_pointer()
+                    .on_click(cx.listener(|this, _, w, cx| this.run("app.settings", json!({ "section": "updates" }), w, cx)))
+                    .child(format!("herdr-core update failed: {error} · Open Updates")))
+                .child(div().pr(settings::z(8.0)).flex().flex_none().items_center()
+                    .child(div().id("core-update-error-dismiss").size(settings::z(24.0))
+                        .flex().items_center().justify_center().rounded_full().cursor_pointer()
+                        .text_color(c("dim")).hover(|s| s.bg(c("raised")).text_color(c("foreground"))).child("×")
+                        .on_click(cx.listener(|this, _, w, cx| this.close_overlay("core-update-error", w, cx)))));
             out.push(place(notice.into_any_element(), past));
         }
         out.extend(pill);
@@ -6492,7 +6519,7 @@ impl AppWindow {
     /// What's waiting, in words: the pill shows it until clicked or dismissed.
     fn update_label() -> Option<String> {
         let core = crate::update::core();
-        let core = core.ready.filter(|_| !core.updating);
+        let core = core.ready.filter(|_| !core.updating && core.managed.is_none());
         match (crate::update::ready(), core) {
             (Some(a), Some(c)) => Some(format!("Herdr {a} and herdr-core {c} are ready")),
             (Some(a), None) => Some(format!("Herdr {a} is ready")),
@@ -7304,10 +7331,38 @@ fn changed_asset_paths(home: &std::path::Path, changed: &[std::path::PathBuf]) -
     paths.into_iter().collect()
 }
 
+fn reconcile_core_update_error(dismissed: &mut Option<String>, core: &crate::update::CoreInfo) {
+    if core.error.as_ref().is_some_and(|error| dismissed.as_ref() != Some(error)) || (!core.updating && core.error.is_none()) {
+        *dismissed = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use gpui::{div, point, px, size, Context, IntoElement, Render, TestAppContext, Window};
     use gpui::prelude::*;
+
+    #[test]
+    fn core_error_dismissal_survives_failed_retries_but_resets_after_recovery() {
+        let mut dismissed = Some("connection closed".to_owned());
+        let mut core = crate::update::CoreInfo { updating: true, ..Default::default() };
+        super::reconcile_core_update_error(&mut dismissed, &core);
+        assert!(dismissed.is_some());
+        core.updating = false;
+        core.error = Some("connection closed".into());
+        super::reconcile_core_update_error(&mut dismissed, &core);
+        assert_eq!(dismissed, core.error);
+        core.error = None;
+        super::reconcile_core_update_error(&mut dismissed, &core);
+        assert!(dismissed.is_none());
+        core.error = Some("connection closed".into());
+        super::reconcile_core_update_error(&mut dismissed, &core);
+        assert_ne!(dismissed, core.error);
+        dismissed = core.error.clone();
+        core.error = Some("checksum mismatch".into());
+        super::reconcile_core_update_error(&mut dismissed, &core);
+        assert!(dismissed.is_none());
+    }
 
     #[test]
     fn going_back_into_a_split_column_takes_its_top_pane_whatever_the_fractions() {
