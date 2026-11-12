@@ -48,6 +48,7 @@ pub(crate) struct TestWindowState {
     frame_wake_count: Rc<Cell<usize>>,
     frame_scheduled: bool,
     frame_callback_pending: bool,
+    presents_between_frames: bool,
     input_handler: Option<PlatformInputHandler>,
     text_input_configurations: Vec<TextInputConfiguration>,
     text_input_state_changes: Vec<TextInputStateChange>,
@@ -121,6 +122,7 @@ impl TestWindow {
             frame_wake_count: Rc::new(Cell::new(0)),
             frame_scheduled: false,
             frame_callback_pending: false,
+            presents_between_frames: false,
             input_handler: None,
             text_input_configurations: Vec::new(),
             text_input_state_changes: Vec::new(),
@@ -153,6 +155,11 @@ impl TestWindow {
 
     pub fn frame_scheduled(&self) -> bool {
         self.0.lock().frame_scheduled
+    }
+
+    /// HERDR: answers [`PlatformWindow::presents_between_frames`] (false by default).
+    pub fn set_presents_between_frames(&self, presents: bool) {
+        self.0.lock().presents_between_frames = presents;
     }
 
     pub fn simulate_visibility_change(&self, visibility: WindowVisibility) {
@@ -478,6 +485,10 @@ impl PlatformWindow for TestWindow {
 
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
         self.0.lock().request_frame_callback = Some(callback);
+    }
+
+    fn presents_between_frames(&self) -> bool {
+        self.0.lock().presents_between_frames
     }
 
     fn schedule_frame(&self) {

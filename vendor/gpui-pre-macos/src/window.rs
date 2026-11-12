@@ -2143,6 +2143,13 @@ impl PlatformWindow for MacWindow {
         this.renderer.draw(scene);
     }
 
+    // HERDR: Core Animation shows a drawable presented between display link
+    // callbacks at the next vsync, so a spinner step needn't restart a parked
+    // link (each start spawns a CoreVideo thread and re-reads display timing).
+    fn presents_between_frames(&self) -> bool {
+        true
+    }
+
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.0.lock().renderer.sprite_atlas().clone()
     }

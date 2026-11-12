@@ -3676,7 +3676,10 @@ impl Window {
     /// presents it again (no draw) when the next step is due: [`SPIN_STEP`]
     /// for a spinner, a cycle's next frame. A draw in between steps them as
     /// well, and a sooner step replaces a later one already scheduled. A
-    /// hidden window steps again once it is visible.
+    /// hidden window steps again once it is visible. With nothing else to
+    /// draw, a platform that can present between frames presents the step
+    /// here, so it needn't restart a parked frame source (on macOS each
+    /// display link start spawns a CoreVideo thread).
     fn schedule_spin_step(&mut self, cx: &mut App) {
         let Some(due) = self.spin_due else { return };
         if self.spin_step_due.is_some_and(|scheduled| scheduled <= due) || !self.visibility.is_visible() {
@@ -3688,7 +3691,7 @@ impl Window {
         cx.spawn(async move |cx| {
             cx.background_executor().timer(delay).await;
             handle
-                .update(cx, |_, window, _| {
+                .update(cx, |_, window, cx| {
                     // A sooner step took this one's place.
                     if window.spin_step_due != Some(due) {
                         return;
@@ -3696,6 +3699,14 @@ impl Window {
                     window.spin_step_due = None;
                     // A draw since took the spinners away, or the window went out of sight.
                     if window.spin_due.is_none() || !window.visibility.is_visible() {
+                        return;
+                    }
+                    if window.platform_window.presents_between_frames()
+                        && !window.invalidator.is_dirty()
+                        && window.next_frame_callbacks.borrow().is_empty()
+                    {
+                        window.present();
+                        window.schedule_spin_step(cx);
                         return;
                     }
                     window.needs_present.set(true);

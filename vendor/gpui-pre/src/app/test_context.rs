@@ -477,6 +477,17 @@ impl TestAppContext {
             .simulate_frame_request(crate::RequestFrameOptions::default());
     }
 
+    /// HERDR: whether the test window lets GPUI present outside a frame
+    /// request, as macOS does.
+    pub fn set_window_presents_between_frames(&self, window_handle: AnyWindowHandle, presents: bool) {
+        self.test_window(window_handle).set_presents_between_frames(presents);
+    }
+
+    /// HERDR: how often the window has woken its frame source.
+    pub fn window_frame_wakes(&self, window_handle: AnyWindowHandle) -> usize {
+        self.test_window(window_handle).frame_wake_count()
+    }
+
     /// Simulates a change in whether the platform is presenting the window.
     pub fn simulate_window_visibility_change(
         &self,
