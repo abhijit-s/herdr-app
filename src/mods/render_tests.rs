@@ -68,7 +68,7 @@ fn mod_text_selection_stays_in_its_shell_root(cx: &mut TestAppContext) {
         cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         cx.run_until_parked();
-        let copied = cx.update(|window, cx| TextSelection::selected_text(window, cx));
+        let copied = cx.update(TextSelection::selected_text);
         assert!(copied.contains("CENTER first block"), "{copied:?}");
         assert!(copied.contains("CENTER middle block"), "end {end:?}: {copied:?}");
         assert!(copied.contains("CENTER second block"), "end {end:?}: {copied:?}");
@@ -77,7 +77,7 @@ fn mod_text_selection_stays_in_its_shell_root(cx: &mut TestAppContext) {
             assert!(copied.contains("CENTER plain text"), "{copied:?}");
         }
         cx.simulate_mouse_move(neighbor.center(), None, Modifiers::default());
-        assert_eq!(cx.update(|window, cx| TextSelection::selected_text(window, cx)), copied);
+        assert_eq!(cx.update(TextSelection::selected_text), copied);
     }
 }
 
