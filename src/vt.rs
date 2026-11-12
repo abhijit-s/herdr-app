@@ -95,7 +95,7 @@ pub struct StyledLine {
     pub faint: Vec<[usize; 2]>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CursorShape {
     Block,
     Bar,

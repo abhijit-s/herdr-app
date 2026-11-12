@@ -9433,12 +9433,12 @@ export default class Recent extends View {
         };
         let focus = |cx: &mut gpui::VisualTestContext, pane: &str| change(cx, &|m| { m.focus_pane(pane); });
         // (where the trail starts, toward which pane), and the (tab, pane) seen last.
-        type State = (Option<(gpui::Bounds<gpui::Pixels>, String)>, Option<(String, String)>);
+        type State = (Option<(super::cursor_shapes::Quad, String)>, Option<(String, String)>);
         let state = |cx: &mut gpui::VisualTestContext| -> State {
             view.update(cx, |this, _| (this.trail.as_ref().and_then(|t| Some((t.from?, t.pane.clone()))), this.trail_seen.as_ref().map(|s| (s.tab.clone(), s.pane.clone()))))
         };
         let seen = |tab: &str, pane: &str| Some((tab.to_owned(), pane.to_owned()));
-        let anchor = |cx: &mut gpui::VisualTestContext, pane: &str| view.update(cx, |this, cx| this.terms[pane].view.read(cx).trail_anchor()).expect("drawn, so it has a cursor anchor");
+        let anchor = |cx: &mut gpui::VisualTestContext, pane: &str| super::cursor_shapes::quad(view.update(cx, |this, cx| this.terms[pane].view.read(cx).trail_end()).expect("drawn, so it has a cursor anchor").cursor);
         let expire = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| {
             let trail = this.trail.as_mut().unwrap();
             trail.start = trail.start.checked_sub(std::time::Duration::from_secs(2)).unwrap();
@@ -9464,8 +9464,30 @@ export default class Recent extends View {
         assert_eq!(state(cx).0, None, "its time up, the next draw drops it");
         assert!(!layer(cx), "and has no layer, the one thing that asks for frames");
 
+        // Steered: a move while a trail is drawn starts from what it drew.
+        focus(cx, "b");
+        assert!(layer(cx));
+        let drawn = view
+            .update(cx, |this, _| this.trail.as_ref().and_then(|t| t.drawn))
+            .expect("a live trail notes what it drew");
+        assert_ne!(
+            drawn,
+            anchor(cx, "a"),
+            "the comet's tail, partway back to a"
+        );
+        focus(cx, "a");
+        assert_eq!(
+            state(cx).0,
+            Some((drawn, "a".into())),
+            "b to a, mid-trail, starts from the trail as drawn, not b's cursor"
+        );
+        expire(cx);
+        draw(cx);
+
         focus(cx, "d");
         let d = anchor(cx, "d");
+        expire(cx);
+        draw(cx);
         change(cx, &|m| { m.remove_pane("d"); });
         let (trail, now) = state(cx);
         assert_eq!(trail.as_ref().map(|(from, _)| *from), Some(d), "closing d starts a trail from where d drew its cursor");
@@ -9638,6 +9660,43 @@ export default class Recent extends View {
         feed(cx, "a", "\x1b[2;2H");
         wait(cx, 200);
         assert_eq!(effect(cx), None, "one cell is no jump");
+
+        // A beam cursor: the trail starts from the beam as drawn (2 px at the
+        // left of its cell), not the cell, and its end is the beam too.
+        feed(cx, "a", "\x1b[6 q\x1b[1;1H");
+        wait(cx, 200);
+        clear(cx);
+        feed(cx, "a", "\x1b[12;40H");
+        wait(cx, 200);
+        let (from, end) = view.update(cx, |this, cx| {
+            (
+                this.trail.as_ref().and_then(|t| t.from),
+                this.terms["a"].view.read(cx).trail_end(),
+            )
+        });
+        let (from, end) = (from.expect("a trail from the beam"), end.unwrap());
+        let width = |q: super::cursor_shapes::Quad| q[1].0 - q[0].0;
+        assert_eq!(width(from), 2.0, "from the beam: {from:?}");
+        assert_eq!(
+            from[3].1 - from[0].1,
+            f32::from(end.cell.size.height),
+            "a cell high"
+        );
+        assert_eq!(
+            (f32::from(end.cursor.size.width), end.shown),
+            (2.0, true),
+            "to the beam"
+        );
+        // A shape change while that trail runs: the trail runs on, the pulse anew.
+        let started = view.update(cx, |this, _| this.trail.as_ref().map(|t| t.start));
+        feed(cx, "a", "\x1b[2 q");
+        wait(cx, 200);
+        assert_eq!(
+            view.update(cx, |this, _| this.trail.as_ref().map(|t| (t.from, t.start))),
+            Some((Some(from), started.unwrap())),
+            "the reshape kept the trail"
+        );
+        clear(cx);
 
         // b doesn't have the keyboard: its cursor moving draws nothing.
         feed(cx, "b", "\x1b[1;1H");
