@@ -9687,8 +9687,15 @@ export default class Recent extends View {
             (2.0, true),
             "to the beam"
         );
+        // A shape change while that trail runs: the trail runs on, the pulse anew.
+        let started = view.update(cx, |this, _| this.trail.as_ref().map(|t| t.start));
         feed(cx, "a", "\x1b[2 q");
         wait(cx, 200);
+        assert_eq!(
+            view.update(cx, |this, _| this.trail.as_ref().map(|t| (t.from, t.start))),
+            Some((Some(from), started.unwrap())),
+            "the reshape kept the trail"
+        );
         clear(cx);
 
         // b doesn't have the keyboard: its cursor moving draws nothing.

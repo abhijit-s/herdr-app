@@ -39,26 +39,41 @@ pub(super) struct Trail {
     color: Hsla,
     pub(super) style: Option<settings::TrailStyle>,
     pub(super) arrival: settings::Arrival,
-    /// The tail's corners as they chase the cursor (`TrailStyle::Tail`).
+    /// When the pulse started: the trail's start, or a later shape change.
+    pulse: Instant,
+    /// The tail's corners as they chase the cursor (`TrailStyle::Tail`),
+    /// None again once they have caught up.
     chase: Option<cursor_shapes::Chase>,
     /// What the trail drew last, where one started meanwhile begins.
     pub(super) drawn: Option<cursor_shapes::Quad>,
 }
 
 impl Trail {
-    fn new(from: Option<cursor_shapes::Quad>, pane: &str, s: &settings::Settings) -> Self {
+    /// A trail from `from` (None: the pulse alone); a tail steered from a
+    /// tail (`live`) keeps its fade, as kitty's one opacity does.
+    fn new(
+        from: Option<cursor_shapes::Quad>,
+        live: Option<&Trail>,
+        pane: &str,
+        s: &settings::Settings,
+    ) -> Self {
         let style = from.map(|_| s.cursor_trail_style);
+        let opacity = live
+            .and_then(|t| t.chase.as_ref())
+            .map_or(1.0, |c| c.opacity);
+        let now = Instant::now();
         Trail {
             from,
             pane: pane.to_owned(),
-            start: Instant::now(),
+            start: now,
             duration: s.trail_duration(),
             color: s.trail_color().unwrap_or_else(|| settings::color("cursor")),
             style,
             arrival: s.cursor_arrival,
+            pulse: now,
             chase: from
                 .filter(|_| style == Some(settings::TrailStyle::Tail))
-                .map(cursor_shapes::Chase::new),
+                .map(|from| cursor_shapes::Chase::new(from).faded(opacity)),
             drawn: None,
         }
     }
@@ -72,7 +87,8 @@ impl Trail {
     ) -> Option<Vec<cursor_shapes::Layer>> {
         let t = elapsed.as_secs_f32() / self.duration.as_secs_f32();
         let h = f32::from(end.cell.size.height);
-        let (mut layers, drawn) = match (&mut self.chase, self.style, self.from) {
+        let tail = self.style == Some(settings::TrailStyle::Tail);
+        let (mut layers, drawn, chasing) = match (&mut self.chase, self.style, self.from) {
             (Some(chase), _, _) => {
                 let live = chase.step(
                     end.cursor,
@@ -81,19 +97,26 @@ impl Trail {
                     self.duration.as_secs_f32(),
                 );
                 if live {
-                    (chase.layers(end.cursor), Some(chase.corners))
+                    (chase.layers(end.cursor), Some(chase.corners), true)
                 } else {
-                    (Vec::new(), None)
+                    (Vec::new(), None, false)
                 }
             }
-            (None, Some(style), Some(from)) if t < 1.0 => {
-                cursor_shapes::trail(style, from, end.cursor, h, t)
+            (None, Some(style), Some(from)) if t < 1.0 && !tail => {
+                let (layers, drawn) = cursor_shapes::trail(style, from, end.cursor, h, t);
+                (layers, drawn, false)
             }
-            _ => (Vec::new(), None),
+            _ => (Vec::new(), None, false),
         };
+        // Caught up, a tail stays ended, however the cursor moves on.
+        if !chasing {
+            self.chase = None;
+        }
         self.drawn = drawn;
-        let pulse = cursor_shapes::arrival(self.arrival, end.cell, t);
-        if layers.is_empty() && pulse.is_empty() {
+        let since = self.pulse.saturating_duration_since(self.start);
+        let pulse_t = elapsed.saturating_sub(since).as_secs_f32() / self.duration.as_secs_f32();
+        let pulse = cursor_shapes::arrival(self.arrival, end.cell, pulse_t);
+        if layers.is_empty() && pulse.is_empty() && !chasing {
             return None;
         }
         layers.extend(pulse);
@@ -171,7 +194,7 @@ impl AppWindow {
                     && self.pane_term(&pane).is_some()
                     && (from.is_some() || s.cursor_arrival != settings::Arrival::Off)
                 {
-                    self.trail = Some(Trail::new(from, &pane, &s));
+                    self.trail = Some(Trail::new(from, live.as_ref(), &pane, &s));
                 }
             }
             None => {}
@@ -197,8 +220,14 @@ impl AppWindow {
         {
             return;
         }
-        let from = from.and_then(|cursor| start_from(self.trail.as_ref(), Some(cursor)));
-        self.trail = Some(Trail::new(from, pane, &s));
+        let reshaped = from.is_none() && self.trail.as_ref().is_some_and(|t| t.pane == pane);
+        if let Some(live) = self.trail.as_mut().filter(|_| reshaped) {
+            // A shape change while a trail runs: it runs on, the pulse anew.
+            (live.arrival, live.pulse) = (s.cursor_arrival, Instant::now());
+        } else {
+            let start = from.and_then(|cursor| start_from(self.trail.as_ref(), Some(cursor)));
+            self.trail = Some(Trail::new(start, self.trail.as_ref(), pane, &s));
+        }
         self.trail_layer.update(cx, |_, cx| cx.notify());
     }
 
@@ -293,6 +322,55 @@ impl Render for TrailLayer {
 mod tests {
     use super::{paler, progress};
     use std::time::Duration;
+
+    /// A tail that has caught up stays ended while its pulse runs on, though
+    /// the cursor moves on (typing must never draw one).
+    #[test]
+    fn a_caught_up_tail_stays_ended_while_the_pulse_runs() {
+        use crate::settings::{Arrival, Settings, TrailStyle};
+        use gpui::{Bounds, point, px, size};
+        let cell = |x: f32| Bounds::new(point(px(x), px(0.0)), size(px(8.0), px(16.0)));
+        let end = |x: f32| crate::terminal::TrailEnd {
+            cell: cell(x),
+            cursor: cell(x),
+            shown: true,
+        };
+        let s = Settings {
+            cursor_trail_style: TrailStyle::Tail,
+            cursor_arrival: Arrival::Ripple,
+            cursor_trail_duration_ms: 400,
+            ..Settings::default()
+        };
+        let mut trail =
+            super::Trail::new(Some(super::cursor_shapes::quad(cell(0.0))), None, "a", &s);
+        let filled = |layers: &[super::cursor_shapes::Layer]| {
+            layers.iter().filter(|l| l.stroke.is_none()).count()
+        };
+        let mut ms = 0;
+        while trail.chase.is_some() {
+            let layers = trail
+                .shapes(end(16.0), std::time::Duration::from_millis(ms))
+                .expect("the tail or the pulse runs");
+            assert!(
+                ms > 0 || filled(&layers) == 1,
+                "the tail draws as it starts"
+            );
+            ms += 16;
+            assert!(ms < 400, "a short tail ends before the pulse does");
+        }
+        let later = trail
+            .shapes(end(400.0), std::time::Duration::from_millis(ms))
+            .expect("the pulse runs on");
+        assert_eq!(
+            filled(&later),
+            0,
+            "no tail after the cursor moved on: {later:?}"
+        );
+        assert!(
+            trail.drawn.is_none(),
+            "and nothing for a next trail to steer from"
+        );
+    }
 
     #[test]
     fn a_trail_runs_its_duration_then_ends() {

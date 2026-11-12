@@ -26,17 +26,20 @@ pub type Cell = (u16, u16);
 pub struct Spot {
     pub cell: Cell,
     pub shape: CursorShape,
+    /// On a wide (two-cell) character, which a block covers whole.
+    pub wide: bool,
 }
 
 /// What a settled cursor did since it last settled.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Jump {
-    /// It moved far enough: a trail from `from` (where it had `shape`) to
-    /// `to` (cells).
+    /// It moved far enough: a trail from `from` (where it had `shape`, on a
+    /// `wide` character or not) to `to` (cells).
     Moved {
         from: Cell,
         to: Cell,
         shape: CursorShape,
+        wide: bool,
     },
     /// It stayed (or moved too little) but changed shape: a pulse only.
     Reshaped,
@@ -183,6 +186,7 @@ impl Jumps {
                     from: b.cell,
                     to: spot.cell,
                     shape: b.shape,
+                    wide: b.wide,
                 })
             } else {
                 (b.shape != spot.shape).then_some(Jump::Reshaped)
@@ -202,6 +206,7 @@ mod tests {
         Some(Spot {
             cell: (x, y),
             shape: CursorShape::Block,
+            wide: false,
         })
     }
 
@@ -227,7 +232,8 @@ mod tests {
             Due::Fire(Some(Jump::Moved {
                 from: (0, 0),
                 to: (10, 3),
-                shape: CursorShape::Block
+                shape: CursorShape::Block,
+                wide: false
             }))
         );
         assert_eq!(
@@ -259,7 +265,8 @@ mod tests {
             Due::Fire(Some(Jump::Moved {
                 from: (0, 0),
                 to: (20, 1),
-                shape: CursorShape::Block
+                shape: CursorShape::Block,
+                wide: false
             }))
         );
     }
@@ -286,7 +293,8 @@ mod tests {
             Due::Fire(Some(Jump::Moved {
                 from: (8, 6),
                 to: (11, 6),
-                shape: CursorShape::Block
+                shape: CursorShape::Block,
+                wide: false
             })),
             "three from where it last settled: more than the threshold"
         );
@@ -297,13 +305,15 @@ mod tests {
             Due::Fire(Some(Jump::Moved {
                 from: (11, 6),
                 to: (8, 6),
-                shape: CursorShape::Block
+                shape: CursorShape::Block,
+                wide: false
             }))
         );
         j.observe(
             Some(Spot {
                 cell: (8, 6),
                 shape: CursorShape::Bar,
+                wide: false,
             }),
             V,
             ms(t0, 400),
@@ -334,7 +344,8 @@ mod tests {
             Due::Fire(Some(Jump::Moved {
                 from: (0, 0),
                 to: (1, 0),
-                shape: CursorShape::Block
+                shape: CursorShape::Block,
+                wide: false
             })),
             "one cell is more than 0"
         );
@@ -342,6 +353,7 @@ mod tests {
             Some(Spot {
                 cell: (1, 0),
                 shape: CursorShape::Block,
+                wide: false,
             }),
             V,
             t0,
@@ -369,7 +381,8 @@ mod tests {
             Due::Fire(Some(Jump::Moved {
                 from: (0, 0),
                 to: (9, 9),
-                shape: CursorShape::Block
+                shape: CursorShape::Block,
+                wide: false
             }))
         );
     }
@@ -476,7 +489,8 @@ mod tests {
                 vec![Jump::Moved {
                     from: (30, 5),
                     to: (0, 6),
-                    shape: CursorShape::Block
+                    shape: CursorShape::Block,
+                    wide: false
                 }]
             );
             assert_eq!(
@@ -487,7 +501,8 @@ mod tests {
                 vec![Jump::Moved {
                     from: (40, 20),
                     to: (0, 0),
-                    shape: CursorShape::Block
+                    shape: CursorShape::Block,
+                    wide: false
                 }]
             );
             assert_eq!(jump((5, 5), (15, 5)).len(), 1);
@@ -510,7 +525,8 @@ mod tests {
                 vec![Jump::Moved {
                     from: (0, 5),
                     to: (0, 8),
-                    shape: CursorShape::Block
+                    shape: CursorShape::Block,
+                    wide: false
                 }],
                 "{frame}"
             );
@@ -544,7 +560,8 @@ mod tests {
             Some(Jump::Moved {
                 from: (0, 0),
                 to: (9, 0),
-                shape: CursorShape::Block
+                shape: CursorShape::Block,
+                wide: false
             })
         );
     }
@@ -636,7 +653,8 @@ mod tests {
             Due::Fire(Some(Jump::Moved {
                 from: (0, 0),
                 to: (20, 0),
-                shape: CursorShape::Block
+                shape: CursorShape::Block,
+                wide: false
             }))
         );
         // No frame ever comes (a hidden window): it settles on what was drawn.
@@ -656,7 +674,8 @@ mod tests {
             Some(Jump::Moved {
                 from: (20, 0),
                 to: (30, 0),
-                shape: CursorShape::Block
+                shape: CursorShape::Block,
+                wide: false
             })
         );
     }

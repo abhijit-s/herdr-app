@@ -2383,6 +2383,7 @@ fn settle_jumps(grid: Rc<RefCell<Grid>>, view: WeakEntity<TerminalView>, settle:
                             Some(Jump::Moved {
                                 from: (x, y),
                                 shape,
+                                wide,
                                 ..
                             }) => {
                                 let g = grid.borrow();
@@ -2391,7 +2392,8 @@ fn settle_jumps(grid: Rc<RefCell<Grid>>, view: WeakEntity<TerminalView>, settle:
                                         g.cell.width * f32::from(x),
                                         g.cell.height * f32::from(y),
                                     );
-                                Some(Some(cursor_rect(at, g.cell.width, g.cell, shape, true)))
+                                let width = g.cell.width * if wide { 2.0 } else { 1.0 };
+                                Some(Some(cursor_rect(at, width, g.cell, shape, true)))
                             }
                             Some(Jump::Reshaped) => Some(None),
                             None => None,
@@ -2610,7 +2612,8 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, view: &WeakEntit
         let track = f32::from(cell.height) * f32::from(g.vt.rows);
         let settings = crate::settings::get();
         if settings.cursor_trail == crate::settings::CursorTrail::All {
-            let spot = frame.cursor.map(|c| crate::cursor_jumps::Spot { cell: (c.x, c.y), shape: c.shape });
+            let wide_at = |x: u16, y: u16| frame.rows.get(y as usize).and_then(|r| r.get(x as usize)).is_some_and(|c| c.wide);
+            let spot = frame.cursor.map(|c| crate::cursor_jumps::Spot { cell: (c.x, c.y), shape: c.shape, wide: wide_at(c.x, c.y) });
             // What the cells are measured in: scrolled back from the bottom, the
             // grid's size, and these settings (a new `Rc` per change, so turning
             // "all" off and on again starts afresh).

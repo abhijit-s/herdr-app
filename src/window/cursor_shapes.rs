@@ -306,7 +306,7 @@ const TAIL_CAP: f32 = 3.0;
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Chase {
     pub(super) corners: Quad,
-    opacity: f32,
+    pub(super) opacity: f32,
     /// When it last stepped, in s from the trail's start.
     at: f32,
 }
@@ -317,6 +317,14 @@ impl Chase {
             corners: from,
             opacity: 1.0,
             at: 0.0,
+        }
+    }
+
+    /// The same, at `opacity` (a steered tail keeps its fade).
+    pub(super) fn faded(self, opacity: f32) -> Self {
+        Chase {
+            opacity: opacity.clamp(0.0, 1.0),
+            ..self
         }
     }
 
