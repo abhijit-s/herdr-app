@@ -26,7 +26,7 @@ It needs the `crosstalk` command on your `PATH`. The mod starts the crosstalk se
 - **Tasks:** shared tasks and their status. Open tasks can be claimed; tasks you hold can be marked done.
 - **Agents:** every agent crosstalk knows, with its state and, for agents in Herdr panes, whether crosstalk verified who it is.
 - **Status:** a read-only view of the crosstalk service, for you only (agents in panes are refused these calls). It shows:
-  - **health:** Healthy, or the status (such as degraded) and each failing check with why, plus the service's process id, version and start time;
+  - **health:** Healthy, or the status (such as degraded) and each failing check with why, plus the service's process id, protocol version (not the release) and start time;
   - **stats:** start time, open requests, tasks by status, inbox depth per reader, open streams, then each operation with its count and 95th and 99th percentile times (busiest first, 15 at most), and the same for the other histograms;
   - **recent events:** the last 20 audit events, newest first: time, operation, outcome, sender and recipients, kind, duration, and "unverified" when crosstalk could not confirm the sender. Metadata only: an event never carries a message body, and the view shows only the fields it knows.
 

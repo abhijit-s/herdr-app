@@ -127,7 +127,7 @@ function healthView(h) {
   return {
     ok: h?.status === "ok", status: short(h?.status ?? "unknown"),
     checks: checks.map((c) => ({ name: short(c?.name), ok: c?.ok === true, detail: short(c?.detail ?? "") })),
-    about: `pid ${short(h?.pid)} · version ${short(h?.version)} · up since ${short(h?.started_at)}`,
+    about: `pid ${short(h?.pid)} · protocol ${short(h?.version)} · up since ${short(h?.started_at)}`,
   };
 }
 
