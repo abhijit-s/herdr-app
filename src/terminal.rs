@@ -1782,7 +1782,7 @@ fn map_key(key: &str) -> Option<(GhosttyKey, bool, Option<char>)> {
     Some((code, shifted, Some(base)))
 }
 
-fn ligature_features(enabled: bool) -> FontFeatures {
+pub(crate) fn ligature_features(enabled: bool) -> FontFeatures {
     static FEATURES: std::sync::LazyLock<[FontFeatures; 2]> = std::sync::LazyLock::new(|| {
         [0, 1].map(|value| FontFeatures(Arc::new(vec![("calt".into(), value), ("liga".into(), value), ("dlig".into(), 0)])))
     });
@@ -1797,6 +1797,30 @@ fn cell_font(bold: bool, italic: bool) -> Font {
     f.style = if italic { FontStyle::Italic } else { FontStyle::Normal };
     f.fallbacks = s.font_fallbacks.clone();
     f
+}
+
+/// How text a mod marks `terminal_text()` draws: in the cells' regular font,
+/// its ligatures as `font_ligatures` says, and their glyph look.
+pub fn terminal_text() -> gpui::TerminalText {
+    let mut font = cell_font(false, false);
+    font.features = ligature_features(crate::settings::get().font_ligatures);
+    let (thicken, contrast, subpixel) = glyph_look();
+    gpui::TerminalText {
+        font,
+        thicken,
+        contrast,
+        subpixel,
+    }
+}
+
+/// How the cells' glyphs paint: thickening, coverage contrast and subpixel.
+fn glyph_look() -> (gpui::GlyphThicken, f32, bool) {
+    let s = crate::settings::get();
+    (
+        glyph_thicken(),
+        s.text_contrast,
+        s.text_rendering.subpixel(),
+    )
 }
 
 // JetBrains Mono joins punctuation, so ordinary ASCII output can keep using
@@ -2784,10 +2808,9 @@ impl Render for TerminalView {
                     },
                     move |bounds, _, window, cx| {
                         // The grid shapes at font_weight, whatever ui_font_weight shifts.
-                        let contrast = crate::settings::get().text_contrast;
-                        let subpixel = crate::settings::get().text_rendering.subpixel();
+                        let (thicken, contrast, subpixel) = glyph_look();
                         window.with_font_weight_shift(0.0, |window| {
-                            window.with_glyph_thicken(glyph_thicken(), |window| {
+                            window.with_glyph_thicken(thicken, |window| {
                                 window.with_glyph_contrast(contrast, |window| window.with_glyph_subpixel(subpixel, |window| paint_grid(bounds, &grid_paint, &selection_view, focused, window, cx)))
                             })
                         });
@@ -5372,6 +5395,52 @@ mod tests {
             assert_eq!(super::cell_font(true, false).weight, gpui::FontWeight(expected));
             assert_eq!(super::cell_font(false, true).weight, gpui::FontWeight(250.0));
         }
+        crate::settings::set((*original).clone());
+    }
+
+    #[test]
+    fn terminal_text_draws_as_the_cells_do() {
+        use crate::settings::{TextRendering, Thicken};
+        let original = crate::settings::get();
+        let mut settings = (*original).clone();
+        (
+            settings.font_thicken,
+            settings.font_thicken_strength,
+            settings.ui_font_thicken,
+        ) = (Thicken::On, 30, Thicken::Off);
+        (settings.text_contrast, settings.ui_text_contrast) = (0.3, 0.0);
+        (settings.text_rendering, settings.ui_text_rendering) =
+            (TextRendering::Subpixel, TextRendering::Grayscale);
+        settings.font_fallbacks = Some(gpui::FontFallbacks::from_fonts(vec!["Menlo".into()]));
+        (settings.font_ligatures, settings.font_weight) = (false, 450);
+        crate::settings::set(settings.clone());
+        let look = super::terminal_text();
+        let fallbacks = look
+            .font
+            .fallbacks
+            .as_ref()
+            .map(|f| f.fallback_list().to_vec());
+        assert_eq!(
+            (look.font.family.to_string(), look.font.weight, fallbacks),
+            (
+                crate::settings::terminal_font(),
+                gpui::FontWeight(450.),
+                Some(vec!["Menlo".to_string()])
+            ),
+            "the cells' family, font_weight and fallbacks"
+        );
+        assert_eq!(look.font.features, super::ligature_features(false));
+        assert_eq!(
+            (look.thicken, look.contrast, look.subpixel),
+            (gpui::GlyphThicken::Strength(30), 0.3, true),
+            "the terminals' look, not the panels'"
+        );
+        settings.font_ligatures = true;
+        crate::settings::set(settings);
+        assert_eq!(
+            super::terminal_text().font.features,
+            super::ligature_features(true)
+        );
         crate::settings::set((*original).clone());
     }
 

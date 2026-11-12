@@ -652,6 +652,11 @@ impl WindowTextSystem {
         f32::from_bits(self.weight_shift.swap(shift.to_bits(), Ordering::Relaxed))
     }
 
+    /// HERDR: the weight every run shaped from here on is shifted by.
+    pub fn weight_shift(&self) -> f32 {
+        f32::from_bits(self.weight_shift.load(Ordering::Relaxed))
+    }
+
     /// HERDR: `font` as shaped: its weight shifted, within 100 to 900.
     fn resolve_run_font(&self, font: &Font) -> FontId {
         let shift = f32::from_bits(self.weight_shift.load(Ordering::Relaxed));
@@ -1320,6 +1325,20 @@ pub struct RenderGlyphParams {
     /// is independent of the color and overrides `dilation` where supported.
     pub thicken: GlyphThicken,
     pub foreground: [u8; 4],
+}
+
+/// HERDR: how text under `Styled::terminal_text` draws
+/// (`Window::set_terminal_text`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerminalText {
+    /// The family, features, fallbacks and weight; its style is unused.
+    pub font: Font,
+    /// As `Window::with_glyph_thicken`.
+    pub thicken: GlyphThicken,
+    /// As `Window::with_glyph_contrast`.
+    pub contrast: f32,
+    /// As `Window::with_glyph_subpixel`.
+    pub subpixel: bool,
 }
 
 /// HERDR: how macOS font smoothing thickens monochrome glyphs.

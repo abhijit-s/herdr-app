@@ -716,6 +716,15 @@ pub trait Styled: Sized {
         self
     }
 
+    /// HERDR: draws the text of this element and its children as the host's
+    /// terminal text (`Window::set_terminal_text`): the terminal's family,
+    /// weight, fallbacks, features and glyph rendering. The size and line
+    /// height stay this element's, and its own font styles win.
+    fn terminal_text(mut self) -> Self {
+        self.text_style().terminal = Some(true);
+        self
+    }
+
     /// Sets the font of this element and its children.
     fn font(mut self, font: Font) -> Self {
         let Font {

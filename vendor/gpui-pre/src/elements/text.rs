@@ -2,7 +2,7 @@ use crate::{
     ActiveTooltip, AnyView, App, Bounds, DispatchPhase, Element, ElementId, GlobalElementId,
     HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, Size, TextOverflow,
-    TextRun, TextStyle, TooltipId, TruncateFrom, WhiteSpace, Window, WrappedLine,
+    TextRun, TextStyle, TooltipId, TruncateFrom, WhiteSpace, Window, WindowTextSystem, WrappedLine,
     WrappedLineLayout, register_tooltip_mouse_handlers, set_tooltip_on_window,
 };
 use anyhow::Context as _;
@@ -651,10 +651,15 @@ impl TextLayout {
         } else {
             vec![text_style.to_run(text.len())]
         };
+        // HERDR: the measure runs when the root computes its layout, outside
+        // any `with_font_weight_shift` around this element: shape at the
+        // shift in force here.
+        let weight_shift = window.text_system().weight_shift();
         window.request_measured_layout(Default::default(), {
             let element_state = self.clone();
 
             move |known_dimensions, available_space, window, cx| {
+                let _shift = WeightShiftScope::new(window.text_system(), weight_shift);
                 let wrap_width = if text_style.white_space == WhiteSpace::Normal {
                     known_dimensions.width.or(match available_space.width {
                         crate::AvailableSpace::Definite(x) => Some(x),
@@ -1310,6 +1315,22 @@ impl IntoElement for InteractiveText {
 
     fn into_element(self) -> Self::Element {
         self
+    }
+}
+
+/// HERDR: a window's weight shift, `shift` until dropped.
+struct WeightShiftScope(Arc<WindowTextSystem>, f32);
+
+impl WeightShiftScope {
+    fn new(text_system: &Arc<WindowTextSystem>, shift: f32) -> Self {
+        let outer = text_system.replace_weight_shift(shift);
+        Self(text_system.clone(), outer)
+    }
+}
+
+impl Drop for WeightShiftScope {
+    fn drop(&mut self) {
+        self.0.replace_weight_shift(self.1);
     }
 }
 

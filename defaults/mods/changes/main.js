@@ -14,14 +14,15 @@ const key = () => JSON.stringify(location());
 const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
 const countLines = (text) => text ? text.split("\n").length - Number(text.endsWith("\n")) : 0;
 
-// The diff draws in the terminals' font, its rows close to a terminal's: the
-// font's height (ascent plus descent, which mods can't measure) times
-// line_height. 1.3 em is a middle value (JetBrains Mono is about 1.32, Menlo
-// 1.16, Fira Code 1.4). Advances are about 0.64 em. Builds without
-// `terminal_font` keep the family at 11 px in 20 px rows.
+// The diff draws as terminal text (`terminal_text()`: the terminals' family,
+// weight, fallbacks, ligatures and thickening) at their size, its rows close
+// to a terminal's: the font's height (ascent plus descent, which mods can't
+// measure) times line_height. 1.3 em is a middle value (JetBrains Mono is
+// about 1.32, Menlo 1.16, Fira Code 1.4). Advances are about 0.64 em. Builds
+// without `terminal_font` draw it at 11 px in 20 px rows.
 function codeMetrics() {
   const s = settings(), font = s.terminal_font;
-  if (!font) return { font: { family: s.font_family ?? "JetBrains Mono", size: 11 }, row: 20, char: 7, number: 35 };
+  if (!font) return { font: { size: 11 }, row: 20, char: 7, number: 35 };
   const em = font.size * (s.ui_text_scale ?? 1), row = Math.ceil(em * 1.3 * font.line_height);
   return { font, row, line: row / em, char: em * 0.64, number: Math.max(30, Math.ceil(em * 0.64 * 5)) };
 }
@@ -211,8 +212,8 @@ export default class Changes extends View {
         .child(Scrollbar.vertical("changes-list").absolute().inset_0()))
       .when(this.limited, el => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child("Showing the first 1,000 changed files")))
       .child(div().flex_1().min_h(0).relative()
-        .child(div().id("changes-diff-x").size_full().overflow_x_scrollbar().font_family(code.font.family).text_size(code.font.size)
-          .when(code.font.weight !== undefined, (e) => e.font_weight(code.font.weight)).when(code.line !== undefined, (e) => e.line_height(code.line))
+        .child(div().id("changes-diff-x").size_full().overflow_x_scrollbar().terminal_text().text_size(code.font.size)
+          .when(code.line !== undefined, (e) => e.line_height(code.line))
           .child(div().w_full().min_w(Math.max(300, Math.ceil(this.diffChars * code.char) + 50)).h_full().child(v_virtual_list("changes-diff", this.rows.length, code.row, (i) => String(i),
             (range) => this.rows.slice(range.start, range.end).map((row) => this.diffRow(row, t, code))).size_full())))
         .child(Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0())
