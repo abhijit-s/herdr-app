@@ -1387,36 +1387,392 @@ fn agent_spinners_follow_the_working_spinner_setting(cx: &mut TestAppContext) {
     }
 }
 
-/// The Changes panel draws its diff in the terminals' font: the family, and
-/// the size and weight that land on the terminals' own under the panels'
-/// text scale and weight shift (`settings().terminal_font`), in rows as tall
-/// as the terminals' line height makes theirs.
+/// The Changes panel draws its diff as terminal text (`terminal_text()`), at
+/// the size that lands on the terminals' own under the panels' text scale
+/// (`settings().terminal_font`), in rows as tall as the terminals' line
+/// height makes theirs.
 #[gpui::test]
 fn changes_diff_follows_the_terminal_font(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut values = fixture(false, props(), updates("current", "current"));
     let person = json!({"font": "Fixture Mono", "font_size": 15, "font_weight": 400, "line_height": 1.2, "ui_text_scale": 1.25, "ui_font_weight": 500});
-    values.insert("settings".into(), crate::settings::Settings::compose(&serde_json::from_value(person).unwrap(), &crate::layout::Look::default(), true).for_mods());
-    let tree = describe_with_values(cx, &staged, "mods/changes", values, Some(r#"this.setLines(["@@ -1 +1 @@", "+let x = 1;"]);"#)).unwrap();
-    let diff = tree.lines().find(|l| l.contains(".font_family[")).unwrap_or_else(|| panic!("no diff font: {tree}"));
+    values.insert(
+        "settings".into(),
+        crate::settings::Settings::compose(
+            &serde_json::from_value(person).unwrap(),
+            &crate::layout::Look::default(),
+            true,
+        )
+        .for_mods(),
+    );
+    let tree = describe_with_values(
+        cx,
+        &staged,
+        "mods/changes",
+        values,
+        Some(r#"this.setLines(["@@ -1 +1 @@", "+let x = 1;"]);"#),
+    )
+    .unwrap();
+    let diff = tree
+        .lines()
+        .find(|l| l.contains(".terminal_text"))
+        .unwrap_or_else(|| panic!("no terminal text: {tree}"));
     // The virtual list's rows aren't described; the line box is the row's
     // height over the text's, 24 px over 15 (12 at text scale 1.25).
-    for style in [r#".font_family[Str("Fixture Mono")]"#, ".font_weight[Number(300.0)]", ".text_size[Number(12.0)]", ".line_height[Number(1.6)]"] {
+    for style in [".text_size[Number(12.0)]", ".line_height[Number(1.6)]"] {
         assert!(diff.contains(style), "diff lacks {style}: {diff}");
     }
-    assert!(tree.contains(r#"v_virtual_list "changes-diff" ×2"#), "both diff lines are rows: {tree}");
+    assert!(
+        !diff.contains(".font_family[") && !diff.contains(".font_weight["),
+        "terminal_text() brings the family and weight: {diff}"
+    );
+    assert!(
+        tree.contains(r#"v_virtual_list "changes-diff" ×2"#),
+        "both diff lines are rows: {tree}"
+    );
 
-    // Builds without `terminal_font`: the family at the old 11 px, no weight or line box.
+    // Builds without `terminal_font`: terminal text at the old 11 px, no line box.
     let mut values = fixture(false, props(), updates("current", "current"));
     let mut settings = crate::settings::Settings::default().for_mods();
     settings.as_object_mut().unwrap().remove("terminal_font");
-    let family = settings["font_family"].as_str().unwrap().to_owned();
     values.insert("settings".into(), settings);
-    let tree = describe_with_values(cx, &staged, "mods/changes", values, Some(r#"this.setLines(["+x"]);"#)).unwrap();
-    let diff = tree.lines().find(|l| l.contains(".font_family[")).unwrap_or_else(|| panic!("no diff font: {tree}"));
-    assert!(diff.contains(&format!(".font_family[Str({family:?})]")) && diff.contains(".text_size[Number(11.0)]"), "{diff}");
-    assert!(!diff.contains(".font_weight[") && !diff.contains(".line_height["), "{diff}");
+    let tree = describe_with_values(
+        cx,
+        &staged,
+        "mods/changes",
+        values,
+        Some(r#"this.setLines(["+x"]);"#),
+    )
+    .unwrap();
+    let diff = tree
+        .lines()
+        .find(|l| l.contains(".terminal_text"))
+        .unwrap_or_else(|| panic!("no terminal text: {tree}"));
+    assert!(
+        diff.contains(".text_size[Number(11.0)]") && !diff.contains(".line_height["),
+        "{diff}"
+    );
+}
+
+/// `terminal_text()` text takes the window's terminal look: its font under
+/// the element's own font styles, shaped with no weight shift (text measured
+/// when the root lays out too), and its glyph rendering, for the whole
+/// subtree; text beside it keeps the window's.
+#[test]
+fn terminal_text_takes_the_windows_terminal_look() {
+    use gpui::{ParentElement as _, Styled as _};
+    type Seen = Rc<RefCell<Vec<(gpui::Font, f32, (gpui::GlyphThicken, f32, bool))>>>;
+    struct Root(Seen);
+    impl gpui::Render for Root {
+        fn render(
+            &mut self,
+            window: &mut gpui::Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            window.set_font_weight_shift(100.);
+            window.set_glyph_thicken(gpui::GlyphThicken::Strength(192));
+            window.set_terminal_text(Some(gpui::TerminalText {
+                font: gpui::Font {
+                    family: "Fixture Mono".into(),
+                    features: crate::terminal::ligature_features(true),
+                    fallbacks: Some(gpui::FontFallbacks::from_fonts(vec!["Menlo".into()])),
+                    weight: gpui::FontWeight(350.),
+                    style: Default::default(),
+                },
+                thicken: gpui::GlyphThicken::Strength(30),
+                contrast: 0.3,
+                subpixel: true,
+            }));
+            let probe = |seen: Seen| {
+                gpui::canvas(
+                    |_, _, _| {},
+                    move |_, _, window, _| {
+                        seen.borrow_mut().push((
+                            window.text_style().font(),
+                            window.text_system().weight_shift(),
+                            window.glyph_look(),
+                        ))
+                    },
+                )
+                .size_full()
+            };
+            gpui::div()
+                .size_full()
+                .font_family("Panel Sans")
+                .child(
+                    gpui::div()
+                        .h(gpui::px(10.))
+                        .terminal_text()
+                        .child(gpui::div().size_full().child(probe(self.0.clone()))),
+                )
+                .child(
+                    gpui::div()
+                        .h(gpui::px(10.))
+                        .terminal_text()
+                        .font_weight(gpui::FontWeight(700.))
+                        .child(probe(self.0.clone())),
+                )
+                .child(gpui::div().h(gpui::px(10.)).child(probe(self.0.clone())))
+                .child(gpui::div().terminal_text().child("terminal"))
+                .child(gpui::div().child("panel"))
+        }
+    }
+    let text = std::sync::Arc::new(RecordingText::default());
+    let cx = &mut TestAppContext::build_with_text_system(
+        gpui::TestDispatcher::new(0),
+        None,
+        text.clone(),
+    );
+    let seen: Seen = Default::default();
+    let window = cx.add_window(|_, _| Root(seen.clone()));
+    cx.run_until_parked();
+    let seen = seen.borrow().clone();
+    assert_eq!(seen.len(), 3, "{seen:?}");
+    let terminal_look = (gpui::GlyphThicken::Strength(30), 0.3, true);
+    let (
+        (nested, nested_shift, nested_look),
+        (bold, bold_shift, bold_look),
+        (panel, panel_shift, panel_look),
+    ) = (&seen[0], &seen[1], &seen[2]);
+    assert_eq!(
+        (
+            nested.family.as_ref(),
+            nested.weight,
+            *nested_shift,
+            *nested_look
+        ),
+        ("Fixture Mono", gpui::FontWeight(350.), 0., terminal_look),
+        "a child of terminal text is terminal text"
+    );
+    assert_eq!(
+        nested
+            .fallbacks
+            .as_ref()
+            .map(|f| f.fallback_list().to_vec()),
+        Some(vec!["Menlo".to_string()])
+    );
+    assert_eq!(nested.features, crate::terminal::ligature_features(true));
+    assert_eq!(
+        (bold.family.as_ref(), bold.weight, *bold_shift, *bold_look),
+        ("Fixture Mono", gpui::FontWeight(700.), 0., terminal_look),
+        "the element's own weight wins"
+    );
+    assert_eq!(
+        (
+            panel.family.as_ref(),
+            panel.fallbacks.clone(),
+            *panel_shift,
+            panel_look.0
+        ),
+        ("Panel Sans", None, 100., gpui::GlyphThicken::Strength(192))
+    );
+    // The strings are measured when the root lays out, outside the scopes.
+    // The line wrapper resolves the unshifted font either way: the check that
+    // no terminal text shaped at 450 (350 + the shift) is the one that counts.
+    let shaped = text.fonts.lock().unwrap().clone();
+    assert!(
+        shaped
+            .iter()
+            .any(|f| f.family.as_ref() == "Fixture Mono" && f.weight == gpui::FontWeight(350.)),
+        "terminal text shapes unshifted: {shaped:?}"
+    );
+    assert!(
+        !shaped
+            .iter()
+            .any(|f| f.family.as_ref() == "Fixture Mono" && f.weight == gpui::FontWeight(450.)),
+        "{shaped:?}"
+    );
+    assert!(
+        shaped
+            .iter()
+            .any(|f| f.family.as_ref() == "Panel Sans" && f.weight == gpui::FontWeight(500.)),
+        "panel text keeps the shift: {shaped:?}"
+    );
+    window
+        .update(cx, |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+/// A text system that gives each font it resolves its own id and records,
+/// for every glyph it is asked to raster, the font (as shaped, its weight
+/// shifted) and the thickening. Lines shape in their first run's font.
+#[derive(Default)]
+struct RecordingText {
+    fonts: std::sync::Mutex<Vec<gpui::Font>>,
+    glyphs: std::sync::Mutex<Vec<(gpui::FontId, gpui::GlyphThicken)>>,
+}
+
+impl gpui::PlatformTextSystem for RecordingText {
+    fn add_fonts(&self, _: Vec<std::borrow::Cow<'static, [u8]>>) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn all_font_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn font_id(&self, font: &gpui::Font) -> anyhow::Result<gpui::FontId> {
+        let mut fonts = self.fonts.lock().unwrap();
+        let index = fonts.iter().position(|f| f == font).unwrap_or_else(|| {
+            fonts.push(font.clone());
+            fonts.len() - 1
+        });
+        Ok(gpui::FontId(index))
+    }
+    fn font_metrics(&self, id: gpui::FontId) -> gpui::FontMetrics {
+        gpui::NoopTextSystem.font_metrics(id)
+    }
+    fn typographic_bounds(
+        &self,
+        id: gpui::FontId,
+        glyph: gpui::GlyphId,
+    ) -> anyhow::Result<gpui::Bounds<f32>> {
+        gpui::NoopTextSystem.typographic_bounds(id, glyph)
+    }
+    fn advance(&self, id: gpui::FontId, glyph: gpui::GlyphId) -> anyhow::Result<gpui::Size<f32>> {
+        gpui::NoopTextSystem.advance(id, glyph)
+    }
+    fn glyph_for_char(&self, id: gpui::FontId, ch: char) -> Option<gpui::GlyphId> {
+        gpui::NoopTextSystem.glyph_for_char(id, ch)
+    }
+    fn glyph_raster_bounds(
+        &self,
+        params: &gpui::RenderGlyphParams,
+    ) -> anyhow::Result<gpui::Bounds<gpui::DevicePixels>> {
+        self.glyphs
+            .lock()
+            .unwrap()
+            .push((params.font_id, params.thicken));
+        Ok(Default::default())
+    }
+    fn rasterize_glyph(
+        &self,
+        params: &gpui::RenderGlyphParams,
+        bounds: gpui::Bounds<gpui::DevicePixels>,
+    ) -> anyhow::Result<(gpui::Size<gpui::DevicePixels>, Vec<u8>)> {
+        gpui::NoopTextSystem.rasterize_glyph(params, bounds)
+    }
+    fn layout_line(
+        &self,
+        text: &str,
+        font_size: gpui::Pixels,
+        runs: &[gpui::FontRun],
+    ) -> gpui::LineLayout {
+        let mut layout = gpui::NoopTextSystem.layout_line(text, font_size, runs);
+        for run in &mut layout.runs {
+            run.font_id = runs.first().map_or(run.font_id, |r| r.font_id);
+        }
+        layout
+    }
+    fn recommended_rendering_mode(
+        &self,
+        id: gpui::FontId,
+        size: gpui::Pixels,
+    ) -> gpui::TextRenderingMode {
+        gpui::NoopTextSystem.recommended_rendering_mode(id, size)
+    }
+}
+
+/// The diff's glyphs draw as a terminal's: the terminals' family, unshifted
+/// weight, fallbacks, ligature features and `font_thicken` strength. The
+/// panel's own text beside it keeps the panels' look.
+#[test]
+fn changes_diff_draws_as_terminal_text() {
+    let text = std::sync::Arc::new(RecordingText::default());
+    let cx = &mut TestAppContext::build_with_text_system(
+        gpui::TestDispatcher::new(0),
+        None,
+        text.clone(),
+    );
+    cx.update(gpui_shell::init);
+    let original = crate::settings::get();
+    let person = json!({
+        "font": "Fixture Mono", "font_weight": 400, "font_fallbacks": ["ZedMono Nerd Font Mono", "AdwaitaMono Nerd Font Mono"], "font_ligatures": true,
+        "font_thicken": true, "font_thicken_strength": 30, "ui_font_thicken": true, "ui_font_thicken_strength": 192, "ui_font_weight": 500,
+    });
+    let settings = crate::settings::Settings::compose(
+        &serde_json::from_value(person).unwrap(),
+        &crate::layout::Look::default(),
+        true,
+    );
+    crate::settings::set(settings.clone());
+    let staged = Staged::new();
+    let mut values = fixture(false, props(), updates("current", "current"));
+    values.insert("settings".into(), settings.for_mods());
+    let calls = Rc::new(RefCell::new(Calls::default()));
+    let policy = Policy::new()
+        .with_storage_path(staged.0.join("store.json"))
+        .with_capabilities(
+            Capabilities::new()
+                .storage(true)
+                .read_roots([staged.0.clone()]),
+        )
+        .with_host_module(module(values, calls.clone()))
+        .unwrap();
+    let root = staged.wrapper(
+        "mods/changes",
+        r#"this.setLines(["@@ -1 +1 @@", "+let x = 1;"]);"#,
+    );
+    struct Panel(DescriptionSession);
+    impl gpui::Render for Panel {
+        fn render(
+            &mut self,
+            window: &mut gpui::Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            crate::window::set_text_look(window);
+            self.0.view()
+        }
+    }
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let window = cx.add_window(|window, cx| {
+        Panel(DescriptionSession::load(runtime, root, policy, window, cx).unwrap())
+    });
+    let handle: gpui::AnyWindowHandle = window.into();
+    cx.simulate_window_frame_request(handle);
+
+    let fonts = text.fonts.lock().unwrap().clone();
+    let mut drawn: Vec<_> = text
+        .glyphs
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(id, thicken)| (id.0, *thicken))
+        .collect();
+    drawn.dedup();
+    let font = |id: usize| &fonts[id];
+    let (terminal, panel): (Vec<_>, Vec<_>) = drawn
+        .iter()
+        .partition(|(id, _)| font(*id).family.as_ref() == "Fixture Mono");
+    assert!(
+        !terminal.is_empty() && !panel.is_empty(),
+        "both the diff and the panel draw text: {fonts:?}"
+    );
+    for (id, thicken) in &terminal {
+        let f = font(*id);
+        assert_eq!(*thicken, gpui::GlyphThicken::Strength(30), "{f:?}");
+        assert_eq!(
+            f.fallbacks.as_ref().map(|f| f.fallback_list().to_vec()),
+            Some(vec![
+                "ZedMono Nerd Font Mono".to_string(),
+                "AdwaitaMono Nerd Font Mono".to_string()
+            ])
+        );
+        assert_eq!(f.features, crate::terminal::ligature_features(true));
+        assert_eq!(f.weight, gpui::FontWeight(400.), "no ui_font_weight shift");
+    }
+    for (id, thicken) in &panel {
+        let f = font(*id);
+        assert_eq!(
+            (*thicken, &f.fallbacks),
+            (gpui::GlyphThicken::Strength(192), &None),
+            "{f:?}"
+        );
+        assert_ne!(f.features, crate::terminal::ligature_features(true));
+        assert!(f.weight.0 > 400., "the panels' +100: {f:?}");
+    }
+    let _ = handle.update(cx, |_, window, _| window.remove_window());
+    cx.run_until_parked();
+    crate::settings::set((*original).clone());
 }
 
 /// Panes as the app publishes them: `label` and `session` filled in by the

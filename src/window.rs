@@ -7002,6 +7002,18 @@ fn shadow(el: Div, s: Option<&str>) -> Div {
     }
 }
 
+/// How the window's text draws this frame: the panels' look, and the
+/// terminals' for text a mod styles `terminal_text()`.
+pub(crate) fn set_text_look(window: &mut Window) {
+    let s = settings::get();
+    window.set_glyph_thicken(s.ui_glyph_thicken());
+    window.set_glyph_contrast(s.ui_text_contrast);
+    window.set_glyph_subpixel(s.ui_text_rendering.subpixel());
+    gpui::set_subpixel_bgr(s.subpixel_order == settings::SubpixelOrder::Bgr);
+    window.set_font_weight_shift(s.ui_weight_shift());
+    window.set_terminal_text(Some(crate::terminal::terminal_text()));
+}
+
 impl Render for AppWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::bench::count(&crate::bench::WINDOW);
@@ -7009,11 +7021,7 @@ impl Render for AppWindow {
         crate::bench::frame_start();
         crate::terminal::next_frame();
         window.set_rem_size(settings::ui_rem());
-        window.set_glyph_thicken(settings::get().ui_glyph_thicken());
-        window.set_glyph_contrast(settings::get().ui_text_contrast);
-        window.set_glyph_subpixel(settings::get().ui_text_rendering.subpixel());
-        gpui::set_subpixel_bgr(settings::get().subpixel_order == settings::SubpixelOrder::Bgr);
-        window.set_font_weight_shift(settings::get().ui_weight_shift());
+        set_text_look(window);
         window.set_veil(inactive_veil(window.is_window_active()));
         if self.model.active_tab().is_some_and(|t| !t.floating.is_empty()) {
             self.float_cell.set(crate::terminal::cell_size(window));

@@ -1276,6 +1276,11 @@ impl DescriptionSession {
         Ok(Self { runtime, view, snapshot: None })
     }
 
+    /// The loaded view, for a test window to draw.
+    pub fn view(&self) -> gpui::AnyView {
+        self.view.clone().into()
+    }
+
     pub fn describe(&mut self, window: &mut Window, cx: &mut App) -> Result<String> {
         let object = self.view.read(cx).object().clone();
         let policy = self.view.read(cx).policy();

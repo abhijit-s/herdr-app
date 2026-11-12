@@ -480,6 +480,10 @@ pub struct TextStyle {
 
     /// The number of lines to display before truncating the text
     pub line_clamp: Option<usize>,
+
+    /// HERDR: the text draws as the host's terminal text
+    /// (`Window::set_terminal_text`), as `Styled::terminal_text` sets it.
+    pub terminal: bool,
 }
 
 impl Default for TextStyle {
@@ -501,6 +505,7 @@ impl Default for TextStyle {
             text_overflow: None,
             text_align: TextAlign::default(),
             line_clamp: None,
+            terminal: false,
         }
     }
 }

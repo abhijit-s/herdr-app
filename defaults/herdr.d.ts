@@ -550,7 +550,9 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  `ui_scale × ui_text_scale`, so it draws at their size; `weight` is for `font_weight`: theirs less
  *  the `ui_font_weight` shift (clamped to 100..900); both hold for the scales of the moment, so read
  *  them at each render. `line_height` is a multiple of the font's height (ascent plus descent),
- *  within 0.8..2, for sizing rows; `fallbacks` is `font_fallbacks` (elements take no fallback list). */
+ *  within 0.8..2, for sizing rows; `fallbacks` is `font_fallbacks`, for information. To draw text in
+ *  the terminals' font and glyph rendering (family, weight, fallbacks, ligatures, thickening, contrast
+ *  and smoothing), style it `terminal_text()` and give it `text_size(size)`. */
 export function settings(): Record<string, unknown>;
 
 /** The toast previews the Settings window draws: `styles` is `{ standard, subtle, "high-contrast",

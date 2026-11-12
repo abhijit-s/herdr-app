@@ -14,7 +14,7 @@ use crate::{
     Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent,
     MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels,
     PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
-    GlyphThicken, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
+    GlyphThicken, TerminalText, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
     RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
     SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size,
     StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
@@ -1210,6 +1210,8 @@ pub struct Window {
     spin_step_due: Option<f64>,
     // HERDR: the frame cycle `paint_glyph` and `paint_emoji` tag their sprites with.
     frame_cycle: Option<FrameCycle>,
+    // HERDR: how text under `Styled::terminal_text` draws (`set_terminal_text`).
+    terminal_text: Option<TerminalText>,
     // HERDR: the thickening `paint_glyph` uses (`with_glyph_thicken`).
     glyph_thicken: GlyphThicken,
     // HERDR: the thickening each frame's paint starts at (`set_glyph_thicken`).
@@ -2126,6 +2128,7 @@ impl Window {
             spin_due: None,
             spin_step_due: None,
             frame_cycle: None,
+            terminal_text: None,
             glyph_thicken: GlyphThicken::Auto,
             base_glyph_thicken: GlyphThicken::Auto,
             glyph_contrast: 0.,
@@ -2238,6 +2241,11 @@ impl ContentMask<Pixels> {
 /// HERDR: how often spinning sprites step: ~10 fps, and a small spinner
 /// looks the same.
 pub const SPIN_STEP: Duration = Duration::from_millis(100);
+
+/// HERDR: whether text styled by `stack` is terminal text.
+fn in_terminal_text(stack: &[TextStyleRefinement]) -> bool {
+    stack.iter().any(|style| style.terminal == Some(true))
+}
 
 /// HERDR: the clock spinning sprites turn by: one for the whole process, so
 /// spinners turn together.
@@ -2466,6 +2474,15 @@ impl Window {
     pub fn text_style(&self) -> TextStyle {
         let mut style = TextStyle::default();
         for refinement in &self.text_style_stack {
+            // HERDR: the terminal's font first, so the element's own styles win.
+            if refinement.terminal == Some(true)
+                && let Some(terminal) = &self.terminal_text
+            {
+                style.font_family = terminal.font.family.clone();
+                style.font_features = terminal.font.features.clone();
+                style.font_fallbacks = terminal.font.fallbacks.clone();
+                style.font_weight = terminal.font.weight;
+            }
             style.refine(refinement);
         }
         style
@@ -3989,10 +4006,18 @@ impl Window {
 
                 let prepaint_start = self.prepaint_index();
                 if let Some(mut element) = element {
+                    // HERDR: a deferred draw under terminal text keeps its look.
+                    let terminal = in_terminal_text(&self.text_style_stack);
                     self.with_rendered_view(current_view, |window| {
                         window.with_rem_size(Some(rem_size), |window| {
                             window.with_absolute_element_offset(absolute_offset, |window| {
-                                element.prepaint(window, cx);
+                                if terminal {
+                                    window.with_terminal_glyphs(|window| {
+                                        element.prepaint(window, cx)
+                                    });
+                                } else {
+                                    element.prepaint(window, cx);
+                                }
                             });
                         });
                     });
@@ -4033,10 +4058,15 @@ impl Window {
             let paint_start = self.paint_index();
             let content_mask = deferred_draw.content_mask;
             if let Some(element) = deferred_draw.element.as_mut() {
+                let terminal = in_terminal_text(&deferred_draw.text_style_stack);
                 self.with_rendered_view(deferred_draw.current_view, |window| {
                     window.with_content_mask(content_mask, |window| {
                         window.with_rem_size(Some(deferred_draw.rem_size), |window| {
-                            element.paint(window, cx);
+                            if terminal {
+                                window.with_terminal_glyphs(|window| element.paint(window, cx));
+                            } else {
+                                element.paint(window, cx);
+                            }
                         });
                     })
                 })
@@ -4188,8 +4218,14 @@ impl Window {
     {
         self.invalidator.debug_assert_paint_or_prepaint();
         if let Some(style) = style {
+            // HERDR: terminal text shapes and paints its subtree in the terminal look.
+            let terminal = style.terminal == Some(true);
             self.text_style_stack.push(style);
-            let result = f(self);
+            let result = if terminal {
+                self.with_terminal_glyphs(f)
+            } else {
+                f(self)
+            };
             self.text_style_stack.pop();
             result
         } else {
@@ -4235,6 +4271,36 @@ impl Window {
     /// rendering, as `set_rem_size`.
     pub fn set_glyph_thicken(&mut self, thicken: GlyphThicken) {
         self.base_glyph_thicken = thicken;
+    }
+
+    /// HERDR: how text under `Styled::terminal_text` draws: in `font`'s
+    /// family, features, fallbacks and weight, shaped with no weight shift,
+    /// its glyphs as `with_glyph_thicken`, `with_glyph_contrast` and
+    /// `with_glyph_subpixel` paint them. None leaves that text as any other.
+    /// Set it while rendering, as `set_glyph_thicken`.
+    pub fn set_terminal_text(&mut self, terminal: Option<TerminalText>) {
+        self.terminal_text = terminal;
+    }
+
+    /// HERDR: the thickening, coverage contrast and subpixel choice the
+    /// glyphs painted here take.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn glyph_look(&self) -> (GlyphThicken, f32, bool) {
+        (self.glyph_thicken, self.glyph_contrast, self.glyph_subpixel)
+    }
+
+    /// HERDR: runs `f` in the terminal text's weight shift and glyph look.
+    fn with_terminal_glyphs<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let Some(look) = &self.terminal_text else {
+            return f(self);
+        };
+        let (thicken, contrast, subpixel) = (look.thicken, look.contrast, look.subpixel);
+        self.with_font_weight_shift(0., |window| {
+            window.with_glyph_thicken(thicken, |window| {
+                window
+                    .with_glyph_contrast(contrast, |window| window.with_glyph_subpixel(subpixel, f))
+            })
+        })
     }
 
     /// HERDR: every run this window shapes outside a `with_font_weight_shift`
