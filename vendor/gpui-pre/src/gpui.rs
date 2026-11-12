@@ -33,6 +33,8 @@ mod key_dispatch;
 mod keymap;
 mod path_builder;
 mod platform;
+/// HERDR: frame counters for benchmarks.
+pub mod frame_counts;
 pub mod prelude;
 /// Profiling utilities for task, frame, and thread performance tracking.
 pub mod profiler;

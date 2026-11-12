@@ -3653,7 +3653,9 @@ impl Window {
         let _foreground_turn = profiler::journal::foreground_turn();
         #[cfg(feature = "profiler")]
         let present_start = Instant::now();
-        self.spin_due = self.rendered_frame.scene.turn_spinners(spin_clock_ms());
+        let now = spin_clock_ms();
+        crate::frame_counts::presented(self.spin_due.filter(|due| now >= *due).map(|due| now - due));
+        self.spin_due = self.rendered_frame.scene.turn_spinners(now);
         #[cfg(any(test, feature = "test-support"))]
         {
             self.presents += 1;

@@ -77,9 +77,10 @@ pub fn start() {
             let now = [SCRIPT_RENDERS.load(Relaxed), SCRIPT_US.load(Relaxed), MATERIALIZE.load(Relaxed), MATERIALIZE_US.load(Relaxed)];
             let d: Vec<u64> = now.iter().zip(last).map(|(n, l)| n.saturating_sub(l)).collect();
             last = now;
+            use gpui::frame_counts as fc;
             let _ = writeln!(
                 f,
-                r#"{{"t":{t},"scripts":{},"script_ms":{},"materialize":{},"materialize_ms":{},"window":{},"body":{},"trail":{},"terminal":{},"grid":{},"rows":{},"window_ms":{},"frame_ms":{}}}"#,
+                r#"{{"t":{t},"scripts":{},"script_ms":{},"materialize":{},"materialize_ms":{},"window":{},"body":{},"trail":{},"terminal":{},"grid":{},"rows":{},"window_ms":{},"frame_ms":{},"presents":{},"spin_steps":{},"spin_late_ms":{},"spin_late_max_ms":{},"link_starts":{}}}"#,
                 d[0],
                 d[1] as f64 / 1000.0,
                 d[2],
@@ -91,7 +92,12 @@ pub fn start() {
                 GRID.swap(0, Relaxed),
                 ROWS.swap(0, Relaxed),
                 WINDOW_US.swap(0, Relaxed) as f64 / 1000.0,
-                FRAME_US.swap(0, Relaxed) as f64 / 1000.0
+                FRAME_US.swap(0, Relaxed) as f64 / 1000.0,
+                fc::PRESENTS.swap(0, Relaxed),
+                fc::SPIN_STEPS.swap(0, Relaxed),
+                fc::SPIN_LATE_US.swap(0, Relaxed) as f64 / 1000.0,
+                fc::SPIN_LATE_MAX_US.swap(0, Relaxed) as f64 / 1000.0,
+                fc::LINK_STARTS.swap(0, Relaxed)
             );
         }
     });
