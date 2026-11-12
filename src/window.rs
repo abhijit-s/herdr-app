@@ -7137,8 +7137,7 @@ impl Render for AppWindow {
         set_text_look(window);
         window.set_veil(inactive_veil(window.is_window_active()));
         let (lower, upper) = (self.lower.entity_id(), self.upper.entity_id());
-        let trail_only = window.view_notified(self.trail_layer.entity_id())
-            && !window.view_notified(cx.entity_id())
+        let trail_only = window.only_view_notified(self.trail_layer.entity_id())
             && !window.view_dirty(lower)
             && !window.view_dirty(upper);
         if !trail_only {
@@ -9665,7 +9664,8 @@ export default class Recent extends View {
     /// window's layout (no layout draw), and the terminals still count as on
     /// screen, so their output keeps drawing. Anything else notifying the
     /// window during the trail draws the layout again, still reusing the
-    /// terminals in it. Over, it paints no more.
+    /// terminals in it. Over, it paints no more, and the window draws its
+    /// layout once more.
     #[gpui::test]
     fn trail_frames(cx: &mut gpui::TestAppContext) {
         use crate::bench::{BODY, TERMINAL, TRAIL, WINDOW};
@@ -9781,9 +9781,13 @@ export default class Recent extends View {
             view.update(cx, |this, _| this.trail.is_none()),
             "over, it ends"
         );
-        let painted = counts().2;
+        let (painted, layouts) = (counts().2, counts().1);
         frame(cx);
         assert_eq!(counts().2, painted, "and paints no more");
+        assert!(
+            counts().1 > layouts,
+            "the frame after its end draws the layout again"
+        );
     }
 
     #[test]

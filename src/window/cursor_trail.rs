@@ -184,9 +184,21 @@ impl Render for TrailLayer {
         canvas(
             |_, _, _| {},
             move |_, _, window, cx| {
-                let Some((layers, color)) =
-                    app.update(cx, |app, cx| app.trail_frame(cx)).ok().flatten()
+                let Ok((live, frame)) =
+                    app.update(cx, |app, cx| (app.trail.is_some(), app.trail_frame(cx)))
                 else {
+                    return;
+                };
+                let Some((layers, color)) = frame else {
+                    // Ended: the window draws once more in full, so anything that
+                    // changed unnotified while trail frames reused it shows, as
+                    // a full draw each frame used to show it.
+                    if live {
+                        let app = app.clone();
+                        window.on_next_frame(move |_, cx| {
+                            let _ = app.update(cx, |_, cx| cx.notify());
+                        });
+                    }
                     return;
                 };
                 crate::bench::count(&crate::bench::TRAIL);
