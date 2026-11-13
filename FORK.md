@@ -416,8 +416,8 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 `feat/copy-on-select-switch` (branched from `master`): a "Copy on select" switch for upstream's `copy_on_select`, which had no Settings window row, on the Input > Mouse page under Focus follows mouse. Like the fork's other switches it writes the key only away from its default: off writes `copy_on_select: false`, on takes the key out of settings.json.
 
 - Tests: `scripts/settings.test.ts` ("copy on select sits on the Mouse page"), `mods::render_tests::copy_on_select_toggle_shows_the_setting`.
-- Files: `defaults/frame/settings/main.js` (`followsMouse`), `scripts/settings.test.ts`, `src/mods/render_tests.rs`
-- Three questions: (1) Does the app act on it? Yes: the terminal copies on release only while it is on (`TerminalView::select`). (2) Can only the app see it? No: it is a settings.json key the Settings mod writes. (3) Can a mod not do it? The Settings window is a mod and does it. Verdict: A, upstream as is: a row for a setting upstream already has. Upstream's Settings window has no Mouse page, so the upstream branch, `feat/copy-on-select-upstream`, puts the row with the terminal rows on its Look page.
+- Files: `defaults/frame/settings/main.js` (`followsMouse`), `defaults/AGENTS.md`, `scripts/settings.test.ts`, `src/mods/render_tests.rs`
+- Three questions: (1) Does the app act on it? Yes: the terminal copies on release only while it is on (`TerminalView::select`). (2) Can only the app see it? No: it is a settings.json key the Settings mod writes. (3) Can a mod not do it? The Settings window is a mod and does it. Verdict: A, upstream as is: a row for a setting upstream already has. Upstream's Settings window has no Mouse page, so the upstream branch, `feat/copy-on-select-upstream`, puts the row under its own Mouse heading at the end of its Look page. Upstream's CONTRIBUTING.md says the mods Herdr ships take fixes only (a Settings feature was closed on that ground, #649), so it waits for an issue asking whether upstream wants the row before a pull request.
 
 ### Toasts stand out, and go where you put them
 
