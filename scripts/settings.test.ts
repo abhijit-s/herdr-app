@@ -305,6 +305,14 @@ test("contrast steps by 0.1 within 0 to 1, terminal and interface apart", () => 
   expect(click({ ui_text_contrast: 0.2, text_contrast: 0.5 }, {}, "st-ui_text_contrast-minus")).toEqual({ ui_text_contrast: 0.1, text_contrast: 0.5 });
 });
 
+test("copy on select sits on the Mouse page: on unless false, and a click writes false or takes it out", () => {
+  expect(click({}, {}, "st-copy_on_select", [], "mouse")).toEqual({ copy_on_select: false });
+  expect(click({ copy_on_select: false }, {}, "st-copy_on_select", [], "mouse")).toEqual({});
+  expect(click({ copy_on_select: true, focus_follows_mouse: true }, {}, "st-copy_on_select", [], "mouse")).toEqual({ copy_on_select: false, focus_follows_mouse: true });
+  const on = (person: Record<string, any>) => click(person, {}, "st-copy_on_select", ["shown?"], "mouse").calls.justify_end !== undefined;
+  expect([on({}), on({ copy_on_select: true }), on({ copy_on_select: false })]).toEqual([true, true, false]);
+});
+
 test("cell width steps by 5% within 0.8 to 2 from the value in use, leaving 100% out", () => {
   expect(click({}, {}, "st-terminal_cell_width-minus")).toEqual({ terminal_cell_width: 0.95 });
   expect(click({}, {}, "st-terminal_cell_width-plus")).toEqual({ terminal_cell_width: 1.05 });
