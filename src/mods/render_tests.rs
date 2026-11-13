@@ -808,6 +808,24 @@ fn pane_zoom_keys_toggle_shows_the_setting(cx: &mut TestAppContext) {
     }
 }
 
+/// The Mouse page has a Copy on select switch under Focus follows mouse,
+/// on unless settings.json sets `copy_on_select` to false.
+#[gpui::test]
+fn copy_on_select_toggle_shows_the_setting(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut p = props();
+    p["section"] = json!("mouse");
+    for (person, on) in [("{}", true), ("{ copy_on_select: true }", true), ("{ copy_on_select: false }", false)] {
+        let tree = describe(cx, &staged, "frame/settings", true, p.clone(), updates("current", "current"), Some(&format!("this.load = async () => {{}}; this.person = {person};"))).unwrap();
+        let follows = tree.find("Focus follows mouse").expect("Focus follows mouse");
+        let copy = tree.find("Copy on select").expect("Copy on select");
+        assert!(follows < copy, "under Focus follows mouse");
+        let toggle = tree.lines().skip_while(|l| !l.contains("st-copy_on_select")).take(6).collect::<Vec<_>>().join("\n");
+        assert_eq!(toggle.contains("justify_end"), on, "{person}: {toggle}");
+    }
+}
+
 /// The Terminal grid page has a Cell rounding choice under Cell width,
 /// showing the person's pick.
 #[gpui::test]

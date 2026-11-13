@@ -2473,10 +2473,11 @@ export default class Settings extends View {
     return this.row(t, label, hint, this.stepper(t, `st-${key}`, `${Math.round(now * 10) / 10}`, (_e, cx) => go(-0.1, cx), (_e, cx) => go(0.1, cx)), key);
   }
 
-  // Focus follows mouse: a toggle, then its delay (50 ms steps) while it's on.
-  // Off and 150 ms are the defaults, left out of settings.json.
+  // Focus follows mouse: a toggle, then its delay (50 ms steps) while it's on;
+  // then copy on select. Off, 150 ms and copying are the defaults, left out of settings.json.
   followsMouse(t) {
     const on = this.person.focus_follows_mouse === true;
+    const copies = this.person.copy_on_select !== false;
     const ms = Math.max(0, Math.min(2000, this.person.focus_follows_mouse_delay_ms ?? 150));
     const delay = (d, cx) =>
       this.change((q) => {
@@ -2503,6 +2504,20 @@ export default class Settings extends View {
       )
       .when(on, (el) =>
         el.child(this.row(t, "Focus delay", "How long the pointer rests on a pane first.", this.stepper(t, "st-focus_follows_mouse_delay_ms", `${ms} ms`, (_e, cx) => delay(-50, cx), (_e, cx) => delay(50, cx)), "focus_follows_mouse_delay_ms")),
+      )
+      .child(
+        this.row(
+          t,
+          "Copy on select",
+          "Text you select in a terminal with the mouse goes to the clipboard as you let go. Off, copy it yourself.",
+          this.toggle(t, "st-copy_on_select", copies, (_e, cx) =>
+            this.change((q) => {
+              if (q.copy_on_select === false) delete q.copy_on_select;
+              else q.copy_on_select = false;
+            }, cx),
+          ),
+          "copy_on_select",
+        ),
       );
   }
 

@@ -37,7 +37,7 @@ Each merge of `upstream/master` into `master`, with the conflict choices worth r
 - 2026-11-13, `4c8c622..3d76790` (36 commits on `sync/upstream-2026-11-13`: the macOS menu bar `daed3e1` and Cmd+M `bb3ef91`, configurable copy on select #656, paths dragged into terminals #320, window blur #702, navigation between zoomed panes `d9402b1`, keyboard selection for mods `3d9446f`, `space.new`/`tab.new` without focus #602, the window title from mods #681, pinch for mods #788, script editors' selection #923, Cursor #728, goose #544 and oh-my-pi #730 agents, update replacement failures `8c2c7df` `ab3343f` `b73c6c5`, the fork's #411 and #752, and fixes: agents through sh for other shells `5f71fd5`, fish agents from + #786, title brackets #935, the Herdr 98 date dialog #940, unnamed tabs #892, input selection colour #768, drops on another machine #811, the found core for `hc` #825, long space names #865, `HERDR_TEST_TMPDIR` #880, PowerShell paths `cc4c52c`, virtual list bottom #973, spaces tests #972, active space in view #977, popup margin #979). Choices:
   - Menu bar: upstream's `refresh_menus` and its menus replace the fork's one Herdr menu; `macos::init` still starts the fork's `follow_reduce_motion` after it. Items show the person's string bindings from keys.json, read when the bar is built; the menus hold upstream's commands only.
   - Keys: upstream adds `cmd-m` (`window.minimize`) to `defaults/keys.macos.json`. The fork's last macOS defaults are kept as `keys/shipped/fork-f41cf96-keys.macos.json` (byte-identical to master's, blob `86670eb`), so an untouched copy migrates and gains Cmd+M; an edited one keeps its keys.
-  - Copy on select: upstream's `copy_on_select` (default on, left out of settings.json while on) gates the fork's "Copied" toast: `TerminalView::select` copies and emits `TerminalEvent::Copied` only when the setting is on, after upstream's `selection_changed`. `Person` has the field beside `clipboard_write`; the guide test lists it. No Settings window row, as upstream has none.
+  - Copy on select: upstream's `copy_on_select` (default on, left out of settings.json while on) gates the fork's "Copied" toast: `TerminalView::select` copies and emits `TerminalEvent::Copied` only when the setting is on, after upstream's `selection_changed`. `Person` has the field beside `clipboard_write`; the guide test lists it. Its Settings window row is "Copy on select switch" below.
   - Selection commands: upstream's `terminal.select`, `terminal.adjust_selection` and `terminal.clear_selection` beside the fork's copy commands (`commands.rs`, `herdr.d.ts`); `TerminalView::selection_command` beside the fork's `full_screen`, `has_selection` and `last_output`; `TerminalEvent` has upstream's `Notice` beside the fork's `Copied` and `CursorJump`, and `AppWindow` handles all three.
   - New spaces and tabs without focus (#602): upstream's `insert_space` and `insert_tab` take the fork's default arrangement (`ctx.arrange.or(self.default_arrange)`), so a tab opened in the background arranges as one opened in front.
   - `tab.move`: upstream's `Model::move_tab` (#752, the fork's own fix upstreamed) replaces the fork's equal one; the fork's `step_tab` and `move_tab_to_space` stay beside it.
@@ -410,6 +410,14 @@ Upstream pull request #67 (`pr/67`, by juanibiapina, closes #66), merged here as
 
 - Files: `src/terminal.rs` (`TerminalEvent::Copied`, `select`, `copy`), `src/window.rs` (the terminal subscription, test `copy_on_select_says_copied_once_and_settings_presses_do_not`)
 - Upstream: none yet
+
+### Copy on select switch
+
+`feat/copy-on-select-switch` (branched from `master`): a "Copy on select" switch for upstream's `copy_on_select`, which had no Settings window row, on the Input > Mouse page under Focus follows mouse. Like the fork's other switches it writes the key only away from its default: off writes `copy_on_select: false`, on takes the key out of settings.json.
+
+- Tests: `scripts/settings.test.ts` ("copy on select sits on the Mouse page"), `mods::render_tests::copy_on_select_toggle_shows_the_setting`.
+- Files: `defaults/frame/settings/main.js` (`followsMouse`), `scripts/settings.test.ts`, `src/mods/render_tests.rs`
+- Three questions: (1) Does the app act on it? Yes: the terminal copies on release only while it is on (`TerminalView::select`). (2) Can only the app see it? No: it is a settings.json key the Settings mod writes. (3) Can a mod not do it? The Settings window is a mod and does it. Verdict: A, upstream as is: a row for a setting upstream already has. Upstream's Settings window has no Mouse page, so the upstream branch, `feat/copy-on-select-upstream`, puts the row with the terminal rows on its Look page.
 
 ### Toasts stand out, and go where you put them
 
