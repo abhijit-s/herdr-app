@@ -885,9 +885,11 @@ fn copy_on_select_toggle_shows_the_setting(cx: &mut TestAppContext) {
     let mut p = props();
     p["section"] = json!("look");
     for (person, on) in [("{}", true), ("{ copy_on_select: true }", true), ("{ copy_on_select: false }", false)] {
-        let setup = format!("this.load = async () => {{}}; this.person = {person};");
+        let setup = format!("this.person = {person};");
         let tree = describe(cx, &staged, "frame/settings", true, p.clone(), updates("current", "current"), Some(&setup)).unwrap();
-        assert!(tree.contains("Copy on select"), "{tree}");
+        let fonts = tree.find("Interface font").expect("Interface font");
+        let copy = tree.find("Copy on select").expect("Copy on select");
+        assert!(fonts < copy, "after the font rows");
         let toggle = tree.lines().skip_while(|l| !l.contains("st-copy_on_select")).take(6).collect::<Vec<_>>().join("\n");
         assert_eq!(toggle.contains("justify_end"), on, "{person}: {toggle}");
     }
