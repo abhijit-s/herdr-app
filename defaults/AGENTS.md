@@ -413,8 +413,9 @@ layout's look and a block can differ:
   that layout's own: Settings offers it only there.
   `herdr-app rex-themes` writes `themes/rex-<name>.json` for each theme of the installed Rex app (read from the app on every run, never shipped), replacing only `rex-*` files; `--dry-run` lists what it would write.
 - `terminal_cell_width`: column width multiplier (default 1, clamped to 0.8..2),
-  like Ghostty's `adjust-cell-width` as a percentage (`-5%` is 0.95). Glyphs
-  are placed in their cells as Ghostty places them.
+  like Ghostty's `adjust-cell-width` as a percentage (`-5%` is 0.95; the
+  same cells with `cell_rounding` `"nearest"`). Glyphs are placed in their
+  cells as Ghostty places them.
 - `terminal_scroll_speed`: wheel and trackpad multiplier (default 1, clamped
   to 0.1..5), including mouse reports to programs. Small moves accumulate.
 - `font` / `font_size`: the terminals' (px at zoom 1); `ui_font`: the mods'
