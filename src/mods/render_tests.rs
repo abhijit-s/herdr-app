@@ -885,7 +885,8 @@ fn copy_on_select_toggle_shows_the_setting(cx: &mut TestAppContext) {
     let mut p = props();
     p["section"] = json!("look");
     for (person, on) in [("{}", true), ("{ copy_on_select: true }", true), ("{ copy_on_select: false }", false)] {
-        let setup = format!("this.person = {person};");
+        // The fixture has no settings.json: keep the window's own load from emptying the person.
+        let setup = format!("this.load = async () => {{}}; this.person = {person};");
         let tree = describe(cx, &staged, "frame/settings", true, p.clone(), updates("current", "current"), Some(&setup)).unwrap();
         let fonts = tree.find("Interface font").expect("Interface font");
         let copy = tree.find("Copy on select").expect("Copy on select");
