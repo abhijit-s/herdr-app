@@ -138,7 +138,7 @@ export default class Tabs extends View {
     // What a tab looks like; the dragged one's ghost is drawn the same, without its controls.
     const face = (c, ghost) => {
       const program = ps.find(p => p.tab === c.id && p.program?.agent)?.program ?? ps.find(p => p.tab === c.id)?.program;
-      const name = /^tb\d+$/.test(c.name) ? program?.name ?? "Terminal" : c.name;
+      const name = c.named ? c.name : program?.name ?? "Terminal";
       return h_flex().h(29).px(10).gap(7).rounded(7).items_center().flex_none().text_size(12.8)
         .border(1).border_color(c.active || ghost ? t.border : t.chrome).bg(c.active || ghost ? t.raised : t.chrome).text_color(c.active ? t.foreground : t.muted)
         .when(Boolean(c.icon), el => el.child(div().flex_none().text_size(13).text_color(t.muted).when(c.icon.kind === "glyph", g => g.font_family("Symbols Nerd Font")).when(c.icon.kind === "letter", l => l.font_bold()).child(c.icon.text)))
