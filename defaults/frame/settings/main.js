@@ -190,11 +190,7 @@ const APP_ICONS = [
   ["phosphor", "Phosphor"],
   ["graphite", "Graphite"],
 ];
-const CELL_WIDTHS = [
-  ["font", "Font"],
-  ["pixel", "Whole pixels"],
-];
-// cell_rounding: how the grid snaps to device pixels (rows always, widths at whole pixels).
+// cell_rounding: how the grid snaps cells and rows to device pixels.
 const CELL_ROUNDINGS = [
   ["outward", "Outward"],
   ["nearest", "Nearest"],
@@ -2154,6 +2150,13 @@ export default class Settings extends View {
         if (next === 1) delete q.terminal_scroll_speed;
         else q.terminal_scroll_speed = next;
       }, cx);
+    // Upstream's steps (#962): 5% within 0.8..2; 100% is the default, left out of settings.json.
+    const cellWidthStep = (d, cx) =>
+      this.change((q) => {
+        const next = Math.max(0.8, Math.min(2, Math.round(Math.round(((q.terminal_cell_width ?? s.terminal_cell_width) + d) / 0.05) * 0.05 * 100) / 100));
+        if (next === 1) delete q.terminal_cell_width;
+        else q.terminal_cell_width = next;
+      }, cx);
     // Writes terminal_line_height, taking line_height (its other name) with it.
     const lineStep = (d, cx) =>
       this.change((q) => {
@@ -2310,14 +2313,13 @@ export default class Settings extends View {
           .child(
             this.row(
               t,
-              "Letter spacing",
-              ownFraction("letter_spacing", s.letter_spacing, 0) ? "This layout sets its own; yours shows in the others." : "Px added to each letter's width.",
-              this.stepper(t, "st-letter_spacing", fraction(s.letter_spacing), (_e, cx) => step("letter_spacing", s.letter_spacing, -0.5, -2, 10, cx), (_e, cx) => step("letter_spacing", s.letter_spacing, 0.5, -2, 10, cx)),
-              "letter_spacing",
+              "Cell width",
+              ownFraction("terminal_cell_width", s.terminal_cell_width, 1) ? "This layout sets its own; yours shows in the others." : "Column width, as Ghostty's adjust-cell-width (95% is -5%; Ghostty's very cells when cells snap to the nearest pixel). Letters are placed in their cells as Ghostty places them.",
+              this.stepper(t, "st-terminal_cell_width", `${Math.round(s.terminal_cell_width * 100)}%`, (_e, cx) => cellWidthStep(-0.05, cx), (_e, cx) => cellWidthStep(0.05, cx)),
+              "terminal_cell_width",
             ),
           )
-          .child(this.row(t, "Cell width", "Whole pixels puts each cell on device pixels, so letters sit evenly.", this.choicePicker(t, "st-cw", "cell_width", CELL_WIDTHS), "cell_width"))
-          .child(this.row(t, "Cell rounding", "Nearest keeps rows (and whole-pixel cells) within half a pixel of the font's size; Outward rounds rows up and whole-pixel cells down.", this.choicePicker(t, "st-cr", "cell_rounding", CELL_ROUNDINGS), "cell_rounding"));
+          .child(this.row(t, "Cell rounding", "Nearest keeps cells and rows within half a pixel of the font's size; Outward rounds cells down and rows up.", this.choicePicker(t, "st-cr", "cell_rounding", CELL_ROUNDINGS), "cell_rounding"));
       default:
         return el
           .child(this.heading(t, "Interface text"))

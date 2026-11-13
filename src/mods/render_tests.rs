@@ -699,14 +699,14 @@ fn terminal_text_rows_show_whose_value_is_in_use(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let layout = "This layout sets its own; yours shows in the others.";
-    for (person, overridden) in [("{}", 0), ("{font_weight: 300, line_height: 1.4, letter_spacing: 1}", 3)] {
+    for (person, overridden) in [("{}", 0), ("{font_weight: 300, line_height: 1.4, terminal_cell_width: 1.1}", 3)] {
         let setup = format!("this.load = async () => {{}}; this.person = {person};");
         let tree: String = ["fonts", "grid", "rendering"].map(|page| {
             let mut p = props();
             p["section"] = json!(page);
             describe(cx, &staged, "frame/settings", true, p, updates("current", "current"), Some(&setup)).unwrap()
         }).concat();
-        for id in ["st-font_weight-plus", "st-font_weight_bold-plus", "st-faint_opacity-plus", "st-line_height-plus", "st-letter_spacing-plus", "st-cw-Font", "st-cw-Whole pixels", "st-font_ligatures", "Terminal text"] {
+        for id in ["st-font_weight-plus", "st-font_weight_bold-plus", "st-faint_opacity-plus", "st-line_height-plus", "st-terminal_cell_width-plus", "st-cr-Outward", "st-font_ligatures", "Terminal text"] {
             assert!(tree.contains(id), "missing {id}: {tree}");
         }
         assert_eq!(tree.matches(layout).count(), overridden, "{person}: {tree}");

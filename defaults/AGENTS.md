@@ -412,9 +412,13 @@ layout's look and a block can differ:
   A theme named like a layout (`themes/win98.json`) is
   that layout's own: Settings offers it only there.
   `herdr-app rex-themes` writes `themes/rex-<name>.json` for each theme of the installed Rex app (read from the app on every run, never shipped), replacing only `rex-*` files; `--dry-run` lists what it would write.
+- `terminal_cell_width`: column width multiplier (default 1, clamped to 0.8..2),
+  like Ghostty's `adjust-cell-width` as a percentage (`-5%` is 0.95; the
+  same cells with `cell_rounding` `"nearest"`). Glyphs are placed in their
+  cells as Ghostty places them.
 - `terminal_scroll_speed`: wheel and trackpad multiplier (default 1, clamped
   to 0.1..5), including mouse reports to programs. Small moves accumulate.
-- `font` / `font_size` / `letter_spacing`: the terminals' (px at zoom 1); `ui_font`: the mods'
+- `font` / `font_size`: the terminals' (px at zoom 1); `ui_font`: the mods'
   (their text sizes are their own, in px, and follow zoom, `ui_zoom` and `ui_text_scale`). Optional: without
   them a layout uses settings.json's, else Herdr's (JetBrains Mono 14, Geist).
   Herdr (main) leaves these unset; Terminals sets text size 15, and Herdr 98
@@ -989,12 +993,13 @@ What's about the user, never a look:
 - `core`: the herdr-core binary to use, when it isn't where Herdr looks
   (PATH, the login shell's PATH, `~/.local/bin`, Homebrew, mise, Nix,
   cargo). Read at start.
-- `terminal_line_height` (default 1.15, 0.8..2; `line_height` is read where it is unset) and `terminal_scroll_speed`
-  (default 1, 0.1..5): terminal row height and wheel/trackpad speed, used
-  where the layout leaves them unset.
-- `font`, `font_size`, `font_weight`, `font_weight_bold`, `letter_spacing`, `ui_font`: used where the layout doesn't set its
+- `terminal_line_height` (default 1.15, 0.8..2; `line_height` is read where it is unset), `terminal_cell_width`
+  (default 1, 0.8..2) and `terminal_scroll_speed` (default 1, 0.1..5):
+  terminal row height, column width and wheel/trackpad speed, used where the
+  layout leaves them unset.
+- `font`, `font_size`, `font_weight`, `font_weight_bold`, `ui_font`: used where the layout doesn't set its
   own. Herdr (main) leaves these unset. Bigger panels: `zoom`.
-- Mods that show code as the terminals do read `settings().terminal_font`: `{ family, size, weight, line_height, fallbacks }`, the terminals' resolved font (the layout's, else the person's, else Herdr's) in a mod's own units. `size` is for `text_size` or an `EditorState`'s `font_size`: it is the terminals' px divided by the panels' scale and text scale, so it draws at the terminals' size whatever `ui_zoom` and `ui_text_scale` are. `weight` is for `font_weight`: `font_weight` less the panels' `ui_font_weight` shift, so it draws at the terminals' weight; a weight whose shifted value would fall outside 100..900 is clamped there, so at the extremes the panel can draw lighter or heavier than the terminals. Both are worked out for the scales of the moment: read them at each render, not once. `line_height` is the terminals' multiple of the font's height (ascent plus descent), not of its size as an element's `line_height` takes it, so use it to size rows rather than passing it on. `fallbacks` is `font_fallbacks`, for information. Panel text takes the panels' `ui_font_thicken`, `ui_text_contrast` and `ui_text_rendering`; to draw text in the terminals' font and glyph rendering, style it `terminal_text()`: it and its children take the terminals' family, weight (with no `ui_font_weight` shift, so don't also pass `weight`), `font_fallbacks`, `font_ligatures`, `font_thicken`, `text_contrast` and `text_rendering`. It sets no size: give it `text_size(size)`. Font styles set on the same element or below still win, so `font_bold()` inside it is 700 (not `font_weight_bold`); inside gpui-base's text and markdown views an explicit default (`font_normal()`, weight 400) takes the terminals' weight instead. It is not the terminal grid: glyphs take their own advances, not cells (`letter_spacing` and `cell_width` don't apply), box and block characters are font glyphs, and faint and dimmed text are the mod's to draw. The Changes panel's diff is styled this way. `settings().font_family` is the same family, kept for mods that read it. On builds without `terminal_font`, `settings().terminal_font` is `undefined`.
+- Mods that show code as the terminals do read `settings().terminal_font`: `{ family, size, weight, line_height, fallbacks }`, the terminals' resolved font (the layout's, else the person's, else Herdr's) in a mod's own units. `size` is for `text_size` or an `EditorState`'s `font_size`: it is the terminals' px divided by the panels' scale and text scale, so it draws at the terminals' size whatever `ui_zoom` and `ui_text_scale` are. `weight` is for `font_weight`: `font_weight` less the panels' `ui_font_weight` shift, so it draws at the terminals' weight; a weight whose shifted value would fall outside 100..900 is clamped there, so at the extremes the panel can draw lighter or heavier than the terminals. Both are worked out for the scales of the moment: read them at each render, not once. `line_height` is the terminals' multiple of the font's height (ascent plus descent), not of its size as an element's `line_height` takes it, so use it to size rows rather than passing it on. `fallbacks` is `font_fallbacks`, for information. Panel text takes the panels' `ui_font_thicken`, `ui_text_contrast` and `ui_text_rendering`; to draw text in the terminals' font and glyph rendering, style it `terminal_text()`: it and its children take the terminals' family, weight (with no `ui_font_weight` shift, so don't also pass `weight`), `font_fallbacks`, `font_ligatures`, `font_thicken`, `text_contrast` and `text_rendering`. It sets no size: give it `text_size(size)`. Font styles set on the same element or below still win, so `font_bold()` inside it is 700 (not `font_weight_bold`); inside gpui-base's text and markdown views an explicit default (`font_normal()`, weight 400) takes the terminals' weight instead. It is not the terminal grid: glyphs take their own advances, not cells (`terminal_cell_width` doesn't apply), box and block characters are font glyphs, and faint and dimmed text are the mod's to draw. The Changes panel's diff is styled this way. `settings().font_family` is the same family, kept for mods that read it. On builds without `terminal_font`, `settings().terminal_font` is `undefined`.
 - `font_ligatures`: programming ligatures are off by default; set `true` to
   enable them in terminal fonts such as JetBrains Mono and Fira Code. The cursor
   and background changes (including selections) break ligatures so individual cells stay clear.
@@ -1109,17 +1114,12 @@ What's about the user, never a look:
   background; this is a threshold, not a guaranteed resulting ratio.
   Box/block, Powerline and sprite glyph colors are never adjusted.
   Changes apply immediately, including text already on screen.
-- `cell_width`: `"font"` (default) keeps the terminal cell width unrounded;
-  `"pixel"` puts it on whole device pixels after `letter_spacing`, rounded as
-  `cell_rounding` says (JetBrains Mono at 12 on a Retina display: 14.4 to 14
-  device pixels). Changes apply immediately.
 - `app_icon`: the app's icon. `"classic"` (default), `"midnight"`, `"mirage"`, `"glass"`, `"phosphor"` or `"graphite"`, all drawn from Herdr's own artwork; `"theme"`, the same artwork in the colours of the theme showing (its background, foreground and accent), which changes with the theme, light and dark included; or an absolute path (or one starting `~/`, your home folder) to an `.icns`, `.png` or `.svg` file; a relative path is refused, like any other unknown value. On macOS the Dock shows it from start-up and changes as soon as settings.json does; a file that can't be read is tried again whenever settings change. An install from a checkout (`just install`) also writes it into the app bundle (an `.icns` or `.png`; an `.svg` stays in the Dock only) or, on Linux, the launcher (an `.svg` or `.png`), so Finder, Spotlight and the app switcher match. `"theme"` is drawn while Herdr runs, so it is in the Dock only: an install puts classic on the bundle. Release packages keep the classic icon. Settings > Appearance > Window has it as "App icon".
-- `cell_rounding`: how the terminal grid snaps to whole device pixels: the row height (the font's ascent plus descent, times `line_height`) always, and the cell width when `cell_width` is `"pixel"`. `"outward"` (default) rounds the row up and the width down, so either can be up to a device pixel off the font's size. `"nearest"` rounds both to the nearest device pixel, at least one, so the grid is never more than half a pixel off the font's design, as Ghostty sizes its cells. A row rounded below the font's height keeps text centred, so tall glyphs reach past it equally above and below (at most a quarter of a device pixel each at `line_height` 1); program backgrounds paint before text and don't cover it, the cursor can. Changes apply immediately.
-- `letter_spacing`: px (at zoom 1, like `font_size`) added to the terminal
-  cell width, from `-2` to `10` (default `0`, the font's own advance).
-  Negative values tighten the grid: JetBrains Mono at 12 is 7.2px wide, so
-  `-0.2` gives 7px cells. The cell stays between half and one and a half of
-  the font's advance. Scales with zoom. Changes apply immediately.
+- `cell_rounding`: how the terminal grid snaps to whole device pixels: the cell width (the font's advance, then that times `terminal_cell_width`) and the row height (the font's ascent plus descent, times `line_height`). `"outward"` (default) rounds the font's advance down and the row up, so either can be up to a device pixel off the font's size (JetBrains Mono at 13 on a 1x display: 7.8 to 7 pixels). `"nearest"` rounds each to the nearest device pixel, as upstream and Ghostty do (JetBrains Mono at 12 on a Retina display: 14.4 to 14 device pixels). Either way the advance times `terminal_cell_width` rounds to the nearest device pixel (14 × 0.95 = 13.3 to 13), at least one, so the grid is never more than half a pixel off the font's design, as Ghostty sizes its cells. A row rounded below the font's height keeps text centred, so tall glyphs reach past it equally above and below (at most half a device pixel each at `line_height` 1); program backgrounds paint before text and don't cover it, the cursor can. Changes apply immediately.
+- `letter_spacing` and `cell_width` are no longer read: Herdr reports
+  either, in settings.json or a layout's look, as a settings problem until
+  it is removed. Cells are always on whole device pixels (`cell_rounding`);
+  `terminal_cell_width` widens or narrows them.
 - `clipboard_write`: `false` blocks terminal programs from writing the local
   clipboard (default `true`, including remote terminals attached in this window).
   OSC 52 accepts base64 UTF-8 text up to 1 MiB: `c` writes the system clipboard,

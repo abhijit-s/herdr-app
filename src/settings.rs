@@ -1447,6 +1447,9 @@ pub struct Person {
     /// The display's color subpixels left to right, for subpixel smoothing.
     #[serde(skip_serializing_if = "SubpixelOrder::is_rgb")]
     pub subpixel_order: SubpixelOrder,
+    /// Cell width multiplier, 0.8..2.
+    #[serde(skip_serializing_if = "is_one")]
+    pub terminal_cell_width: f32,
     /// Wheel and trackpad scroll multiplier, 0.1..5.
     #[serde(skip_serializing_if = "is_one")]
     pub terminal_scroll_speed: f32,
@@ -1525,12 +1528,12 @@ pub struct Person {
     pub cursor_trail_color: Option<String>,
     /// Minimum terminal text contrast ratio; 1 leaves program colors unchanged.
     pub minimum_contrast: f32,
-    /// Px (at zoom 1) added to (or, negative, taken from) the terminal cell width.
+    /// Retired, never read: kept as written, so `problems()` names them
+    /// (`cell_problems`) and a rewrite of the file leaves them for the person.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub letter_spacing: Option<f32>,
-    /// Terminal cell width: the font's own advance, or rounded down to whole device pixels.
-    #[serde(skip_serializing_if = "CellWidth::is_font")]
-    pub cell_width: CellWidth,
+    pub letter_spacing: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cell_width: Option<serde_json::Value>,
     /// The app's icon: a built-in variant or an image file.
     #[serde(skip_serializing_if = "crate::app_icon::AppIcon::is_classic")]
     pub app_icon: crate::app_icon::AppIcon,
@@ -1713,24 +1716,47 @@ impl ZoomStep {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum CellWidth {
-    #[default]
-    Font,
-    Pixel,
+/// `terminal_cell_width`'s range, as upstream's.
+pub const CELL_WIDTH_RANGE: (f32, f32) = (0.8, 2.0);
+
+/// `terminal_cell_width` as asked: the layout's, else the person's.
+fn asked_cell_width(person: &Person, look: &crate::layout::Look) -> f32 {
+    look.terminal_cell_width
+        .unwrap_or(person.terminal_cell_width)
 }
 
-impl CellWidth {
-    fn is_font(&self) -> bool {
-        *self == CellWidth::Font
+/// What settings.json and the look say about the cell width that isn't
+/// applied: a `terminal_cell_width` out of range (clamped), and the retired
+/// `letter_spacing` and `cell_width`, which are reported, never read.
+fn cell_problems(person: &Person, look: &crate::layout::Look) -> Vec<String> {
+    let mut out = Vec::new();
+    let asked = asked_cell_width(person, look);
+    let (lo, hi) = CELL_WIDTH_RANGE;
+    if !(lo..=hi).contains(&asked) {
+        out.push(format!(
+            "terminal_cell_width {asked} is outside {lo}..{hi}: using {}",
+            asked.clamp(lo, hi)
+        ));
     }
+    for (whose, letter_spacing, cell_width) in [
+        ("settings.json", &person.letter_spacing, &person.cell_width),
+        ("the layout's look", &look.letter_spacing, &look.cell_width),
+    ] {
+        if let Some(v) = letter_spacing {
+            out.push(format!("letter_spacing {v} in {whose} is no longer read: terminal_cell_width (0.8..2, default 1) scales the cell; remove it"));
+        }
+        if let Some(v) = cell_width {
+            out.push(format!("cell_width {v} in {whose} is no longer read: cells are always on whole device pixels (cell_rounding); remove it"));
+        }
+    }
+    out
 }
 
-/// How the terminal grid snaps to whole device pixels: the row height always,
-/// the cell width when `cell_width` is "pixel". `Nearest` keeps the grid
-/// within half a pixel of the font's advance and height (× line_height);
-/// `Outward` rounds the width down and the row up, up to a pixel off.
+/// How the terminal grid snaps to whole device pixels: the cell width (the
+/// font's advance, then that times `terminal_cell_width`) and the row height.
+/// `Nearest` keeps the grid within half a pixel of the font's advance and
+/// height (× line_height) at each step; `Outward` rounds the width down and
+/// the row up, up to a pixel off.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CellRounding {
@@ -1746,7 +1772,8 @@ impl CellRounding {
 
     /// `v` device px as whole ones, at least one; `outward` is this
     /// dimension's outward direction (floor for the width, ceil for the row).
-    pub fn whole(self, v: f32, outward: fn(f32) -> f32) -> f32 {
+    /// In f64, as Ghostty rounds its cells (`Metrics.zig`).
+    pub fn whole(self, v: f64, outward: fn(f64) -> f64) -> f64 {
         match self {
             CellRounding::Nearest => v.round(),
             CellRounding::Outward => outward(v),
@@ -2560,6 +2587,7 @@ impl Default for Person {
             text_rendering: TextRendering::Grayscale,
             ui_text_rendering: TextRendering::Grayscale,
             subpixel_order: SubpixelOrder::Rgb,
+            terminal_cell_width: 1.0,
             terminal_scroll_speed: 1.0,
             ui_font: None,
             ui_font_weight: UI_FONT_WEIGHT_DEFAULT,
@@ -2585,7 +2613,7 @@ impl Default for Person {
             cursor_trail_color: None,
             minimum_contrast: 1.0,
             letter_spacing: None,
-            cell_width: CellWidth::Font,
+            cell_width: None,
             app_icon: crate::app_icon::AppIcon::Classic,
             cell_rounding: CellRounding::Outward,
             option_as_alt: OptionAsAlt::Auto,
@@ -2643,6 +2671,8 @@ pub struct Settings {
     /// The panels' text's smoothing.
     pub ui_text_rendering: TextRendering,
     pub subpixel_order: SubpixelOrder,
+    /// Cell width multiplier, 0.8..2.
+    pub terminal_cell_width: f32,
     /// Wheel and trackpad scroll multiplier, 0.1..5.
     pub terminal_scroll_speed: f32,
     pub ui_font_family: String,
@@ -2704,9 +2734,11 @@ pub struct Settings {
     pub clipboard_write: bool,
     pub copy_on_select: bool,
     pub minimum_contrast: f32,
-    pub letter_spacing: f32,
-    pub cell_width: CellWidth,
     pub cell_rounding: CellRounding,
+    /// A `terminal_cell_width` out of range, and retired cell keys in
+    /// settings.json or the layout's look (`cell_problems`).
+    #[serde(skip)]
+    pub cell_problems: Vec<String>,
     pub app_icon: crate::app_icon::AppIcon,
     pub option_as_alt: OptionAsAlt,
     pub sounds: Sounds,
@@ -2790,6 +2822,7 @@ impl Default for Settings {
             text_rendering: TextRendering::Grayscale,
             ui_text_rendering: TextRendering::Grayscale,
             subpixel_order: SubpixelOrder::Rgb,
+            terminal_cell_width: 1.0,
             terminal_scroll_speed: 1.0,
             ui_font_family: "Geist".into(),
             ui_font_size: 13.0,
@@ -2828,10 +2861,9 @@ impl Default for Settings {
             clipboard_write: true,
             copy_on_select: true,
             minimum_contrast: 1.0,
-            letter_spacing: 0.0,
-            cell_width: CellWidth::Font,
             app_icon: crate::app_icon::AppIcon::Classic,
             cell_rounding: CellRounding::Outward,
+            cell_problems: Vec::new(),
             option_as_alt: OptionAsAlt::Auto,
             sounds: Sounds::default(),
             system_notifications: SystemNotifications::Background,
@@ -2904,6 +2936,7 @@ impl Settings {
             text_rendering: person.text_rendering,
             ui_text_rendering: person.ui_text_rendering,
             subpixel_order: person.subpixel_order,
+            terminal_cell_width: asked_cell_width(person, look).clamp(CELL_WIDTH_RANGE.0, CELL_WIDTH_RANGE.1),
             terminal_scroll_speed: look.terminal_scroll_speed.unwrap_or(person.terminal_scroll_speed).clamp(0.1, 5.0),
             ui_font_family: look.ui_font.clone().or(person.ui_font.clone()).unwrap_or(d.ui_font_family),
             ui_font_size: d.ui_font_size,
@@ -2965,10 +2998,9 @@ impl Settings {
             clipboard_write: person.clipboard_write,
             copy_on_select: person.copy_on_select,
             minimum_contrast: person.minimum_contrast,
-            letter_spacing: look.letter_spacing.or(person.letter_spacing).unwrap_or(d.letter_spacing),
-            cell_width: person.cell_width,
             app_icon: person.app_icon.clone(),
             cell_rounding: person.cell_rounding,
+            cell_problems: cell_problems(person, look),
             option_as_alt: person.option_as_alt,
         }
     }
@@ -3081,9 +3113,7 @@ impl Settings {
         out.extend(self.notification_sounds_problem.clone());
         out.extend(self.toast_offset_problem.clone());
         out.extend(self.space_avatar_problem.clone());
-        if !(-2.0..=10.0).contains(&self.letter_spacing) {
-            out.push(format!("letter_spacing {} is outside -2..10", self.letter_spacing));
-        }
+        out.extend(self.cell_problems.iter().cloned());
         if !FONT_SIZE_RANGE.contains(&self.font_size) {
             out.push(format!("font_size {} is outside 6..72", self.font_size));
         }
@@ -3549,12 +3579,6 @@ impl Settings {
         self.on_point(self.on_point(self.font_size * pane) * self.zoom).max(self.font_size * ZOOM_MIN).min(self.font_size * ZOOM_MAX)
     }
 
-    /// The pane's whole scale on the terminals' design size: `zoom × pane`,
-    /// within the app zoom's range, as `ui_scale` caps its product.
-    pub fn pane_scale(&self, pane: f32) -> f32 {
-        (self.zoom * pane).max(ZOOM_MIN).min(ZOOM_MAX)
-    }
-
     fn on_point(&self, size: f32) -> f32 {
         if self.zoom_step == ZoomStep::Point && (size - size.round()).abs() < POINT_SLACK {
             return size.round();
@@ -3821,21 +3845,104 @@ mod tests {
     }
 
     #[test]
-    fn letter_spacing_defaults_to_zero_and_validates_the_range() {
+    fn terminal_cell_width_defaults_inherits_overrides_and_clamps() {
         let default: Person = serde_json::from_str("{}").unwrap();
-        assert_eq!(default.letter_spacing, None);
-        assert_eq!(Settings::default().letter_spacing, 0.0);
-        assert!(serde_json::to_value(&default).unwrap().get("letter_spacing").is_none());
-        for spacing in [-2.0, -0.2, 0.0, 1.5, 10.0, -2.5, 10.5] {
-            let person: Person = serde_json::from_value(serde_json::json!({"letter_spacing": spacing})).unwrap();
-            let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
-            assert_eq!(settings.letter_spacing, spacing);
-            assert_eq!(settings.problems().is_empty(), (-2.0..=10.0).contains(&spacing));
-        }
-        let person = Person { letter_spacing: Some(1.0), ..Person::default() };
-        let look = crate::layout::Look { letter_spacing: Some(-0.5), ..Default::default() };
-        assert_eq!(Settings::compose(&person, &crate::layout::Look::default(), true).letter_spacing, 1.0);
-        assert_eq!(Settings::compose(&person, &look, true).letter_spacing, -0.5);
+        let none = crate::layout::Look::default();
+        assert_eq!(
+            Settings::compose(&default, &none, true).terminal_cell_width,
+            1.0
+        );
+        assert!(
+            serde_json::to_value(&default)
+                .unwrap()
+                .get("terminal_cell_width")
+                .is_none(),
+            "100% is left out"
+        );
+        let person: Person = serde_json::from_str(r#"{"terminal_cell_width":0.95}"#).unwrap();
+        let roundtrip: Person =
+            serde_json::from_value(serde_json::to_value(&person).unwrap()).unwrap();
+        assert_eq!(
+            Settings::compose(&roundtrip, &none, true).terminal_cell_width,
+            0.95
+        );
+        assert!(
+            Settings::compose(&roundtrip, &none, true)
+                .problems()
+                .is_empty()
+        );
+        let look: crate::layout::Look =
+            serde_json::from_str(r#"{"terminal_cell_width":1.1}"#).unwrap();
+        assert_eq!(
+            Settings::compose(&person, &look, true).terminal_cell_width,
+            1.1
+        );
+        let look: crate::layout::Look =
+            serde_json::from_str(r#"{"terminal_cell_width":0.1}"#).unwrap();
+        let low = Settings::compose(&person, &look, true);
+        assert_eq!(low.terminal_cell_width, 0.8);
+        assert_eq!(
+            low.problems(),
+            vec!["terminal_cell_width 0.1 is outside 0.8..2: using 0.8".to_string()]
+        );
+        let person = Person {
+            terminal_cell_width: 5.0,
+            ..default
+        };
+        assert_eq!(
+            Settings::compose(&person, &none, true).terminal_cell_width,
+            2.0
+        );
+    }
+
+    /// `letter_spacing` and `cell_width` are retired: in settings.json or a
+    /// look, whatever their value, they load (nothing else is lost), are
+    /// reported by name, change no cell, and stay in a rewritten file.
+    #[test]
+    fn retired_cell_keys_are_reported_and_kept() {
+        let none = crate::layout::Look::default();
+        let plain = Settings::compose(&Person::default(), &none, true);
+        let person: Person = serde_json::from_value(
+            serde_json::json!({"cell_width": "pixel", "letter_spacing": -0.2, "font_size": 13}),
+        )
+        .unwrap();
+        let s = Settings::compose(&person, &none, true);
+        assert_eq!(
+            (s.font_size, s.terminal_cell_width, s.cell_rounding),
+            (13.0, plain.terminal_cell_width, plain.cell_rounding)
+        );
+        assert_eq!(s.problems(), vec![
+            "letter_spacing -0.2 in settings.json is no longer read: terminal_cell_width (0.8..2, default 1) scales the cell; remove it".to_string(),
+            "cell_width \"pixel\" in settings.json is no longer read: cells are always on whole device pixels (cell_rounding); remove it".to_string(),
+        ]);
+        let saved = serde_json::to_value(&person).unwrap();
+        assert_eq!(
+            (&saved["cell_width"], &saved["letter_spacing"]),
+            (&serde_json::json!("pixel"), &serde_json::json!(-0.2))
+        );
+        // Any value, even one the retired settings refused, loads and is named.
+        let odd: Person =
+            serde_json::from_value(serde_json::json!({"cell_width": "round"})).unwrap();
+        assert!(
+            Settings::compose(&odd, &none, true).problems()[0]
+                .starts_with("cell_width \"round\" in settings.json")
+        );
+        let look: crate::layout::Look =
+            serde_json::from_value(serde_json::json!({"letter_spacing": 1, "cell_width": "font"}))
+                .unwrap();
+        let problems = Settings::compose(&Person::default(), &look, true).problems();
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(
+            problems
+                .iter()
+                .all(|p| p.contains("in the layout's look is no longer read")),
+            "{problems:?}"
+        );
+        assert!(
+            Settings::compose(&Person::default(), &none, true)
+                .problems()
+                .is_empty()
+        );
     }
 
     fn stepped(font_size: f32, zoom: f32, zoom_step: ZoomStep) -> Settings {
@@ -3974,7 +4081,6 @@ mod tests {
         let at = |zoom| stepped(14.0, zoom, ZoomStep::Tenth);
         assert_eq!(at(3.0).pane_font_size(3.0), 42.0);
         assert_eq!(at(2.0).pane_font_size(2.0), 42.0);
-        assert_eq!(at(2.0).pane_scale(2.0), 3.0);
         assert_eq!(at(1.0).pane_font_size(2.0), 28.0, "the app's reset keeps the pane's zoom");
         assert_eq!(at(2.0).next_pane_zoom(2.0, 0), None, "the pane's reset keeps the app's");
         assert_eq!(at(2.0).terminal_font_size(), 28.0);
@@ -4021,7 +4127,6 @@ mod tests {
         assert_eq!(stepped(14.0, 1.0, ZoomStep::Point).pane_font_size(top), 21.0, "the app's reset keeps the pane's zoom");
         assert_eq!(point.next_pane_zoom(top, 0), None, "the pane's reset keeps the app's");
         assert_eq!(stepped(14.0, 0.5, ZoomStep::Tenth).pane_font_size(0.5), 7.0, "the small end: 0.5 × 0.5 stops at font_size × 0.5");
-        assert_eq!(stepped(14.0, 0.5, ZoomStep::Tenth).pane_scale(0.5), 0.5, "and so does the letter-spacing scale");
     }
 
     /// An end that isn't a whole point never turns a press back: it moves
@@ -4064,16 +4169,6 @@ mod tests {
         assert_eq!(Settings::compose(&person, &crate::layout::Look::default(), true).cell_rounding, CellRounding::Nearest);
         assert_eq!(serde_json::to_value(&person).unwrap()["cell_rounding"], "nearest");
         assert!(serde_json::from_value::<Person>(serde_json::json!({"cell_rounding": "up"})).is_err());
-    }
-
-    #[test]
-    fn cell_width_defaults_to_the_font_advance() {
-        let default: Person = serde_json::from_str("{}").unwrap();
-        assert_eq!(default.cell_width, CellWidth::Font);
-        assert!(serde_json::to_value(&default).unwrap().get("cell_width").is_none());
-        let person: Person = serde_json::from_value(serde_json::json!({"cell_width": "pixel"})).unwrap();
-        assert_eq!(Settings::compose(&person, &crate::layout::Look::default(), true).cell_width, CellWidth::Pixel);
-        assert!(serde_json::from_value::<Person>(serde_json::json!({"cell_width": "round"})).is_err());
     }
 
     #[test]
@@ -4793,7 +4888,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, letter_spacing: Some(1.0), cell_width: CellWidth::Pixel, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, copy_on_select: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, pane_header_info: Some(String::new()), agents_card_info: Some(String::new()), cursor_trail: CursorTrail::Panes, cursor_trail_style: TrailStyle::Warp, cursor_arrival: Arrival::Ripple, cursor_trail_settle_ms: 40, cursor_trail_min_cells: MinCells { x: 3, y: 1 }, cursor_trail_duration_ms: 300, cursor_trail_color: Some("#ff8800".into()), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, terminal_cell_width: 0.95, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, copy_on_select: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, pane_header_info: Some(String::new()), agents_card_info: Some(String::new()), cursor_trail: CursorTrail::Panes, cursor_trail_style: TrailStyle::Warp, cursor_arrival: Arrival::Ripple, cursor_trail_settle_ms: 40, cursor_trail_min_cells: MinCells { x: 3, y: 1 }, cursor_trail_duration_ms: 300, cursor_trail_color: Some("#ff8800".into()), ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

@@ -498,7 +498,7 @@ fn time_first_frame(cx: &mut HeadlessAppContext) {
 
 
 /// The person's three test lines, painted as the terminal grid paints them:
-/// each glyph at its cell's whole-pixel x (cell_width "pixel": 7 px at 12 px)
+/// each glyph at its cell's whole-pixel x (7 px cells at 12 px)
 /// on a whole-pixel baseline, line_height 1 (16 px rows).
 const SHAPE_LINES: [&str; 3] = [
     "The quick brown fox jumps over the lazy dog 0123456789",
