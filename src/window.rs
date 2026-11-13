@@ -10104,6 +10104,108 @@ export default class Recent extends View {
     }
 
     #[test]
+    fn a_cell_width_in_settings_json_refits_every_terminal() {
+        in_own_process("cell_width_refit");
+    }
+
+    /// Tab t: a | b, b at its own text zoom; tab u: d, hidden. settings.json's
+    /// terminal_cell_width, read as the app reads it (`reload_config`), widens
+    /// every terminal's cell, rows kept, and refits each to fewer columns: the
+    /// shown panes on the next frame, the hidden one at the hidden-tab fit.
+    /// Back at 1, each returns to the grid it had.
+    #[gpui::test]
+    fn cell_width_refit(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use serde_json::json;
+        if !running_alone("cell_width_refit") {
+            return;
+        }
+        let (view, cx) = open_window(
+            cx,
+            "unused",
+            "",
+            json!({ "id": "main", "type": "block", "content": { "tab": "active" } }),
+        );
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.add_tab("s", Tab::new("u", "", "d", "td"));
+            this.model.select_tab("t");
+            this.model.focus_pane("a");
+            this.sync(window, cx);
+        });
+        cx.run_until_parked();
+        let reply = view.update_in(cx, |this, window, cx| {
+            this.run_as(
+                "pane.zoom_text_in",
+                json!({ "pane": "b" }),
+                false,
+                window,
+                cx,
+            )
+        });
+        assert!(reply.get("error").is_none(), "{reply}");
+        cx.run_until_parked();
+        // Two ticks that see the same cell: the hidden tab's terminal is fitted.
+        let fit_hidden = |cx: &mut gpui::VisualTestContext| {
+            view.update_in(cx, |this, window, cx| {
+                this.fit_hidden_tabs(window, cx);
+                this.fit_hidden_tabs(window, cx);
+            })
+        };
+        let set = |cx: &mut gpui::VisualTestContext, person: &str| {
+            std::fs::write(crate::settings::path(), person).unwrap();
+            view.update_in(cx, |this, window, cx| {
+                this.watched.settings = None;
+                this.reload_config(window, cx);
+            });
+            cx.run_until_parked();
+            fit_hidden(cx);
+        };
+        // Each of a, b and d: its cell and its grid.
+        let state = |cx: &mut gpui::VisualTestContext| {
+            view.update(cx, |this, cx| {
+                ["a", "b", "d"].map(|p| {
+                    let v = this
+                        .terms
+                        .get(p)
+                        .unwrap_or_else(|| panic!("no terminal for {p}"))
+                        .view
+                        .read(cx);
+                    (v.cell(), v.dimensions())
+                })
+            })
+        };
+        fit_hidden(cx);
+        let plain = state(cx);
+        set(cx, r#"{ "terminal_cell_width": 1.5 }"#);
+        assert_eq!(crate::settings::get().terminal_cell_width, 1.5);
+        let wide = state(cx);
+        let window_cell = cx.update(|window, _| crate::terminal::cell_size(window));
+        assert_eq!(wide[0].0, window_cell, "a is on the window's new cell");
+        for (i, p) in ["a", "b", "d"].iter().enumerate() {
+            let ((was, grid), (now, refit)) = (plain[i], wide[i]);
+            assert!(
+                now.width > was.width && now.height == was.height,
+                "{p}: {was:?} -> {now:?}"
+            );
+            assert!(
+                refit.0 < grid.0 && refit.1 == grid.1,
+                "{p} refit: {grid:?} -> {refit:?}"
+            );
+        }
+        assert!(
+            wide[1].0.width > wide[0].0.width,
+            "b keeps its own text zoom on top"
+        );
+        set(cx, "{}");
+        assert_eq!(state(cx), plain, "back at 1, every grid is as it was");
+    }
+
+    #[test]
     fn pane_text_zoom_keys_zoom_the_focused_pane_or_reach_the_program() {
         in_own_process("pane_text_zoom");
     }

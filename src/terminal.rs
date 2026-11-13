@@ -2212,16 +2212,18 @@ fn paint_cell_text(
     let _ = line.paint(origin, height, TextAlign::Left, None, window, cx);
 }
 
-/// The cell's width, upstream's rule (#962, `font_cell_metrics`:
-/// `width = round(round(face_width) * cell_width)`) on the fork's advance:
-/// the font's advance on whole device pixels, scaled by
-/// `terminal_cell_width`, on whole device pixels again, each rounded as
-/// `cell_rounding` says (nearest is upstream's; outward is down). As
-/// Ghostty's `adjust-cell-width` scales its rounded cell (`Metrics.zig`), and
-/// `glyph_x` re-centres the face in it (`cell_metrics`).
-fn cell_width(advance: Pixels, multiplier: f32, rounding: crate::settings::CellRounding, scale: f32) -> Pixels {
+/// #962's `round(round(face_width) * cell_width)` on the fork's advance,
+/// rounded as `cell_rounding` says. The product always rounds to the nearest
+/// pixel, as #962 and Ghostty round it: rounded down too, small steps would
+/// change nothing (7 px × 1.1 = 7.7 to 7) and others jump twice as far.
+fn cell_width(
+    advance: Pixels,
+    multiplier: f32,
+    rounding: crate::settings::CellRounding,
+    scale: f32,
+) -> Pixels {
     let face = rounding.whole(f64::from(f32::from(advance) * scale), f64::floor);
-    px(rounding.whole(face * ghostty_percent(multiplier), f64::floor) as f32 / scale)
+    px((face * ghostty_percent(multiplier)).round().max(1.0) as f32 / scale)
 }
 
 /// The multiplier as Ghostty applies `adjust-cell-width = <p>%` (`Metrics.zig`
@@ -3406,13 +3408,15 @@ mod tests {
     }
 
     /// The cell is the advance on whole device pixels, times
-    /// terminal_cell_width, on whole device pixels again (#962's
-    /// `round(round(face_width) * cell_width)`): "outward" rounds both down.
+    /// terminal_cell_width, to the nearest whole device pixel (#962's
+    /// `round(round(face_width) * cell_width)`): "outward" rounds the advance down.
     #[test]
     fn cell_width_scales_the_whole_advance_and_rounds_again() {
         use crate::settings::CellRounding::{Nearest, Outward};
         use gpui::px;
-        let device = |advance: f32, m: f32, rounding, scale: f32| f32::from(super::cell_width(px(advance), m, rounding, scale)) * scale;
+        let device = |advance: f32, m: f32, rounding, scale: f32| {
+            f32::from(super::cell_width(px(advance), m, rounding, scale)) * scale
+        };
         assert_eq!(device(7.5, 1.0, Outward, 1.), 7.);
         assert_eq!(device(7.2, 1.0, Outward, 2.), 14.);
         assert_eq!(device(7.75, 1.0, Outward, 2.), 15.);
@@ -3424,7 +3428,11 @@ mod tests {
         assert_eq!(device(7.2, 2.0, Nearest, 2.), 28.);
         // The advance rounds before the multiplier: 7.6 → 8 × 0.95 = 7.6 → 8, not 7.6 × 0.95 = 7.22 → 7.
         assert_eq!(device(7.6, 0.95, Nearest, 1.), 8.);
-        assert_eq!(device(7.6, 0.95, Outward, 1.), 6.);
+        // Outward rounds the advance down, the product to the nearest: 7 × 0.95 = 6.65 → 7,
+        // 7 × 1.1 = 7.7 → 8, so each step is as near the multiplier as a pixel grid can be.
+        assert_eq!(device(7.6, 0.95, Outward, 1.), 7.);
+        assert_eq!(device(7.6, 1.1, Outward, 1.), 8.);
+        assert_eq!(device(7.6, 0.9, Outward, 1.), 6.);
         // A product on a half pixel rounds as Ghostty's f64 percent does, not by the f32's last bit:
         // there 10 × 0.95 and 10 × 1.05 are 9.5 and 10.5, to 10 and 11; the f32s 0.94999999 and
         // 1.04999995 would give 9.4999999 and 10.4999995, to 9 and 10.
@@ -4254,10 +4262,18 @@ mod tests {
         use super::*;
         use gpui::PlatformTextSystem;
         let path = std::env::var("HERDR_GRID_DUMP").expect("HERDR_GRID_DUMP=<settings.json>");
-        let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let platform = Arc::new(gpui_macos::MacTextSystem::new());
         let system = Arc::new(TextSystem::new(platform.clone()));
-        system.add_fonts(crate::settings::BUNDLED_FONTS.iter().map(|b| std::borrow::Cow::Borrowed(*b)).collect()).unwrap();
+        system
+            .add_fonts(
+                crate::settings::BUNDLED_FONTS
+                    .iter()
+                    .map(|b| std::borrow::Cow::Borrowed(*b))
+                    .collect(),
+            )
+            .unwrap();
         let ts = WindowTextSystem::new(system);
         let original = crate::settings::get();
         let lines = [
@@ -4271,7 +4287,8 @@ mod tests {
             let mut json = json.clone();
             json["font_size"] = serde_json::json!(size);
             let person: crate::settings::Person = serde_json::from_value(json).unwrap();
-            let s = crate::settings::Settings::compose(&person, &crate::layout::Look::default(), true);
+            let s =
+                crate::settings::Settings::compose(&person, &crate::layout::Look::default(), true);
             crate::settings::set(s.clone());
             for scale in [2.0_f32, 1.0] {
                 let f = cell_font(false, false);
@@ -4284,12 +4301,28 @@ mod tests {
                         if s.font_ligatures && needs_ligatures(text, &text_font) {
                             text_font.features = ligature_features(true);
                         }
-                        let positions: Vec<_> = (0..text.len()).map(|i| (i, cell.width * i as f32)).collect();
-                        let run = TextRun { len: text.len(), font: text_font, color: gpui::black(), background_color: None, underline: None, strikethrough: None };
-                        let line = ts.shape_line(text.to_string().into(), px(s.terminal_font_size()), &[run], None)
+                        let positions: Vec<_> = (0..text.len())
+                            .map(|i| (i, cell.width * i as f32))
+                            .collect();
+                        let run = TextRun {
+                            len: text.len(),
+                            font: text_font,
+                            color: gpui::black(),
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        };
+                        let line = ts
+                            .shape_line(
+                                text.to_string().into(),
+                                px(s.terminal_font_size()),
+                                &[run],
+                                None,
+                            )
                             .with_cell_positions(&positions, cell.width * text.len() as f32);
                         let origin = text_origin(&line, point(px(0.), px(0.)), None, metrics);
-                        let baseline = (metrics.size.height - line.ascent - line.descent) / 2. + line.ascent;
+                        let baseline =
+                            (metrics.size.height - line.ascent - line.descent) / 2. + line.ascent;
                         let (mut x, mut prev) = (origin.x, px(0.));
                         let rows = (f32::from(metrics.size.height) * scale).ceil() as i32 + 16;
                         let mut ink = vec![0.0_f64; rows as usize];
@@ -4299,29 +4332,64 @@ mod tests {
                                 x += g.position.x - prev;
                                 prev = g.position.x;
                                 let at = point(x, origin.y + baseline + g.position.y).scale(scale);
-                                let quantize = |v: f32, n: u8| ((v * n as f32).abs() - 0.5).ceil().copysign(v * n as f32) / n as f32;
-                                let q = point(quantize(at.x.0, gpui::SUBPIXEL_VARIANTS_X), quantize(at.y.0, gpui::SUBPIXEL_VARIANTS_Y));
-                                let variant = point((q.x.fract() * gpui::SUBPIXEL_VARIANTS_X as f32) as u8, (q.y.fract() * gpui::SUBPIXEL_VARIANTS_Y as f32) as u8);
+                                let quantize = |v: f32, n: u8| {
+                                    ((v * n as f32).abs() - 0.5).ceil().copysign(v * n as f32)
+                                        / n as f32
+                                };
+                                let q = point(
+                                    quantize(at.x.0, gpui::SUBPIXEL_VARIANTS_X),
+                                    quantize(at.y.0, gpui::SUBPIXEL_VARIANTS_Y),
+                                );
+                                let variant = point(
+                                    (q.x.fract() * gpui::SUBPIXEL_VARIANTS_X as f32) as u8,
+                                    (q.y.fract() * gpui::SUBPIXEL_VARIANTS_Y as f32) as u8,
+                                );
                                 let params = gpui::RenderGlyphParams {
-                                    font_id: run.font_id, glyph_id: g.id, font_size: line.font_size, subpixel_variant: variant, scale_factor: scale,
-                                    is_emoji: false, subpixel_rendering: false, dilation: 0, thicken: glyph_thicken(), foreground: [0, 0, 0, 255],
+                                    font_id: run.font_id,
+                                    glyph_id: g.id,
+                                    font_size: line.font_size,
+                                    subpixel_variant: variant,
+                                    scale_factor: scale,
+                                    is_emoji: false,
+                                    subpixel_rendering: false,
+                                    dilation: 0,
+                                    thicken: glyph_thicken(),
+                                    foreground: [0, 0, 0, 255],
                                 };
                                 let bounds = platform.glyph_raster_bounds(&params).unwrap();
-                                glyphs.push(format!("{}@{},{}+{},{}", g.id.0, q.x.trunc(), q.y.trunc(), variant.x, variant.y));
+                                glyphs.push(format!(
+                                    "{}@{},{}+{},{}",
+                                    g.id.0,
+                                    q.x.trunc(),
+                                    q.y.trunc(),
+                                    variant.x,
+                                    variant.y
+                                ));
                                 if bounds.size.width.0 == 0 || bounds.size.height.0 == 0 {
                                     continue;
                                 }
-                                let (raster, bytes) = platform.rasterize_glyph(&params, bounds).unwrap();
+                                let (raster, bytes) =
+                                    platform.rasterize_glyph(&params, bounds).unwrap();
                                 let top = q.y.trunc() as i32 + bounds.origin.y.0 + 8;
                                 let width = raster.width.0 as usize;
                                 for (r, row) in bytes.chunks(width).enumerate() {
                                     let y = (top + r as i32).clamp(0, rows - 1) as usize;
-                                    ink[y] += row.iter().map(|&a| f64::from(a)).sum::<f64>() / 255.0;
+                                    ink[y] +=
+                                        row.iter().map(|&a| f64::from(a)).sum::<f64>() / 255.0;
                                 }
                             }
                         }
-                        out.push(format!("  line {n} bold {bold} glyphs {}", glyphs.join(" ")));
-                        out.push(format!("  line {n} bold {bold} ink by row (from 8 above the cell) {}", ink.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>().join(" ")));
+                        out.push(format!(
+                            "  line {n} bold {bold} glyphs {}",
+                            glyphs.join(" ")
+                        ));
+                        out.push(format!(
+                            "  line {n} bold {bold} ink by row (from 8 above the cell) {}",
+                            ink.iter()
+                                .map(|v| format!("{v:.3}"))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        ));
                     }
                 }
             }
@@ -4511,7 +4579,7 @@ mod tests {
                             let (mw, mh) = device(at(m, Nearest));
                             assert_eq!((mw, mh), (times(w).round().max(1.0) as f32, h), "nearest × {m}, {what}");
                             let (mw, mh) = device(at(m, Outward));
-                            assert_eq!((mw, mh), (times(ow).floor().max(1.0) as f32, oh), "outward × {m}, {what}");
+                            assert_eq!((mw, mh), (times(ow).round().max(1.0) as f32, oh), "outward × {m}, {what}");
                         }
                     }
                 }
@@ -4574,17 +4642,29 @@ mod tests {
     fn a_zoomed_panes_cells_take_the_cell_width(cx: &mut gpui::TestAppContext) {
         use super::*;
         let window = cx.add_window(|_, _| Empty);
-        window.update(cx, |_, window, _| {
-            let scale = window.scale_factor();
-            let at = |m: f32| {
-                crate::settings::set(crate::settings::Settings { terminal_cell_width: m, cell_rounding: crate::settings::CellRounding::Nearest, ..crate::settings::Settings::default() });
-                (f32::from(text_metrics(window, None).0.width) * scale, f32::from(text_metrics(window, Some(2.0)).0.width) * scale)
-            };
-            let ((plain, zoomed), (wide, zoomed_wide)) = (at(1.0), at(1.5));
-            assert!(zoomed > plain, "{plain} {zoomed}");
-            assert_eq!((wide, zoomed_wide), ((plain * 1.5).round(), (zoomed * 1.5).round()));
-            crate::settings::set(crate::settings::Settings::default());
-        }).unwrap();
+        window
+            .update(cx, |_, window, _| {
+                let scale = window.scale_factor();
+                let at = |m: f32| {
+                    crate::settings::set(crate::settings::Settings {
+                        terminal_cell_width: m,
+                        cell_rounding: crate::settings::CellRounding::Nearest,
+                        ..crate::settings::Settings::default()
+                    });
+                    (
+                        f32::from(text_metrics(window, None).0.width) * scale,
+                        f32::from(text_metrics(window, Some(2.0)).0.width) * scale,
+                    )
+                };
+                let ((plain, zoomed), (wide, zoomed_wide)) = (at(1.0), at(1.5));
+                assert!(zoomed > plain, "{plain} {zoomed}");
+                assert_eq!(
+                    (wide, zoomed_wide),
+                    ((plain * 1.5).round(), (zoomed * 1.5).round())
+                );
+                crate::settings::set(crate::settings::Settings::default());
+            })
+            .unwrap();
     }
 
     /// A pane's own text zoom: its cells are measured at its text size, it
@@ -4663,12 +4743,16 @@ mod tests {
         struct Root(Entity<TerminalView>);
         impl Render for Root {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                div().size_full().child(div().w(px(400.)).h(px(200.)).child(self.0.clone()))
+                div()
+                    .size_full()
+                    .child(div().w(px(400.)).h(px(200.)).child(self.0.clone()))
             }
         }
         let original = crate::settings::get();
         cx.update(gpui_base::init);
-        let (root, cx) = cx.add_window_view(|_, cx| Root(cx.new(|cx| TerminalView::attach(crate::hc::offline(), "t1".into(), (40, 5), cx))));
+        let (root, cx) = cx.add_window_view(|_, cx| {
+            Root(cx.new(|cx| TerminalView::attach(crate::hc::offline(), "t1".into(), (40, 5), cx)))
+        });
         let term = root.read_with(cx, |r, _| r.0.clone());
         term.update(cx, |t, cx| {
             t.mark_shown();
@@ -4676,13 +4760,30 @@ mod tests {
         });
         cx.executor().advance_clock(Duration::from_millis(100));
         cx.run_until_parked();
-        let state = |cx: &mut gpui::VisualTestContext| term.read_with(cx, |t, _| {
-            let g = t.grid.borrow();
-            let painted = g.painted.iter().flat_map(|p| p.ops.iter()).filter(|op| matches!(op, RowOp::Text { .. })).count();
-            (g.cell, g.vt.cols, g.vt.rows, g.vt_cell, painted, g.painted_with.clone())
-        });
+        let state = |cx: &mut gpui::VisualTestContext| {
+            term.read_with(cx, |t, _| {
+                let g = t.grid.borrow();
+                let painted = g
+                    .painted
+                    .iter()
+                    .flat_map(|p| p.ops.iter())
+                    .filter(|op| matches!(op, RowOp::Text { .. }))
+                    .count();
+                (
+                    g.cell,
+                    g.vt.cols,
+                    g.vt.rows,
+                    g.vt_cell,
+                    painted,
+                    g.painted_with.clone(),
+                )
+            })
+        };
         let set = |m: f32, cx: &mut gpui::VisualTestContext| {
-            crate::settings::set(crate::settings::Settings { terminal_cell_width: m, ..(*original).clone() });
+            crate::settings::set(crate::settings::Settings {
+                terminal_cell_width: m,
+                ..(*original).clone()
+            });
             term.update(cx, |_, cx| cx.notify());
             cx.run_until_parked();
         };
@@ -4692,26 +4793,64 @@ mod tests {
         let wide = state(cx);
         let want = cx.update(|window, _| cell_size(window));
         assert_eq!(wide.0, want);
-        assert!(wide.0.width > plain.0.width && wide.0.height == plain.0.height, "{:?} {:?}", plain.0, wide.0);
-        assert_eq!((wide.1, wide.2), grid_size(size(px(400.), px(200.)), want), "reflowed to what fits");
+        assert!(
+            wide.0.width > plain.0.width && wide.0.height == plain.0.height,
+            "{:?} {:?}",
+            plain.0,
+            wide.0
+        );
+        assert_eq!(
+            (wide.1, wide.2),
+            grid_size(size(px(400.), px(200.)), want),
+            "reflowed to what fits"
+        );
         assert!(wide.1 < plain.1);
-        assert_eq!(wide.3, device_cell(want, scale), "the program is told the new cell");
-        assert!(wide.4 > 0 && wide.5 != plain.5, "rows drawn again at the new cell");
+        assert_eq!(
+            wide.3,
+            device_cell(want, scale),
+            "the program is told the new cell"
+        );
+        assert!(
+            wide.4 > 0 && wide.5 != plain.5,
+            "rows drawn again at the new cell"
+        );
 
         let origin = term.read_with(cx, |t, _| t.grid.borrow().origin);
         let (cw, ch) = (want.width, want.height);
         let none = Modifiers::default();
         cx.simulate_mouse_down(origin + point(cw * 0.2, ch * 0.5), MouseButton::Left, none);
-        cx.simulate_mouse_move(origin + point(cw * 5.3, ch * 0.5), Some(MouseButton::Left), none);
+        cx.simulate_mouse_move(
+            origin + point(cw * 5.3, ch * 0.5),
+            Some(MouseButton::Left),
+            none,
+        );
         cx.simulate_mouse_up(origin + point(cw * 5.3, ch * 0.5), MouseButton::Left, none);
         cx.run_until_parked();
-        assert_eq!(term.read_with(cx, |t, _| t.grid.borrow().vt.selection_text()).as_deref(), Some("hello"));
-        let report = term.read_with(cx, |t, _| mouse_at(&t.grid.borrow(), origin + point(cw * 2.5, ch * 0.5)));
-        assert_eq!(report.1, (u32::from(wide.1), u32::from(wide.2), f32::from(cw) * scale, f32::from(ch) * scale), "pixel mouse reports use the new cells");
+        assert_eq!(
+            term.read_with(cx, |t, _| t.grid.borrow().vt.selection_text())
+                .as_deref(),
+            Some("hello")
+        );
+        let report = term.read_with(cx, |t, _| {
+            mouse_at(&t.grid.borrow(), origin + point(cw * 2.5, ch * 0.5))
+        });
+        assert_eq!(
+            report.1,
+            (
+                u32::from(wide.1),
+                u32::from(wide.2),
+                f32::from(cw) * scale,
+                f32::from(ch) * scale
+            ),
+            "pixel mouse reports use the new cells"
+        );
 
         set(1.0, cx);
         let back = state(cx);
-        assert_eq!((back.0, back.1, back.2, back.3), (plain.0, plain.1, plain.2, plain.3));
+        assert_eq!(
+            (back.0, back.1, back.2, back.3),
+            (plain.0, plain.1, plain.2, plain.3)
+        );
         crate::settings::set((*original).clone());
     }
 
@@ -4732,19 +4871,33 @@ mod tests {
         for family in ["JetBrains Mono", "Geist Mono", "Menlo"] {
             let f = font(family);
             let id = ts.resolve_font(&f);
-            for size in [9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 18.0, 20.0, 24.0] {
+            for size in [
+                9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 18.0, 20.0, 24.0,
+            ] {
                 for scale in [1.0_f32, 2.0] {
-                    let face = (' '..='~').filter_map(|c| ts.advance(id, px(size * scale), c).ok()).map(|a| f64::from(f32::from(a.width))).fold(0.0, f64::max);
+                    let face = (' '..='~')
+                        .filter_map(|c| ts.advance(id, px(size * scale), c).ok())
+                        .map(|a| f64::from(f32::from(a.width)))
+                        .fold(0.0, f64::max);
                     let ghostty = (face.round() * modifier).round().max(1.0);
-                    let cell = measure_cell(&ts, &f, &cell_settings(size, 1.0, 0.95, Nearest), scale);
+                    let cell =
+                        measure_cell(&ts, &f, &cell_settings(size, 1.0, 0.95, Nearest), scale);
                     let ours = f64::from(f32::from(cell.width) * scale);
                     assert_eq!(ours, ghostty, "{family} {size} at {scale}x");
                     let dx = (ghostty - face) / 2.0;
                     let ghostty_x = if dx < 0.0 { dx - dx.trunc() } else { dx };
                     let metrics = cell_metrics(&ts, &f, cell, size, scale);
-                    assert!((f64::from(f32::from(metrics.glyph_x) * scale) - ghostty_x).abs() < 1e-3, "{family} {size} at {scale}x: glyph_x {:?}, Ghostty {ghostty_x}", metrics.glyph_x);
-                    if family == crate::settings::DEFAULT_FONT && [12.0, 13.0, 14.0].contains(&size) {
-                        println!("ghostty -5%: {family} {size} at {scale}x: face {face:.3} → {} × {modifier} → {ghostty}; ours {ours}; glyph x {ghostty_x:.3} device px", face.round());
+                    assert!(
+                        (f64::from(f32::from(metrics.glyph_x) * scale) - ghostty_x).abs() < 1e-3,
+                        "{family} {size} at {scale}x: glyph_x {:?}, Ghostty {ghostty_x}",
+                        metrics.glyph_x
+                    );
+                    if family == crate::settings::DEFAULT_FONT && [12.0, 13.0, 14.0].contains(&size)
+                    {
+                        println!(
+                            "ghostty -5%: {family} {size} at {scale}x: face {face:.3} → {} × {modifier} → {ghostty}; ours {ours}; glyph x {ghostty_x:.3} device px",
+                            face.round()
+                        );
                     }
                 }
             }

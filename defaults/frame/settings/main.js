@@ -2314,7 +2314,7 @@ export default class Settings extends View {
             this.row(
               t,
               "Cell width",
-              ownFraction("terminal_cell_width", s.terminal_cell_width, 1) ? "This layout sets its own; yours shows in the others." : "Column width, as Ghostty's adjust-cell-width: 95% is -5%. Letters stay centred in their cells.",
+              ownFraction("terminal_cell_width", s.terminal_cell_width, 1) ? "This layout sets its own; yours shows in the others." : "Column width, as Ghostty's adjust-cell-width: 95% is -5%. Letters are placed in their cells as Ghostty places them.",
               this.stepper(t, "st-terminal_cell_width", `${Math.round(s.terminal_cell_width * 100)}%`, (_e, cx) => cellWidthStep(-0.05, cx), (_e, cx) => cellWidthStep(0.05, cx)),
               "terminal_cell_width",
             ),

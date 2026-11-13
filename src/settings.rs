@@ -1721,7 +1721,8 @@ pub const CELL_WIDTH_RANGE: (f32, f32) = (0.8, 2.0);
 
 /// `terminal_cell_width` as asked: the layout's, else the person's.
 fn asked_cell_width(person: &Person, look: &crate::layout::Look) -> f32 {
-    look.terminal_cell_width.unwrap_or(person.terminal_cell_width)
+    look.terminal_cell_width
+        .unwrap_or(person.terminal_cell_width)
 }
 
 /// What settings.json and the look say about the cell width that isn't
@@ -1732,9 +1733,15 @@ fn cell_problems(person: &Person, look: &crate::layout::Look) -> Vec<String> {
     let asked = asked_cell_width(person, look);
     let (lo, hi) = CELL_WIDTH_RANGE;
     if !(lo..=hi).contains(&asked) {
-        out.push(format!("terminal_cell_width {asked} is outside {lo}..{hi}: using {}", asked.clamp(lo, hi)));
+        out.push(format!(
+            "terminal_cell_width {asked} is outside {lo}..{hi}: using {}",
+            asked.clamp(lo, hi)
+        ));
     }
-    for (whose, letter_spacing, cell_width) in [("settings.json", &person.letter_spacing, &person.cell_width), ("the layout's look", &look.letter_spacing, &look.cell_width)] {
+    for (whose, letter_spacing, cell_width) in [
+        ("settings.json", &person.letter_spacing, &person.cell_width),
+        ("the layout's look", &look.letter_spacing, &look.cell_width),
+    ] {
         if let Some(v) = letter_spacing {
             out.push(format!("letter_spacing {v} in {whose} is no longer read: terminal_cell_width (0.8..2, default 1) scales the cell; remove it"));
         }
@@ -3572,12 +3579,6 @@ impl Settings {
         self.on_point(self.on_point(self.font_size * pane) * self.zoom).max(self.font_size * ZOOM_MIN).min(self.font_size * ZOOM_MAX)
     }
 
-    /// The pane's whole scale on the terminals' design size: `zoom × pane`,
-    /// within the app zoom's range, as `ui_scale` caps its product.
-    pub fn pane_scale(&self, pane: f32) -> f32 {
-        (self.zoom * pane).max(ZOOM_MIN).min(ZOOM_MAX)
-    }
-
     fn on_point(&self, size: f32) -> f32 {
         if self.zoom_step == ZoomStep::Point && (size - size.round()).abs() < POINT_SLACK {
             return size.round();
@@ -3847,20 +3848,51 @@ mod tests {
     fn terminal_cell_width_defaults_inherits_overrides_and_clamps() {
         let default: Person = serde_json::from_str("{}").unwrap();
         let none = crate::layout::Look::default();
-        assert_eq!(Settings::compose(&default, &none, true).terminal_cell_width, 1.0);
-        assert!(serde_json::to_value(&default).unwrap().get("terminal_cell_width").is_none(), "100% is left out");
+        assert_eq!(
+            Settings::compose(&default, &none, true).terminal_cell_width,
+            1.0
+        );
+        assert!(
+            serde_json::to_value(&default)
+                .unwrap()
+                .get("terminal_cell_width")
+                .is_none(),
+            "100% is left out"
+        );
         let person: Person = serde_json::from_str(r#"{"terminal_cell_width":0.95}"#).unwrap();
-        let roundtrip: Person = serde_json::from_value(serde_json::to_value(&person).unwrap()).unwrap();
-        assert_eq!(Settings::compose(&roundtrip, &none, true).terminal_cell_width, 0.95);
-        assert!(Settings::compose(&roundtrip, &none, true).problems().is_empty());
-        let look: crate::layout::Look = serde_json::from_str(r#"{"terminal_cell_width":1.1}"#).unwrap();
-        assert_eq!(Settings::compose(&person, &look, true).terminal_cell_width, 1.1);
-        let look: crate::layout::Look = serde_json::from_str(r#"{"terminal_cell_width":0.1}"#).unwrap();
+        let roundtrip: Person =
+            serde_json::from_value(serde_json::to_value(&person).unwrap()).unwrap();
+        assert_eq!(
+            Settings::compose(&roundtrip, &none, true).terminal_cell_width,
+            0.95
+        );
+        assert!(
+            Settings::compose(&roundtrip, &none, true)
+                .problems()
+                .is_empty()
+        );
+        let look: crate::layout::Look =
+            serde_json::from_str(r#"{"terminal_cell_width":1.1}"#).unwrap();
+        assert_eq!(
+            Settings::compose(&person, &look, true).terminal_cell_width,
+            1.1
+        );
+        let look: crate::layout::Look =
+            serde_json::from_str(r#"{"terminal_cell_width":0.1}"#).unwrap();
         let low = Settings::compose(&person, &look, true);
         assert_eq!(low.terminal_cell_width, 0.8);
-        assert_eq!(low.problems(), vec!["terminal_cell_width 0.1 is outside 0.8..2: using 0.8".to_string()]);
-        let person = Person { terminal_cell_width: 5.0, ..default };
-        assert_eq!(Settings::compose(&person, &none, true).terminal_cell_width, 2.0);
+        assert_eq!(
+            low.problems(),
+            vec!["terminal_cell_width 0.1 is outside 0.8..2: using 0.8".to_string()]
+        );
+        let person = Person {
+            terminal_cell_width: 5.0,
+            ..default
+        };
+        assert_eq!(
+            Settings::compose(&person, &none, true).terminal_cell_width,
+            2.0
+        );
     }
 
     /// `letter_spacing` and `cell_width` are retired: in settings.json or a
@@ -3870,23 +3902,47 @@ mod tests {
     fn retired_cell_keys_are_reported_and_kept() {
         let none = crate::layout::Look::default();
         let plain = Settings::compose(&Person::default(), &none, true);
-        let person: Person = serde_json::from_value(serde_json::json!({"cell_width": "pixel", "letter_spacing": -0.2, "font_size": 13})).unwrap();
+        let person: Person = serde_json::from_value(
+            serde_json::json!({"cell_width": "pixel", "letter_spacing": -0.2, "font_size": 13}),
+        )
+        .unwrap();
         let s = Settings::compose(&person, &none, true);
-        assert_eq!((s.font_size, s.terminal_cell_width, s.cell_rounding), (13.0, plain.terminal_cell_width, plain.cell_rounding));
+        assert_eq!(
+            (s.font_size, s.terminal_cell_width, s.cell_rounding),
+            (13.0, plain.terminal_cell_width, plain.cell_rounding)
+        );
         assert_eq!(s.problems(), vec![
             "letter_spacing -0.2 in settings.json is no longer read: terminal_cell_width (0.8..2, default 1) scales the cell; remove it".to_string(),
             "cell_width \"pixel\" in settings.json is no longer read: cells are always on whole device pixels (cell_rounding); remove it".to_string(),
         ]);
         let saved = serde_json::to_value(&person).unwrap();
-        assert_eq!((&saved["cell_width"], &saved["letter_spacing"]), (&serde_json::json!("pixel"), &serde_json::json!(-0.2)));
+        assert_eq!(
+            (&saved["cell_width"], &saved["letter_spacing"]),
+            (&serde_json::json!("pixel"), &serde_json::json!(-0.2))
+        );
         // Any value, even one the retired settings refused, loads and is named.
-        let odd: Person = serde_json::from_value(serde_json::json!({"cell_width": "round"})).unwrap();
-        assert!(Settings::compose(&odd, &none, true).problems()[0].starts_with("cell_width \"round\" in settings.json"));
-        let look: crate::layout::Look = serde_json::from_value(serde_json::json!({"letter_spacing": 1, "cell_width": "font"})).unwrap();
+        let odd: Person =
+            serde_json::from_value(serde_json::json!({"cell_width": "round"})).unwrap();
+        assert!(
+            Settings::compose(&odd, &none, true).problems()[0]
+                .starts_with("cell_width \"round\" in settings.json")
+        );
+        let look: crate::layout::Look =
+            serde_json::from_value(serde_json::json!({"letter_spacing": 1, "cell_width": "font"}))
+                .unwrap();
         let problems = Settings::compose(&Person::default(), &look, true).problems();
         assert_eq!(problems.len(), 2, "{problems:?}");
-        assert!(problems.iter().all(|p| p.contains("in the layout's look is no longer read")), "{problems:?}");
-        assert!(Settings::compose(&Person::default(), &none, true).problems().is_empty());
+        assert!(
+            problems
+                .iter()
+                .all(|p| p.contains("in the layout's look is no longer read")),
+            "{problems:?}"
+        );
+        assert!(
+            Settings::compose(&Person::default(), &none, true)
+                .problems()
+                .is_empty()
+        );
     }
 
     fn stepped(font_size: f32, zoom: f32, zoom_step: ZoomStep) -> Settings {
@@ -4025,7 +4081,6 @@ mod tests {
         let at = |zoom| stepped(14.0, zoom, ZoomStep::Tenth);
         assert_eq!(at(3.0).pane_font_size(3.0), 42.0);
         assert_eq!(at(2.0).pane_font_size(2.0), 42.0);
-        assert_eq!(at(2.0).pane_scale(2.0), 3.0);
         assert_eq!(at(1.0).pane_font_size(2.0), 28.0, "the app's reset keeps the pane's zoom");
         assert_eq!(at(2.0).next_pane_zoom(2.0, 0), None, "the pane's reset keeps the app's");
         assert_eq!(at(2.0).terminal_font_size(), 28.0);
@@ -4072,7 +4127,6 @@ mod tests {
         assert_eq!(stepped(14.0, 1.0, ZoomStep::Point).pane_font_size(top), 21.0, "the app's reset keeps the pane's zoom");
         assert_eq!(point.next_pane_zoom(top, 0), None, "the pane's reset keeps the app's");
         assert_eq!(stepped(14.0, 0.5, ZoomStep::Tenth).pane_font_size(0.5), 7.0, "the small end: 0.5 × 0.5 stops at font_size × 0.5");
-        assert_eq!(stepped(14.0, 0.5, ZoomStep::Tenth).pane_scale(0.5), 0.5, "and so does the letter-spacing scale");
     }
 
     /// An end that isn't a whole point never turns a press back: it moves
