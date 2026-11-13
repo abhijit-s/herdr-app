@@ -4016,7 +4016,9 @@ mod tests {
                     let font_id = text_system.resolve_font(&font);
                     let width = text_system.advance(font_id, font_size, 'M').unwrap().width;
                     let run = TextRun { len: text.len(), font, ..Default::default() };
-                    let line = text_system.shape_line(text.into(), font_size, std::slice::from_ref(&run), Some(width));
+                    // As `row_ops` places a row: each cell's cluster at its cell's left edge.
+                    let at_cells = |cell: Pixels| -> Vec<(usize, Pixels)> { (0..text.len()).map(|i| (i, cell * i as f32)).collect() };
+                    let line = text_system.shape_line(text.into(), font_size, std::slice::from_ref(&run), None).with_cell_positions(&at_cells(width), width * text.len() as f32);
 
                     assert!(f32::from(line.width() - width * text.len() as f32).abs() < 0.1, "{text}: width drift");
                     let glyphs: Vec<_> = line.runs.iter().flat_map(|run| &run.glyphs).collect();
@@ -4025,8 +4027,7 @@ mod tests {
                     }
                     variants.push(glyphs.iter().map(|glyph| glyph.id).collect::<Vec<_>>());
                     let cell = px(f32::from(width).round());
-                    let positions: Vec<_> = (0..text.len()).map(|i| (i, cell * i as f32)).collect();
-                    let aligned = text_system.shape_line(text.into(), font_size, &[run], None).with_cell_positions(&positions, cell * text.len() as f32);
+                    let aligned = text_system.shape_line(text.into(), font_size, &[run], None).with_cell_positions(&at_cells(cell), cell * text.len() as f32);
                     for glyph in aligned.runs.iter().flat_map(|run| &run.glyphs) {
                         assert!((f32::from(glyph.position.x - cell * glyph.index as f32)).abs() < 0.1, "{text}: rounded grid drift");
                     }
@@ -4620,7 +4621,7 @@ mod tests {
             assert!(fit.ink.origin.x >= px(0.) && fit.ink.right() <= cell.width + px(0.01), "{text}: inside its cell");
             // Where the drawn line puts the ink, with the row's offset.
             let run = TextRun { len: text.len(), font: font.clone(), ..Default::default() };
-            let line = ts.shape_line(text.to_string().into(), fit.size, &[run], Some(cell.width));
+            let line = ts.shape_line(text.to_string().into(), fit.size, &[run], None).with_cell_positions(&[(0, px(0.))], cell.width);
             let drawn = glyph_ink(&line, text.chars().next().unwrap(), cell.height, &ts).unwrap();
             assert!((f32::from(drawn.size.width - fit.ink.size.width)).abs() < 0.05, "{text}: drawn at the fitted size");
             // Wide characters keep their two cells' natural size.
