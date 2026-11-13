@@ -190,14 +190,14 @@ impl AppWindow {
     pub(super) fn unzoomed_neighbor(&self, tab: &Tab, from: &str, dir: &str) -> Option<String> {
         let (context, area) = self.context_area()?;
         let frame = match context.content() {
-            Some(Content::Context { pane: Some(frame), .. }) if frame.lone || tab.root.panes().len() > 1 => Some(frame),
+            Some(Content::Context { pane: Some(frame), .. }) if frame.lone || tab.panes().len() > 1 => Some(frame),
             _ => None,
         };
-        let zoom = settings::zoom();
+        let zoom = settings::ui_scale();
         let (y, x) = padding(context);
         let origin = self.bounds.borrow().get(&context.id)?.origin + point(px(x * zoom), px(y * zoom));
         let bounds = Bounds::new(origin, inset(area, 2.0 * x * zoom, 2.0 * y * zoom));
-        let focused = tab.root.path_to(from)?.into_iter().collect();
+        let focused = tab.path_to(from)?.into_iter().collect();
         let geometry = |id: &str| block_bounds(&tab.root, bounds, id, frame, &focused, zoom);
         let candidates = tab.root.visible_blocks().into_iter().filter(|n| n.is_pane() && n.id != from)
             .filter_map(|n| Some((n.id.clone(), geometry(&n.id)?)));

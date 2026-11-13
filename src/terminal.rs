@@ -1507,6 +1507,12 @@ fn scrollbar_row_at(total: u64, len: u64, track: f32, min: f32, top: f32) -> usi
 /// spins would redraw every mod that shows titles, 10 times a second.
 pub(crate) fn shown_title(title: &str) -> std::borrow::Cow<'_, str> {
     use std::borrow::Cow;
+    // Codex blinks "[ ! ] " / "[ . ] " before its title while it needs you:
+    // both phases are one title, so a blink redraws nothing.
+    let lead = title.find(char::is_alphanumeric).unwrap_or(title.len());
+    if let Some((at, len)) = ["[ ! ] ", "[ . ] "].iter().find_map(|mark| title[..lead].find(mark).map(|at| (at, mark.len()))) {
+        return Cow::Owned(shown_title(&format!("{}{}", &title[..at], &title[at + len..])).into_owned());
+    }
     // Frames agents spin, not status icons (\u{2713} build stays): braille dots,
     // Claude Code's stars and its half circles.
     let spinner = |c: char| {
@@ -4018,14 +4024,16 @@ mod tests {
                     let run = TextRun { len: text.len(), font, ..Default::default() };
                     // As `row_ops` places a row: each cell's cluster at its cell's left edge.
                     let at_cells = |cell: Pixels| -> Vec<(usize, Pixels)> { (0..text.len()).map(|i| (i, cell * i as f32)).collect() };
-                    let line = text_system.shape_line(text.into(), font_size, std::slice::from_ref(&run), None).with_cell_positions(&at_cells(width), width * text.len() as f32);
-
-                    assert!(f32::from(line.width() - width * text.len() as f32).abs() < 0.1, "{text}: width drift");
-                    let glyphs: Vec<_> = line.runs.iter().flat_map(|run| &run.glyphs).collect();
+                    let natural = text_system.shape_line(text.into(), font_size, std::slice::from_ref(&run), None);
+                    // The shaper itself keeps every glyph, ligature or not, on its cell:
+                    // nothing for with_cell_positions to hide.
+                    let glyphs: Vec<_> = natural.runs.iter().flat_map(|run| &run.glyphs).collect();
                     for glyph in &glyphs {
                         assert!(f32::from(glyph.position.x - width * glyph.index as f32).abs() < 0.1, "{text}: glyph drift");
                     }
                     variants.push(glyphs.iter().map(|glyph| glyph.id).collect::<Vec<_>>());
+                    let line = natural.clone().with_cell_positions(&at_cells(width), width * text.len() as f32);
+                    assert!(f32::from(line.width() - width * text.len() as f32).abs() < 0.1, "{text}: width drift");
                     let cell = px(f32::from(width).round());
                     let aligned = text_system.shape_line(text.into(), font_size, &[run], None).with_cell_positions(&at_cells(cell), cell * text.len() as f32);
                     for glyph in aligned.runs.iter().flat_map(|run| &run.glyphs) {
@@ -4619,7 +4627,7 @@ mod tests {
             let fit = fallback_fit(&c, &font, cell, crate::settings::font_size(), &ts).unwrap_or_else(|| panic!("{text} must be fitted"));
             assert!((f32::from(fit.ink.size.width - cell.width)).abs() < 0.01, "{text}: as wide as its cell, {fit:?}", fit = fit.ink);
             assert!(fit.ink.origin.x >= px(0.) && fit.ink.right() <= cell.width + px(0.01), "{text}: inside its cell");
-            // Where the drawn line puts the ink, with the row's offset.
+            // Where the drawn line puts the ink.
             let run = TextRun { len: text.len(), font: font.clone(), ..Default::default() };
             let line = ts.shape_line(text.to_string().into(), fit.size, &[run], None).with_cell_positions(&[(0, px(0.))], cell.width);
             let drawn = glyph_ink(&line, text.chars().next().unwrap(), cell.height, &ts).unwrap();
@@ -5092,6 +5100,12 @@ mod tests {
         assert_eq!(shown_title("herdr \u{2839} task"), "herdr \u{2839} task", "a word is no prefix");
         assert_eq!(shown_title("\u{2839}"), "\u{2839}", "only a spinner: kept");
         assert_eq!(shown_title("\u{2839} \u{2838}"), "\u{2839} \u{2838}");
+        assert_eq!(shown_title("[ ! ] Action Required | herdr-app"), "Action Required | herdr-app", "codex's blink mark");
+        assert_eq!(shown_title("[ . ] Action Required | herdr-app"), "Action Required | herdr-app", "its other phase");
+        assert_eq!(shown_title("\u{25cf} [ ! ] Action Required"), "\u{25cf} Action Required", "after the microphone dot");
+        assert_eq!(shown_title("\u{280b} [ ! ] Action Required"), "Action Required", "after a spinner");
+        assert_eq!(shown_title("[herdr] config"), "[herdr] config", "a bracketed name stays");
+        assert_eq!(shown_title("a [ ! ] b"), "a [ ! ] b", "only before the title");
     }
 
     use super::key_bytes;
