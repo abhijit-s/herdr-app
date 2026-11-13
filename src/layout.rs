@@ -168,6 +168,9 @@ pub struct Look {
     /// `terminal_line_height` by its other name, used when that is unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_height: Option<f32>,
+    /// Cell width multiplier, 0.8..2 (1 keeps the font's natural columns).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_cell_width: Option<f32>,
     /// Wheel and trackpad scroll multiplier, 0.1..5.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_scroll_speed: Option<f32>,
@@ -177,9 +180,11 @@ pub struct Look {
     /// The weight bold terminal text draws at, 100 to 900.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font_weight_bold: Option<u16>,
-    /// Px (at zoom 1) added to (or, negative, taken from) the terminal cell width.
+    /// Retired, never read: kept as written so Settings reports them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub letter_spacing: Option<f32>,
+    pub letter_spacing: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_width: Option<serde_json::Value>,
     /// The mods' font.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_font: Option<String>,

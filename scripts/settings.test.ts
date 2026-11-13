@@ -125,7 +125,7 @@ function find(root: Element, id: string): Element {
 
 /** Clicks `id` on the Text group's pages (or `page`) with `person` in settings.json; what gets written. */
 function click(person: Record<string, any>, shown: Record<string, any>, id: string, real: string[] = [], page: string | string[] = ["zoom", "fonts", "grid", "rendering"]) {
-  composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, letter_spacing: 0, ui_scale_ranges: { ui_zoom: [0.75, 1.5], ui_text_scale: [0.8, 1.3] }, ...shown };
+  composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, terminal_cell_width: 1, ui_scale_ranges: { ui_zoom: [0.75, 1.5], ui_text_scale: [0.8, 1.3] }, ...shown };
   const view = new Settings();
   view.person = person;
   for (const part of ["layoutPicker", "spacing", "choicePicker", "fontButton", "fontList"]) if (!real.includes(part)) view[part] = element;
@@ -303,6 +303,21 @@ test("contrast steps by 0.1 within 0 to 1, terminal and interface apart", () => 
   expect(click({}, {}, "st-text_contrast-minus")).toEqual({});
   expect(click({ text_contrast: 0.5 }, {}, "st-ui_text_contrast-plus")).toEqual({ text_contrast: 0.5, ui_text_contrast: 0.1 });
   expect(click({ ui_text_contrast: 0.2, text_contrast: 0.5 }, {}, "st-ui_text_contrast-minus")).toEqual({ ui_text_contrast: 0.1, text_contrast: 0.5 });
+});
+
+test("cell width steps by 5% within 0.8 to 2 from the value in use, leaving 100% out", () => {
+  expect(click({}, {}, "st-terminal_cell_width-minus")).toEqual({ terminal_cell_width: 0.95 });
+  expect(click({}, {}, "st-terminal_cell_width-plus")).toEqual({ terminal_cell_width: 1.05 });
+  expect(click({ terminal_cell_width: 0.95 }, { terminal_cell_width: 0.95 }, "st-terminal_cell_width-plus")).toEqual({});
+  // Settings arrive as f32s widened to f64; the step lands on a whole 5% all the same.
+  expect(click({ terminal_cell_width: 1.100000023841858 }, {}, "st-terminal_cell_width-plus")).toEqual({ terminal_cell_width: 1.15 });
+  expect(click({}, { terminal_cell_width: 1.100000023841858 }, "st-terminal_cell_width-plus")).toEqual({ terminal_cell_width: 1.15 });
+  expect(click({ terminal_cell_width: 0.8 }, {}, "st-terminal_cell_width-minus")).toEqual({ terminal_cell_width: 0.8 });
+  expect(click({ terminal_cell_width: 2 }, {}, "st-terminal_cell_width-plus")).toEqual({ terminal_cell_width: 2 });
+  // A value off the steps or out of range comes back onto them.
+  expect(click({ terminal_cell_width: 0.97 }, {}, "st-terminal_cell_width-plus")).toEqual({});
+  expect(click({ terminal_cell_width: 0.92 }, {}, "st-terminal_cell_width-plus")).toEqual({ terminal_cell_width: 0.95 });
+  expect(click({ terminal_cell_width: 7 }, {}, "st-terminal_cell_width-minus")).toEqual({ terminal_cell_width: 2 });
 });
 
 test("faint opacity steps by 0.1 within 0 to 1 and leaves Ghostty's 0.5 out", () => {
@@ -915,7 +930,7 @@ const searchCx = { spawn() {}, notify() {}, stop_propagation() {} };
 
 /** A Settings window searching for `query`: what its results draw, and the view. */
 function search(query: string, person: Record<string, any> = {}) {
-  composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, letter_spacing: 0, ui_scale_ranges: { ui_zoom: [0.75, 1.5], ui_text_scale: [0.8, 1.3] } };
+  composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, terminal_cell_width: 1, ui_scale_ranges: { ui_zoom: [0.75, 1.5], ui_text_scale: [0.8, 1.3] } };
   const view = new Settings();
   view.init({}, { ...searchCx, focus_handle: () => ({ focus() {} }), timer: { every() {}, after() {} } });
   view.person = person;
@@ -1013,7 +1028,7 @@ test("the index is built once per window and again only after a setting changes"
 });
 
 test("with nothing typed, pages draw as before and nothing is indexed or matched", () => {
-  composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, letter_spacing: 0, ui_scale_ranges: { ui_zoom: [0.75, 1.5], ui_text_scale: [0.8, 1.3] } };
+  composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, terminal_cell_width: 1, ui_scale_ranges: { ui_zoom: [0.75, 1.5], ui_text_scale: [0.8, 1.3] } };
   const view = new Settings();
   view.init({}, { ...searchCx, focus_handle: () => ({ focus() {} }), timer: { every() {}, after() {} } });
   view.person = {};
@@ -1060,7 +1075,7 @@ test("cmd-f focuses the field, typing with nothing focused searches, esc clears 
 
 /** A search on a window opened at `section`, its spawned work run when `settle` is awaited. */
 function searchFrom(section: string) {
-  composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, letter_spacing: 0, ui_scale_ranges: { ui_zoom: [0.75, 1.5], ui_text_scale: [0.8, 1.3] } };
+  composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, terminal_cell_width: 1, ui_scale_ranges: { ui_zoom: [0.75, 1.5], ui_text_scale: [0.8, 1.3] } };
   const pending: Promise<void>[] = [];
   const cx = { ...searchCx, spawn: (f: (cx: any) => Promise<void>) => pending.push(f(cx)), focus_handle: () => ({ focus() {} }), timer: { every() {}, after() {} } };
   const view = new Settings();
@@ -1140,7 +1155,7 @@ test("alt starts no search off macOS, and marks keep their place after a letter 
 
 /** A Settings window opened at `section` (as app.settings names it), on a dark theme. */
 function opened(section?: string, palette: Record<string, string> = dark) {
-  composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, letter_spacing: 0 };
+  composed = { zoom: 1, font_size: 14, font_weight: 500, line_height: 1.15, terminal_cell_width: 1 };
   propsNow = { section };
   const view = new Settings();
   view.init({}, { ...searchCx, focus_handle: () => ({ focus() {} }), timer: { every() {}, after() {} } });

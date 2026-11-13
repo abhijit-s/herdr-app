@@ -543,9 +543,10 @@ export function feedbackClearImages(): null;
 export function sendFeedback(body: import("gpui-kit").HostValue, images?: string[]): Promise<string | null>;
 
 /** What the app runs with: the shown layout's look (theme name, fonts, sizes, terminal
- *  padding and opacity, terminal_line_height and terminal_scroll_speed) with the person's zoom and sounds.
- *  terminal_line_height: number, default 1.15, within 0.8..2 (also given as line_height);
- *  terminal_scroll_speed: number, default 1, clamped to 0.1..5. Layout values override settings.json. `ui_scale` is what a mod's px
+ *  padding and opacity, terminal_line_height, terminal_cell_width and terminal_scroll_speed) with the
+ *  person's zoom and sounds. terminal_line_height: number, default 1.15, within 0.8..2 (also given as
+ *  line_height); terminal_cell_width: number, default 1, clamped to 0.8..2; terminal_scroll_speed:
+ *  number, default 1, clamped to 0.1..5. Layout values override settings.json. `ui_scale` is what a mod's px
  *  are drawn at (zoom × ui_zoom): divide window px by it; `ui_scale_ranges` is
  *  `{ ui_zoom: [min, max], ui_text_scale: [min, max] }`. `panels_in_use` is the panel
  *  derivation drawing now ("tinted" or "classic"): `panel_colors`, or classic for a theme
