@@ -55,6 +55,8 @@ const SHIPPED_MACOS_KEYS: &[&str] = &[
     include_str!("keys/shipped/v0.1.15-keys.macos.json"),
     // The fork's defaults before Cmd+A selects a terminal (master 41ed086).
     include_str!("keys/shipped/fork-41ed086-keys.macos.json"),
+    // The fork's defaults before Cmd+M minimizes the window (master f41cf96).
+    include_str!("keys/shipped/fork-f41cf96-keys.macos.json"),
 ];
 
 #[derive(serde::Deserialize)]
@@ -283,6 +285,9 @@ pub fn install(bindings: Vec<KeyBinding>, cx: &mut App) {
         KeyBinding::new(ESCAPE_HATCH, ShellAction::new("app.reset"), None),
         KeyBinding::new("escape", ShellAction::new("overlay.close"), Some("Overlay")),
     ]);
+    // The menu bar shows the keys it finds when it's built.
+    #[cfg(target_os = "macos")]
+    crate::macos::refresh_menus(cx);
 }
 
 #[cfg(test)]

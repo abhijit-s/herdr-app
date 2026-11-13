@@ -194,7 +194,10 @@ export default class Palette extends View {
     return all
       .map((e) => {
         const title = fuzzy(q, e.title);
-        const more = fuzzy(q, `${e.group} ${e.title} ${e.name} ${e.words}`);
+        // Keywords alone too: in the joined text the leftmost letters win, so a
+        // keyword typed whole ranked as scattered letters.
+        const more = [fuzzy(q, `${e.group} ${e.title} ${e.name} ${e.words}`), e.words ? fuzzy(q, e.words) : null]
+          .reduce((a, b) => (!a || (b && b.score > a.score) ? b : a), null);
         const best = title ?? (more && { score: more.score - 4, hits: [] });
         return best && { e, score: best.score, hits: best.hits };
       })
