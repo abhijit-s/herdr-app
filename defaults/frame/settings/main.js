@@ -549,6 +549,19 @@ export default class Settings extends View {
           (_e, cx) => this.change((q) => (q[key] = Math.max(min, Math.min(max, Math.round(((q[key] ?? s[key]) - 0.1) * 10) / 10))), cx),
           (_e, cx) => this.change((q) => (q[key] = Math.max(min, Math.min(max, Math.round(((q[key] ?? s[key]) + 0.1) * 10) / 10))), cx)),
       )))
+      .child(
+        this.row(
+          t,
+          "Copy on select",
+          "Copies a mouse selection in a terminal when you let go. Off, the selection stays until you copy it.",
+          this.toggle(t, "st-copy_on_select", this.person.copy_on_select !== false, (_e, cx) =>
+            this.change((p) => {
+              if (p.copy_on_select === false) delete p.copy_on_select;
+              else p.copy_on_select = false;
+            }, cx),
+          ),
+        ),
+      )
       .child(fontRow("ui_font", null, "Interface font", s.ui_font_family, DEFAULT_UI_FONT));
   }
 

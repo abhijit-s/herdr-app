@@ -785,6 +785,7 @@ What's about the user, never a look:
   `true`), and to PRIMARY on Linux. Set `false` to leave both untouched while
   keeping the selection visible; `terminal.copy` (Cmd+C/Ctrl+Shift+C) still
   copies it. Hold Shift while dragging in programs that capture the mouse.
+  Settings > Look has it as "Copy on select".
 - `pane_scrollbars`: `false` hides the scroll position thumb at a terminal
   pane's right edge (default `true`). It shows only when the pane has
   scrollback — never on the alternate screen (editors, pagers) — and
