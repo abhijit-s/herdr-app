@@ -764,7 +764,7 @@ thread_local! {
     /// Snapshot parts by key, with the revision they were copied at (`shared_part`).
     static SHARED_PARTS: RefCell<HashMap<&'static str, (u64, std::sync::Arc<Value>)>> = RefCell::new(HashMap::new());
     /// `panes()` with its live scroll positions, from the part and numbers it was made of (`panes_part`).
-    static PANES_PART: RefCell<Option<(std::sync::Arc<Value>, PaneScrolls, std::sync::Arc<Value>)>> = const { RefCell::new(None) };
+    static PANES_PART: RefCell<Option<PanesPart>> = const { RefCell::new(None) };
     /// Copies passed over by a refresh while hidden: refreshed once shown.
     static MISSED: RefCell<std::collections::HashSet<u64>> = RefCell::new(std::collections::HashSet::new());
     static COPY_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -1000,6 +1000,9 @@ fn panes_part(f: fn(&Snapshot) -> &Value) -> std::sync::Arc<Value> {
 }
 
 type PaneScrolls = Vec<(usize, Option<crate::terminal::ScrollMetrics>)>;
+
+/// The shared part, the numbers laid over it, and the result (`with_scrolls`).
+type PanesPart = (std::sync::Arc<Value>, PaneScrolls, std::sync::Arc<Value>);
 
 /// `base` with `scroll` set on the panes at those places, the last answer
 /// reused while `base` and the numbers are the same.
