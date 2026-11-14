@@ -66,6 +66,21 @@ test("an unnamed tab's row reads its terminal's label, not the tab number", () =
   expect(title({ name: "3", named: false }, undefined)).toBe("3");
 });
 
+// The app's label is never the address when the program has a name
+// (pane_label::tests); a label from a build before that keeps the tab name.
+test("an empty OSC title published as the terminal address keeps the tab name", () => {
+  const title = new Function("View", "localStorage", "props", "run", `${source}; return title;`)(class {}, {}, () => ({}), () => {});
+  for (const address of ["t2", "remote/t2"]) {
+    for (const identity of [{ terminal: address }, { address }]) {
+      const lead = { ...identity, program: { name: "Claude Code", key: "claude" }, title: address, label: address };
+      expect(title({ name: "2", named: false }, lead)).toBe("2");
+      expect(title({ name: "Claude Code", named: true }, lead)).toBe("Claude Code");
+      expect(title({ name: "fix login", named: true }, lead)).toBe("fix login");
+      expect(title({ name: "2", named: false }, { ...lead, title: "renamed-task", label: "renamed-task" })).toBe("renamed-task");
+    }
+  }
+});
+
 // The app's label never is a folder title (pane_label::tests), so a folder
 // title leaves the label at the program's name and the tab keeps its own.
 test("a title that is a folder never replaces the tab's name", () => {
@@ -223,7 +238,7 @@ for (const sort of ["priority", "grouped"]) for (const named of [false, true]) t
 type Kid = { address: string; parent: string };
 function keptRender(sort: string, { width = 268, kept = [{ address: "t3", parent: "t1" }] as Kid[], paneless = [] as Kid[], pinned = [] as string[], mode = undefined as string | undefined, records = {} as Record<string, unknown>, data = new Map<string, string>(), before = (_: any) => {}, more = (_: any) => ({}), set = {} as Record<string, unknown> } = {}) {
   const program = { name: "Claude", key: "claude", agent: true, icon: "claude.svg", tint: true };
-  const row = (address: string, seq: number) => ({ address, pane: `p-${address}`, tab: "tab1", space: "s1", space_name: "Project", program, title: address, label: address, status: "working", seq, pinned: pinned.includes(address), ...more(address) });
+  const row = (address: string, seq: number) => ({ address, pane: `p-${address}`, tab: "tab1", space: "s1", space_name: "Project", program, title: `Task ${address}`, label: `Task ${address}`, status: "working", seq, pinned: pinned.includes(address), ...more(address) });
   const list = [row("t1", 1), ...kept.map((k, i) => row(k.address, i + 2))];
   const live = (address: string, parent: string | null) => ({ address, parent, state: "live", status: "working", program, labels: {} });
   const orders: string[][] = [];
@@ -273,8 +288,8 @@ for (const sort of ["priority", "grouped"]) test(`${sort}: a kept sub-agent keep
   expect(keptRender(sort, { width: 44 }).ids).toContain("ag-t3"); // the rail draws no trees
   const pinned = keptRender(sort, { pinned: ["t3"] });
   expect(pinned.ids).toContain("ag-t3");
-  expect(pinned.texts.get("ag-t1")).toContain("t1");
-  expect(pinned.texts.get("ag-t3")).toContain("t3");
+  expect(pinned.texts.get("ag-t1")).toContain("Task t1");
+  expect(pinned.texts.get("ag-t3")).toContain("Task t3");
   expect(keptRender(sort, { kept: [{ address: "t3", parent: "t9" }] }).ids).toContain("ag-t3"); // its parent ended
 });
 

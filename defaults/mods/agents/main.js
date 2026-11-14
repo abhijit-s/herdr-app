@@ -62,7 +62,7 @@ function leadPanes(all) {
 function title(tab, l) {
   const prog = l?.program?.name;
   const own = l?.label;
-  return (tab.name === prog || !tab.named) && own && own !== prog && own !== l.terminal ? own : tab.name;
+  return (tab.name === prog || !tab.named) && own && own !== prog && own !== (l.terminal ?? l.address) ? own : tab.name;
 }
 const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
 // A sub-agent without a pane isn't in agents(): its raw word, error counting as
