@@ -2617,9 +2617,6 @@ pub(crate) mod tests {
     fn synchronized_output_releases_at_its_deadline() {
         let mut vt = Vt::new(20, 3);
         vt.write(b"before");
-        // Drawn once, as a terminal on screen is: a new `Vt` starts released
-        // (`release_frame_caches`), and `on_render_hold` keeps no frame while released.
-        let _ = vt.frame();
         vt.write(b"\x1b[?2026h\r\x1b[Kafter");
         let text = |frame: Frame| frame.rows[0].iter().map(|c| c.text.as_str()).collect::<String>();
         assert!(text(vt.frame()).starts_with("before"));
