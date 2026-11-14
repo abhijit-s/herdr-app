@@ -380,6 +380,9 @@ test("a tab Herdr named after its agent follows the agent's label", () => {
   expect(label({ name: "", named: false }, { ...claude, label: "✦ [web] login" })).toBe("[web] login");
   expect(label({ name: "", named: false }, { ...claude, label: "✓ “quoted” task" })).toBe("“quoted” task");
   expect(label({ name: "", named: false }, { ...claude, label: "[ ! ] fix login" })).toBe("fix login");
+  // A pane's given name (pane.rename) stays as written.
+  expect(label({ name: "", named: false }, { ...claude, name: "🔥 build", label: "🔥 build" })).toBe("🔥 build");
+  expect(label({ name: "", named: false }, { ...claude, name: "#42 fix", label: "#42 fix" })).toBe("#42 fix");
   // A label that is only a glyph says nothing.
   expect(label({ name: "", named: false }, { ...claude, label: "✦ " })).toBe("Claude Code");
   expect(label({ name: "Claude Code", named: true }, { ...claude, label: "renamed-task" })).toBe("renamed-task");
