@@ -13,7 +13,8 @@ async function harness(mod: string, values: Record<string, string>) {
   const Mod = new Function(...Object.keys(globals), `${source}; return ${name};`)(...Object.values(globals));
   const view = new Mod();
   view.refreshMachines = () => {};
-  view.init({}, { timer: { every() {} } });
+  // The fork's mods also start a command loop (agents, spaces) and take a focus handle (tabs) in init.
+  view.init({}, { timer: { every() {} }, spawn() {}, focus_handle: () => ({ focus() {} }), notify() {} });
   return { view, data };
 }
 
@@ -22,6 +23,10 @@ for (const raw of ["{{{not json", "null", "42", '"old shape"', "[]"]) {
     const { view, data } = await harness("agents", { changed: raw });
     view.track([{ address: "t1", status: "working" }], 123);
     expect(JSON.parse(data.get("changed")!)).toEqual({ t1: { s: "working", at: 123 } });
+  });
+  test(`agents recover invalid folds: ${raw}`, async () => {
+    const { view } = await harness("agents", { folds: raw });
+    expect(view.folds).toEqual({});
   });
   test(`tabs recover invalid panel map: ${raw}`, async () => {
     const { view, data } = await harness("tabs", { panels: raw });

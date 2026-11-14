@@ -117,7 +117,8 @@ export default class Agents extends View {
     this.folded = new Set();
     // The agents the person folded (true) or opened (false) against
     // agents_subagents, kept across restarts; the rest follow the setting.
-    this.folds = JSON.parse(localStorage.getItem("folds") ?? "{}");
+    try { this.folds = JSON.parse(localStorage.getItem("folds") ?? "{}"); } catch { this.folds = {}; }
+    if (!this.folds || typeof this.folds !== "object" || Array.isArray(this.folds)) this.folds = {};
     // Each agent's last state and when it changed (ms), kept across restarts.
     try { this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}"); } catch { this.changed = {}; }
     if (!this.changed || typeof this.changed !== "object" || Array.isArray(this.changed)) this.changed = {};
