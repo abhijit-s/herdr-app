@@ -2,6 +2,8 @@
 //! with GPUI, keys and mouse encoded by libghostty-vt and sent back.
 
 mod drag_paths;
+#[cfg(all(test, target_os = "macos"))]
+mod underline_pixels;
 
 use crate::hc::{Core, Stream};
 use crate::vt::{self, CursorShape, Rgb, Select, Vt};
