@@ -377,11 +377,7 @@ const claude = { terminal: "t1", program: { name: "Claude Code", key: "claude", 
 test("a tab Herdr named after its agent follows the agent's label", () => {
   expect(label({ name: "Claude Code", named: true }, claude)).toBe("my-task");
   expect(label({ name: "", named: false }, claude)).toBe("my-task");
-  expect(label({ name: "", named: false }, { ...claude, label: "✦ [web] login" })).toBe("[web] login");
-  expect(label({ name: "", named: false }, { ...claude, label: "✓ “quoted” task" })).toBe("“quoted” task");
-  expect(label({ name: "", named: false }, { ...claude, label: "[ ! ] fix login" })).toBe("fix login");
-  // A label that is only a glyph says nothing.
-  expect(label({ name: "", named: false }, { ...claude, label: "✦ " })).toBe("Claude Code");
+  expect(label({ name: "", named: false }, { ...claude, label: "✦ [web] login" })).toBe("✦ [web] login");
   expect(label({ name: "Claude Code", named: true }, { ...claude, label: "renamed-task" })).toBe("renamed-task");
 });
 

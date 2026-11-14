@@ -19,18 +19,14 @@ function find(node, id) {
   return null;
 }
 
-// As upstream's tab bar: drops a status glyph, keeps a leading bracket or quote.
-const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}\p{Ps}\p{Pi}]+/u, "").replace(/^\[ [!.] \] /, "").trim();
-
 // A tab Herdr named (unnamed, or after its program) follows its agent's
-// label (its pane's given name, telling title or session name: pane_label.rs)
-// without a leading status glyph, as the agents list does; a name the person
-// gave stays.
+// label (its pane's given name, telling title or session name: pane_label.rs),
+// as the agents list does; a name the person gave stays.
 function label(tab, lead) {
   const prog = lead?.program?.name;
   const base = tab.named ? tab.name : prog ?? "Terminal";
   if (!lead?.program?.agent) return base;
-  const own = clean(lead.label);
+  const own = lead.label;
   return (tab.name === prog || !tab.named) && own && own !== prog && own !== lead.terminal ? own : base;
 }
 
