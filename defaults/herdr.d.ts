@@ -32,6 +32,9 @@ export function terminalLines(terminal: string, options?: { lines?: number }): P
 export function home(): string;
 /** The app's folder (`~/.config/herdr-app`, or `$HERDR_APP_HOME`): settings.json, keys.json, layouts/. */
 export function appHome(): string;
+/** True while `herdr-app check` loads this mod: `init()` runs for real there
+ *  (exec and writeTextFile included), so guard process side effects. */
+export function checking(): boolean;
 
 /** Reads UTF-8 text (up to 1 MiB), or null if absent. Runs off the UI thread.
  *  `on`: from that machine (a space's `machine`). */
@@ -65,7 +68,7 @@ export function playSound(sound: string): null;
  *   space.move {id, index}, space.select {index | id}, space.next, space.prev.
  * Tabs: tab.new {name?, space?, folder?, argv?, task?, focus?} (argv: an agent, task: its first message)
  *   or {name?, space?, mod, props?, focus?} (a tab whose only pane is a mod),
- *   tab.close {id?}, tab.rename {id?, name}, tab.move {id, index}, tab.select {index | id},
+ *   tab.close {id?}, tab.rename {id?, name}, tab.move {id?, index | by} (by: -1 left, 1 right, wrapping), tab.select {index | id},
  *   tab.move_left {id?}, tab.move_right {id?} (one place; nothing at the end), tab.next, tab.prev,
  *   tab.move_to_space {space, id?, index?} (the whole tab to another space on its machine, last unless index;
  *   shown there, terminals keep running; a space it leaves empty closes).
@@ -263,6 +266,18 @@ export interface CardInfo extends HeaderInfo {
 /** Terminals whose program reports a status (agents), in space, tab, pane order. Live. */
 export function agents(): AgentInfo[];
 
+/** History scroll as Ghostty reports it, read fresh by panes().
+ *  Rows from the top of retained history; `from_bottom` is 0 at the end.
+ *  PaneInfo.scroll is null on the alternate screen or with no view.
+ *  Mods refresh on user scrolling or transitions between end/history/alternate
+ *  screen, not on ordinary output that only changes the numbers. */
+export interface PaneScroll {
+  total: number;
+  offset: number;
+  len: number;
+  from_bottom: number;
+}
+
 export interface PaneInfo {
   pane: string;
   /** null for a mod pane (`pane.split {mod}`): then `mod` names it, and only
@@ -319,6 +334,8 @@ export interface PaneInfo {
    *  minute for `{elapsed}`); null when unset, for shells, and when every segment is empty.
    *  Draw what `fitHeaderInfo` keeps for your width; `text` is the whole line, for a tooltip. */
   header_info?: HeaderInfo | null;
+  /** History scroll for a terminal pane's attached view; null for mod panes / alt-screen. Live. */
+  scroll?: PaneScroll | null;
 }
 
 /** `PaneInfo.header_info`. */
@@ -466,6 +483,13 @@ export function window(): {
  *  call wins, whichever mod made it; null restores "Herdr". It doesn't outlive the app, so set it
  *  again when your mod starts. Call it when the title changes, not on every render. */
 export function setWindowTitle(title: string | null): null;
+
+/** Sets the badge on the app's icon: the red label on the macOS Dock icon, e.g. how many agents
+ *  need you. The last call wins, whichever mod made it; null or "" clears it. It shows over the
+ *  app's own count of waiting agents (settings.json `dock_badge`), which comes back once it is
+ *  cleared. Other platforms ignore it for now. It doesn't outlive the app, so set it again when your mod starts. Call it
+ *  when the text changes, not on every render. */
+export function setBadge(text: string | null): null;
 
 /** For a floating mod: where it sits now. `vertical` on the left/right edges, horizontal on
  *  top/bottom; while dragged, where it would land. `hovered` is true while the pointer is on it

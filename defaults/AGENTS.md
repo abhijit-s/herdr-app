@@ -64,7 +64,7 @@ commands. They're rewritten on every start to match this version.
 
 ## Seeing the window
 
-`herdr-app shot [file.png]` saves the last rendered window frame as a PNG
+`herdr-app shot [file.png]` saves the current window frame as a PNG
 and prints its absolute path (default: `herdr-shot.png` in your current
 folder). Use it when debugging mod UIs: inspect spacing, colors, terminal
 images, overlays, popups and floats. It captures the app, not the desktop,
@@ -466,12 +466,18 @@ The tab block says how each pane of the shown tab is wrapped:
 - Each pane's content sits in by the wider of `border` and `focus`, so moving the focus never resizes a terminal; with the narrower line drawn, the rest shows the frame's `background` if it sets one. settings.json's `focus_border_width` replaces the `focus` width.
 - `header`: a mod drawn on each pane, one copy per pane, with
   `props().pane` and `props().terminal`. It reads its live facts from
-  `panes()` (name, auto_name, label, session, title, folder, branch, agent status, focused, zoomed, text_size) and its
-  buttons run pane commands with that pane (`pane.split`, `pane.zoom`,
-  `pane.close`). `position`: `top` or `bottom`; `reveal: "hover"` shows it
-  only while the pointer is on the pane, drawn over the terminal so the
-  terminal never resizes. The shipped `pane` mod keeps its divider on the
-  terminal-facing edge and reads the frame position from `layout()`.
+  `panes()` (name, auto_name, label, session, title, folder, branch, agent status, focused, zoomed, text_size, scroll)
+  and its buttons run pane commands with that pane (`pane.split`, `pane.zoom`,
+  `pane.close`). `scroll` is `{ total, offset, len, from_bottom }` for a
+  terminal pane's history viewport (`from_bottom` is 0 at the end; `scroll`
+  is null on the alternate screen). Reads get current numbers. Mods refresh
+  on user scrolling and transitions between the end, history, and the
+  alternate screen; ordinary output within one of those states does not
+  refresh them just because the numbers changed. `position`: `top` or
+  `bottom`; `reveal: "hover"` shows it only while the pointer is on the pane,
+  drawn over the terminal so the terminal never resizes. The shipped `pane`
+  mod keeps its divider on the terminal-facing edge and reads the frame
+  position from `layout()`.
 - `lone: true` frames a tab's only pane too (default: only when split).
 - Each layout has its own, so one can stay bare while another makes
   every pane a card.
@@ -666,7 +672,7 @@ The main ones:
   props?, focus?}` for a tab whose only pane is a mod (a file, a board; split a shell
   in beside it like any tab), `tab.close {id?, confirmed?}` (closing the last tab
   closes its space and asks first unless confirmed),
-  `tab.rename {id?, name}` ("": its number again), `tab.move {id, index}`,
+  `tab.rename {id?, name}` ("": its number again), `tab.move {id?, index | by}` (by: places left (-) or right (+), skipping settled tabs as `tab.next` does, wrapping),
   `tab.move_left {id?}`, `tab.move_right {id?}` (one place; nothing at the end),
   `tab.move_to_space {space, id?, index?}` (the whole tab, the shown one by
   default, to another space on its machine, last unless index; shown there,
@@ -682,6 +688,8 @@ The main ones:
   terminal, or a mod pane), `pane.close {pane?}`, `pane.rename {pane?, name}` ("": unnamed again),
   `pane.set_icon {pane?, icon}` and `tab.set_icon {id?, icon}` (`icon`: `{kind: "glyph" | "emoji", value}` or `{kind: "letter"}`; null or absent: the automatic icon again, so a misspelt key clears it; kept by id in the machine's layout and gone with the pane or tab; the shipped `menu` offers them as Change icon… and Clear icon, through the shipped `icon-picker`: Suggested, every Symbols Nerd Font glyph and every emoji, searchable by name and keyword. A mod keeping icons of its own opens the same picker with `openOverlay({mod: "icon-picker", kind: "dialog", width: 452, height: 392, props: {shared: "<key>", id, name, letter?, now?, extra?}})`: the pick is written to `shared(key)[id]` as `{kind, value?}` and Clear icon deletes it; `now` (`{kind, text}`) is the icon shown today, `extra` (`[{kind, text, word}]`) adds the mod's own kinds beside the letter),
   `pane.zoom {pane?}`, `pane.menu {pane?}` (the pane's menu at the pointer, the layout's `terminal_menu` as a terminal right-click opens it, with no selection: what a pane header's right-click runs; the shipped `menu` lists Copy with a selection, Copy all, Paste, Copy path when the folder is known, then Rename, Split right and down, Zoom, Change icon… and Clear icon, Float pane (or Dock pane and Bring to front), then where right-clicks go, Send back for a kept sub-agent, and Close pane), `pane.focus {pane | terminal}`, `pane.refocus` (the keyboard back to what has the focus after a mod took it for a moment, as a tab drag does: a focused mod pane gets its `focus` command again, else the focused pane or the agent shown), `pane.go {direction}`, `pane.swap {pane?, direction | target}`.
+  `pane.zoom` also makes the pane its tab's focused one (the tab isn't
+  selected); on the zoomed pane it unzooms and focus stays.
   Floating panes: `pane.float {pane?, rect?}` lifts a tiled pane above its tab's tiled panes, in front and focused (`rect`: `[x, y, w, h]`, fractions of the tab area; default centred at 60% × 60%); `pane.dock {pane?, target?, edge?}` puts it back: beside `target` (a tiled pane) on `edge` (`left`, `right`, `top`, `bottom`), else beside the pane it floated from on the same side at the same share, else beside the tiled pane focused last (an arranged tab places it there in reading order and arranges again, so a master pane comes back as master); `pane.float_toggle {pane?}` does either. `pane.float_move {pane?, direction? | rect? | to?, cells?}` moves one (by `cells`, default 2 columns or 1 row; or to `center`, `full`, a half `left`/`right`/`top`/`bottom` or a quarter `top-left`…; the shorthand `pane.float_move:center` works), `pane.float_resize {direction, cells?, pane?}` grows it right or down and shrinks it left or up, its top-left corner staying. `pane.raise {to?, pane?}` and `pane.lower {to?, pane?}` step it forward or back (`to: "front"` / `"back"`); focusing a float brings it to the front. `pane.float_cycle {reverse?}` focuses the shown tab's floats in turn. A float keeps its id, terminal, name and icon; it is one pane (no splits inside: `pane.split` on a float splits the tiled pane it would dock beside). Floats are part of the tab's structure: kept in the machine's document with their rects and order, so every screen of the machine shows them; focus and zoom stay this screen's. Floats always draw above the tiled panes, also over a zoomed tiled pane; `pane.zoom` on a float fills the tab with it on this screen. `pane.go` reaches floats (the front one wins a tie) when one lies in that direction nearer than a tiled pane; `pane.swap {target}` between a float and a tiled pane trades their places, `pane.swap {direction}` moves tiled panes only, and `pane.arrange` leaves floats where they are. Float commands on a tiled pane fail ("doesn't float"). `panes()[i].floating` is `{rect, z, hidden}` for a float (`z` 0 at the back), else null; `herdr-app ls` gives a float's terminal its `floating` rect. The shipped `menu` offers Float pane, or Dock pane and Bring to front, and the shipped `pane` header has a float button among its hover buttons (Float, or Dock on a floating pane: `pane.float_toggle`). Default keys: Cmd+Alt+Enter float or dock, Cmd+Ctrl+arrows move, Cmd+Ctrl+Shift+arrows resize (macOS); unbound elsewhere.
   `pane.zoom_text_in {pane?}`, `pane.zoom_text_out {pane?}`,
   `pane.zoom_text_reset {pane?}` zoom one terminal pane's text (default:
@@ -909,7 +917,7 @@ What's about the user, never a look:
 - `dock_bounce`: `true` bounces the Dock icon when an agent needs the
   person while Herdr is in the background. Off by default. Settings >
   Alerts > Notifications has it as "Bounce the Dock icon".
-- `dock_badge`: on macOS the Dock icon counts the agents waiting on the person, the way Mail counts unread mail: each row the agents list shows as needing you (blocked on a question, a permission or a login, or stopped on an error, its own or a sub-agent's) or as finished and not yet seen. Looking at a finished agent, or it starting work again, takes it off the count; no badge when none waits. On by default; `false` takes the badge off. Settings > Alerts > Notifications has it as "Count waiting agents on the Dock icon".
+- `dock_badge`: on macOS the Dock icon counts the agents waiting on the person, the way Mail counts unread mail: each row the agents list shows as needing you (blocked on a question, a permission or a login, or stopped on an error, its own or a sub-agent's) or as finished and not yet seen. Looking at a finished agent, or it starting work again, takes it off the count; no badge when none waits. A mod's `setBadge` shows over the count until it clears it. On by default; `false` takes the badge off. Settings > Alerts > Notifications has it as "Count waiting agents on the Dock icon".
 - `dock_bounce_on_wait`: `true` bounces the Dock icon once (macOS's short, informational bounce) when an agent starts waiting and none was, while Herdr is in the background. Off by default.
 - `pane_auto_names`: `true` gives each pane nobody named two calm words of
   its own, such as `hazy-inlet`, picked from its id so they last across
@@ -1298,6 +1306,11 @@ herdr-app check ~/.config/herdr-app/mods/<name>
 Loads the mod, renders it once, exits nonzero with the exact error. Run it
 after every change. Never call a mod done without a passing check.
 
+`init()` runs for real during a check. Import `checking` from `"herdr"` and
+use `if (checking()) return;` before starting helpers or writing files.
+`checking()` is true throughout a check and false in a live window.
+`exec`, `hc` and `writeTextFile` still run during checks and warn when called.
+
 ### A mod
 
 ```js
@@ -1535,6 +1548,10 @@ All of it is in `herdr.d.ts`. In short:
 - Window title: `setWindowTitle(title)` sets the OS window's title, which window switchers,
   taskbars and time trackers read. The last call wins; `null` restores `Herdr`. Call it when the
   title changes, not on every render.
+- App icon badge: `setBadge(text)` puts `text` on the app's Dock icon (macOS; other platforms
+  ignore it), e.g. `setBadge(blocked ? String(blocked) : null)`. The last call wins; `null` or `""`
+  clears it. A mod's badge shows over the waiting-agents count (`dock_badge`); clearing it shows
+  the count again.
 - `notify({ ..., action: { name, args } })`: the toast runs the command when clicked.
 - This copy: `props()`, `shared(key)` / `setShared(key, value)` (every mod
   sees it; setting re-renders the copies that read that key), `nextCommand()` (key commands for this

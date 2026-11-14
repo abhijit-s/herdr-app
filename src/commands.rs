@@ -38,7 +38,7 @@ pub const COMMANDS: &[Command] = &[
         "Make a tab in a space (default: the selected one; name default: none, so it's called by its number) with a terminal in folder (default: the focused terminal's), optionally an agent (argv) and its first message (task); or with a mod as its only pane (`mod`, its `props`: a file, a board). It is shown at once; focus false adds it last in its space and keeps the shown space and the target space's selected tab. With no space open, a person's new tab starts a space (as space.new)."),
     cmd("tab.close", &[opt("id"), opt("confirmed")], "Close a tab and end its terminals."),
     cmd("tab.rename", &[opt("id"), opt("name")], "Rename a tab (asks the person when no name; an empty name: called by its number again)."),
-    cmd("tab.move", &[req("id"), req("index")], "Move a tab to a position in its space (1 = first)."),
+    cmd("tab.move", &[opt("id"), opt("index"), opt("by")], "Move a tab (the active one if no id) to a position in its space (1 = first), or `by` places left (-) or right (+), wrapping."),
     cmd("tab.move_left", &[opt("id")], "Move a tab (default: the shown one) one place left in its space; at the first place, nothing happens."),
     cmd("tab.move_right", &[opt("id")], "Move a tab (default: the shown one) one place right in its space; at the last place, nothing happens."),
     cmd("tab.move_to_space", &[req("space"), opt("id"), opt("index")], "Move a tab (default: the shown one) to another space on its machine, at a position (1 = first; default: last), and show it there. Its panes, floats, name and terminals go with it; a space it leaves empty closes."),

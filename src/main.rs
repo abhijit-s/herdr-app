@@ -4,6 +4,7 @@
 mod alert;
 mod app_icon;
 mod arrange;
+mod badge;
 mod bench;
 mod commands;
 mod control;
@@ -70,7 +71,7 @@ Usage:
   herdr-app feedback <text>        draft feedback for the person to review and send
   herdr-app commands               every command, its arguments, what it does
   herdr-app status                 what the window shows, and any errors
-  herdr-app shot [file.png]        save the last window frame (default: herdr-shot.png)
+  herdr-app shot [file.png]        save the current window frame (default: herdr-shot.png)
   herdr-app check <mod folder>     load a mod once and report what's wrong
   herdr-app rex-themes [--dry-run] themes/rex-*.json from the installed Rex app's themes
   herdr-app --skill                Agent Skill: driving the window, and where hc fits

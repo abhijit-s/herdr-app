@@ -368,6 +368,22 @@ mod tests {
     }
 
     #[test]
+    fn a_float_over_a_lone_tiled_pane_zooms_and_takes_the_keyboard() {
+        let mut m = model();
+        for p in ["b", "c", "d"] {
+            m.float_pane(p, DEFAULT_RECT).unwrap();
+        }
+        assert_eq!(m.tab("t").unwrap().tiled_count(), 1);
+        m.focus_pane("a");
+        assert!(m.toggle_zoom("c"), "floats count as the tab's panes");
+        let t = m.tab("t").unwrap();
+        assert_eq!((t.zoomed.as_deref(), m.focused_pane().as_deref()), (Some("c"), Some("c")));
+        assert_eq!(t.floating.last().map(|f| f.pane.id.as_str()), Some("c"), "it comes to the front");
+        assert!(!m.toggle_zoom("c"));
+        assert_eq!(m.tab("t").unwrap().zoomed, None);
+    }
+
+    #[test]
     fn a_zoomed_pane_unzooms_when_it_floats_and_a_zoomed_float_draws_alone() {
         let mut m = model();
         m.tab_mut("t").unwrap().zoomed = Some("b".into());

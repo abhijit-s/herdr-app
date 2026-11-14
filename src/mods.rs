@@ -6,7 +6,7 @@ use gpui::App;
 use gpui_shell::{Capabilities, ExecuteGrant, HostError, HostModule, HostObject, HostValue, NetworkGrant};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -32,6 +32,17 @@ pub fn frame_dir() -> PathBuf {
 pub fn home() -> PathBuf {
     // HOME, or the profile folder on Windows.
     std::env::home_dir().unwrap_or_else(|| "/".into())
+}
+
+thread_local! {
+    static CHECKING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// True while `herdr-app check` loads a mod: `init()` runs there with live
+/// exec and write capabilities, so mods can see it (`herdr.checking()`) and
+/// those side effects warn.
+fn checking() -> bool {
+    CHECKING.with(|c| c.get())
 }
 
 /// The fonts on this machine (`fonts()`): read when the window opens and
@@ -565,6 +576,8 @@ pub enum Request {
     CloseOverlay { id: String },
     /// The OS window's title; `None` restores the default.
     SetWindowTitle(Option<String>),
+    /// The app icon's badge (the Dock on macOS); `None` clears it.
+    SetBadge(Option<String>),
     /// Every copy re-renders.
     Refresh,
     /// Copies whose reads changed re-render (`snapshot_changed`).
@@ -731,6 +744,7 @@ thread_local! {
     /// Snapshots the window publishes; mods read them synchronously and
     /// re-render when they change.
     static SNAPSHOT: RefCell<Snapshot> = RefCell::new(Snapshot::default());
+    static PANE_VIEWS: RefCell<HashMap<String, gpui::WeakEntity<crate::terminal::TerminalView>>> = RefCell::new(HashMap::new());
     static AGENT_ORDER: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static SHARED: RefCell<Option<SharedStore>> = const { RefCell::new(None) };
     /// Where key commands for each loaded copy go: (copy, mod, sender).
@@ -749,6 +763,8 @@ thread_local! {
     static KEYS_PART: RefCell<Option<(FileStamp, std::sync::Arc<Value>)>> = const { RefCell::new(None) };
     /// Snapshot parts by key, with the revision they were copied at (`shared_part`).
     static SHARED_PARTS: RefCell<HashMap<&'static str, (u64, std::sync::Arc<Value>)>> = RefCell::new(HashMap::new());
+    /// `panes()` with its live scroll positions, from the part and numbers it was made of (`panes_part`).
+    static PANES_PART: RefCell<Option<PanesPart>> = const { RefCell::new(None) };
     /// Copies passed over by a refresh while hidden: refreshed once shown.
     static MISSED: RefCell<std::collections::HashSet<u64>> = RefCell::new(std::collections::HashSet::new());
     static COPY_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -852,7 +868,18 @@ pub fn published_actions() -> Value {
     SNAPSHOT.with(|s| s.borrow().actions.clone())
 }
 
+pub fn panes_scrolled() {
+    bump_revision("panes");
+}
+
+pub fn track_pane_view(pane: String, view: &gpui::Entity<crate::terminal::TerminalView>) {
+    PANE_VIEWS.with_borrow_mut(|views| { views.insert(pane, view.downgrade()); });
+}
+
 pub fn publish_panes(v: Value) -> bool {
+    PANE_VIEWS.with_borrow_mut(|views| views.retain(|pane, _| {
+        v.as_array().into_iter().flatten().any(|p| p["pane"].as_str() == Some(pane))
+    }));
     publish("panes", |s| (std::mem::replace(&mut s.panes, v.clone()), v))
 }
 pub fn publish_terminals(mut v: Value) -> bool {
@@ -951,8 +978,50 @@ fn record(reads: &RefCell<LiveReads>, key: &str) {
 fn reader(reads: Rc<RefCell<LiveReads>>, key: &'static str, f: fn(&Snapshot) -> &Value) -> impl Fn(&gpui_shell::HostArguments) -> gpui_shell::HostResult {
     move |_| {
         record(&reads, key);
-        Ok(HostValue::Json(shared_part(key, f)))
+        Ok(HostValue::Json(if key == "panes" { panes_part(f) } else { shared_part(key, f) }))
     }
+}
+
+/// `panes()`: the shared part with each terminal pane's `scroll` read live,
+/// as output and resizing move it without a new revision. Copied again only
+/// when the part or a pane's numbers changed.
+fn panes_part(f: fn(&Snapshot) -> &Value) -> std::sync::Arc<Value> {
+    let base = shared_part("panes", f);
+    let scrolls: PaneScrolls = gpui_shell::with_current_app(|cx| {
+        PANE_VIEWS.with_borrow(|views| {
+            let panes = base.as_array().into_iter().flatten().enumerate();
+            panes.filter_map(|(i, pane)| {
+                let view = pane["pane"].as_str().and_then(|id| views.get(id)).and_then(|v| v.upgrade())?;
+                Some((i, view.read(cx).scroll_metrics()))
+            }).collect()
+        })
+    }).unwrap_or_default();
+    with_scrolls(base, scrolls)
+}
+
+type PaneScrolls = Vec<(usize, Option<crate::terminal::ScrollMetrics>)>;
+
+/// The shared part, the numbers laid over it, and the result (`with_scrolls`).
+type PanesPart = (std::sync::Arc<Value>, PaneScrolls, std::sync::Arc<Value>);
+
+/// `base` with `scroll` set on the panes at those places, the last answer
+/// reused while `base` and the numbers are the same.
+fn with_scrolls(base: std::sync::Arc<Value>, scrolls: PaneScrolls) -> std::sync::Arc<Value> {
+    PANES_PART.with_borrow_mut(|cached| {
+        if let Some((seen_base, seen, part)) = cached.as_ref()
+            && std::sync::Arc::ptr_eq(seen_base, &base)
+            && *seen == scrolls
+        {
+            return part.clone();
+        }
+        let mut panes = (*base).clone();
+        for (i, scroll) in &scrolls {
+            panes[*i]["scroll"] = scroll.map_or(Value::Null, crate::terminal::ScrollMetrics::json);
+        }
+        let part = std::sync::Arc::new(panes);
+        *cached = Some((base, scrolls, part.clone()));
+        part
+    })
 }
 
 /// `keys()`, listed again only once keys.json or the mods folder changed: a
@@ -1304,6 +1373,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
         .declarations(DECLARATIONS)
         .async_function("exec", |a| {
             let command = a.string(0)?.to_owned();
+            if checking() { tracing::warn!("check: mod exec'd `{command}`; the child runs for real"); }
             Ok(exec_future(command, strings(a.get(1)), opt_str(a.get(2), "cwd"), opt_str(a.get(2), "on"), exec_limit(a.get(2))?))
         })
         .async_function("readTextFile", |a| {
@@ -1316,9 +1386,15 @@ fn module(inst: Instance, copy: u64) -> HostModule {
         })
         .async_function("writeTextFile", |a| {
             let expected = a.get(2).and_then(|v| match v { HostValue::Str(s) => Some(s.clone()), _ => None });
-            Ok(crate::mod_files::write_text(a.string(0)?.to_owned(), a.string(1)?.to_owned(), expected))
+            let path = a.string(0)?.to_owned();
+            if checking() { tracing::warn!("check: mod wrote `{path}`; the write lands for real"); }
+            Ok(crate::mod_files::write_text(path, a.string(1)?.to_owned(), expected))
         })
-        .async_function("hc", |a| Ok(exec_future("hc".into(), strings(a.get(0)), None, None, EXEC_LIMIT)))
+        .async_function("hc", |a| {
+            if checking() { tracing::warn!("check: mod called hc; it runs for real"); }
+            Ok(exec_future("hc".into(), strings(a.get(0)), None, None, EXEC_LIMIT))
+        })
+        .function("checking", |_| Ok(HostValue::Bool(checking())))
         .async_function("terminalLines", |a| {
             let terminal = a.string(0)?.to_owned();
             let lines = a.get(1).and_then(|o| o.get("lines")).and_then(HostValue::as_number).map_or(usize::MAX, |n| n.max(0.0) as usize);
@@ -1443,6 +1519,14 @@ fn module(inst: Instance, copy: u64) -> HostModule {
                 _ => None,
             };
             request(Request::SetWindowTitle(title));
+            Ok(HostValue::Null)
+        })
+        .function("setBadge", |a| {
+            let text = match a.get(0) {
+                Some(v) if !v.is_null() => Some(a.string(0)?.to_owned()),
+                _ => None,
+            };
+            request(Request::SetBadge(text));
             Ok(HostValue::Null)
         })
         .function("terminals", reader(reads.clone(), "terminals", |s| &s.terminals))
@@ -1595,8 +1679,11 @@ fn capabilities() -> Capabilities {
         .clipboard_write(true)
 }
 
-/// Checks exercise shared state in memory, without reading or writing the person's file.
+/// Checks exercise shared state in memory, without reading or writing the person's
+/// file. A check still loads the mod for real, so mods are told (`herdr.checking()`)
+/// and its exec and write side effects warn.
 pub fn install_check_policy() {
+    CHECKING.with(|c| c.set(true));
     SHARED.with_borrow_mut(|slot| *slot = Some(SharedStore { values: Default::default(), path: app_dir().join("shared.json"), writable: false, writer: None }));
     install_policy();
 }
@@ -1836,6 +1923,27 @@ mod tests {
             assert!(std::sync::Arc::ptr_eq(&first, &shared_part("panes", panes)), "the same value is no change");
             publish_panes(json!([{"pane":"p1","status":"working"}]));
             assert_eq!(*shared_part("panes", panes), json!([{"pane":"p1","status":"working"}]));
+        }).join().unwrap();
+    }
+
+    #[test]
+    fn panes_carry_live_scroll_numbers_on_the_shared_copy() {
+        std::thread::spawn(|| {
+            use crate::terminal::ScrollMetrics;
+            let panes: fn(&Snapshot) -> &Value = |s| &s.panes;
+            publish_panes(json!([{"pane":"p1"},{"pane":"m1"}]));
+            let base = shared_part("panes", panes);
+            let at = |from_bottom| Some(ScrollMetrics { total: 100, offset: 80 - from_bottom, len: 20, from_bottom });
+            let end = with_scrolls(base.clone(), vec![(0, at(0))]);
+            assert_eq!(*end, json!([{"pane":"p1","scroll":{"total":100,"offset":80,"len":20,"from_bottom":0}},{"pane":"m1"}]), "a pane without a terminal view gets no scroll");
+            assert!(std::sync::Arc::ptr_eq(&end, &with_scrolls(base.clone(), vec![(0, at(0))])), "the same numbers share one copy");
+            let up = with_scrolls(base.clone(), vec![(0, at(10))]);
+            assert_eq!(up[0]["scroll"]["from_bottom"], json!(10), "numbers moved without a new revision are read again");
+            assert_eq!(with_scrolls(base.clone(), vec![(0, None)])[0]["scroll"], Value::Null, "the alternate screen has none");
+            assert_eq!(*base, json!([{"pane":"p1"},{"pane":"m1"}]), "the shared part itself is untouched");
+            publish_panes(json!([{"pane":"p1","status":"working"}]));
+            let next = with_scrolls(shared_part("panes", panes), vec![(0, at(10))]);
+            assert_eq!(next[0]["status"], json!("working"), "a new revision is read again with the same numbers");
         }).join().unwrap();
     }
 
