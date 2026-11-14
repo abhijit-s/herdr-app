@@ -30,8 +30,7 @@ function label(tab, lead) {
   const prog = lead?.program?.name;
   const base = tab.named ? tab.name : prog ?? "Terminal";
   if (!lead?.program?.agent) return base;
-  // A name someone gave the pane (pane.rename) shows as given; only a title is cleaned.
-  const own = lead.name && lead.label === lead.name ? lead.label : clean(lead.label);
+  const own = clean(lead.label);
   return (tab.name === prog || !tab.named) && own && own !== prog && own !== lead.terminal ? own : base;
 }
 
