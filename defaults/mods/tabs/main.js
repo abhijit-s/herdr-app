@@ -42,7 +42,8 @@ export default class Tabs extends View {
     this.drag = null;
     this.handle = cx.focus_handle();
     this.scroll = ScrollHandle.new();
-    this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
+    try { this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}"); } catch { this.panels = {}; }
+    if (!this.panels || typeof this.panels !== "object" || Array.isArray(this.panels)) this.panels = {};
   }
 
   pressTab(c, e) {
