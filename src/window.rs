@@ -2550,14 +2550,14 @@ impl AppWindow {
         self.header_tick = Some((at, task));
     }
 
-    /// The Dock badge counts the agents list's waiting rows; the Dock
-    /// hears only of changes. `dock_bounce_on_wait` bounces it once when
+    /// The Dock badge counts the agents list's waiting rows (under a mod's
+    /// `setBadge`, which shows over it); the Dock hears only of changes. `dock_bounce_on_wait` bounces it once when
     /// something starts waiting and nothing did.
     fn badge_dock(&mut self, waiting: usize) {
         let s = settings::get();
         let change = self.dock_badge.update(waiting, s.dock_badge);
         if let Some(label) = change.label {
-            crate::dock_badge::show(&label);
+            crate::badge::set_count(&label);
         }
         if change.rose && s.dock_bounce_on_wait && !self.window_active {
             crate::dock_badge::bounce();

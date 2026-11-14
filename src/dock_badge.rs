@@ -3,7 +3,8 @@
 //! (defaults/mods/agents) shows as needing you or finished and not yet seen,
 //! with that list's rules for sub-agents (`count_rows`). The window counts on
 //! every publish; the Dock is told only when the label changes, so the badge
-//! never costs a redraw.
+//! never costs a redraw. The label goes through `badge::set_count`, so a mod's
+//! `setBadge` shows over it.
 
 /// Whether a status from `Model::status` waits on the person.
 pub fn is_waiting(status: &str) -> bool {
@@ -94,20 +95,6 @@ impl Badge {
         Change { label: Some(label), rose }
     }
 }
-
-/// Puts the label on the Dock icon; empty takes the badge off. Only on the
-/// main thread of a macOS build; anywhere else (tests) this does nothing.
-#[cfg(all(target_os = "macos", not(test)))]
-pub fn show(label: &str) {
-    let Some(mtm) = objc2::MainThreadMarker::new() else { return };
-    let text = (!label.is_empty()).then(|| objc2_foundation::NSString::from_str(label));
-    let tile = objc2_app_kit::NSApplication::sharedApplication(mtm).dockTile();
-    tile.setBadgeLabel(text.as_deref());
-    tracing::debug!(badge = %tile.badgeLabel().map(|l| l.to_string()).unwrap_or_default(), "dock badge");
-}
-
-#[cfg(not(all(target_os = "macos", not(test))))]
-pub fn show(_label: &str) {}
 
 /// One informational Dock bounce. AppKit ignores it while Herdr is the app in front.
 #[cfg(all(target_os = "macos", not(test)))]

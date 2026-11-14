@@ -485,8 +485,9 @@ export function window(): {
 export function setWindowTitle(title: string | null): null;
 
 /** Sets the badge on the app's icon: the red label on the macOS Dock icon, e.g. how many agents
- *  need you. The last call wins, whichever mod made it; null or "" clears it. Other platforms
- *  ignore it for now. It doesn't outlive the app, so set it again when your mod starts. Call it
+ *  need you. The last call wins, whichever mod made it; null or "" clears it. It shows over the
+ *  app's own count of waiting agents (settings.json `dock_badge`), which comes back once it is
+ *  cleared. Other platforms ignore it for now. It doesn't outlive the app, so set it again when your mod starts. Call it
  *  when the text changes, not on every render. */
 export function setBadge(text: string | null): null;
 

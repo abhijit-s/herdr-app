@@ -917,7 +917,7 @@ What's about the user, never a look:
 - `dock_bounce`: `true` bounces the Dock icon when an agent needs the
   person while Herdr is in the background. Off by default. Settings >
   Alerts > Notifications has it as "Bounce the Dock icon".
-- `dock_badge`: on macOS the Dock icon counts the agents waiting on the person, the way Mail counts unread mail: each row the agents list shows as needing you (blocked on a question, a permission or a login, or stopped on an error, its own or a sub-agent's) or as finished and not yet seen. Looking at a finished agent, or it starting work again, takes it off the count; no badge when none waits. On by default; `false` takes the badge off. Settings > Alerts > Notifications has it as "Count waiting agents on the Dock icon".
+- `dock_badge`: on macOS the Dock icon counts the agents waiting on the person, the way Mail counts unread mail: each row the agents list shows as needing you (blocked on a question, a permission or a login, or stopped on an error, its own or a sub-agent's) or as finished and not yet seen. Looking at a finished agent, or it starting work again, takes it off the count; no badge when none waits. A mod's `setBadge` shows over the count until it clears it. On by default; `false` takes the badge off. Settings > Alerts > Notifications has it as "Count waiting agents on the Dock icon".
 - `dock_bounce_on_wait`: `true` bounces the Dock icon once (macOS's short, informational bounce) when an agent starts waiting and none was, while Herdr is in the background. Off by default.
 - `pane_auto_names`: `true` gives each pane nobody named two calm words of
   its own, such as `hazy-inlet`, picked from its id so they last across
@@ -1550,7 +1550,8 @@ All of it is in `herdr.d.ts`. In short:
   title changes, not on every render.
 - App icon badge: `setBadge(text)` puts `text` on the app's Dock icon (macOS; other platforms
   ignore it), e.g. `setBadge(blocked ? String(blocked) : null)`. The last call wins; `null` or `""`
-  clears it.
+  clears it. A mod's badge shows over the waiting-agents count (`dock_badge`); clearing it shows
+  the count again.
 - `notify({ ..., action: { name, args } })`: the toast runs the command when clicked.
 - This copy: `props()`, `shared(key)` / `setShared(key, value)` (every mod
   sees it; setting re-renders the copies that read that key), `nextCommand()` (key commands for this
