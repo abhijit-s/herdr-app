@@ -3739,6 +3739,22 @@ mod tests {
         }
     }
 
+    /// A zoom write on a file with the fork's keys, retired ones included, keeps every one as written.
+    #[test]
+    fn zoom_writes_keep_the_forks_own_keys() {
+        let raw = r#"{"zoom":1,"font_weight":400,"font_weight_bold":700,"cell_rounding":"nearest","line_height":1,"cell_width":"pixel","letter_spacing":0.5,"thicken":30,"worktrees":{"directory":"~/wt"}}"#;
+        let mut person: Person = serde_json::from_str(raw).unwrap();
+        person.zoom = 1.25;
+        let saved: serde_json::Value = serde_json::from_str(&person_text(&person, raw).unwrap()).unwrap();
+        let mut want: serde_json::Value = serde_json::from_str(raw).unwrap();
+        want["zoom"] = serde_json::json!(1.25);
+        // Person also writes the fields it always serialises (sounds, …), as the whole-file write did.
+        let same = |a: &serde_json::Value, b: &serde_json::Value| a == b || a.as_f64().is_some_and(|x| Some(x) == b.as_f64());
+        for (key, value) in want.as_object().unwrap() {
+            assert!(same(&saved[key], value), "{key}: {} kept as {value}", saved[key]);
+        }
+    }
+
     #[test]
     fn font_thicken_defaults_auto_at_ghosttys_strength_and_validates_it() {
         let default: Person = serde_json::from_str("{}").unwrap();
