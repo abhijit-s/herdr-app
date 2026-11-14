@@ -162,6 +162,12 @@ pub struct Look {
     pub font: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font_size: Option<f32>,
+    /// The terminals' text weight, 100 to 900.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_weight: Option<u16>,
+    /// The weight bold terminal text draws at, 100 to 900.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_weight_bold: Option<u16>,
     /// The terminals' row height, as a multiple of the font's height.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_line_height: Option<f32>,
@@ -174,12 +180,6 @@ pub struct Look {
     /// Wheel and trackpad scroll multiplier, 0.1..5.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_scroll_speed: Option<f32>,
-    /// The terminals' text weight, 100 to 900.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub font_weight: Option<u16>,
-    /// The weight bold terminal text draws at, 100 to 900.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub font_weight_bold: Option<u16>,
     /// Retired, never read: kept as written so Settings reports them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub letter_spacing: Option<serde_json::Value>,

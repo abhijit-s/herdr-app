@@ -3217,7 +3217,28 @@ pub fn telemetry_setting(person: &Result<Person, String>) -> bool {
 }
 
 pub fn write_person(person: &Person) -> std::io::Result<()> {
-    crate::persist::write_atomic(&path(), serde_json::to_string_pretty(person).unwrap_or_default() + "\n")
+    let path = path();
+    let previous = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}".into(),
+        Err(e) => return Err(e),
+    };
+    crate::persist::write_atomic(&path, person_text(person, &previous)?)
+}
+
+// Zoom writes replace app-owned fields, not preferences owned by mods.
+fn person_text(person: &Person, previous: &str) -> std::io::Result<String> {
+    let old: Person = serde_json::from_str(previous)?;
+    let mut raw: serde_json::Map<String, serde_json::Value> = serde_json::from_str(previous)?;
+    if let serde_json::Value::Object(owned) = serde_json::to_value(old)? {
+        for key in owned.keys() {
+            raw.remove(key);
+        }
+    }
+    if let serde_json::Value::Object(owned) = serde_json::to_value(person)? {
+        raw.extend(owned);
+    }
+    Ok(serde_json::to_string_pretty(&raw)? + "\n")
 }
 
 /// Notes whether the window is active, which `sidebar_shade` follows;
@@ -3698,6 +3719,41 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn zoom_writes_preserve_mod_preferences_and_clear_unset_app_fields() {
+        let raw = r#"{"zoom":1,"font":"custom","telemetry":false,"worktrees":{"directory":"~/Developer/worktrees","future":true},"another_mod":{"enabled":true}}"#;
+        let mut person: Person = serde_json::from_str(raw).unwrap();
+        person.zoom = 1.5;
+        person.font = None;
+        person.telemetry = true;
+        let saved: serde_json::Value = serde_json::from_str(&person_text(&person, raw).unwrap()).unwrap();
+        assert_eq!(saved["zoom"], 1.5);
+        assert_eq!(saved["worktrees"], serde_json::json!({"directory":"~/Developer/worktrees","future":true}));
+        assert_eq!(saved["another_mod"], serde_json::json!({"enabled":true}));
+        assert!(saved.get("font").is_none());
+        assert!(saved.get("telemetry").is_none());
+        assert_eq!(serde_json::from_value::<Person>(saved).unwrap().zoom, 1.5);
+        for broken in ["{", "null", "[]", r#"{"zoom":"big"}"#] {
+            assert!(person_text(&person, broken).is_err());
+        }
+    }
+
+    /// A zoom write on a file with the fork's keys, retired ones included, keeps every one as written.
+    #[test]
+    fn zoom_writes_keep_the_forks_own_keys() {
+        let raw = r#"{"zoom":1,"font_weight":400,"font_weight_bold":700,"cell_rounding":"nearest","line_height":1,"cell_width":"pixel","letter_spacing":0.5,"thicken":30,"worktrees":{"directory":"~/wt"}}"#;
+        let mut person: Person = serde_json::from_str(raw).unwrap();
+        person.zoom = 1.25;
+        let saved: serde_json::Value = serde_json::from_str(&person_text(&person, raw).unwrap()).unwrap();
+        let mut want: serde_json::Value = serde_json::from_str(raw).unwrap();
+        want["zoom"] = serde_json::json!(1.25);
+        // Person also writes the fields it always serialises (sounds, …), as the whole-file write did.
+        let same = |a: &serde_json::Value, b: &serde_json::Value| a == b || a.as_f64().is_some_and(|x| Some(x) == b.as_f64());
+        for (key, value) in want.as_object().unwrap() {
+            assert!(same(&saved[key], value), "{key}: {} kept as {value}", saved[key]);
+        }
+    }
 
     #[test]
     fn font_thicken_defaults_auto_at_ghosttys_strength_and_validates_it() {

@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { afterAll, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 
 const strip = (text: string, name: string) => text.replace(/^import .*;\n/gm, "").replace(`export default class ${name}`, `class ${name}`).replace(/^export /gm, "");
@@ -32,11 +32,12 @@ function harness(names = ["a", "b", "c", "d"]) {
     return proxy;
   };
   let tabs: Tab[] = names.map((id, i) => ({ id, name: id, active: i === 0 }));
+  let paneList: unknown[] = [];
   const space = () => ({ id: "s1", active: true, tabs });
   const handle = { focused: false, focus() { this.focused = true; }, is_focused() { return this.focused; } };
   const Tabs = new Function("View", "div", "svg", "image", "h_flex", "spaces", "panes", "run", "openOverlay", "theme", "window", "shared", "layout", "settings", "localStorage", "ScrollHandle", `${tabsSource}; return { Tabs, slotOver, dropIndex };`)(
     class {}, element, element, element, element,
-    () => [space()], () => [],
+    () => [space()], () => paneList,
     (name: string, args: unknown) => { runs.push([name, args]); },
     () => null, () => new Proxy({}, { get: () => "#000" }), () => null, () => null, () => null, () => ({ ui_scale: 1 }),
     { getItem: () => null, setItem() {} },
@@ -70,8 +71,9 @@ function harness(names = ["a", "b", "c", "d"]) {
   const leave = () => { strip().$handlers.on_hover(false, cx); render(); };
   const key = (k: string) => { strip().$handlers.on_key_down({ key: k }, cx); render(); };
   const setTabs = (next: Tab[]) => { tabs = next; render(); };
+  const setPanes = (next: unknown[]) => { paneList = next; render(); };
   const lose = () => { held = null; };
-  return { view, runs, handle, find, all: () => elements, press, moveOver, moveStrip, moveTail, release, leave, key, render, setTabs, lose, ...Tabs };
+  return { view, runs, handle, find, all: () => elements, press, moveOver, moveStrip, moveTail, release, leave, key, render, setTabs, setPanes, lose, ...Tabs };
 }
 
 test("a drop slot is the half of the tab under the pointer", () => {
@@ -253,4 +255,170 @@ test("the tab menu offers moves except at the ends", () => {
   expect(labels("c")).not.toContain("Move right");
   const one = items({ tab: "tab", target: { id: "a", space: "s1" } }, null);
   expect(one.find(([, command]: [string, string]) => command === "tab.move_right")).toEqual(["Move right", "tab.move_right", { id: "a" }]);
+});
+
+// Exercise the shipped tab bar's wheel handler without a window or a core.
+type Handler = (event: unknown) => void;
+class Element {
+  nodes: Element[] = [];
+  calls: Record<string, unknown[]> = {};
+  constructor() {
+    const proxy: Element = new Proxy(this, {
+      get: (target, key: string) => key in target ? Reflect.get(target, key) : (...args: unknown[]) => {
+        if (key === "child") target.nodes.push(args[0] as Element);
+        else if (key === "children") target.nodes.push(...(args[0] as Element[]));
+        else if (key === "when") { if (args[0]) (args[1] as (el: Element) => void)(proxy); }
+        else target.calls[key] = args;
+        return proxy;
+      },
+    });
+    return proxy;
+  }
+}
+const element = () => new Element();
+const commands: string[] = [];
+const store: Record<string, string> = {};
+const values: Record<string, unknown> = {
+  View: class {}, div: element, svg: element, image: element, h_flex: element,
+  ScrollHandle: { new: () => ({ scroll_to_item() {} }) },
+  spaces: () => [{ id: "s1", active: true, tabs: [{ id: "t1", name: "a" }, { id: "t2", name: "b", active: true }, { id: "t3", name: "c" }] }],
+  panes: () => [], run(command: string) { commands.push(command); }, openOverlay() {}, theme: () => ({}),
+  window: () => null, shared: () => null, layout: () => null, settings: () => ({ zoom: 1 }),
+  localStorage: { getItem: (key: string) => store[key] ?? null, setItem(key: string, value: string) { store[key] = value; } },
+};
+const WheelTabs = new Function(...Object.keys(values), `${tabsSource}; return Tabs;`)(...Object.values(values));
+const wheelCx = { focus_handle: () => ({ focus() {}, is_focused: () => false }), notify() {}, stop_propagation() {} };
+
+let now = 1_000_000;
+function wheel() {
+  const view = new WheelTabs();
+  view.init(null, wheelCx);
+  // The mod is plain JS: its handler's shape is the documented ScrollWheelEvent listener.
+  const handler = (view.render() as Element).calls.on_scroll_wheel[0] as Handler;
+  return (y: number, touch_phase = "moved", lines?: number, ms = 8) => {
+    now += ms;
+    setSystemTime(new Date(now));
+    handler({ delta: { x: 0, y }, delta_lines: lines === undefined ? undefined : { x: 0, y: lines }, touch_phase });
+  };
+}
+beforeEach(() => { commands.length = 0; });
+// Bun runs every test file in one process: give the later ones the real clock.
+afterAll(() => setSystemTime());
+
+test("a short touchpad swipe switches one tab", () => {
+  const send = wheel();
+  for (let i = 0; i < 12; i++) send(-6);
+  expect(commands).toEqual(["tab.next"]);
+});
+
+test("a nudge below the threshold switches nothing", () => {
+  const send = wheel();
+  for (let i = 0; i < 3; i++) send(-5);
+  expect(commands).toEqual([]);
+});
+
+test("each notch of a smooth-scrolling mouse switches one tab", () => {
+  const send = wheel();
+  // macOS smooths one notch into about 28 events of 1 px.
+  for (let i = 0; i < 28; i++) send(-1, "moved", undefined, 10);
+  send(-1, "moved", undefined, 700);
+  for (let i = 0; i < 27; i++) send(-1, "moved", undefined, 10);
+  expect(commands).toEqual(["tab.next", "tab.next"]);
+});
+
+test("a long swipe keeps switching, a tab per 60 px", () => {
+  const send = wheel();
+  // 20 px for the first tab, then 60 px each: 400 px is seven tabs.
+  for (let i = 0; i < 40; i++) send(10, "moved", undefined, 40);
+  expect(commands).toEqual(Array(7).fill("tab.prev"));
+});
+
+test("a fast flick shows each tab it passes for at least 100 ms", () => {
+  const send = wheel();
+  // 1200 px within 240 ms: enough for twenty tabs, time for three.
+  for (let i = 0; i < 30; i++) send(-40);
+  expect(commands).toEqual(["tab.next", "tab.next", "tab.next"]);
+});
+
+test("a pause or a turn starts a new gesture", () => {
+  const send = wheel();
+  for (let i = 0; i < 12; i++) send(-6);
+  send(-30, "moved", undefined, 400);
+  for (let i = 0; i < 4; i++) send(-5);
+  for (let i = 0; i < 12; i++) send(6, "moved", undefined, 20);
+  expect(commands).toEqual(["tab.next", "tab.next", "tab.prev"]);
+});
+
+test("each wheel notch switches one tab", () => {
+  const send = wheel();
+  send(-20, "moved", -1);
+  send(-20, "moved", -1);
+  send(2, "moved", 0.1);
+  expect(commands).toEqual(["tab.next", "tab.next", "tab.prev"]);
+});
+
+test("the wheel switches no tab while one is being dragged", () => {
+  const h = harness();
+  h.press("a");
+  h.moveOver("c", 60);
+  h.find("tab-strip").$handlers.on_scroll_wheel({ delta: { x: 0, y: -40 }, delta_lines: { x: 0, y: -1 }, touch_phase: "moved" });
+  expect(h.runs.filter(([n]) => n === "tab.next" || n === "tab.prev")).toEqual([]);
+  h.release("c");
+  h.find("tab-strip").$handlers.on_scroll_wheel({ delta: { x: 0, y: -40 }, delta_lines: { x: 0, y: -1 }, touch_phase: "moved" });
+  expect(h.runs.at(-1)).toEqual(["tab.next", undefined]);
+});
+
+// The rule for what a pane is called is the app's (pane_label.rs): leads carry
+// it as `label`; the cases about titles are in pane_label::tests.
+const label = new Function("View", `${tabsSource}; return label;`)(class {});
+
+const claude = { terminal: "t1", program: { name: "Claude Code", key: "claude", agent: true }, title: "my-task", label: "my-task" };
+
+test("a tab Herdr named after its agent follows the agent's label", () => {
+  expect(label({ name: "Claude Code", named: true }, claude)).toBe("my-task");
+  expect(label({ name: "", named: false }, claude)).toBe("my-task");
+  expect(label({ name: "", named: false }, { ...claude, label: "✦ [web] login" })).toBe("[web] login");
+  expect(label({ name: "", named: false }, { ...claude, label: "✓ “quoted” task" })).toBe("“quoted” task");
+  expect(label({ name: "", named: false }, { ...claude, label: "[ ! ] fix login" })).toBe("fix login");
+  // A pane's given name (pane.rename) stays as written.
+  expect(label({ name: "", named: false }, { ...claude, name: "🔥 build", label: "🔥 build" })).toBe("🔥 build");
+  expect(label({ name: "", named: false }, { ...claude, name: "#42 fix", label: "#42 fix" })).toBe("#42 fix");
+  // A label that is only a glyph says nothing.
+  expect(label({ name: "", named: false }, { ...claude, label: "✦ " })).toBe("Claude Code");
+  expect(label({ name: "Claude Code", named: true }, { ...claude, label: "renamed-task" })).toBe("renamed-task");
+});
+
+test("a label that is the terminal's address keeps the program label", () => {
+  for (const terminal of ["t2", "remote/t2"]) {
+    const lead = { ...claude, terminal, title: terminal, label: terminal };
+    expect(label({ name: "2", named: false }, lead)).toBe("Claude Code");
+    expect(label({ name: "Claude Code", named: true }, lead)).toBe("Claude Code");
+    expect(label({ name: "fix login", named: true }, lead)).toBe("fix login");
+    expect(label({ name: "2", named: false }, { ...lead, label: "renamed-task" })).toBe("renamed-task");
+  }
+});
+
+test("a name the person gave stays", () => {
+  expect(label({ name: "fix login", named: true }, claude)).toBe("fix login");
+});
+
+test("a label that says nothing new keeps the tab's own name", () => {
+  expect(label({ name: "Claude Code", named: true }, { ...claude, label: "Claude Code" })).toBe("Claude Code");
+  expect(label({ name: "", named: false }, { ...claude, label: "Claude Code" })).toBe("Claude Code");
+  expect(label({ name: "", named: false }, { ...claude, label: "" })).toBe("Claude Code");
+});
+
+test("a shell's label never replaces its tab's name", () => {
+  const shell = { terminal: "t1", program: { name: "zsh", key: "zsh" }, title: "vim notes.md", label: "vim notes.md" };
+  expect(label({ name: "", named: false }, shell)).toBe("zsh");
+  expect(label({ name: "notes", named: true }, shell)).toBe("notes");
+  expect(label({ name: "", named: false }, undefined)).toBe("Terminal");
+});
+
+test("the tab strip draws each tab by its lead agent's label", () => {
+  const h = harness();
+  h.setPanes([{ tab: "b", terminal: "t1", program: { name: "Claude Code", key: "claude", agent: true }, label: "fix login" }]);
+  const shows = (id: string, text: string) => h.find(`tab-${id}`).$children.some((c: any) => c.$children.includes(text));
+  expect(shows("b", "fix login")).toBe(true);
+  expect(shows("a", "Terminal")).toBe(true);
 });

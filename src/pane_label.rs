@@ -54,7 +54,8 @@ pub fn label(p: &Parts) -> String {
     RESOLVED.with(|n| n.set(n.get() + 1));
     given(p.name)
         .or(p.auto_name)
-        .or_else(|| telling(p.title, p.program))
+        // A terminal with no title yet, or an empty OSC one, is titled by its address.
+        .or_else(|| telling(p.title, p.program).filter(|t| *t != p.address))
         .or(p.session)
         .or_else(|| p.program.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()))
         .unwrap_or(p.address)
@@ -283,6 +284,12 @@ mod tests {
         assert_eq!(label(&Parts { title: "~/src", ..p() }), "Claude Code");
         assert_eq!(label(&Parts { title: "~/src", program: &json!({ "key": "program", "name": "" }), ..p() }), "t7");
         assert_eq!(label(&Parts { program: &Value::Null, ..p() }), "t7");
+        // A title that is only the terminal's address (#737) says nothing.
+        for address in ["t7", "remote/t7"] {
+            assert_eq!(label(&Parts { title: address, address, session: Some("vendor-insights"), ..p() }), "vendor-insights");
+            assert_eq!(label(&Parts { title: address, address, ..p() }), "Claude Code");
+            assert_eq!(label(&Parts { title: address, address, program: &Value::Null, ..p() }), address);
+        }
     }
 
     fn source() -> crate::resume::SessionFile {
