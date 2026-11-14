@@ -3425,7 +3425,9 @@ extern "C" fn wake_frames(view: *mut c_void) {
     let mut lock = window_state.lock();
     lock.woken = true;
     lock.idle_frames = 0;
-    if std::mem::take(&mut lock.parked) {
+    if lock.request_frame_callback.is_some()
+        && !lock.frame_source.as_ref().is_some_and(|f| f.is_running())
+    {
         lock.start_display_link();
     }
 }
