@@ -13214,6 +13214,13 @@ export default class Keeper extends View {
         send(cx, b"before");
         assert!(drawing(cx).0.contains("before"));
 
+        // A terminal in a tab never shown keeps what drawing reads
+        // (`Vt::new`) only until it is released as a hidden one.
+        let never_drawn = view.update(cx, |this, _| this.terms["d"].view.clone());
+        never_drawn.update(cx, |t, cx| t.ingest(vec![crate::hc::Stream::Data(b"\x1b[?2026hheld\x1b[?2026l".to_vec())], cx));
+        wait(cx, 5000);
+        assert!(never_drawn.update(cx, |t, _| t.drawing()).1, "a terminal never drawn kept its drawing caches");
+
         keys(cx, "tab.next");
         wait(cx, 5000);
         assert!(drawing(cx).1, "hidden 5 s, the drawing caches are still held");
