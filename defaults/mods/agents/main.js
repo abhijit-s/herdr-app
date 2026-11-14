@@ -119,8 +119,10 @@ export default class Agents extends View {
     // agents_subagents, kept across restarts; the rest follow the setting.
     this.folds = JSON.parse(localStorage.getItem("folds") ?? "{}");
     // Each agent's last state and when it changed (ms), kept across restarts.
-    this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}");
-    this.pendingPins = JSON.parse(localStorage.getItem("pins") ?? "[]");
+    try { this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}"); } catch { this.changed = {}; }
+    if (!this.changed || typeof this.changed !== "object" || Array.isArray(this.changed)) this.changed = {};
+    try { this.pendingPins = JSON.parse(localStorage.getItem("pins") ?? "[]"); } catch { this.pendingPins = []; }
+    if (!Array.isArray(this.pendingPins)) this.pendingPins = [];
     if (!this.pendingPins.length) localStorage.removeItem("pins");
     this.migratingPins = new Set();
     cx.timer.every(30000, (cx) => cx.notify());
