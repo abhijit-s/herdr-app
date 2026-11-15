@@ -153,10 +153,10 @@ function startsGroup(list, i) {
 
 const itemHeight = (list, i) => ROW + (startsGroup(list, i) ? RULE : 0);
 
-function menuIcon(command) {
+function menuIcon(command, args) {
   if (command === "icon") return "mods/icon-picker/smile.svg";
   if (command.endsWith(".set_icon")) return "mods/workspace-chrome/x.svg";
-  const name = command === "terminal.copy" ? "copy" : command === "terminal.copy_all" ? "files" : command === "terminal.copy_last_output" ? "file-text" : command === "terminal.copy_path" ? "folder" : command === "terminal.paste" ? "clipboard" : command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : command === "tab.move_left" ? "chevron-left" : command === "tab.move_right" ? "chevron-right" : command === "tab-move" ? "layers" : "terminal";
+  const name = command === "terminal.copy" ? "copy" : command === "terminal.copy_all" ? "files" : command === "terminal.copy_last_output" ? "file-text" : command === "terminal.copy_path" ? "folder" : command === "terminal.paste" ? "clipboard" : command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? (args?.direction === "down" ? "panel-bottom" : "panel-right") : command === "pane.zoom" ? "square" : command === "tab.move_left" ? "chevron-left" : command === "tab.move_right" ? "chevron-right" : command === "tab-move" ? "layers" : "terminal";
   return `mods/workspace-chrome/${name}.svg`;
 }
 
@@ -213,7 +213,7 @@ export default class Menu extends View {
       .when(i === this.at, (el) => el.bg(t.selected))
       .hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => this.choose(i, cx))
-      .child(svg(it[3]?.icon ?? menuIcon(it[1])).size(14).flex_none().text_color(t.muted))
+      .child(svg(it[3]?.icon ?? menuIcon(it[1], it[2])).size(14).flex_none().text_color(t.muted))
       .child(div().flex_1().child(it[0]))
       .child(div().text_size(11).text_color(t.dim).child(shortcut(it[1], it[2]))));
   }

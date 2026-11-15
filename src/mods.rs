@@ -878,7 +878,7 @@ pub fn track_pane_view(pane: String, view: &gpui::Entity<crate::terminal::Termin
 
 pub fn publish_panes(v: Value) -> bool {
     PANE_VIEWS.with_borrow_mut(|views| views.retain(|pane, _| {
-        v.as_array().into_iter().flatten().any(|p| p["pane"].as_str() == Some(pane))
+        v.as_array().into_iter().flatten().any(|p| p["pane"].as_str() == Some(pane.strip_suffix("#swap").unwrap_or(pane)))
     }));
     publish("panes", |s| (std::mem::replace(&mut s.panes, v.clone()), v))
 }
@@ -991,12 +991,17 @@ fn panes_part(f: fn(&Snapshot) -> &Value) -> std::sync::Arc<Value> {
         PANE_VIEWS.with_borrow(|views| {
             let panes = base.as_array().into_iter().flatten().enumerate();
             panes.filter_map(|(i, pane)| {
-                let view = pane["pane"].as_str().and_then(|id| views.get(id)).and_then(|v| v.upgrade())?;
+                let view = pane["pane"].as_str().and_then(|id| shown_view(views, id))?;
                 Some((i, view.read(cx).scroll_metrics()))
             }).collect()
         })
     }).unwrap_or_default();
     with_scrolls(base, scrolls)
+}
+
+/// The terminal a pane shows: one swapped in (`<pane>#swap`, `terminal.show`) over its own.
+fn shown_view(views: &HashMap<String, gpui::WeakEntity<crate::terminal::TerminalView>>, pane: &str) -> Option<gpui::Entity<crate::terminal::TerminalView>> {
+    views.get(&format!("{pane}#swap")).and_then(|v| v.upgrade()).or_else(|| views.get(pane).and_then(|v| v.upgrade()))
 }
 
 type PaneScrolls = Vec<(usize, Option<crate::terminal::ScrollMetrics>)>;
@@ -1945,6 +1950,27 @@ mod tests {
             let next = with_scrolls(shared_part("panes", panes), vec![(0, at(10))]);
             assert_eq!(next[0]["status"], json!("working"), "a new revision is read again with the same numbers");
         }).join().unwrap();
+    }
+
+    /// `panes()` reads a pane's scroll from the terminal it shows: one
+    /// swapped in (`terminal.show`) over its own, its own again once that goes.
+    #[gpui::test]
+    fn a_pane_reads_the_scroll_of_the_terminal_it_shows(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        let own = cx.new(|cx| crate::terminal::TerminalView::attach(crate::hc::offline(), "t1".into(), (40, 5), cx));
+        let swapped = cx.new(|cx| crate::terminal::TerminalView::attach(crate::hc::offline(), "t2".into(), (40, 5), cx));
+        track_pane_view("p1".into(), &own);
+        let shown = || PANE_VIEWS.with_borrow(|views| shown_view(views, "p1").map(|v| v.entity_id()));
+        assert_eq!(shown(), Some(own.entity_id()));
+        track_pane_view("p1#swap".into(), &swapped);
+        assert_eq!(shown(), Some(swapped.entity_id()), "the swapped-in terminal");
+        assert!(publish_panes(json!([{ "pane": "p1" }])));
+        assert_eq!(shown(), Some(swapped.entity_id()), "a swap slot stays while its pane is listed");
+        drop(swapped);
+        cx.run_until_parked();
+        assert_eq!(shown(), Some(own.entity_id()), "its own once the swapped-in one is gone");
+        publish_panes(json!([]));
+        assert_eq!(shown(), None, "a pane no longer listed is forgotten");
     }
 
     #[test]

@@ -116,6 +116,7 @@ function element() {
     return (...args: any[]) => {
       if (method === "id") node.id = args[0];
       if (method === "on_click") (node as any).click = args[0];
+      if (method === "bg") (node as any).bg = args[0];
       if (method === "child") node.children.push(args[0]?.node ?? args[0]);
       if (method === "children") node.children.push(...args[0].map((child: any) => child?.node ?? child));
       if (method === "when" && args[0]) args[1](el);
@@ -408,4 +409,27 @@ for (const sort of ["priority", "grouped"]) test(`${sort}: a row shows its card 
   expect(remote({ card_info: info("Project", null) }, { agents_card_info: "{space}" })).not.toContain("Project Project");
   // A build without card_info: the machine.
   expect(remote({}, { agents_card_info: "{branch}" })).toContain("vps");
+});
+
+for (const width of [268, 44]) test(`the focused agent's row is marked as selected ${width < 160 ? "in the rail" : "in the wide list"}`, () => {
+  const program = { name: "Claude", key: "claude", agent: true };
+  const list = ["t1", "t2"].map((address, i) => ({
+    address, pane: `p-${address}`, tab: address, space: "s1", space_name: "Project",
+    program, title: address, status: "idle", seq: i, focused: address === "t2",
+  }));
+  const { agents } = harness([], {
+    agents: () => list, terminals: () => list.map(a => ({ ...a, state: "live", labels: {} })),
+    panes: () => list.map(a => ({ ...a, terminal: a.address })), focused: () => ({ agent: "t2" }),
+    spaces: () => [{ tabs: list.map(a => ({ id: a.tab, name: a.address, named: true })) }],
+    layout: () => ({ id: "sidebar", size: { px: width } }), shared: () => "grouped",
+    theme: () => ({ selected: "selected", hover: "hover" }), setAgentOrder() {},
+    div: element, v_flex: element, h_flex: element, svg: element, image: element,
+  });
+  const fills = new Map<string, unknown>();
+  const walk = (node: any) => {
+    if (node?.id?.startsWith("ag-t")) fills.set(node.id, node.bg);
+    (node?.children ?? []).forEach(walk);
+  };
+  walk(agents.render({}).node);
+  expect([...fills]).toEqual([["ag-t1", undefined], ["ag-t2", "selected"]]);
 });
