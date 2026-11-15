@@ -2796,6 +2796,8 @@ fn icon_picker_names_match_the_font_and_the_commands() {
         let choice = json!({"kind": "emoji", "value": row[0]});
         assert!(crate::pane_icons::Choice::parse(&choice).is_ok(), "{row}");
     }
+}
+
 #[gpui::test]
 fn status_bar_counts_agents_in_the_singular_and_the_plural(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
