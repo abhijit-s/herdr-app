@@ -263,7 +263,8 @@ pub struct Glyph {
     pub glyph_id: u16,
     /// The size in device pixels.
     pub ppem: f32,
-    /// Where the pen starts right of the box's pixel grid, 0 to 1.
+    /// Where the pen starts right of the box's pixel grid, 0 to under 2
+    /// (`RenderGlyphParams::subpixel_shift`).
     pub shift: f32,
     /// How far the strokes grow across and along the rows, in device pixels
     /// (`fit`, by `Samples::outward`).

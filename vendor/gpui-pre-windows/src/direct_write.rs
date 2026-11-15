@@ -716,11 +716,9 @@ impl DirectWriteState {
             dx: 0.0,
             dy: 0.0,
         };
-        let baseline_origin_x =
-            params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32 / params.scale_factor;
-        let baseline_origin_y = params.subpixel_variant.y as f32
-            / gpui::SUBPIXEL_VARIANTS_Y as f32
-            / params.scale_factor;
+        let subpixel_shift = params.subpixel_shift();
+        let baseline_origin_x = subpixel_shift.x / params.scale_factor;
+        let baseline_origin_y = subpixel_shift.y / params.scale_factor;
 
         let mut rendering_mode = DWRITE_RENDERING_MODE1::default();
         let mut grid_fit_mode = DWRITE_GRID_FIT_MODE::default();
@@ -916,9 +914,7 @@ impl DirectWriteState {
             .as_ref()
             .context("rasterizing color glyphs needs a GPU, which headless mode has none of")?;
         let bitmap_size = glyph_bounds.size;
-        let subpixel_shift = params
-            .subpixel_variant
-            .map(|v| v as f32 / SUBPIXEL_VARIANTS_X as f32);
+        let subpixel_shift = params.subpixel_shift();
         let baseline_origin_x = subpixel_shift.x / params.scale_factor;
         let baseline_origin_y = subpixel_shift.y / params.scale_factor;
 
@@ -2067,6 +2063,7 @@ mod tests {
                 glyph_id,
                 font_size: px(48.0),
                 subpixel_variant: point(0u8, 0u8),
+                subpixel_phase: 0.0,
                 scale_factor: 1.0,
                 is_emoji: true,
                 subpixel_rendering: false,

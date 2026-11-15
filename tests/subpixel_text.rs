@@ -250,6 +250,7 @@ fn check_strength_sweep(text_system: &std::sync::Arc<dyn PlatformTextSystem>) {
                     glyph_id,
                     font_size: px(text.size),
                     subpixel_variant: point(0, 0),
+                    subpixel_phase: 0.0,
                     scale_factor: 1.0,
                     is_emoji: false,
                     subpixel_rendering: subpixel,
@@ -298,6 +299,74 @@ fn check_strength_sweep(text_system: &std::sync::Arc<dyn PlatformTextSystem>) {
     }
 }
 
+/// A glyph rasterised at a phase (`RenderGlyphParams::subpixel_phase`, as the
+/// terminal paints its cells) moves its ink right by the phase, grayscale and
+/// subpixel, thickened and plain, alone and on top of a quarter variant: the
+/// ink's centre across every terminal glyph moves by the whole shift within
+/// 0.03 device px, its total within 1%. Subpixel glyphs must come from swash,
+/// not CoreGraphics' gray copied into each channel: some of their texels'
+/// channels differ.
+fn check_phase_moves_ink(text_system: &std::sync::Arc<dyn PlatformTextSystem>) {
+    let font_id = text_system.font_id(&font(TERMINAL.family)).unwrap();
+    let glyphs: Vec<GlyphId> = TERMINAL.text.chars().filter_map(|c| text_system.glyph_for_char(font_id, c)).collect();
+    for subpixel in [false, true] {
+        for thicken in [GlyphThicken::Off, GlyphThicken::Strength(30)] {
+            // The ink's summed coverage, its first moment across in device pixels,
+            // how many texels' channels differ by more than a tenth, and how many
+            // inked glyphs have no such texel (gray in every channel).
+            let ink = |variant: u8, phase: f32| {
+                let (mut sum, mut moment, mut colored, mut gray) = (0.0f64, 0.0f64, 0usize, 0usize);
+                for &glyph_id in &glyphs {
+                    let params = RenderGlyphParams {
+                        font_id,
+                        glyph_id,
+                        font_size: px(TERMINAL.size),
+                        subpixel_variant: point(variant, 0),
+                        subpixel_phase: phase,
+                        scale_factor: 1.0,
+                        is_emoji: false,
+                        subpixel_rendering: subpixel,
+                        dilation: 0,
+                        thicken,
+                        foreground: [0, 0, 0, 255],
+                    };
+                    let bounds = text_system.glyph_raster_bounds(&params).unwrap();
+                    if bounds.is_zero() {
+                        continue;
+                    }
+                    let (size, bytes) = text_system.rasterize_glyph(&params, bounds).unwrap();
+                    let channels = if subpixel { 4 } else { 1 };
+                    let width = size.width.0 as usize;
+                    let (mut inked, mut glyph_colored) = (false, false);
+                    for (i, texel) in bytes.chunks_exact(channels).enumerate() {
+                        let rgb = &texel[..channels.min(3)];
+                        let a = rgb.iter().map(|&v| v as f64).sum::<f64>() / rgb.len() as f64;
+                        sum += a;
+                        moment += a * (bounds.origin.x.0 as f64 + (i % width) as f64 + 0.5);
+                        let differ = rgb.iter().max().unwrap() - rgb.iter().min().unwrap() > 25;
+                        colored += differ as usize;
+                        (inked, glyph_colored) = (inked || a > 0.0, glyph_colored || differ);
+                    }
+                    gray += (inked && !glyph_colored) as usize;
+                }
+                (sum, moment / sum, colored, gray)
+            };
+            let (base_sum, base_x, _, base_gray) = ink(0, 0.0);
+            assert!(!subpixel || base_gray == 0, "subpixel at no shift, {thicken:?}: {base_gray} glyphs drew gray");
+            for (variant, phase) in [(0u8, 0.1f32), (0, 0.9), (3, 0.8)] {
+                let (sum, x, colored, gray) = ink(variant, phase);
+                assert_eq!(colored > 0, subpixel, "phase {phase} on variant {variant}, subpixel {subpixel}, {thicken:?}: {colored} colored texels");
+                assert!(!subpixel || gray == 0, "phase {phase} on variant {variant}, {thicken:?}: {gray} subpixel glyphs drew gray (swash fell back)");
+                let shift = variant as f64 / 4.0 + phase as f64;
+                let moved = x - base_x;
+                println!("phase {phase} on variant {variant}, subpixel {subpixel}, thicken {thicken:?}: ink moved {moved:+.3} device px (shift {shift}), ink {:+.2}%, {colored} colored texels", (sum / base_sum - 1.0) * 100.0);
+                assert!((moved - shift).abs() < 0.03, "phase {phase} on variant {variant}, subpixel {subpixel}, {thicken:?}: ink moved {moved}, not {shift}");
+                assert!((sum / base_sum - 1.0).abs() < 0.01, "phase {phase} on variant {variant}, subpixel {subpixel}, {thicken:?}: ink {sum} against {base_sum}");
+            }
+        }
+    }
+}
+
 /// At 2x the subpixel rows draw exactly as their grayscale twins.
 fn check_retina(window: &mut Window, cx: &mut App) {
     let image = draw(window, cx);
@@ -330,6 +399,7 @@ fn check_every_glyph_grows(text_system: &std::sync::Arc<dyn PlatformTextSystem>)
                 glyph_id,
                 font_size: px(text.size),
                 subpixel_variant: point(0, 0),
+                subpixel_phase: 0.0,
                 scale_factor: 1.0,
                 is_emoji: false,
                 subpixel_rendering: true,
@@ -384,6 +454,7 @@ fn time_rasterising(text_system: &std::sync::Arc<dyn PlatformTextSystem>) {
                         glyph_id,
                         font_size: px(12.),
                         subpixel_variant: point(x, 0),
+                        subpixel_phase: 0.0,
                         scale_factor: 1.0,
                         is_emoji: false,
                         subpixel_rendering: subpixel,
@@ -434,6 +505,7 @@ fn check_faces(text_system: &std::sync::Arc<dyn PlatformTextSystem>) {
             glyph_id,
             font_size: px(13.),
             subpixel_variant: point(1, 0),
+            subpixel_phase: 0.0,
             scale_factor: 1.0,
             is_emoji: false,
             subpixel_rendering: true,
@@ -799,6 +871,7 @@ fn main() {
     cx.update(add_fonts);
     check_every_glyph_grows(&platform_text_system);
     check_strength_sweep(&platform_text_system);
+    check_phase_moves_ink(&platform_text_system);
     let rows = rows().len();
     let window = cx.open_window(size(px(WIDTH), px(ROW * rows as f32)), |_, cx| cx.new(|_| Scene)).unwrap();
     // Test windows open at 2x.

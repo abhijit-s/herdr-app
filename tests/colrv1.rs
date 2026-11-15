@@ -379,6 +379,7 @@ fn params(id: gpui::FontId, glyph: &gpui::ShapedGlyph) -> RenderGlyphParams {
         font_size: px(14.0),
         scale_factor: 1.0,
         subpixel_variant: point(0, 0),
+        subpixel_phase: 0.0,
         is_emoji: glyph.is_emoji,
         subpixel_rendering: false,
         dilation: 0,
