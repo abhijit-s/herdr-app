@@ -4507,7 +4507,7 @@ mod tests {
                 let start = f32::from(cell * column as f32) * scale;
                 let x = f32::from((cell * column as f32 + metrics.glyph_x) * scale);
                 let drawn = drawn_x(x, phase);
-                // A few f32 steps at 22,000 device px, far under a quarter pixel.
+                // A few f32 steps at 28,000 device px (column 1999 at 2x), far under a quarter pixel.
                 assert!((drawn - start - exact).abs() < 4e-3, "{scale}x column {column}: drawn {drawn}, cell {start} + {exact}");
                 variants.insert(gpui::glyph_raster_origin(gpui::point(x, 0.0), phase).1);
             }

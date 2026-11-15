@@ -312,9 +312,10 @@ fn check_phase_moves_ink(text_system: &std::sync::Arc<dyn PlatformTextSystem>) {
     for subpixel in [false, true] {
         for thicken in [GlyphThicken::Off, GlyphThicken::Strength(30)] {
             // The ink's summed coverage, its first moment across in device pixels,
-            // and how many texels' channels differ by more than a tenth.
+            // how many texels' channels differ by more than a tenth, and how many
+            // inked glyphs have no such texel (gray in every channel).
             let ink = |variant: u8, phase: f32| {
-                let (mut sum, mut moment, mut colored) = (0.0f64, 0.0f64, 0usize);
+                let (mut sum, mut moment, mut colored, mut gray) = (0.0f64, 0.0f64, 0usize, 0usize);
                 for &glyph_id in &glyphs {
                     let params = RenderGlyphParams {
                         font_id,
@@ -336,20 +337,26 @@ fn check_phase_moves_ink(text_system: &std::sync::Arc<dyn PlatformTextSystem>) {
                     let (size, bytes) = text_system.rasterize_glyph(&params, bounds).unwrap();
                     let channels = if subpixel { 4 } else { 1 };
                     let width = size.width.0 as usize;
+                    let (mut inked, mut glyph_colored) = (false, false);
                     for (i, texel) in bytes.chunks_exact(channels).enumerate() {
                         let rgb = &texel[..channels.min(3)];
                         let a = rgb.iter().map(|&v| v as f64).sum::<f64>() / rgb.len() as f64;
                         sum += a;
                         moment += a * (bounds.origin.x.0 as f64 + (i % width) as f64 + 0.5);
-                        colored += (rgb.iter().max().unwrap() - rgb.iter().min().unwrap() > 25) as usize;
+                        let differ = rgb.iter().max().unwrap() - rgb.iter().min().unwrap() > 25;
+                        colored += differ as usize;
+                        (inked, glyph_colored) = (inked || a > 0.0, glyph_colored || differ);
                     }
+                    gray += (inked && !glyph_colored) as usize;
                 }
-                (sum, moment / sum, colored)
+                (sum, moment / sum, colored, gray)
             };
-            let (base_sum, base_x, _) = ink(0, 0.0);
+            let (base_sum, base_x, _, base_gray) = ink(0, 0.0);
+            assert!(!subpixel || base_gray == 0, "subpixel at no shift, {thicken:?}: {base_gray} glyphs drew gray");
             for (variant, phase) in [(0u8, 0.1f32), (0, 0.9), (3, 0.8)] {
-                let (sum, x, colored) = ink(variant, phase);
+                let (sum, x, colored, gray) = ink(variant, phase);
                 assert_eq!(colored > 0, subpixel, "phase {phase} on variant {variant}, subpixel {subpixel}, {thicken:?}: {colored} colored texels");
+                assert!(!subpixel || gray == 0, "phase {phase} on variant {variant}, {thicken:?}: {gray} subpixel glyphs drew gray (swash fell back)");
                 let shift = variant as f64 / 4.0 + phase as f64;
                 let moved = x - base_x;
                 println!("phase {phase} on variant {variant}, subpixel {subpixel}, thicken {thicken:?}: ink moved {moved:+.3} device px (shift {shift}), ink {:+.2}%, {colored} colored texels", (sum / base_sum - 1.0) * 100.0);
