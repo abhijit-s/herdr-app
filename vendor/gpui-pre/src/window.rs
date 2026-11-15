@@ -16,7 +16,7 @@ use crate::{
     PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
     GlyphThicken, TerminalText, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
     RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
-    glyph_raster_origin, ScaledPixels, Scene, Shadow, SharedString, Size,
+    glyph_phase, glyph_raster_origin, ScaledPixels, Scene, Shadow, SharedString, Size,
     StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
     SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextInputConfiguration,
     TextInputStateChange, TextRenderingMode, TextStyle, TextStyleRefinement, ThermalState,
@@ -4435,18 +4435,14 @@ impl Window {
         result
     }
 
-    /// HERDR: paints the monochrome glyphs in `f` at `phase` (a fraction of a
-    /// device pixel, 0 to 1) past the quarter-pixel positions `paint_glyph`
-    /// rounds to: a glyph whose origin is a whole device pixel plus `phase`
-    /// draws exactly there, as Ghostty's CoreText face places terminal glyphs
-    /// (`frac_x`). A grid's glyphs share one phase, so each glyph still takes
-    /// one atlas entry; interface text keeps the quarter grid alone.
+    /// HERDR: paints the monochrome glyphs in `f` at `phase` device pixels
+    /// (taken modulo 1, `glyph_phase`) past the quarter-pixel positions
+    /// `paint_glyph` rounds to: a glyph whose origin is a whole device pixel
+    /// plus the phase draws exactly there, as Ghostty's CoreText face places
+    /// terminal glyphs (`frac_x`). A grid's glyphs share one phase, so each
+    /// still takes one atlas entry; interface text keeps the quarter grid.
     pub fn with_glyph_phase<R>(&mut self, phase: f32, f: impl FnOnce(&mut Self) -> R) -> R {
-        // rem_euclid can round a tiny negative up to 1 itself, and keeps -0, which hashes
-        // apart from the 0 it equals (`RenderGlyphParams` is an atlas key).
-        let phase = phase.rem_euclid(1.);
-        let phase = if phase < 1. { phase.abs() } else { 0. };
-        let outer = std::mem::replace(&mut self.glyph_phase, phase);
+        let outer = std::mem::replace(&mut self.glyph_phase, glyph_phase(phase));
         let result = f(self);
         self.glyph_phase = outer;
         result

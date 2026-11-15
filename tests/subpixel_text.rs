@@ -299,6 +299,61 @@ fn check_strength_sweep(text_system: &std::sync::Arc<dyn PlatformTextSystem>) {
     }
 }
 
+/// A glyph rasterised at a phase (`RenderGlyphParams::subpixel_phase`, as the
+/// terminal paints its cells) moves its ink right by the phase, grayscale and
+/// subpixel, thickened and plain, alone and on top of a quarter variant: the
+/// ink's centre across every terminal glyph moves by the whole shift within
+/// 0.03 device px, its total within 1%.
+fn check_phase_moves_ink(text_system: &std::sync::Arc<dyn PlatformTextSystem>) {
+    let font_id = text_system.font_id(&font(TERMINAL.family)).unwrap();
+    let glyphs: Vec<GlyphId> = TERMINAL.text.chars().filter_map(|c| text_system.glyph_for_char(font_id, c)).collect();
+    for subpixel in [false, true] {
+        for thicken in [GlyphThicken::Off, GlyphThicken::Strength(30)] {
+            // The ink's summed coverage and its first moment across, in device pixels.
+            let ink = |variant: u8, phase: f32| {
+                let (mut sum, mut moment) = (0.0f64, 0.0f64);
+                for &glyph_id in &glyphs {
+                    let params = RenderGlyphParams {
+                        font_id,
+                        glyph_id,
+                        font_size: px(TERMINAL.size),
+                        subpixel_variant: point(variant, 0),
+                        subpixel_phase: phase,
+                        scale_factor: 1.0,
+                        is_emoji: false,
+                        subpixel_rendering: subpixel,
+                        dilation: 0,
+                        thicken,
+                        foreground: [0, 0, 0, 255],
+                    };
+                    let bounds = text_system.glyph_raster_bounds(&params).unwrap();
+                    if bounds.is_zero() {
+                        continue;
+                    }
+                    let (size, bytes) = text_system.rasterize_glyph(&params, bounds).unwrap();
+                    let channels = if subpixel { 4 } else { 1 };
+                    let width = size.width.0 as usize;
+                    for (i, texel) in bytes.chunks_exact(channels).enumerate() {
+                        let a = texel.iter().take(3).map(|&v| v as f64).sum::<f64>() / channels.min(3) as f64;
+                        sum += a;
+                        moment += a * (bounds.origin.x.0 as f64 + (i % width) as f64 + 0.5);
+                    }
+                }
+                (sum, moment / sum)
+            };
+            let (base_sum, base_x) = ink(0, 0.0);
+            for (variant, phase) in [(0u8, 0.1f32), (0, 0.9), (3, 0.8)] {
+                let (sum, x) = ink(variant, phase);
+                let shift = variant as f64 / 4.0 + phase as f64;
+                let moved = x - base_x;
+                println!("phase {phase} on variant {variant}, subpixel {subpixel}, thicken {thicken:?}: ink moved {moved:+.3} device px (shift {shift}), ink {:+.2}%", (sum / base_sum - 1.0) * 100.0);
+                assert!((moved - shift).abs() < 0.03, "phase {phase} on variant {variant}, subpixel {subpixel}, {thicken:?}: ink moved {moved}, not {shift}");
+                assert!((sum / base_sum - 1.0).abs() < 0.01, "phase {phase} on variant {variant}, subpixel {subpixel}, {thicken:?}: ink {sum} against {base_sum}");
+            }
+        }
+    }
+}
+
 /// At 2x the subpixel rows draw exactly as their grayscale twins.
 fn check_retina(window: &mut Window, cx: &mut App) {
     let image = draw(window, cx);
@@ -803,6 +858,7 @@ fn main() {
     cx.update(add_fonts);
     check_every_glyph_grows(&platform_text_system);
     check_strength_sweep(&platform_text_system);
+    check_phase_moves_ink(&platform_text_system);
     let rows = rows().len();
     let window = cx.open_window(size(px(WIDTH), px(ROW * rows as f32)), |_, cx| cx.new(|_| Scene)).unwrap();
     // Test windows open at 2x.

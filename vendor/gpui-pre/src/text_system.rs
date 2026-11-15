@@ -51,6 +51,16 @@ pub const SUBPIXEL_VARIANTS_X: u8 = 4;
 /// Number of subpixel glyph variants along the Y axis.
 pub const SUBPIXEL_VARIANTS_Y: u8 = 1;
 
+/// HERDR: the phase `Window::with_glyph_phase` paints at for `phase` device
+/// pixels: its fraction of a pixel, 0 to 1, where within a ten-thousandth of
+/// a whole pixel counts as none, so a whole move that came back through f32
+/// as 0.9999999 keeps the phase-0 atlas key. Never -0, which hashes apart
+/// from the 0 it equals.
+pub fn glyph_phase(phase: f32) -> f32 {
+    let phase = phase.rem_euclid(1.);
+    if phase.is_nan() || phase < 1e-4 || phase > 1. - 1e-4 { 0. } else { phase }
+}
+
 /// HERDR: where `Window::paint_glyph` rasterizes a glyph whose origin is
 /// `origin` device pixels: the whole-pixel origin and the subpixel variant.
 /// The origin less `phase` (`Window::with_glyph_phase`, a fraction of a device

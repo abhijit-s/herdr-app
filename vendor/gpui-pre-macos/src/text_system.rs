@@ -581,7 +581,7 @@ impl MacTextSystemState {
             anyhow::bail!("glyph bounds are empty");
         } else {
             // Add an extra pixel when the subpixel variant isn't zero to make room for anti-aliasing.
-            // HERDR: a pixel for each the shift starts into (it is under 2 with a phase).
+            // HERDR: room for the shift, a pixel per pixel it reaches into (under 2 with a phase).
             let mut bitmap_size = glyph_bounds.size;
             bitmap_size.width += DevicePixels(params.subpixel_shift().x.ceil() as i32);
             if params.subpixel_variant.y > 0 {

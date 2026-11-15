@@ -2257,8 +2257,8 @@ fn adjusted_cell_width(width: f32, multiplier: f32) -> f32 {
 /// without sliding a pixel or more left; FreeType (`font/face/freetype.zig`)
 /// moves only into a wider cell, by whole pixels, to keep hinting. Every glyph
 /// a cell's text draws on its baseline moves by it (wide, combining,
-/// ligatures, the cursor's and an input method's), exactly rather than to
-/// gpui's quarter device pixel (`paint_cell_text`). Sprites sit on the cell,
+/// ligatures, the cursor's and an input method's); the glyph on the cell
+/// draws there exactly (`paint_cell_text`). Sprites sit on the cell,
 /// as Ghostty's do; bundled icons and fitted fallbacks are centred on the
 /// cell, where Ghostty's face-centred fit lands once moved, and stay inside it.
 fn glyph_x(cell_width: Pixels, face_width: Pixels, scale: f32) -> Pixels {
@@ -2289,11 +2289,20 @@ fn text_origin(
         })
 }
 
-/// Paints a cell's shaped text from `text_origin`. Text on the cell's baseline
-/// draws `glyph_x` across exactly, as Ghostty's CoreText face rasterises it
-/// (`frac_x`), where gpui would round it to a quarter device pixel
-/// (`Window::with_glyph_phase`); a fitted fallback keeps gpui's quarters, as
-/// its offset centres it in the cell.
+/// The phase a cell's text paints at (`Window::with_glyph_phase`): `glyph_x`
+/// in device pixels for text on the cell's baseline, so the glyph starting
+/// each cell (whose origin is a whole device pixel plus `glyph_x`) draws
+/// exactly where Ghostty's CoreText face puts it (`frac_x`), rather than on
+/// gpui's quarter device pixel. A glyph off its cell's start (a combining
+/// mark's or ligature part's own offset, input-method text after its first
+/// glyph) lands on the quarters, moved by the phase; Ghostty rounds those
+/// offsets to whole pixels. None for a fitted fallback, which its offset
+/// centres in the cell.
+fn cell_text_phase(offset: Option<Point<Pixels>>, metrics: CellMetrics, scale: f32) -> f32 {
+    if offset.is_none() { f32::from(metrics.glyph_x) * scale } else { 0.0 }
+}
+
+/// Paints a cell's shaped text from `text_origin`, at `cell_text_phase`.
 fn paint_cell_text(
     line: &ShapedLine,
     origin: Point<Pixels>,
@@ -2304,8 +2313,7 @@ fn paint_cell_text(
 ) {
     let origin = text_origin(line, origin, offset, metrics);
     let height = metrics.size.height;
-    let phase = if offset.is_none() { f32::from(metrics.glyph_x) * window.scale_factor() } else { 0.0 };
-    window.with_glyph_phase(phase, |window| {
+    window.with_glyph_phase(cell_text_phase(offset, metrics, window.scale_factor()), |window| {
         let _ = line.paint(origin, height, TextAlign::Left, None, window, cx);
     });
 }
@@ -4444,8 +4452,7 @@ mod tests {
                 let at = text_origin(&line, cell, None, metrics);
                 assert!(f32::from(at.x - cell.x - metrics.glyph_x).abs() < 1e-4, "column {column} at {scale}x: {:?}", at.x);
                 if cfg!(target_os = "macos") {
-                    let phase = f32::from(metrics.glyph_x) * scale;
-                    let drawn = drawn_x(f32::from(at.x) * scale, phase.rem_euclid(1.0));
+                    let drawn = drawn_x(f32::from(at.x) * scale, cell_text_phase(None, metrics, scale));
                     let placed = drawn - f32::from(cell.x) * scale;
                     assert!((placed - device).abs() < 1e-4, "column {column} at {scale}x: {placed}");
                 } else {
@@ -4455,34 +4462,62 @@ mod tests {
         }
     }
 
+    /// JetBrains Mono 12 pt's cell (7 × 20 px, the face 7.2 px), its glyphs
+    /// moved `glyph_x` across.
+    fn moved_cell(glyph_x: gpui::Pixels) -> super::CellMetrics {
+        use gpui::{px, size};
+        super::CellMetrics {
+            size: size(px(7.0), px(20.0)),
+            face_width: px(7.2),
+            glyph_x,
+            baseline: px(15.0),
+            underline: px(17.0),
+            underline_thickness: px(1.0),
+            strike: px(10.0),
+            strike_thickness: px(1.0),
+        }
+    }
+
     /// Where `Window::paint_glyph` draws a glyph whose origin is `x` device
-    /// pixels, painted at `phase`: its whole pixel plus its variant and phase.
+    /// pixels, inside `Window::with_glyph_phase(phase)`: its whole pixel plus
+    /// its variant and phase (`RenderGlyphParams::subpixel_shift`).
     fn drawn_x(x: f32, phase: f32) -> f32 {
+        let phase = gpui::glyph_phase(phase);
         let (origin, variant) = gpui::glyph_raster_origin(gpui::point(x, 0.0), phase);
         origin.x + variant.x as f32 / gpui::SUBPIXEL_VARIANTS_X as f32 + phase
     }
 
-    /// The atlas keys a grid's glyphs take: a glyph drawn in any column, at
-    /// any scale, has one placement (variant and phase), as it had on the
-    /// quarter grid alone, so drawing glyphs exactly adds no atlas entries.
-    /// Interface text keeps the quarter grid: at no phase a glyph lands on
-    /// the nearest quarter device pixel, ties toward zero.
+    /// A grid's glyphs draw `glyph_x` from their cell exactly in every column,
+    /// at 1x, 1.5x and 2x, and with one placement (variant and phase) for the
+    /// atlas key, as they had on the quarter grid alone: drawing exactly adds
+    /// no atlas entries for the grid. Interface text keeps the quarter grid:
+    /// at no phase a glyph lands on the nearest quarter device pixel, ties
+    /// toward zero. A phase is taken modulo a pixel, -0 and a whole pixel
+    /// back through f32 count as none, so they share phase 0's atlas key.
     #[test]
-    fn a_grids_glyphs_keep_one_atlas_placement() {
+    fn a_grids_glyphs_draw_exactly_with_one_atlas_placement() {
         use super::*;
         for scale in [1.0_f32, 1.5, 2.0] {
             let cell = px((7.0 * scale).round() / scale);
-            let metrics_x = glyph_x(cell, px(7.2), scale);
-            let phase = (f32::from(metrics_x) * scale).rem_euclid(1.0);
-            let placements: std::collections::HashSet<_> = (0..2000)
-                .map(|column| {
-                    let x = (cell * column as f32 + metrics_x) * scale;
-                    let (_, variant) = gpui::glyph_raster_origin(gpui::point(f32::from(x), 0.0), phase);
-                    (variant, phase.to_bits())
-                })
-                .collect();
+            let metrics = moved_cell(glyph_x(cell, px(7.2), scale));
+            let phase = gpui::glyph_phase(cell_text_phase(None, metrics, scale));
+            let exact = f32::from(metrics.glyph_x) * scale;
+            let mut placements = std::collections::HashSet::new();
+            for column in 0..2000 {
+                let start = f32::from(cell * column as f32) * scale;
+                let x = f32::from((cell * column as f32 + metrics.glyph_x) * scale);
+                let drawn = drawn_x(x, phase);
+                assert!((drawn - start - exact).abs() < 2e-3, "{scale}x column {column}: drawn {drawn}, cell {start} + {exact}");
+                placements.insert((gpui::glyph_raster_origin(gpui::point(x, 0.0), phase).1, phase.to_bits()));
+            }
             assert_eq!(placements.len(), 1, "{scale}x: {placements:?}");
         }
+        assert_eq!(cell_text_phase(Some(point(px(1.3), px(0.))), moved_cell(px(-0.1)), 1.0), 0.0, "fitted fallbacks take no phase");
+        for (phase, normal) in [(-0.1_f32, 0.9_f32), (0.9, 0.9), (1.25, 0.25), (-0.0, 0.0), (-1e-9, 0.0), (1.0, 0.0), (0.99999994, 0.0), (f32::NAN, 0.0)] {
+            let got = gpui::glyph_phase(phase);
+            assert!((got - normal).abs() < 1e-6 && got.to_bits() == got.abs().to_bits(), "phase {phase}: {got}");
+        }
+        assert_eq!(gpui::glyph_phase(-0.0).to_bits(), 0.0_f32.to_bits());
         for (x, quarter) in [(10.1_f32, 10.0_f32), (10.125, 10.0), (10.2, 10.25), (9.8, 9.75), (9.875, 9.75)] {
             assert_eq!(drawn_x(x, 0.0), quarter, "interface glyph at {x}");
         }
@@ -4500,18 +4535,6 @@ mod tests {
         use super::*;
         const COLUMNS: usize = 40;
         const ROW: f32 = 20.0;
-        fn metrics(glyph_x: Pixels) -> CellMetrics {
-            CellMetrics {
-                size: size(px(7.0), px(ROW)),
-                face_width: px(7.2),
-                glyph_x,
-                baseline: px(15.0),
-                underline: px(17.0),
-                underline_thickness: px(1.0),
-                strike: px(10.0),
-                strike_thickness: px(1.0),
-            }
-        }
         struct Rows;
         impl Render for Rows {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -4532,10 +4555,10 @@ mod tests {
                             .text_system()
                             .shape_line(text.into(), px(12.0), &[run], None)
                             .with_cell_positions(&positions, px(7.0) * COLUMNS as f32);
-                        let moved = metrics(glyph_x(px(7.0), px(7.2), window.scale_factor()));
+                        let moved = moved_cell(glyph_x(px(7.0), px(7.2), window.scale_factor()));
                         let row = |y: usize| point(px(8.0), px(ROW * y as f32));
                         window.with_glyph_thicken(gpui::GlyphThicken::Off, |window| {
-                            paint_cell_text(&line, row(0), None, metrics(px(0.0)), window, cx);
+                            paint_cell_text(&line, row(0), None, moved_cell(px(0.0)), window, cx);
                             paint_cell_text(&line, row(1), None, moved, window, cx);
                             let interface = text_origin(&line, row(2), None, moved);
                             let _ = line.paint(interface, moved.size.height, TextAlign::Left, None, window, cx);
@@ -4782,7 +4805,7 @@ mod tests {
                                 x += g.position.x - prev;
                                 prev = g.position.x;
                                 let at = point(x, origin.y + baseline + g.position.y).scale(scale);
-                                let phase = (f32::from(metrics.glyph_x) * scale).rem_euclid(1.0);
+                                let phase = gpui::glyph_phase(cell_text_phase(None, metrics, scale));
                                 let (q, variant) = gpui::glyph_raster_origin(at.map(|c| c.0), phase);
                                 let params = gpui::RenderGlyphParams {
                                     font_id: run.font_id,
