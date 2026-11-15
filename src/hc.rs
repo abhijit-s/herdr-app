@@ -654,6 +654,8 @@ pub fn answering(answer: impl Fn(&str, &Value) -> Result<Value, Value> + Send + 
     });
     let core = Arc::new(Core { hello: Value::Null, writer, routes, next_id: AtomicU64::new(1), child: Mutex::new(child), lost });
     (core, calls)
+}
+
 /// A core that answers every call at once: `terminal.run` with a new address,
 /// whose argv it passes on to `runs`; anything else with `{}`.
 #[cfg(test)]

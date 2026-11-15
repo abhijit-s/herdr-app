@@ -1301,6 +1301,16 @@ impl TerminalView {
         cx.notify();
     }
 
+    #[cfg(test)]
+    pub(crate) fn fit_for_test(&mut self, cols: u16, rows: u16, cell: gpui::Size<gpui::Pixels>) {
+        self.grid.borrow_mut().fit(cols, rows, cell, 14., 1.);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn write_for_test(&mut self, bytes: &[u8]) {
+        self.grid.borrow_mut().vt.write(bytes);
+    }
+
     /// History scroll metrics for mods (`panes().scroll`). None on the alternate screen.
     pub fn scroll_metrics(&self) -> Option<ScrollMetrics> {
         let g = self.grid.borrow();
@@ -3445,7 +3455,7 @@ mod tests {
             let lines: String = (0..100).map(|i| format!("line {i}\r\n")).collect();
             g.vt.write(lines.as_bytes());
         });
-        let mut step = |target: ScrollTarget, cx: &mut gpui::TestAppContext| {
+        let step = |target: ScrollTarget, cx: &mut gpui::TestAppContext| {
             view.update(cx, |view, cx| view.scroll_history(target, cx));
             cx.run_until_parked();
             (view.read_with(cx, |view, _| view.scroll_metrics().map(|m| m.from_bottom)), told.read_with(cx, |n, _| *n))

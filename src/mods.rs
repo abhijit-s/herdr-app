@@ -987,16 +987,18 @@ fn reader(reads: Rc<RefCell<LiveReads>>, key: &'static str, f: fn(&Snapshot) -> 
 /// when the part or a pane's numbers changed.
 fn panes_part(f: fn(&Snapshot) -> &Value) -> std::sync::Arc<Value> {
     let base = shared_part("panes", f);
-    let scrolls: PaneScrolls = gpui_shell::with_current_app(|cx| {
-        PANE_VIEWS.with_borrow(|views| {
-            let panes = base.as_array().into_iter().flatten().enumerate();
-            panes.filter_map(|(i, pane)| {
-                let view = pane["pane"].as_str().and_then(|id| shown_view(views, id))?;
-                Some((i, view.read(cx).scroll_metrics()))
-            }).collect()
-        })
-    }).unwrap_or_default();
+    let scrolls = gpui_shell::with_current_app(|cx| pane_scrolls(&base, cx)).unwrap_or_default();
     with_scrolls(base, scrolls)
+}
+
+/// Each listed pane's scroll, from the terminal it shows (`shown_view`).
+fn pane_scrolls(panes: &Value, cx: &gpui::App) -> PaneScrolls {
+    PANE_VIEWS.with_borrow(|views| {
+        panes.as_array().into_iter().flatten().enumerate().filter_map(|(i, pane)| {
+            let view = pane["pane"].as_str().and_then(|id| shown_view(views, id))?;
+            Some((i, view.read(cx).scroll_metrics()))
+        }).collect()
+    })
 }
 
 /// The terminal a pane shows: one swapped in (`<pane>#swap`, `terminal.show`) over its own.
@@ -1956,21 +1958,38 @@ mod tests {
     /// swapped in (`terminal.show`) over its own, its own again once that goes.
     #[gpui::test]
     fn a_pane_reads_the_scroll_of_the_terminal_it_shows(cx: &mut gpui::TestAppContext) {
-        use gpui::AppContext as _;
-        let own = cx.new(|cx| crate::terminal::TerminalView::attach(crate::hc::offline(), "t1".into(), (40, 5), cx));
-        let swapped = cx.new(|cx| crate::terminal::TerminalView::attach(crate::hc::offline(), "t2".into(), (40, 5), cx));
-        track_pane_view("p1".into(), &own);
-        let shown = || PANE_VIEWS.with_borrow(|views| shown_view(views, "p1").map(|v| v.entity_id()));
-        assert_eq!(shown(), Some(own.entity_id()));
-        track_pane_view("p1#swap".into(), &swapped);
-        assert_eq!(shown(), Some(swapped.entity_id()), "the swapped-in terminal");
+        use gpui::{AppContext as _, px, size};
+        use crate::terminal::{ScrollTarget, TerminalView};
+        // Two terminals with 100 lines of history: `own` at the end, `swapped` 10 rows up.
+        let view = |address: &str, up: isize, cx: &mut gpui::TestAppContext| {
+            let view = cx.new(|cx| TerminalView::attach(crate::hc::offline(), address.into(), (40, 5), cx));
+            view.update(cx, |view, cx| {
+                view.fit_for_test(40, 5, size(px(8.), px(18.)));
+                view.write_for_test((0..100).map(|i| format!("line {i}\r\n")).collect::<String>().as_bytes());
+                view.scroll_history(ScrollTarget::Lines(up), cx);
+            });
+            view
+        };
+        let own = view("t1", 0, cx);
+        let swapped = view("t2", -10, cx);
+        let base = std::sync::Arc::new(json!([{ "pane": "p1" }, { "pane": "p2" }]));
+        let read = |cx: &mut gpui::TestAppContext| {
+            let scrolls = cx.update(|cx| pane_scrolls(&base, cx));
+            let part = with_scrolls(base.clone(), scrolls);
+            (part[0]["scroll"]["from_bottom"].clone(), part[1].get("scroll").cloned())
+        };
         assert!(publish_panes(json!([{ "pane": "p1" }])));
-        assert_eq!(shown(), Some(swapped.entity_id()), "a swap slot stays while its pane is listed");
+        track_pane_view("p1".into(), &own);
+        assert_eq!(read(cx), (json!(0), None), "its own terminal; a pane with no view has no scroll");
+        track_pane_view("p1#swap".into(), &swapped);
+        assert_eq!(read(cx).0, json!(10), "the swapped-in terminal's numbers");
+        publish_panes(json!([{ "pane": "p1" }]));
+        assert_eq!(read(cx).0, json!(10), "a swap slot stays while its pane is listed");
         drop(swapped);
         cx.run_until_parked();
-        assert_eq!(shown(), Some(own.entity_id()), "its own once the swapped-in one is gone");
+        assert_eq!(read(cx).0, json!(0), "its own again once the swapped-in one is gone");
         publish_panes(json!([]));
-        assert_eq!(shown(), None, "a pane no longer listed is forgotten");
+        assert_eq!(read(cx).0, Value::Null, "a pane no longer listed is forgotten");
     }
 
     #[test]
