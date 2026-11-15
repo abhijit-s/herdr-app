@@ -303,15 +303,18 @@ fn check_strength_sweep(text_system: &std::sync::Arc<dyn PlatformTextSystem>) {
 /// terminal paints its cells) moves its ink right by the phase, grayscale and
 /// subpixel, thickened and plain, alone and on top of a quarter variant: the
 /// ink's centre across every terminal glyph moves by the whole shift within
-/// 0.03 device px, its total within 1%.
+/// 0.03 device px, its total within 1%. Subpixel glyphs must come from swash,
+/// not CoreGraphics' gray copied into each channel: some of their texels'
+/// channels differ.
 fn check_phase_moves_ink(text_system: &std::sync::Arc<dyn PlatformTextSystem>) {
     let font_id = text_system.font_id(&font(TERMINAL.family)).unwrap();
     let glyphs: Vec<GlyphId> = TERMINAL.text.chars().filter_map(|c| text_system.glyph_for_char(font_id, c)).collect();
     for subpixel in [false, true] {
         for thicken in [GlyphThicken::Off, GlyphThicken::Strength(30)] {
-            // The ink's summed coverage and its first moment across, in device pixels.
+            // The ink's summed coverage, its first moment across in device pixels,
+            // and how many texels' channels differ by more than a tenth.
             let ink = |variant: u8, phase: f32| {
-                let (mut sum, mut moment) = (0.0f64, 0.0f64);
+                let (mut sum, mut moment, mut colored) = (0.0f64, 0.0f64, 0usize);
                 for &glyph_id in &glyphs {
                     let params = RenderGlyphParams {
                         font_id,
@@ -334,19 +337,22 @@ fn check_phase_moves_ink(text_system: &std::sync::Arc<dyn PlatformTextSystem>) {
                     let channels = if subpixel { 4 } else { 1 };
                     let width = size.width.0 as usize;
                     for (i, texel) in bytes.chunks_exact(channels).enumerate() {
-                        let a = texel.iter().take(3).map(|&v| v as f64).sum::<f64>() / channels.min(3) as f64;
+                        let rgb = &texel[..channels.min(3)];
+                        let a = rgb.iter().map(|&v| v as f64).sum::<f64>() / rgb.len() as f64;
                         sum += a;
                         moment += a * (bounds.origin.x.0 as f64 + (i % width) as f64 + 0.5);
+                        colored += (rgb.iter().max().unwrap() - rgb.iter().min().unwrap() > 25) as usize;
                     }
                 }
-                (sum, moment / sum)
+                (sum, moment / sum, colored)
             };
-            let (base_sum, base_x) = ink(0, 0.0);
+            let (base_sum, base_x, _) = ink(0, 0.0);
             for (variant, phase) in [(0u8, 0.1f32), (0, 0.9), (3, 0.8)] {
-                let (sum, x) = ink(variant, phase);
+                let (sum, x, colored) = ink(variant, phase);
+                assert_eq!(colored > 0, subpixel, "phase {phase} on variant {variant}, subpixel {subpixel}, {thicken:?}: {colored} colored texels");
                 let shift = variant as f64 / 4.0 + phase as f64;
                 let moved = x - base_x;
-                println!("phase {phase} on variant {variant}, subpixel {subpixel}, thicken {thicken:?}: ink moved {moved:+.3} device px (shift {shift}), ink {:+.2}%", (sum / base_sum - 1.0) * 100.0);
+                println!("phase {phase} on variant {variant}, subpixel {subpixel}, thicken {thicken:?}: ink moved {moved:+.3} device px (shift {shift}), ink {:+.2}%, {colored} colored texels", (sum / base_sum - 1.0) * 100.0);
                 assert!((moved - shift).abs() < 0.03, "phase {phase} on variant {variant}, subpixel {subpixel}, {thicken:?}: ink moved {moved}, not {shift}");
                 assert!((sum / base_sum - 1.0).abs() < 0.01, "phase {phase} on variant {variant}, subpixel {subpixel}, {thicken:?}: ink {sum} against {base_sum}");
             }

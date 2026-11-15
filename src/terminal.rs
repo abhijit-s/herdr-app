@@ -4488,8 +4488,8 @@ mod tests {
     }
 
     /// A grid's glyphs draw `glyph_x` from their cell exactly in every column,
-    /// at 1x, 1.5x and 2x, and with one placement (variant and phase) for the
-    /// atlas key, as they had on the quarter grid alone: drawing exactly adds
+    /// at 1x, 1.5x and 2x, and with one quarter variant beside the grid's one
+    /// phase in the atlas key, as they had on the quarter grid alone: drawing exactly adds
     /// no atlas entries for the grid. Interface text keeps the quarter grid:
     /// at no phase a glyph lands on the nearest quarter device pixel, ties
     /// toward zero. A phase is taken modulo a pixel, -0 and a whole pixel
@@ -4502,15 +4502,16 @@ mod tests {
             let metrics = moved_cell(glyph_x(cell, px(7.2), scale));
             let phase = gpui::glyph_phase(cell_text_phase(None, metrics, scale));
             let exact = f32::from(metrics.glyph_x) * scale;
-            let mut placements = std::collections::HashSet::new();
+            let mut variants = std::collections::HashSet::new();
             for column in 0..2000 {
                 let start = f32::from(cell * column as f32) * scale;
                 let x = f32::from((cell * column as f32 + metrics.glyph_x) * scale);
                 let drawn = drawn_x(x, phase);
-                assert!((drawn - start - exact).abs() < 2e-3, "{scale}x column {column}: drawn {drawn}, cell {start} + {exact}");
-                placements.insert((gpui::glyph_raster_origin(gpui::point(x, 0.0), phase).1, phase.to_bits()));
+                // A few f32 steps at 22,000 device px, far under a quarter pixel.
+                assert!((drawn - start - exact).abs() < 4e-3, "{scale}x column {column}: drawn {drawn}, cell {start} + {exact}");
+                variants.insert(gpui::glyph_raster_origin(gpui::point(x, 0.0), phase).1);
             }
-            assert_eq!(placements.len(), 1, "{scale}x: {placements:?}");
+            assert_eq!(variants.len(), 1, "{scale}x: {variants:?}");
         }
         assert_eq!(cell_text_phase(Some(point(px(1.3), px(0.))), moved_cell(px(-0.1)), 1.0), 0.0, "fitted fallbacks take no phase");
         for (phase, normal) in [(-0.1_f32, 0.9_f32), (0.9, 0.9), (1.25, 0.25), (-0.0, 0.0), (-1e-9, 0.0), (1.0, 0.0), (0.99999994, 0.0), (f32::NAN, 0.0)] {
