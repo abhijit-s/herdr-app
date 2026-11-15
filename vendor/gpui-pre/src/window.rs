@@ -16,7 +16,7 @@ use crate::{
     PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
     GlyphThicken, TerminalText, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
     RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
-    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size,
+    glyph_raster_origin, ScaledPixels, Scene, Shadow, SharedString, Size,
     StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
     SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextInputConfiguration,
     TextInputStateChange, TextRenderingMode, TextStyle, TextStyleRefinement, ThermalState,
@@ -1224,6 +1224,8 @@ pub struct Window {
     glyph_subpixel: bool,
     // HERDR: the choice each frame's paint starts at (`set_glyph_subpixel`).
     base_glyph_subpixel: bool,
+    // HERDR: the subpixel phase `paint_glyph` places glyphs at (`with_glyph_phase`).
+    glyph_phase: f32,
     // HERDR: a color laid over the whole frame, above everything (`set_veil`).
     veil: Option<Hsla>,
     #[cfg(any(test, feature = "test-support"))]
@@ -2139,6 +2141,7 @@ impl Window {
             veil: None,
             glyph_subpixel: false,
             base_glyph_subpixel: false,
+            glyph_phase: 0.,
             #[cfg(any(test, feature = "test-support"))]
             presents: 0,
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
@@ -4432,6 +4435,23 @@ impl Window {
         result
     }
 
+    /// HERDR: paints the monochrome glyphs in `f` at `phase` (a fraction of a
+    /// device pixel, 0 to 1) past the quarter-pixel positions `paint_glyph`
+    /// rounds to: a glyph whose origin is a whole device pixel plus `phase`
+    /// draws exactly there, as Ghostty's CoreText face places terminal glyphs
+    /// (`frac_x`). A grid's glyphs share one phase, so each glyph still takes
+    /// one atlas entry; interface text keeps the quarter grid alone.
+    pub fn with_glyph_phase<R>(&mut self, phase: f32, f: impl FnOnce(&mut Self) -> R) -> R {
+        // rem_euclid can round a tiny negative up to 1 itself, and keeps -0, which hashes
+        // apart from the 0 it equals (`RenderGlyphParams` is an atlas key).
+        let phase = phase.rem_euclid(1.);
+        let phase = if phase < 1. { phase.abs() } else { 0. };
+        let outer = std::mem::replace(&mut self.glyph_phase, phase);
+        let result = f(self);
+        self.glyph_phase = outer;
+        result
+    }
+
     /// Invoke the given function with the given content mask after intersecting it
     /// with the current mask. This method should only be called during element drawing.
     // This function is called in a highly recursive manner in editor
@@ -5125,18 +5145,10 @@ impl Window {
         let element_opacity = self.element_opacity();
         let scale_factor = self.scale_factor();
         let glyph_origin = origin.scale(scale_factor);
-
-        let quantized_origin = Point::new(
-            round_half_toward_zero(glyph_origin.x.0 * SUBPIXEL_VARIANTS_X as f32)
-                / SUBPIXEL_VARIANTS_X as f32,
-            round_half_toward_zero(glyph_origin.y.0 * SUBPIXEL_VARIANTS_Y as f32)
-                / SUBPIXEL_VARIANTS_Y as f32,
-        );
-        let subpixel_variant = Point::new(
-            (quantized_origin.x.fract() * SUBPIXEL_VARIANTS_X as f32) as u8,
-            (quantized_origin.y.fract() * SUBPIXEL_VARIANTS_Y as f32) as u8,
-        );
-        let integer_origin = quantized_origin.map(|c| ScaledPixels(c.trunc()));
+        let subpixel_phase = self.glyph_phase;
+        let (integer_origin, subpixel_variant) =
+            glyph_raster_origin(glyph_origin.map(|c| c.0), subpixel_phase);
+        let integer_origin = integer_origin.map(ScaledPixels);
         let subpixel_rendering = self.frame_cycle.is_none() && self.should_use_subpixel_rendering(font_id, font_size);
         // A frame nobody can see would keep the window presenting for nothing.
         if self.frame_cycle.is_some() && color.opacity(element_opacity).a <= 0.0 {
@@ -5152,6 +5164,7 @@ impl Window {
             glyph_id,
             font_size,
             subpixel_variant,
+            subpixel_phase,
             scale_factor,
             is_emoji: false,
             subpixel_rendering,
@@ -5264,6 +5277,7 @@ impl Window {
             glyph_id,
             font_size,
             subpixel_variant: Default::default(),
+            subpixel_phase: 0.,
             scale_factor,
             is_emoji: true,
             subpixel_rendering: false,

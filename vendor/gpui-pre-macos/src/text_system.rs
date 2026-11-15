@@ -37,7 +37,7 @@ use font_kit::{
 use gpui::{
     Bounds, DevicePixels, Font, FontFallbacks, FontFeatures, FontId, FontMetrics, FontRun,
     FontStyle, FontWeight, GlyphId, GlyphThicken, Hsla, LineLayout, Pixels, PlatformTextSystem,
-    RenderGlyphParams, Result, Rgba, SUBPIXEL_VARIANTS_X, ShapedGlyph, ShapedRun, SharedString,
+    RenderGlyphParams, Result, Rgba, ShapedGlyph, ShapedRun, SharedString,
     Size, TextRenderingMode, point, px, size, swap_rgba_pa_to_bgra,
 };
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
@@ -581,10 +581,9 @@ impl MacTextSystemState {
             anyhow::bail!("glyph bounds are empty");
         } else {
             // Add an extra pixel when the subpixel variant isn't zero to make room for anti-aliasing.
+            // HERDR: a pixel for each the shift starts into (it is under 2 with a phase).
             let mut bitmap_size = glyph_bounds.size;
-            if params.subpixel_variant.x > 0 {
-                bitmap_size.width += DevicePixels(1);
-            }
+            bitmap_size.width += DevicePixels(params.subpixel_shift().x.ceil() as i32);
             if params.subpixel_variant.y > 0 {
                 bitmap_size.height += DevicePixels(1);
             }
@@ -639,9 +638,7 @@ impl MacTextSystemState {
                 params.scale_factor as CGFloat,
             );
 
-            let subpixel_shift = params
-                .subpixel_variant
-                .map(|v| v as f32 / SUBPIXEL_VARIANTS_X as f32);
+            let subpixel_shift = params.subpixel_shift();
             cx.set_text_drawing_mode(CGTextDrawingMode::CGTextFill);
             cx.set_allows_antialiasing(true);
             cx.set_should_antialias(true);
@@ -739,7 +736,7 @@ impl MacTextSystemState {
         let glyphs: Vec<(crate::lcd::Samples, RenderGlyphParams, Bounds<DevicePixels>, usize)> = ('!'..='~')
             .filter_map(|ch| Some((self.glyph_for_char(params.font_id, ch)?, if ch.is_ascii_lowercase() { 2 } else { 1 })))
             .filter_map(|(glyph_id, count)| {
-                let params = RenderGlyphParams { glyph_id, subpixel_variant: point(0, 0), subpixel_rendering: false, ..params.clone() };
+                let params = RenderGlyphParams { glyph_id, subpixel_variant: point(0, 0), subpixel_phase: 0., subpixel_rendering: false, ..params.clone() };
                 let bounds = self.raster_bounds(&params).ok().filter(|bounds| bounds.size.width.0 > 0 && bounds.size.height.0 > 0)?;
                 Some((self.subpixel_samples(&params, bounds)?, params, bounds, count))
             })
@@ -772,7 +769,7 @@ impl MacTextSystemState {
         if let Some(sign) = self.subpixel_outward.lock().get(&key) {
             return *sign;
         }
-        let gray_params = RenderGlyphParams { subpixel_variant: point(0, 0), subpixel_rendering: false, ..params.clone() };
+        let gray_params = RenderGlyphParams { subpixel_variant: point(0, 0), subpixel_phase: 0., subpixel_rendering: false, ..params.clone() };
         let sign = self
             .raster_bounds(&gray_params)
             .ok()
@@ -787,7 +784,7 @@ impl MacTextSystemState {
     /// sample per pixel in CoreGraphics' box.
     fn subpixel_samples(&self, params: &RenderGlyphParams, bounds: Bounds<DevicePixels>) -> Option<crate::lcd::Samples> {
         let mut size = bounds.size;
-        size.width += DevicePixels((params.subpixel_variant.x > 0) as i32);
+        size.width += DevicePixels(params.subpixel_shift().x.ceil() as i32);
         let probe = crate::lcd::Samples::PROBE;
         let [plain, across, along] = [[0.0, 0.0], [probe, 0.0], [0.0, probe]].map(|embolden| {
             let glyph = self.subpixel_glyph(params, bounds.origin, size, embolden, 1.0);
@@ -807,7 +804,7 @@ impl MacTextSystemState {
         crate::lcd::Glyph {
             glyph_id: params.glyph_id.0 as u16,
             ppem: f32::from(params.font_size) * params.scale_factor,
-            shift: params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32,
+            shift: params.subpixel_shift().x,
             embolden,
             outward,
             origin: (origin.x.0, origin.y.0),

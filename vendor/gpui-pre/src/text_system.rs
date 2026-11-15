@@ -51,6 +51,26 @@ pub const SUBPIXEL_VARIANTS_X: u8 = 4;
 /// Number of subpixel glyph variants along the Y axis.
 pub const SUBPIXEL_VARIANTS_Y: u8 = 1;
 
+/// HERDR: where `Window::paint_glyph` rasterizes a glyph whose origin is
+/// `origin` device pixels: the whole-pixel origin and the subpixel variant.
+/// The origin less `phase` (`Window::with_glyph_phase`, a fraction of a device
+/// pixel) goes to the nearest variant, ties toward zero; the glyph then draws
+/// `phase` further right (`RenderGlyphParams::subpixel_shift`), so an origin
+/// one phase past a whole pixel draws exactly there.
+pub fn glyph_raster_origin(origin: Point<f32>, phase: f32) -> (Point<f32>, Point<u8>) {
+    let quantized = Point::new(
+        crate::util::round_half_toward_zero((origin.x - phase) * SUBPIXEL_VARIANTS_X as f32)
+            / SUBPIXEL_VARIANTS_X as f32,
+        crate::util::round_half_toward_zero(origin.y * SUBPIXEL_VARIANTS_Y as f32)
+            / SUBPIXEL_VARIANTS_Y as f32,
+    );
+    let variant = Point::new(
+        (quantized.x.fract() * SUBPIXEL_VARIANTS_X as f32) as u8,
+        (quantized.y.fract() * SUBPIXEL_VARIANTS_Y as f32) as u8,
+    );
+    (quantized.map(f32::trunc), variant)
+}
+
 // Leave enough room below the underline for its stroke while keeping it below the baseline.
 const UNDERLINE_DESCENT_OFFSET_FACTOR: f32 = 0.618;
 
@@ -1317,6 +1337,9 @@ pub struct RenderGlyphParams {
     pub glyph_id: GlyphId,
     pub font_size: Pixels,
     pub subpixel_variant: Point<u8>,
+    /// HERDR: the fraction of a device pixel (0 to 1) the glyph draws right
+    /// of its `subpixel_variant` (`Window::with_glyph_phase`); 0 elsewhere.
+    pub subpixel_phase: f32,
     pub scale_factor: f32,
     pub is_emoji: bool,
     pub subpixel_rendering: bool,
@@ -1367,12 +1390,24 @@ impl GlyphThicken {
 
 impl Eq for RenderGlyphParams {}
 
+impl RenderGlyphParams {
+    /// HERDR: how far right of its whole-pixel origin the glyph draws, in
+    /// device pixels: its variant, then its phase.
+    pub fn subpixel_shift(&self) -> Point<f32> {
+        Point::new(
+            self.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32 + self.subpixel_phase,
+            self.subpixel_variant.y as f32 / SUBPIXEL_VARIANTS_Y as f32,
+        )
+    }
+}
+
 impl Hash for RenderGlyphParams {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.font_id.0.hash(state);
         self.glyph_id.0.hash(state);
         self.font_size.0.to_bits().hash(state);
         self.subpixel_variant.hash(state);
+        self.subpixel_phase.to_bits().hash(state);
         self.scale_factor.to_bits().hash(state);
         self.is_emoji.hash(state);
         self.subpixel_rendering.hash(state);
