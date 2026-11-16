@@ -1836,7 +1836,7 @@ impl CursorTrail {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TrailStyle {
-    /// A glowing streak tapering to a point, as Rex draws.
+    /// A glowing streak with a swelling head that pinches into the cursor.
     #[default]
     Comet,
     /// A cursor-sized quad whose corners decay into the cursor, as kitty draws.

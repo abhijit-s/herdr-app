@@ -1357,6 +1357,23 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Files: `src/window/cursor_particles.rs`, `src/window/cursor_shapes.rs` (`Layer::disc`), `src/window/trail_paint.rs`, `src/window/cursor_trail.rs`, `src/window/cursor_preview.rs`, `src/window.rs`, `src/settings.rs`, `tests/trail_pixels.rs`, `defaults/AGENTS.md`, `defaults/herdr.d.ts`, `defaults/frame/settings/main.js`, `scripts/settings.test.ts`, `FORK.md`
 - Upstream: none
 
+### Comet head
+
+`comet-head` (branched from `master` 1f46858, fork only): the comet's head is our own design. It is thicker and it moves. Its values are not taken from Rex.
+
+- Size: the core's half width at the head is 0.22 of the cell height and the outer streak's is 0.40 (`COMET_LAYERS`). The glow's radius is 0.5 of the cell height and its blur 0.45 (`COMET_GLOW`). At rest the head is about a cursor block across.
+- Launch swell: `comet_head_scale` grows the head to `COMET_SWELL` (1.25) times its size and back to 1 over the first `COMET_SWELL_END` (0.25) of the effect, as a sine bump.
+- Glow: `comet_glow_strength` rises from `COMET_GLOW_FROM` (0.85) to full by `COMET_GLOW_PEAK` (0.15), then eases down quadratically to none at the end. It is not a linear fade. The glow's radius and blur follow the head's scale.
+- Landing pinch: from `COMET_PINCH_START` (0.7) on, the head shrinks smoothly (smoothstep) to `COMET_PINCH_TO` (0.3) of its size, so the effect ends in the cursor. The streaks' opacity is `1 - t^COMET_FADE_POW` (3) rather than `1 - t`, so the head keeps its strength while it pinches (0.39 at t = 0.85) instead of fading out before it lands.
+- Rules: there are no extra layers; the comet still draws one glow and two streaks a frame, with per-frame sizes only. Everything is a pure function of the progress `t`, tested without a window. Reduced motion works as before, because no trail starts while it is on (`cursor_trail.rs`, `cursor_preview.rs`).
+- At the default 120 ms the swell's peak falls at about 15 ms, so at 60 frames a second it shows for about one frame. The swell is easier to see at longer durations.
+- Bench: release builds, A/B against master 1f46858, `scripts/bench.py --set leaps` with the comet at 160 ms, 15 s a scenario, two interleaved rounds per side (master, branch, branch, master), 1-minute load 3 to 7, non-zero window draws in every run. leaps-all Minstr/s (app, core and holder): master 90.7, 90.7 / branch 91.4, 90.8; trail frames 13.6, 13.7 / 13.9, 13.9 a second; frame time 14.3, 13.1 / 11.7, 13.2 ms/s. leaps-off: 34.3, 33.9 / 34.7, 34.3. Equal within the runs' spread: the per-frame sizes cost nothing measurable.
+- Regression: master 1121 bin tests and 335 script tests; this branch 1124 bin (the three new ones) and 335 script, all passing.
+- Tests: `window::cursor_shapes::tests::{comet_head_swells_as_it_launches_and_settles, comet_glow_peaks_early_then_eases_down, comet_head_pinches_into_the_cursor_as_it_lands}` (widths and strengths at given `t`, and the head still visible while it pinches), with the comet's width, glow and alpha tests updated; `tests/trail_pixels.rs` (the glow at 0.5 and 0.45 of a 16 px cell, and the comet's pale nose sampled past the wider core).
+- Files: `src/window/cursor_shapes.rs`, `src/window/trail_paint.rs`, `src/settings.rs`, `tests/trail_pixels.rs`, `defaults/AGENTS.md`, `FORK.md`
+- Three questions (FORK-ADR-001, fork architecture stance): (1) Does the app act on it? Only to draw it; the trail is drawing in the app's Rust core. (2) Can only the app see it? Yes: the cursor and its trail are painted by the app's renderer, not by a mod. (3) Can a mod not do it? No mod can paint over the terminal's cursor. Verdict: D (fork only), as with the cursor trail it changes.
+- Upstream: none
+
 ### Kitty images by file path on this machine
 
 `fix/kitty-local-file-medium` (branched from `master`): a terminal whose herdr-core runs on this machine accepts kitty graphics images sent by file path (`t=f`). libghostty-vt accepts only inline data (`t=d`) unless its embedder enables more, and Herdr enabled nothing, so `kitten icat`'s probes got `EINVAL: unsupported medium` for the temporary file and shared memory mediums, and snacks.nvim, which sends a local image as a path, never had one drawn.

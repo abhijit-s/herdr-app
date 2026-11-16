@@ -9,7 +9,7 @@ use gpui::{
     linear_color_stop, linear_gradient, point, px, size,
 };
 
-/// How far the comet's core color is mixed toward white, as Rex mixes it.
+/// How far the comet's core color is mixed toward white.
 const CORE_WHITE: f32 = 0.25;
 
 /// The core's color: the trail's mixed `CORE_WHITE` toward white.
