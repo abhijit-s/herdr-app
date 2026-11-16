@@ -413,7 +413,7 @@ test("the preview heads the Cursor page while the trail or the pulse is on", () 
     const box = preview(person);
     expect(box).toBeDefined();
     expect(box.nodes[0].calls.cursorPreview).toEqual(["cursor-effects", {}]);
-    expect(texts(box).join("|")).toContain("Click in the box");
+    expect(texts(box).join("|")).toContain("Try it: click a cell");
   }
   // Above every effect row: the first thing under the heading.
   const view = new Settings();
@@ -421,10 +421,10 @@ test("the preview heads the Cursor page while the trail or the pulse is on", () 
   view.choicePicker = element;
   const page = view.page("cursor", new Proxy({}, { get: () => "#000000" }), {});
   const shown = texts(page);
-  expect(shown.findIndex((x: string) => x.startsWith("Click in the box"))).toBeLessThan(shown.indexOf("Cursor trail"));
+  expect(shown.findIndex((x: string) => x.startsWith("Try it: click a cell"))).toBeLessThan(shown.indexOf("Cursor trail"));
   expect(shown.indexOf("Cursor trail")).toBeGreaterThan(-1);
   // Not among search results.
-  expect(texts(search("cursor_trail").root).join("|")).not.toContain("Click in the box");
+  expect(texts(search("cursor_trail").root).join("|")).not.toContain("Try it: click a cell");
 });
 
 test("effect time shows while the trail or the pulse is on, and steps by 20 ms within 50 to 1000, leaving 120 out", () => {

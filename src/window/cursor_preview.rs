@@ -4,10 +4,10 @@
 //! cursor to the clicked cell and plays the effect the settings ask for at
 //! that moment, drawn by the panes' own `Trail` and `paint_layers`, so it is
 //! the effect a pane draws, not a copy of it. It asks for frames only while an
-//! effect runs. Each such frame draws the Settings window again (GPUI draws a
-//! notified view's ancestors), as any change on the page does; the main
-//! window's trail layer avoids that with its cached views, which a mod's
-//! window doesn't have.
+//! effect runs. Each such frame also builds the Settings page's elements
+//! again from the script's last description (GPUI draws a notified view's
+//! ancestors); the script itself doesn't run. The main window's trail layer
+//! avoids even that with its cached views, which a mod's window doesn't have.
 
 use super::cursor_shapes;
 use super::cursor_trail::{Trail, start_from};
@@ -24,9 +24,9 @@ const LINES: [(usize, usize); 5] = [(0, 18), (2, 31), (2, 24), (0, 12), (0, 2)];
 pub(crate) struct CursorPreview {
     cursor: (usize, usize),
     trail: Option<Trail>,
-    /// The grid's origin and cell size at the last paint, which a click
-    /// reads to find its cell.
-    grid: Option<(Point<Pixels>, Size<Pixels>)>,
+    /// The grid's origin, cell size and columns at the last paint, which a
+    /// click reads to find its cell.
+    grid: Option<(Point<Pixels>, Size<Pixels>, usize)>,
     /// The effect frames it has painted.
     frames: u64,
 }
@@ -61,18 +61,19 @@ impl CursorPreview {
 
     /// The cell at window point `at`, held within the grid.
     fn cell_at(&self, at: Point<Pixels>) -> Option<(usize, usize)> {
-        let (origin, cell) = self.grid?;
+        let (origin, cell, cols) = self.grid?;
         let col = f32::from(at.x - origin.x) / f32::from(cell.width);
         let row = f32::from(at.y - origin.y) / f32::from(cell.height);
         Some((
-            (col.max(0.0) as usize).min(COLS - 1),
+            (col.max(0.0) as usize).min(cols - 1),
             (row.max(0.0) as usize).min(ROWS - 1),
         ))
     }
 
     /// The rect of the cell at `(col, row)` in the last paint's grid.
     fn rect(&self, (col, row): (usize, usize)) -> Option<Bounds<Pixels>> {
-        let (origin, cell) = self.grid?;
+        let (origin, cell, cols) = self.grid?;
+        let col = col.min(cols - 1);
         Some(Bounds::new(
             point(
                 origin.x + cell.width * col as f32,
@@ -142,21 +143,22 @@ impl Render for CursorPreview {
                 canvas(
                     |_, _, _| {},
                     move |bounds, _, window, cx| {
-                        let cell = crate::terminal::cell_size(window);
-                        let grid = size(cell.width * COLS as f32, cell.height * ROWS as f32);
-                        let origin = point(
-                            bounds.origin.x + ((bounds.size.width - grid.width) / 2.0).max(px(0.0)),
-                            bounds.origin.y + ((bounds.size.height - grid.height) / 2.0).max(px(0.0)),
-                        );
+                        let (origin, cell, cols) = fit(bounds, crate::terminal::cell_size(window));
+                        let reduce_motion = cx.reduce_motion();
                         let _ = view.update(cx, |this, _| {
-                            this.grid = Some((origin, cell));
-                            paint_grid(this, window);
-                            if let Some((layers, color)) = this.frame() {
-                                crate::bench::count(&crate::bench::TRAIL);
-                                this.frames += 1;
-                                window.request_animation_frame();
-                                paint_layers(&layers, color, window);
+                            this.grid = Some((origin, cell, cols));
+                            // As in panes: reduced motion ends one running.
+                            if reduce_motion {
+                                this.trail = None;
                             }
+                            window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                                paint_grid(this, window);
+                                if let Some((layers, color)) = this.frame() {
+                                    this.frames += 1;
+                                    window.request_animation_frame();
+                                    paint_layers(&layers, color, window);
+                                }
+                            });
                         });
                     },
                 )
@@ -165,10 +167,23 @@ impl Render for CursorPreview {
     }
 }
 
-/// The stand-in terminal: its placeholder lines, faint, and the cursor block.
+/// The grid in the box `bounds` for cells of `cell`: as many columns as fit,
+/// up to `COLS`, centred, and its origin, cell and columns.
+fn fit(bounds: Bounds<Pixels>, cell: Size<Pixels>) -> (Point<Pixels>, Size<Pixels>, usize) {
+    let cols = ((bounds.size.width / cell.width).floor() as usize).clamp(1, COLS);
+    let grid = size(cell.width * cols as f32, cell.height * ROWS as f32);
+    let origin = point(
+        bounds.origin.x + ((bounds.size.width - grid.width) / 2.0).max(px(0.0)),
+        bounds.origin.y + ((bounds.size.height - grid.height) / 2.0).max(px(0.0)),
+    );
+    (origin, cell, cols)
+}
+
+/// The stand-in terminal: its placeholder lines in the terminals' ink, faint,
+/// and the cursor block.
 fn paint_grid(preview: &CursorPreview, window: &mut Window) {
-    let Some((origin, cell)) = preview.grid else { return };
-    let text = settings::color("text").opacity(0.18);
+    let Some((origin, cell, _)) = preview.grid else { return };
+    let text = settings::color("terminal_foreground").opacity(0.18);
     for (row, &(col, len)) in LINES.iter().enumerate() {
         let bar = Bounds::new(
             point(
@@ -192,7 +207,7 @@ mod tests {
 
     fn preview() -> CursorPreview {
         CursorPreview {
-            grid: Some((point(px(10.0), px(20.0)), size(px(8.0), px(16.0)))),
+            grid: Some((point(px(10.0), px(20.0)), size(px(8.0), px(16.0)), COLS)),
             ..CursorPreview::new()
         }
     }
@@ -231,10 +246,22 @@ mod tests {
             let (layers, _) = p.frame().expect("it draws as it starts");
             assert!(!layers.is_empty(), "{style:?}");
             if style != TrailStyle::Tail {
+                // The panes' layers for the same ends, at about the same time:
+                // the same outlines, within a frame's worth of motion.
                 let to = p.rect((30, 1)).unwrap();
                 let t = p.trail.as_ref().unwrap().start.elapsed().as_secs_f32() / 0.2;
                 let want = cursor_shapes::trail(style, cursor_shapes::quad(from), to, 16.0, t).0;
                 assert_eq!(layers.len(), want.len(), "{style:?}: the panes' layers");
+                for (got, want) in layers.iter().zip(&want) {
+                    assert_eq!(got.outline.len(), want.outline.len(), "{style:?}");
+                    // The same points, wherever each outline starts.
+                    for a in &got.outline {
+                        let near = want.outline.iter().any(|b| {
+                            (f32::from(a.x - b.x)).hypot(f32::from(a.y - b.y)) < 2.0
+                        });
+                        assert!(near, "{style:?}: {a:?} not in {:?}", want.outline);
+                    }
+                }
             }
         }
         // A setting changed between clicks shows on the next one.
@@ -243,6 +270,25 @@ mod tests {
         p.moved((3, 3), &on(TrailStyle::Sweep, Arrival::Ripple), false);
         let t = p.trail.as_ref().unwrap();
         assert_eq!((t.style, t.arrival), (Some(TrailStyle::Sweep), Arrival::Ripple));
+    }
+
+    /// A tail chases into the clicked cell and ends there, as in a pane.
+    #[test]
+    fn a_tail_chases_into_the_clicked_cell_and_ends() {
+        use settings::{Arrival, TrailStyle};
+        let mut p = preview();
+        p.moved((40, 0), &on(TrailStyle::Tail, Arrival::Off), false);
+        let to = p.rect((40, 0)).unwrap();
+        let mut gaps = Vec::new();
+        for _ in 0..100 {
+            let Some((layers, _)) = p.frame() else { break };
+            let x = layers[0].outline.iter().map(|q| f32::from(q.x)).fold(f32::MAX, f32::min);
+            gaps.push(f32::from(to.origin.x) - x);
+            p.trail.as_mut().unwrap().age(std::time::Duration::from_millis(16));
+        }
+        assert!(p.trail.is_none(), "it ends: {gaps:?}");
+        assert!(gaps.len() >= 3 && gaps[0] > 200.0, "{gaps:?}");
+        assert!(gaps.windows(2).all(|w| w[1] <= w[0] + 1e-3), "closing in: {gaps:?}");
     }
 
     #[test]
@@ -288,7 +334,7 @@ mod tests {
         cx.run_until_parked();
         let preview = seen.borrow().clone().expect("rendered");
         let (grid, frames) = preview.read_with(cx, |p, _| (p.grid, p.frames));
-        let (origin, cell) = grid.expect("painted");
+        let (origin, cell, _) = grid.expect("painted");
         assert_eq!(frames, 0, "nothing runs at rest");
         let before = renders.get();
         let at = origin + point(cell.width * 20.5, cell.height * 1.5);

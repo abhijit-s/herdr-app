@@ -187,7 +187,8 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
     for (name, value) in values {
         module = module.function(name, move |_| Ok(to_host(&value)));
     }
-    // The real preview, so Settings renders draw it as the app does.
+    // The real preview component (a description doesn't build it; the
+    // preview's own tests draw it in a window).
     module = module.component("CursorPreview", |args, window, cx| {
         crate::window::cursor_preview::element(args.id(), window, cx)
     });
@@ -871,7 +872,8 @@ fn cell_rounding_row_shows_the_pick(cx: &mut TestAppContext) {
 }
 
 /// The Cursor page draws Herdr's preview above the effect rows while an effect
-/// is on, through the real `CursorPreview` component, and none while both are off.
+/// is on, and none while both are off (the script's description: the component
+/// itself is drawn in window::cursor_preview's tests).
 #[gpui::test]
 fn cursor_page_draws_the_preview_while_an_effect_is_on(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
@@ -881,7 +883,7 @@ fn cursor_page_draws_the_preview_while_an_effect_is_on(cx: &mut TestAppContext) 
     for (person, shown) in [("{}", false), (r#"{ cursor_trail: "panes" }"#, true), (r#"{ cursor_arrival: "boom" }"#, true)] {
         let values = fixture(true, p.clone(), updates("current", "current"));
         let tree = describe_with_values(cx, &staged, "frame/settings", values, Some(&format!("this.load = async () => {{}}; this.person = {person};"))).unwrap();
-        let (caption, trail) = (tree.find("Click in the box"), tree.find("Cursor trail").expect("the trail row"));
+        let (caption, trail) = (tree.find("Try it: click a cell"), tree.find("Cursor trail").expect("the trail row"));
         assert_eq!(caption.is_some(), shown, "{person}: {tree}");
         assert!(caption.is_none_or(|c| c < trail), "above the rows");
     }

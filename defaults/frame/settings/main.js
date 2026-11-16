@@ -1894,7 +1894,7 @@ export default class Settings extends View {
       .border_b(1)
       .border_color(t.border)
       .child(CursorPreview.new("cursor-effects", {}))
-      .child(div().text_size(12).text_color(t.dim).child("Click in the box to move the cursor there and see the effect as it's set."));
+      .child(div().text_size(12).text_color(t.dim).child("Try it: click a cell and the cursor jumps there with your trail and pulse."));
   }
 
   activity(t) {
