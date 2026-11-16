@@ -258,7 +258,7 @@ mod tests {
     fn floating_and_docking_keep_the_pane_and_its_place() {
         use crate::pane_icons::{Choice, Kind};
         let mut m = model();
-        m.rename_pane("c", "build");
+        m.name_pane("c", "build");
         let icon = Choice { kind: Kind::Letter, value: None };
         m.set_icon("c", Some(icon.clone()));
         let before = drawn(tiled(&m));

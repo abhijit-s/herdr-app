@@ -235,6 +235,9 @@ pub struct TerminalView {
     /// This pane's own text zoom on top of the app's (`pane.zoom_text_*`),
     /// for the life of the view; None at the default size.
     text_zoom: Option<f32>,
+    /// Files on their way to this terminal's machine for over a second: what
+    /// the pane says meanwhile, by send.
+    sending: Vec<(u64, &'static str)>,
     grid: Rc<RefCell<Grid>>,
     focus: FocusHandle,
     was_focused: bool,
@@ -414,6 +417,7 @@ impl TerminalView {
             link: None,
             right_click_to_program: false,
             text_zoom: None,
+            sending: Vec::new(),
             grid: Rc::new(RefCell::new(Grid {
                 vt: Vt::new(size_hint.0.max(2), size_hint.1.max(1)),
                 core: core.clone(),
@@ -953,6 +957,25 @@ impl TerminalView {
             return drag_paths::unavailable(body);
         }
         let addr = self.address.clone();
+        static SENDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let send = SENDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let label = match (copies, paths.len()) {
+            (true, _) => "Sending image…",
+            (false, 1) => "Sending file…",
+            _ => "Sending files…",
+        };
+        let done = Rc::new(Cell::new(false));
+        let shown = done.clone();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            if !shown.get() {
+                let _ = this.update(cx, |this, cx| {
+                    this.sending.push((send, label));
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             let (there, refused) = cx
                 .background_executor()
@@ -976,7 +999,11 @@ impl TerminalView {
                     (there, refused)
                 })
                 .await;
+            // A closed pane is gone here: its paths go nowhere.
             let _ = this.update(cx, |this, cx| {
+                done.set(true);
+                this.sending.retain(|(s, _)| *s != send);
+                cx.notify();
                 if !there.is_empty() {
                     this.paste_paths(there);
                 }
@@ -3332,6 +3359,21 @@ impl Render for TerminalView {
                         .text_color(hsla(vt::theme().fg))
                         .text_size(crate::settings::text_rems(0.75))
                         .child(format!("[{why}]")),
+                )
+            })
+            .when_some(self.sending.last(), |d, (_, label)| {
+                d.child(
+                    div()
+                        .absolute()
+                        .bottom_2()
+                        .left_3()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .bg(crate::settings::color("raised"))
+                        .text_color(hsla(vt::theme().fg))
+                        .text_xs()
+                        .child(*label),
                 )
             })
     }
