@@ -199,6 +199,7 @@ impl AppWindow {
             && s.cursor_arrival == settings::Arrival::Off
         {
             (self.trail_seen, self.trail) = (None, None);
+            self.dust = cursor_particles::Dust::default();
             return;
         }
         let Some((tab, pane)) = self
@@ -207,6 +208,7 @@ impl AppWindow {
             .and_then(|t| Some((t.id.clone(), t.focused_pane()?)))
         else {
             (self.trail_seen, self.trail) = (None, None);
+            self.dust = cursor_particles::Dust::default();
             return;
         };
         let anchor = self
@@ -222,6 +224,10 @@ impl AppWindow {
                 return;
             }
             Some(seen) => {
+                // Dust is in the window's px: a tab change leaves it behind.
+                if seen.tab != tab {
+                    self.dust = cursor_particles::Dust::default();
+                }
                 let live = self.trail.take();
                 let from = start_from(live.as_ref(), seen.anchor)
                     .filter(|_| s.cursor_trail != settings::CursorTrail::Off);
@@ -281,7 +287,16 @@ impl AppWindow {
         if self.dust.is_empty() {
             return trail;
         }
-        let dust = self.dust.layers(Instant::now(), self.dust_cursor);
+        // Kept off the focused pane's cursor as it is now, which may have
+        // moved on since the trail ended.
+        let cursor = self
+            .model
+            .active_tab()
+            .and_then(|t| t.focused_pane())
+            .and_then(|pane| self.pane_term(&pane))
+            .and_then(|term| term.view.read(cx).trail_end())
+            .map(|end| end.cursor);
+        let dust = self.dust.layers(Instant::now(), cursor);
         match trail {
             Some((layers, tint)) => Some((dust.into_iter().chain(layers).collect(), tint)),
             None => (!self.dust.is_empty()).then_some((dust, self.dust_tint)),
@@ -310,11 +325,11 @@ impl AppWindow {
         };
         let color = trail.color;
         let dust = trail.take_dust(end.cursor, end.cell);
-        let start = trail.start;
         let shapes = trail.shapes(end, elapsed);
-        (self.dust_cursor, self.dust_tint) = (Some(end.cursor), color);
+        self.dust_tint = color;
+        // From the frame it's shed: a pane drawn late doesn't lose its dust's start.
         if let Some(burst) = dust {
-            self.dust.add(burst, start);
+            self.dust.add(burst, Instant::now());
         }
         if shapes.is_none() {
             self.trail = None;

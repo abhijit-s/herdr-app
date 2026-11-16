@@ -163,24 +163,31 @@ impl Dust {
         }
     }
 
-    /// Every live particle at `now` as a layer to paint, none over `cursor`;
-    /// moves whose particles have all faded are dropped.
+    /// Every live particle at `now` as a layer to paint, none over `cursor`:
+    /// each fades out over its radius as it nears it, so one that flies
+    /// past it dims and comes back rather than blinking; moves whose
+    /// particles have all faded are dropped.
     pub(super) fn layers(&mut self, now: Instant, cursor: Option<Bounds<Pixels>>) -> Vec<Layer> {
         self.bursts
             .retain(|(b, at)| b.alive(now.saturating_duration_since(*at).as_secs_f32()));
-        let clear = |m: &Mote| {
-            cursor.is_none_or(|c| {
+        // How far it may show beside the cursor: none touching it, all from
+        // a radius clear of it, smoothly between.
+        let shown = |m: &Mote| {
+            cursor.map_or(1.0, |c| {
                 let (x0, y0) = (f32::from(c.origin.x), f32::from(c.origin.y));
                 let (x1, y1) = (x0 + f32::from(c.size.width), y0 + f32::from(c.size.height));
                 let gap = ((x0 - m.at.0).max(m.at.0 - x1).max(0.0)).hypot((y0 - m.at.1).max(m.at.1 - y1).max(0.0));
-                gap >= m.radius
+                let k = ((gap - m.radius) / m.radius).clamp(0.0, 1.0);
+                k * k * (3.0 - 2.0 * k)
             })
         };
         self.bursts
             .iter()
             .flat_map(|(b, at)| b.motes(now.saturating_duration_since(*at).as_secs_f32()))
-            .filter(clear)
-            .map(|m| Layer::disc(m.at, m.radius, m.alpha, Tone::Effect))
+            .filter_map(|m| {
+                let alpha = m.alpha * shown(&m);
+                (alpha > 0.0).then(|| Layer::disc(m.at, m.radius, alpha, Tone::Effect))
+            })
             .collect()
     }
 }
@@ -278,5 +285,30 @@ mod tests {
             let gap = ((100.0 - x).max(x - 250.0).max(0.0)).hypot((0.0 - y).max(y - 200.0).max(0.0));
             assert!(gap >= r, "over the cursor: {x} {y}");
         }
+    }
+
+    /// Nearing the cursor, a particle dims smoothly to nothing as it reaches
+    /// it, rather than blinking out whole.
+    #[test]
+    fn a_particle_fades_as_it_nears_the_cursor_rather_than_blinking() {
+        let start = Instant::now();
+        let b = burst(400.0);
+        let t = 0.3;
+        let free: Vec<Mote> = b.motes(t);
+        let m = free[free.len() / 2];
+        let alpha_with = |gap: f32| {
+            let mut dust = Dust::default();
+            dust.add(b.clone(), start);
+            let left = m.at.0 + gap;
+            let cursor = Bounds::new(gpui::point(gpui::px(left), gpui::px(-1000.0)), gpui::size(gpui::px(1.0), gpui::px(3000.0)));
+            dust.layers(start + std::time::Duration::from_secs_f32(t), Some(cursor))
+                .iter()
+                .find(|l| l.disc.is_some_and(|(at, _)| at == m.at))
+                .map_or(0.0, |l| l.alpha)
+        };
+        let alphas: Vec<f32> = [3.0, 2.0, 1.5, 1.0, 0.5].iter().map(|k| alpha_with(m.radius * k)).collect();
+        assert!((alphas[0] - m.alpha).abs() < 1e-5 && (alphas[1] - m.alpha).abs() < 1e-5, "clear of it, as it is: {alphas:?}");
+        assert!(alphas[2] > 0.0 && alphas[2] < m.alpha, "dimmer nearer: {alphas:?}");
+        assert_eq!((alphas[3], alphas[4]), (0.0, 0.0), "none touching it");
     }
 }

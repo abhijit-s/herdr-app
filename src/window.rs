@@ -763,10 +763,9 @@ pub struct AppWindow {
     /// The cursor trail being drawn, and the (tab, pane) focused at the last draw (window/cursor_trail.rs).
     trail: Option<cursor_trail::Trail>,
     trail_seen: Option<cursor_trail::Seen>,
-    /// Pixie dust from recent trails (`cursor_trail_particles`), with the
-    /// cursor it keeps off and the colors it is drawn in.
+    /// Pixie dust from recent trails (`cursor_trail_particles`), and the
+    /// colors it is drawn in.
     dust: cursor_particles::Dust,
-    dust_cursor: Option<Bounds<Pixels>>,
     dust_tint: trail_paint::Tint,
     /// The window's drawing below the trail and above it, each drawn again
     /// only when the window is (a frame the trail alone asked for reuses
@@ -933,7 +932,6 @@ impl AppWindow {
             trail: None,
             trail_seen: None,
             dust: cursor_particles::Dust::default(),
-            dust_cursor: None,
             dust_tint: trail_paint::Tint::default(),
             lower: cx.new(|_| Body {
                 app: me.clone(),

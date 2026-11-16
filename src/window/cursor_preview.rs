@@ -132,11 +132,10 @@ impl CursorPreview {
         };
         let elapsed = trail.start.elapsed();
         let dust = trail.take_dust(at, at);
-        let start = trail.start;
         self.tint = trail.color();
         let frame = trail.shapes(end, elapsed).map(|l| (l, trail.color()));
         if let Some(burst) = dust {
-            self.dust.add(burst, start);
+            self.dust.add(burst, std::time::Instant::now());
         }
         if frame.is_none() {
             self.trail = None;
