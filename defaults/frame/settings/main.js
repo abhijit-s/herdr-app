@@ -1873,6 +1873,22 @@ export default class Settings extends View {
       .when((on || pulse) && !this.filtering(), (el) => el.child(this.cursorPreview(t)))
       .child(this.row(t, "Cursor trail", "A trail from one pane's cursor to the next as the focus moves between panes, and with Panes and jumps, as the cursor jumps in the pane you're typing in.", this.choicePicker(t, "st-ct", "cursor_trail", CURSOR_TRAILS), "cursor_trail"))
       .when(on, (el) => el.child(this.row(t, "Trail style", "Comet: a glowing streak. Tail: the cursor stretched, as kitty does. Sweep: a block shrinking into the cursor. Warp: the cursor stretching and springing into place, after Neovide. Blaze: a flame-colored beam pulled into the cursor, after kitty; tapered, it narrows to a line.", this.choicePicker(t, "st-cs", "cursor_trail_style", TRAIL_STYLES), "cursor_trail_style")))
+      .when(on && (this.person.cursor_trail_style ?? "comet") === "tail", (el) =>
+        el.child(
+          this.row(
+            t,
+            "Motion blur",
+            "The tail smeared along its way between frames, so a fast move reads as one streak rather than hops.",
+            this.toggle(t, "st-cursor_trail_motion_blur", this.person.cursor_trail_motion_blur === true, (_e, cx) =>
+              this.change((p) => {
+                if (p.cursor_trail_motion_blur) delete p.cursor_trail_motion_blur;
+                else p.cursor_trail_motion_blur = true;
+              }, cx),
+            ),
+            "cursor_trail_motion_blur",
+          ),
+        ),
+      )
       .when(jumps, (el) =>
         el
           .child(this.row(t, "Settle time", "How long the program leaves the cursor still before a jump counts, so streaming output draws nothing until it pauses.", this.stepper(t, "st-cursor_trail_settle_ms", `${settle} ms`, settleLess, settleMore), "cursor_trail_settle_ms"))

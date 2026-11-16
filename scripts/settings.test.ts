@@ -429,6 +429,17 @@ test("the preview heads the Cursor page while the trail or the pulse is on", () 
   expect(texts(search("cursor_trail").root).join("|")).not.toContain("Try it: click a cell");
 });
 
+test("motion blur shows only for the tail and toggles its key, leaving off out", () => {
+  const toggle = (person: Record<string, any>) => click(person, {}, "st-cursor_trail_motion_blur", ["choicePicker"], "cursor");
+  const shown = (person: Record<string, any>) => click(person, {}, "st-cursor_trail_motion_blur", ["choicePicker", "shown?"], "cursor") !== undefined;
+  expect(shown({ cursor_trail: "panes" })).toBe(false);
+  expect(shown({ cursor_trail_style: "tail" })).toBe(false);
+  expect(shown({ cursor_trail: "all", cursor_trail_style: "tail" })).toBe(true);
+  const tail = { cursor_trail: "panes", cursor_trail_style: "tail" };
+  expect(toggle(tail)).toEqual({ ...tail, cursor_trail_motion_blur: true });
+  expect(toggle({ ...tail, cursor_trail_motion_blur: true })).toEqual(tail);
+});
+
 test("effect time shows while the trail or the pulse is on, and steps by 20 ms within 50 to 1000, leaving 120 out", () => {
   const step = (person: Record<string, any>, id: string) => click(person, {}, id, [], "cursor");
   expect(() => step({}, "st-cursor_trail_duration_ms-plus")).toThrow();

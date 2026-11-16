@@ -320,6 +320,8 @@ pub(super) struct Chase {
     pub(super) opacity: f32,
     /// When it last stepped, in s from the trail's start.
     at: f32,
+    /// The corners before the last step, where a motion blur starts.
+    before: Quad,
 }
 
 impl Chase {
@@ -328,6 +330,7 @@ impl Chase {
             corners: from,
             opacity: 1.0,
             at: 0.0,
+            before: from,
         }
     }
 
@@ -344,6 +347,7 @@ impl Chase {
     /// still to be drawn at `now` (s from the start).
     pub(super) fn step(&mut self, to: Bounds<Pixels>, shown: bool, now: f32, decay: f32) -> bool {
         let dt = (now - self.at).max(0.0);
+        self.before = self.corners;
         self.at = now;
         let (target, center) = (quad(to), mid(to));
         let diag = (f32::from(to.size.width).hypot(f32::from(to.size.height)) / 2.0).max(1e-3);
@@ -399,6 +403,43 @@ impl Chase {
 
     /// The quad as it stands, less the cursor `to` (kitty draws the trail
     /// only outside the cursor's rect).
+    /// The quad with a motion blur behind it (`cursor_trail_motion_blur`):
+    /// what the eye would see of the quad moving from where it was at the
+    /// last frame to where it is. The average of the quad drawn at many
+    /// points between the two, for a quad that moves without changing shape,
+    /// is a ramp across the ground it swept, from none at its old trailing
+    /// edge to full at its new one, and full under the quad; drawn here as one
+    /// layer, the hull of the two quads in that ramp, under the quad itself,
+    /// both less the cursor. Nothing more while it barely moved.
+    pub(super) fn blurred(&self, to: Bounds<Pixels>) -> Vec<Layer> {
+        let mut layers = self.layers(to);
+        let (was, now) = (centroid(&self.before), centroid(&self.corners));
+        let (dx, dy) = (now.0 - was.0, now.1 - was.1);
+        if layers.is_empty() || dx.hypot(dy) < CAUGHT_UP {
+            return layers;
+        }
+        // Each quad's corner furthest back along the move: its trailing edge.
+        let back = |q: &Quad| {
+            *q.iter()
+                .min_by(|a, b| (a.0 * dx + a.1 * dy).total_cmp(&(b.0 * dx + b.1 * dy)))
+                .unwrap()
+        };
+        let swept = hull_points(self.before.iter().chain(&self.corners).copied().collect());
+        let cut = clipped(&quad(to), &swept);
+        let blur = Layer {
+            outline: swept.into_iter().map(pt).collect(),
+            hole: (cut.len() >= 3 && area(&cut).abs() > 1e-3).then(|| cut.into_iter().map(pt).collect()),
+            stroke: None,
+            open: false,
+            alpha: self.opacity,
+            tone: Tone::Effect,
+            fade: Some((back(&self.before), back(&self.corners))),
+            glow: None,
+        };
+        layers.insert(0, blur);
+        layers
+    }
+
     pub(super) fn layers(&self, to: Bounds<Pixels>) -> Vec<Layer> {
         let outer = hull_points(self.corners.to_vec());
         if outer.len() < 3 {
@@ -815,8 +856,13 @@ mod tests {
     /// Whether `p` is inside the convex outline `o` (or on its edge).
     fn within(o: &[Point<Pixels>], p: P) -> bool {
         let pts: Vec<P> = o.iter().map(|q| xy(*q)).collect();
+        // How far `p` is inside each side, in px (a cross product would
+        // grow with the side's length).
         let sides: Vec<f32> = (0..pts.len())
-            .map(|i| cross(pts[i], pts[(i + 1) % pts.len()], p))
+            .map(|i| {
+                let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+                cross(a, b, p) / (b.0 - a.0).hypot(b.1 - a.1).max(1e-6)
+            })
             .collect();
         sides.iter().all(|s| *s >= -1e-3) || sides.iter().all(|s| *s <= 1e-3)
     }
@@ -1669,5 +1715,64 @@ mod tests {
         assert_eq!(Tint::new(chosen, true).flame, (chosen, deeper(chosen)));
         let d = deeper(chosen);
         assert!(d.l < chosen.l && d.s > chosen.s && d.h == chosen.h);
+    }
+
+    #[test]
+    fn a_blurred_tail_smears_the_ground_it_swept_since_the_last_frame() {
+        let (from, to) = (cell(0.0, 0.0), cell(400.0, 0.0));
+        let mut c = Chase::new(quad(from));
+        assert!(c.step(to, true, 0.0, 0.4));
+        assert_eq!(c.blurred(to), c.layers(to), "no move yet: no blur");
+        // Frames at 30 a second, so the hops are long.
+        assert!(c.step(to, true, 1.0 / 30.0, 0.4));
+        let before = c.before;
+        assert!(c.step(to, true, 2.0 / 30.0, 0.4));
+        let (layers, plain) = (c.blurred(to), c.layers(to));
+        assert_eq!(layers.len(), plain.len() + 1, "one more layer, under the tail");
+        assert_eq!(&layers[1..], &plain[..], "the tail itself as without the blur");
+        let blur = &layers[0];
+        assert!(convex(&blur.outline), "{:?}", blur.outline);
+        assert_eq!((blur.alpha, blur.tone, blur.stroke), (c.opacity, Tone::Effect, None));
+        assert_ne!(c.before, before, "it notes the corners it stepped from");
+        for q in c.before.iter().chain(&c.corners) {
+            assert!(within(&blur.outline, *q), "both quads inside: {q:?}");
+        }
+        // It covers the ground between the two quads' back edges, which the
+        // tail alone leaves bare.
+        let back = |q: &Quad| q.iter().map(|p| p.0).fold(f32::MAX, f32::min);
+        let gap = ((back(&c.before) + back(&c.corners)) / 2.0, 8.0);
+        assert!(paints(blur, gap) && !paints(&plain[0], gap), "{gap:?}");
+        // Rising from none at the old back edge to full at the new one.
+        let fade = blur.fade.unwrap();
+        assert!((fade.0.0 - back(&c.before)).abs() < 1e-3 && (fade.1.0 - back(&c.corners)).abs() < 1e-3, "{fade:?}");
+        // Never over the cursor.
+        for p in [(404.0, 8.0), (401.0, 1.0), (407.0, 15.0)] {
+            assert!(!paints(blur, p), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn a_blurred_tail_is_convex_and_finite_every_way_and_ends_as_the_tail_does() {
+        for dir in DIRS {
+            for len in [1.0f32, 10.0, 400.0] {
+                let (from, to) = (cell(0.0, 0.0), cell(dir.0 * len, dir.1 * len));
+                let (mut c, mut now, mut frames) = (Chase::new(quad(from)), 0.0, 0);
+                while c.step(to, true, now, 0.4) {
+                    for l in c.blurred(to) {
+                        assert!(convex(&l.outline), "{dir:?} {len}: {:?}", l.outline);
+                        assert!(l.outline.iter().all(|p| xy(*p).0.is_finite() && xy(*p).1.is_finite()));
+                        assert!(
+                            l.hole.as_ref().is_none_or(|h| convex(h) && h.iter().all(|p| within(&l.outline, xy(*p)))),
+                            "{dir:?} {len}: {:?} in {:?}",
+                            l.hole,
+                            l.outline
+                        );
+                    }
+                    now += 1.0 / 60.0;
+                    frames += 1;
+                    assert!(frames < 10_000);
+                }
+            }
+        }
     }
 }
