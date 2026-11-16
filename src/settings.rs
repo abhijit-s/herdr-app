@@ -1511,6 +1511,9 @@ pub struct Person {
     /// `ripple`, `boom`, `ripple_rect` or `boom_rect`.
     #[serde(skip_serializing_if = "Arrival::is_off")]
     pub cursor_arrival: Arrival,
+    /// Particles shed along each trail's path: `off` or `pixiedust`.
+    #[serde(skip_serializing_if = "Particles::is_off")]
+    pub cursor_trail_particles: Particles,
     /// With `cursor_trail: "all"`, how long the cursor stays still before a
     /// jump counts, in ms (read through `trail_settle`).
     #[serde(skip_serializing_if = "is_settle_ms_default")]
@@ -1874,6 +1877,22 @@ pub enum Arrival {
 impl Arrival {
     fn is_off(&self) -> bool {
         *self == Arrival::Off
+    }
+}
+
+/// Particles shed along a trail's path (window/cursor_particles.rs).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Particles {
+    #[default]
+    Off,
+    /// Glittering dust that flies off the path, falls and fades, as kitty's pixiedust trail.
+    Pixiedust,
+}
+
+impl Particles {
+    fn is_off(&self) -> bool {
+        *self == Particles::Off
     }
 }
 
@@ -2615,6 +2634,7 @@ impl Default for Person {
             cursor_trail: CursorTrail::Off,
             cursor_trail_style: TrailStyle::Comet,
             cursor_arrival: Arrival::Off,
+            cursor_trail_particles: Particles::Off,
             cursor_trail_settle_ms: SETTLE_MS_DEFAULT,
             cursor_trail_min_cells: MIN_CELLS_DEFAULT,
             cursor_trail_duration_ms: TRAIL_MS_DEFAULT,
@@ -2732,6 +2752,7 @@ pub struct Settings {
     pub cursor_trail: CursorTrail,
     pub cursor_trail_style: TrailStyle,
     pub cursor_arrival: Arrival,
+    pub cursor_trail_particles: Particles,
     pub cursor_trail_settle_ms: u32,
     pub cursor_trail_min_cells: MinCells,
     pub cursor_trail_duration_ms: u32,
@@ -2862,6 +2883,7 @@ impl Default for Settings {
             cursor_trail: CursorTrail::Off,
             cursor_trail_style: TrailStyle::Comet,
             cursor_arrival: Arrival::Off,
+            cursor_trail_particles: Particles::Off,
             cursor_trail_settle_ms: SETTLE_MS_DEFAULT,
             cursor_trail_min_cells: MIN_CELLS_DEFAULT,
             cursor_trail_duration_ms: TRAIL_MS_DEFAULT,
@@ -2980,6 +3002,7 @@ impl Settings {
             cursor_trail: person.cursor_trail,
             cursor_trail_style: person.cursor_trail_style,
             cursor_arrival: person.cursor_arrival,
+            cursor_trail_particles: person.cursor_trail_particles,
             cursor_trail_settle_ms: person.cursor_trail_settle_ms,
             cursor_trail_min_cells: person.cursor_trail_min_cells,
             cursor_trail_duration_ms: person.cursor_trail_duration_ms,
@@ -4953,6 +4976,15 @@ mod tests {
     }
 
     #[test]
+    fn cursor_trail_particles_are_off_by_default_and_out_of_settings_json() {
+        assert_eq!((Person::default().cursor_trail_particles, Settings::default().cursor_trail_particles), (Particles::Off, Particles::Off));
+        assert!(serde_json::to_value(Person::default()).unwrap().get("cursor_trail_particles").is_none());
+        let on: Person = serde_json::from_value(serde_json::json!({"cursor_trail_particles": "pixiedust"})).unwrap();
+        assert_eq!(Settings::compose(&on, &crate::layout::Look::default(), true).cursor_trail_particles, Particles::Pixiedust);
+        assert_eq!(serde_json::to_value(&on).unwrap()["cursor_trail_particles"], "pixiedust");
+    }
+
+    #[test]
     fn cursor_trail_motion_blur_is_off_by_default_and_out_of_settings_json() {
         assert!(!Person::default().cursor_trail_motion_blur && !Settings::default().cursor_trail_motion_blur);
         assert!(serde_json::to_value(Person::default()).unwrap().get("cursor_trail_motion_blur").is_none());
@@ -4965,7 +4997,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, terminal_cell_width: 0.95, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, copy_on_select: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, pane_header_info: Some(String::new()), agents_card_info: Some(String::new()), cursor_trail: CursorTrail::Panes, cursor_trail_style: TrailStyle::Warp, cursor_arrival: Arrival::Ripple, cursor_trail_settle_ms: 40, cursor_trail_min_cells: MinCells { x: 3, y: 1 }, cursor_trail_duration_ms: 300, cursor_trail_color: Some("#ff8800".into()), cursor_trail_motion_blur: true, ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, terminal_cell_width: 0.95, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, copy_on_select: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, pane_header_info: Some(String::new()), agents_card_info: Some(String::new()), cursor_trail: CursorTrail::Panes, cursor_trail_style: TrailStyle::Warp, cursor_arrival: Arrival::Ripple, cursor_trail_settle_ms: 40, cursor_trail_min_cells: MinCells { x: 3, y: 1 }, cursor_trail_duration_ms: 300, cursor_trail_color: Some("#ff8800".into()), cursor_trail_motion_blur: true, cursor_trail_particles: Particles::Pixiedust, ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

@@ -104,6 +104,7 @@ fn layer(
         tone: cursor_shapes::Tone::Effect,
         fade,
         glow,
+        disc: None,
     }
 }
 
@@ -276,6 +277,17 @@ fn the_blaze_is_an_amber_beam_with_a_red_edge(cx: &mut HeadlessAppContext) {
     println!("trail pixels: blaze body {body:?}, edge {edge:?}, outside {outside:?}, cursor {cursor:?}, far {far:?}, slanted cursor {corners:?}");
 }
 
+/// A particle is a solid round disc, as faint as asked.
+fn a_disc_is_round_and_as_faint_as_asked(cx: &mut HeadlessAppContext) {
+    let disc = cursor_shapes::Layer::disc((100.0, 40.0), 6.0, 0.5, cursor_shapes::Tone::Effect);
+    let at = rendered(cx, vec![disc]);
+    let (middle, edge, corner, outside) = (at(100.0, 40.0), at(104.5, 40.0), at(104.6, 44.6), at(108.0, 40.0));
+    assert!((120..=135).contains(&middle), "half strength in the middle: {middle}");
+    assert!(edge > 100, "solid to near its edge: {edge}");
+    assert!(corner < 20 && outside == 0, "round, not square: corner {corner}, outside {outside}");
+    println!("trail pixels: disc middle {middle}, edge {edge}, corner {corner}, outside {outside}");
+}
+
 fn main() {
     #[cfg(not(windows))]
     {
@@ -289,6 +301,7 @@ fn main() {
         gradient_stops_sit_on_their_points(&mut cx);
         the_comet_brightens_to_a_pale_nose(&mut cx);
         the_blaze_is_an_amber_beam_with_a_red_edge(&mut cx);
+        a_disc_is_round_and_as_faint_as_asked(&mut cx);
         println!("trail pixel tests passed");
     }
 }

@@ -429,6 +429,15 @@ test("the preview heads the Cursor page while the trail or the pulse is on", () 
   expect(texts(search("cursor_trail").root).join("|")).not.toContain("Try it: click a cell");
 });
 
+test("particles show while the trail is on and write their choice, leaving off out", () => {
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "cursor");
+  const shown = (person: Record<string, any>) => click(person, {}, "st-cp-Pixie dust", ["choicePicker", "shown?"], "cursor") !== undefined;
+  expect(shown({})).toBe(false);
+  expect(shown({ cursor_trail: "panes" })).toBe(true);
+  expect(pick({ cursor_trail: "panes" }, "st-cp-Pixie dust")).toEqual({ cursor_trail: "panes", cursor_trail_particles: "pixiedust" });
+  expect(pick({ cursor_trail: "panes", cursor_trail_particles: "pixiedust" }, "st-cp-Off")).toEqual({ cursor_trail: "panes" });
+});
+
 test("motion blur shows only for the tail and toggles its key, leaving off out", () => {
   const toggle = (person: Record<string, any>) => click(person, {}, "st-cursor_trail_motion_blur", ["choicePicker"], "cursor");
   const shown = (person: Record<string, any>) => click(person, {}, "st-cursor_trail_motion_blur", ["choicePicker", "shown?"], "cursor") !== undefined;
