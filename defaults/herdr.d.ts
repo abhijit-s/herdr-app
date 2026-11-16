@@ -591,7 +591,7 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  `card_info` only once it is set, so its rows stay as they were by default.
  *  `toast_duration`, `toast_style`, `toast_corners`, `toast_mark`, `toast_design` and `toast_progress` are the person's toast choices
  *  (see AGENTS.md). `cursor_trail` is `"off" | "panes" | "all"`, `cursor_trail_style`
- *  `"comet" | "tail" | "sweep" | "warp"`, `cursor_arrival` `"off" | "ripple" | "boom" | "ripple_rect" | "boom_rect"`,
+ *  `"comet" | "tail" | "sweep" | "warp" | "blaze" | "blaze_tapered"`, `cursor_arrival` `"off" | "ripple" | "boom" | "ripple_rect" | "boom_rect"`,
  *  with `cursor_trail_duration_ms`, `cursor_trail_settle_ms`, `cursor_trail_min_cells` (a number
  *  for both axes, or `[columns, rows]`) and `cursor_trail_color` (`null` for the theme's `cursor`)
  *  as written; the app draws the effects.

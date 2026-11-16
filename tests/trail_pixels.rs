@@ -22,6 +22,8 @@ mod settings {
         Tail,
         Sweep,
         Warp,
+        Blaze,
+        BlazeTapered,
     }
 }
 
@@ -34,14 +36,14 @@ mod trail_paint;
 
 use cursor_shapes::Layer;
 
-struct Scene(Vec<Layer>, Hsla);
+struct Scene(Vec<Layer>, trail_paint::Tint);
 impl Render for Scene {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let (layers, color) = (self.0.clone(), self.1);
         div().size_full().bg(rgb(0)).child(
             canvas(
                 |_, _, _| {},
-                move |_, _, window, _| trail_paint::paint_layers(&layers, color, window),
+                move |_, _, window, _| trail_paint::paint_layers(&layers, &color, window),
             )
             .size_full(),
         )
@@ -66,8 +68,18 @@ fn rendered_in(
     color: Hsla,
     area: Size<Pixels>,
 ) -> impl Fn(f32, f32) -> [u8; 4] {
+    tinted(cx, layers, trail_paint::Tint::new(color, true), area)
+}
+
+/// `layers` in `tint` on black in a window `area` big: each pixel's RGBA.
+fn tinted(
+    cx: &mut HeadlessAppContext,
+    layers: Vec<Layer>,
+    tint: trail_paint::Tint,
+    area: Size<Pixels>,
+) -> impl Fn(f32, f32) -> [u8; 4] + use<> {
     let handle = cx
-        .open_window(area, |_, cx| cx.new(|_| Scene(layers, color)))
+        .open_window(area, |_, cx| cx.new(|_| Scene(layers, tint)))
         .unwrap();
     let (image, scale) = cx
         .update_window(handle.into(), |_, window, cx| {
@@ -87,8 +99,9 @@ fn layer(
         outline,
         hole: None,
         stroke: None,
+        open: false,
         alpha: 1.0,
-        core: false,
+        tone: cursor_shapes::Tone::Effect,
         fade,
         glow,
     }
@@ -224,6 +237,45 @@ fn the_comet_brightens_to_a_pale_nose(cx: &mut HeadlessAppContext) {
     }
 }
 
+/// The blaze as drawn in its own flame: amber, full at the cursor and faint at
+/// the old end, red along its sides, and nothing painted on the cursor.
+fn the_blaze_is_an_amber_beam_with_a_red_edge(cx: &mut HeadlessAppContext) {
+    let cell =
+        |x: f32, y: f32| Bounds::new(point(px(x - 4.0), px(y - 8.0)), size(px(8.0), px(16.0)));
+    let layers = cursor_shapes::trail(
+        settings::TrailStyle::Blaze,
+        cursor_shapes::quad(cell(40.0, 100.0)),
+        cell(360.0, 100.0),
+        16.0,
+        0.02,
+    )
+    .0;
+    let tint = trail_paint::Tint::new(hsla(0.6, 0.5, 0.5, 1.0), false);
+    let at = tinted(cx, layers, tint, size(px(400.), px(200.)));
+    let (body, edge, outside, cursor, far) = (at(320.0, 100.0), at(320.0, 93.0), at(320.0, 91.0), at(360.0, 100.0), at(50.0, 100.0));
+    assert!(body[0] > 220 && (130..210).contains(&body[1]) && body[2] < 90, "amber near the cursor: {body:?}");
+    assert!(edge[0] > 200 && edge[1] < body[1] / 2, "red just inside its side: {edge:?}");
+    assert!(outside[1] as f32 > outside[0] as f32 * 0.5, "only the amber glow just outside it, no red: {outside:?}");
+    assert!(cursor[..3].iter().all(|c| *c < 20), "nothing on the cursor: {cursor:?}");
+    assert!(far[0] < body[0] / 3, "faint at the old end: {far:?}");
+    // On a slant, nothing on the cursor, corners and all.
+    let layers = cursor_shapes::trail(
+        settings::TrailStyle::Blaze,
+        cursor_shapes::quad(cell(40.0, 20.0)),
+        cell(360.0, 180.0),
+        16.0,
+        0.02,
+    )
+    .0;
+    let at = tinted(cx, layers, tint, size(px(400.), px(200.)));
+    let corners: Vec<[u8; 4]> = [(356.5, 172.5), (363.5, 172.5), (356.5, 187.5), (363.5, 187.5), (360.0, 180.0)]
+        .iter()
+        .map(|&(x, y)| at(x, y))
+        .collect();
+    assert!(corners.iter().all(|c| c[..3].iter().all(|v| *v < 20)), "nothing on the slanted cursor: {corners:?}");
+    println!("trail pixels: blaze body {body:?}, edge {edge:?}, outside {outside:?}, cursor {cursor:?}, far {far:?}, slanted cursor {corners:?}");
+}
+
 fn main() {
     #[cfg(not(windows))]
     {
@@ -236,6 +288,7 @@ fn main() {
         glow_is_soft_and_round(&mut cx);
         gradient_stops_sit_on_their_points(&mut cx);
         the_comet_brightens_to_a_pale_nose(&mut cx);
+        the_blaze_is_an_amber_beam_with_a_red_edge(&mut cx);
         println!("trail pixel tests passed");
     }
 }

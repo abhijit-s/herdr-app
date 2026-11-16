@@ -3,7 +3,7 @@
 //! GPUI gradient and a glow as one blurred shadow. Apart from the window so
 //! tests/trail_pixels.rs renders it headless and reads the pixels back.
 
-use super::cursor_shapes::Layer;
+use super::cursor_shapes::{Layer, Tone};
 use gpui::{
     Bounds, BoxShadow, Corners, FillOptions, FillRule, Hsla, PathBuilder, PathStyle, Window,
     linear_color_stop, linear_gradient, point, px, size,
@@ -20,12 +20,52 @@ pub(crate) fn paler(c: Hsla) -> Hsla {
     }
 }
 
-/// Paints `layers` back to front in `color`: filled (even-odd, so a hole
-/// stays clear) or stroked outlines, brightening along a `fade`, and soft
-/// round glows (a blurred shadow with nothing under it).
-pub(crate) fn paint_layers(layers: &[Layer], color: Hsla, window: &mut Window) {
+/// The blaze's own flame: amber, with a red edge.
+/// sRGB (1.0, 0.725, 0.161).
+const AMBER: Hsla = Hsla { h: 40.33 / 360.0, s: 1.0, l: 0.5805, a: 1.0 };
+const RED: Hsla = Hsla { h: 0.0, s: 1.0, l: 0.5, a: 1.0 };
+
+/// The colors an effect is painted in: its color (the theme's cursor or
+/// `cursor_trail_color`), and the blaze's flame and edge: amber and red, or,
+/// when `cursor_trail_color` is set, that color and a deeper one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Tint {
+    pub(crate) color: Hsla,
+    pub(crate) flame: (Hsla, Hsla),
+}
+
+impl Tint {
+    /// The tint for the effect `color`, `chosen` when `cursor_trail_color` set it.
+    pub(crate) fn new(color: Hsla, chosen: bool) -> Self {
+        let flame = if chosen { (color, deeper(color)) } else { (AMBER, RED) };
+        Tint { color, flame }
+    }
+
+    fn of(&self, tone: Tone) -> Hsla {
+        match tone {
+            Tone::Effect => self.color,
+            Tone::Core => paler(self.color),
+            Tone::Flame => self.flame.0,
+            Tone::FlameEdge => self.flame.1,
+        }
+    }
+}
+
+/// `c` darker and more saturated: a chosen flame color's edge.
+pub(crate) fn deeper(c: Hsla) -> Hsla {
+    Hsla {
+        s: (c.s + 0.25).min(1.0),
+        l: c.l * 0.6,
+        ..c
+    }
+}
+
+/// Paints `layers` back to front in `tint`: filled (even-odd, so a hole
+/// stays clear) or stroked outlines, closed or open, brightening along a
+/// `fade`, and soft round glows (a blurred shadow with nothing under it).
+pub(crate) fn paint_layers(layers: &[Layer], tint: &Tint, window: &mut Window) {
     for layer in layers {
-        let tint = if layer.core { paler(color) } else { color };
+        let tint = tint.of(layer.tone);
         if let Some(((x, y), radius, blur)) = layer.glow {
             let at = Bounds::new(point(px(x), px(y)), size(px(0.0), px(0.0)));
             let shadow = BoxShadow {
@@ -44,7 +84,7 @@ pub(crate) fn paint_layers(layers: &[Layer], color: Hsla, window: &mut Window) {
                 FillOptions::default().with_fill_rule(FillRule::EvenOdd),
             )),
         };
-        path.add_polygon(&layer.outline, true);
+        path.add_polygon(&layer.outline, !layer.open);
         if let Some(hole) = &layer.hole {
             path.add_polygon(hole, true);
         }

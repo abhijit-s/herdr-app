@@ -5,7 +5,8 @@
 //! They are drawn above the tiled and floating panes, below dialogs; their
 //! shapes are window/cursor_shapes.rs's, after sahaj-b/ghostty-cursor-shaders
 //! (MIT). Every color is the theme's cursor color (or `cursor_trail_color`),
-//! the comet's core paler.
+//! the comet's core paler; the blaze has its own flame unless
+//! `cursor_trail_color` is set.
 //!
 //! Each end is the terminal's `trail_end`: its cursor as drawn (a block's
 //! cell, a beam's or an underline's strip), else its cursor cell when hidden,
@@ -28,7 +29,7 @@
 //! effect ends: its duration is clamped and its progress only grows.
 
 use super::cursor_shapes;
-use super::trail_paint::paint_layers;
+use super::trail_paint::{self, paint_layers};
 use super::*;
 
 /// The effect being drawn at the terminal `pane` shows: a trail from `from`
@@ -38,7 +39,7 @@ pub(super) struct Trail {
     pub(super) pane: String,
     pub(super) start: Instant,
     duration: Duration,
-    color: Hsla,
+    color: trail_paint::Tint,
     pub(super) style: Option<settings::TrailStyle>,
     pub(super) arrival: settings::Arrival,
     /// When the pulse started: the trail's start, or a later shape change.
@@ -51,8 +52,8 @@ pub(super) struct Trail {
 }
 
 impl Trail {
-    /// The color it is drawn in.
-    pub(super) fn color(&self) -> Hsla {
+    /// The colors it is drawn in.
+    pub(super) fn color(&self) -> trail_paint::Tint {
         self.color
     }
 
@@ -80,7 +81,10 @@ impl Trail {
             pane: pane.to_owned(),
             start: now,
             duration: s.trail_duration(),
-            color: s.trail_color().unwrap_or_else(|| settings::color("cursor")),
+            color: trail_paint::Tint::new(
+                s.trail_color().unwrap_or_else(|| settings::color("cursor")),
+                s.trail_color().is_some(),
+            ),
             style,
             arrival: s.cursor_arrival,
             pulse: now,
@@ -240,7 +244,7 @@ impl AppWindow {
 
     /// The live effect's shapes now and their color, asking nothing of the
     /// window; None (and the effect dropped) once it's over or its pane is gone.
-    pub(super) fn trail_frame(&mut self, cx: &App) -> Option<(Vec<cursor_shapes::Layer>, Hsla)> {
+    pub(super) fn trail_frame(&mut self, cx: &App) -> Option<(Vec<cursor_shapes::Layer>, trail_paint::Tint)> {
         if cx.reduce_motion() {
             self.trail = None;
             return None;
@@ -305,7 +309,7 @@ impl Render for TrailLayer {
                 };
                 crate::bench::count(&crate::bench::TRAIL);
                 window.request_animation_frame();
-                paint_layers(&layers, color, window);
+                paint_layers(&layers, &color, window);
             },
         )
         .absolute()
