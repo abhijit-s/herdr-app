@@ -313,6 +313,8 @@ const TRAIL_STYLES = [
   ["tail", "Tail"],
   ["sweep", "Sweep"],
   ["warp", "Warp"],
+  ["blaze", "Blaze"],
+  ["blaze_tapered", "Blaze tapered"],
 ];
 // The pulse as the focus lands (cursor_arrival); Off is the default, left out of settings.json.
 const ARRIVALS = [
@@ -1870,7 +1872,7 @@ export default class Settings extends View {
       .child(this.heading(t, "Cursor effects"))
       .when((on || pulse) && !this.filtering(), (el) => el.child(this.cursorPreview(t)))
       .child(this.row(t, "Cursor trail", "A trail from one pane's cursor to the next as the focus moves between panes, and with Panes and jumps, as the cursor jumps in the pane you're typing in.", this.choicePicker(t, "st-ct", "cursor_trail", CURSOR_TRAILS), "cursor_trail"))
-      .when(on, (el) => el.child(this.row(t, "Trail style", "Comet: a glowing streak. Tail: the cursor stretched, as kitty does. Sweep: a block shrinking into the cursor. Warp: the cursor stretching and springing into place, after Neovide.", this.choicePicker(t, "st-cs", "cursor_trail_style", TRAIL_STYLES), "cursor_trail_style")))
+      .when(on, (el) => el.child(this.row(t, "Trail style", "Comet: a glowing streak. Tail: the cursor stretched, as kitty does. Sweep: a block shrinking into the cursor. Warp: the cursor stretching and springing into place, after Neovide. Blaze: a flame-colored beam pulled into the cursor, after kitty; tapered, it narrows to a line.", this.choicePicker(t, "st-cs", "cursor_trail_style", TRAIL_STYLES), "cursor_trail_style")))
       .when(jumps, (el) =>
         el
           .child(this.row(t, "Settle time", "How long the program leaves the cursor still before a jump counts, so streaming output draws nothing until it pauses.", this.stepper(t, "st-cursor_trail_settle_ms", `${settle} ms`, settleLess, settleMore), "cursor_trail_settle_ms"))

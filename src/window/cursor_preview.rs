@@ -103,7 +103,7 @@ impl CursorPreview {
 
     /// The effect's layers now and its color; None (and the effect dropped)
     /// once it's over.
-    fn frame(&mut self) -> Option<(Vec<cursor_shapes::Layer>, Hsla)> {
+    fn frame(&mut self) -> Option<(Vec<cursor_shapes::Layer>, super::trail_paint::Tint)> {
         let at = self.rect(self.cursor)?;
         let trail = self.trail.as_mut()?;
         let end = crate::terminal::TrailEnd {
@@ -158,7 +158,7 @@ impl Render for CursorPreview {
                                 if let Some((layers, color)) = this.frame() {
                                     this.frames += 1;
                                     window.request_animation_frame();
-                                    paint_layers(&layers, color, window);
+                                    paint_layers(&layers, &color, window);
                                 }
                             });
                         });

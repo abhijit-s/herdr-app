@@ -1504,7 +1504,7 @@ pub struct Person {
     /// between panes (window/cursor_trail.rs): `off` or `panes`.
     #[serde(skip_serializing_if = "CursorTrail::is_off")]
     pub cursor_trail: CursorTrail,
-    /// How the trail looks: `comet`, `tail`, `sweep` or `warp`.
+    /// How the trail looks: `comet`, `tail`, `sweep`, `warp`, `blaze` or `blaze_tapered`.
     #[serde(skip_serializing_if = "TrailStyle::is_comet")]
     pub cursor_trail_style: TrailStyle,
     /// A pulse at the new cursor as the focus lands in another pane: `off`,
@@ -1839,6 +1839,11 @@ pub enum TrailStyle {
     Sweep,
     /// The cursor block on springs, after Neovide's stretching cursor: stretched along the move, narrowed across it, overshooting and settling.
     Warp,
+    /// A solid flame-colored beam from the old cursor to the new, pulled into the cursor as it fades, as kitty's blaze trail.
+    Blaze,
+    /// The blaze, narrowing from the cursor's height to a thin line at its far end.
+    #[serde(rename = "blaze_tapered")]
+    BlazeTapered,
 }
 
 impl TrailStyle {
@@ -4611,7 +4616,7 @@ mod tests {
         assert_eq!((person.cursor_trail_style, person.cursor_arrival), (TrailStyle::Comet, Arrival::Off));
         let json = serde_json::to_value(&person).unwrap();
         assert!(json.get("cursor_trail_style").is_none() && json.get("cursor_arrival").is_none(), "{json}");
-        for (style, name) in [(TrailStyle::Comet, "comet"), (TrailStyle::Tail, "tail"), (TrailStyle::Sweep, "sweep"), (TrailStyle::Warp, "warp")] {
+        for (style, name) in [(TrailStyle::Comet, "comet"), (TrailStyle::Tail, "tail"), (TrailStyle::Sweep, "sweep"), (TrailStyle::Warp, "warp"), (TrailStyle::Blaze, "blaze"), (TrailStyle::BlazeTapered, "blaze_tapered")] {
             let p: Person = serde_json::from_value(serde_json::json!({ "cursor_trail_style": name })).unwrap();
             assert_eq!(p.cursor_trail_style, style);
             assert_eq!(Settings::compose(&p, &crate::layout::Look::default(), true).for_mods()["cursor_trail_style"], name);

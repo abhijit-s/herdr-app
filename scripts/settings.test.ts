@@ -390,6 +390,8 @@ test("cursor effects sit on their own Cursor page, each writing its choice and l
   expect(pick({}, "st-ct-Panes and jumps")).toEqual({ cursor_trail: "all" });
   expect(pick({ cursor_trail: "panes", zoom: 1.1 }, "st-ct-Off")).toEqual({ zoom: 1.1 });
   expect(pick({ cursor_trail: "panes" }, "st-cs-Warp")).toEqual({ cursor_trail: "panes", cursor_trail_style: "warp" });
+  expect(pick({ cursor_trail: "panes" }, "st-cs-Blaze")).toEqual({ cursor_trail: "panes", cursor_trail_style: "blaze" });
+  expect(pick({ cursor_trail: "panes" }, "st-cs-Blaze tapered")).toEqual({ cursor_trail: "panes", cursor_trail_style: "blaze_tapered" });
   expect(pick({ cursor_trail: "panes", cursor_trail_style: "tail" }, "st-cs-Comet")).toEqual({ cursor_trail: "panes" });
   expect(pick({}, "st-ca-Ripple box")).toEqual({ cursor_arrival: "ripple_rect" });
   expect(pick({ cursor_arrival: "boom" }, "st-ca-Off")).toEqual({});

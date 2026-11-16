@@ -21,15 +21,26 @@ pub(super) type P = (f32, f32);
 /// corners partway to them.
 pub(super) type Quad = [P; 4];
 
-/// One outline to paint: filled, or stroked `stroke` px wide, less `hole`; at
-/// `alpha` of the effect's color, or of its paler core color.
+/// What a layer is painted in: the effect's color, its paler core color, or
+/// the blaze's flame and its edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Tone {
+    Effect,
+    Core,
+    Flame,
+    FlameEdge,
+}
+
+/// One outline to paint: filled, or stroked `stroke` px wide (as an open line
+/// when `open`), less `hole`; at `alpha` of its `tone`.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Layer {
     pub(super) outline: Vec<Point<Pixels>>,
     pub(super) hole: Option<Vec<Point<Pixels>>>,
     pub(super) stroke: Option<f32>,
+    pub(super) open: bool,
     pub(super) alpha: f32,
-    pub(super) core: bool,
+    pub(super) tone: Tone,
     /// Brightness along the outline: none at the first point, `alpha` at the second.
     pub(super) fade: Option<(P, P)>,
     /// Not an outline but a soft round glow: its middle, radius and blur, px.
@@ -41,8 +52,9 @@ fn fill(outline: Vec<Point<Pixels>>, alpha: f32) -> Layer {
         outline,
         hole: None,
         stroke: None,
+        open: false,
         alpha,
-        core: false,
+        tone: Tone::Effect,
         fade: None,
         glow: None,
     }
@@ -205,6 +217,8 @@ pub(super) fn trail(
         TrailStyle::Comet => comet(a, to, h, t),
         TrailStyle::Sweep => sweep(enclosing(from), to, t),
         TrailStyle::Warp => warp(enclosing(from), to, h, t),
+        TrailStyle::Blaze => blaze(enclosing(from), to, h, t, false),
+        TrailStyle::BlazeTapered => blaze(enclosing(from), to, h, t, true),
         TrailStyle::Tail => (Vec::new(), None),
     }
 }
@@ -248,8 +262,9 @@ fn comet(from: P, to: Bounds<Pixels>, h: f32, t: f32) -> (Vec<Layer>, Option<Qua
         outline: Vec::new(),
         hole: None,
         stroke: None,
+        open: false,
         alpha: alpha * fade,
-        core: false,
+        tone: Tone::Effect,
         fade: None,
         glow: Some((head, radius * h, blur * h)),
     };
@@ -257,8 +272,9 @@ fn comet(from: P, to: Bounds<Pixels>, h: f32, t: f32) -> (Vec<Layer>, Option<Qua
         outline: streak(tail, head, half * h),
         hole: None,
         stroke: None,
+        open: false,
         alpha: alpha * fade,
-        core,
+        tone: if core { Tone::Core } else { Tone::Effect },
         fade: Some((tail, full)),
         glow: None,
     });
@@ -395,8 +411,9 @@ impl Chase {
             outline: outer.into_iter().map(pt).collect(),
             hole,
             stroke: None,
+            open: false,
             alpha: self.opacity,
-            core: false,
+            tone: Tone::Effect,
             fade: None,
             glow: None,
         }]
@@ -415,6 +432,128 @@ fn sweep(from: Bounds<Pixels>, to: Bounds<Pixels>, t: f32) -> (Vec<Layer>, Optio
         vec![fill(span(end, to, 0.0), 0.8 * (1.0 - k))],
         Some(quad(end)),
     )
+}
+
+/// Blaze, as kitty's bundled blaze cursor trail behaves (reimplemented from a
+/// description of it, not its source): the tapered tail's height at its far
+/// end, against the cursor's; the soft glow round the beam as (grown this many
+/// cell heights, opacity), plain and tapered; and the red edge's width, px.
+const BLAZE_THIN: f32 = 0.12;
+const BLAZE_GLOW: [(f32, f32); 2] = [(0.12, 0.35), (0.08, 0.2)];
+const BLAZE_EDGE: f32 = 2.0;
+
+/// The blaze's easing: smooth from 0 to 1, slow at both ends.
+pub(super) fn blend_smooth(a: f32) -> f32 {
+    let a = a.clamp(0.0, 1.0);
+    a * a / (2.0 * (a * a - a) + 1.0)
+}
+
+/// A solid beam swept from the old cursor to the new, the cursor's height all
+/// the way (or, tapered, narrowing to a thin line at the far end), its
+/// opacity rising from none at the far end to full at the cursor, with a red
+/// edge along its sides and a thin soft glow. It doesn't travel: the far end
+/// is pulled into the cursor, the lit length the jump times (1 - s)^10, s the
+/// smooth blend of the progress. The cursor's own rect is cut out of it.
+fn blaze(
+    from: Bounds<Pixels>,
+    to: Bounds<Pixels>,
+    h: f32,
+    t: f32,
+    tapered: bool,
+) -> (Vec<Layer>, Option<Quad>) {
+    let lit = (1.0 - blend_smooth(t)).powi(10);
+    let (a, b) = (mid(from), mid(to));
+    let far = (b.0 + (a.0 - b.0) * lit, b.1 + (a.1 - b.1) * lit);
+    if t >= 1.0 || (far.0 - b.0).hypot(far.1 - b.1) < CAUGHT_UP {
+        return (Vec::new(), None);
+    }
+    let (w, ht) = (f32::from(to.size.width), f32::from(to.size.height));
+    let thin = if tapered { BLAZE_THIN } else { 1.0 };
+    let end = Bounds::new(
+        point(px(far.0 - w * thin / 2.0), px(far.1 - ht * thin / 2.0)),
+        gpui::size(px(w * thin), px(ht * thin)),
+    );
+    let outline = hull_points(corners(end, 0.0).into_iter().chain(corners(to, 0.0)).collect());
+    let cut = clipped(&quad(to), &outline);
+    let hole: Option<Vec<Point<Pixels>>> =
+        (cut.len() >= 3 && area(&cut).abs() > 1e-3).then(|| cut.into_iter().map(pt).collect());
+    let (grow, glow) = BLAZE_GLOW[tapered as usize];
+    let ramp = Some((far, b));
+    let halo = Layer {
+        outline: span(end, to, grow * h),
+        hole: hole.clone(),
+        stroke: None,
+        open: false,
+        alpha: glow,
+        tone: Tone::Flame,
+        fade: ramp,
+        glow: None,
+    };
+    let body = Layer {
+        outline: outline.iter().copied().map(pt).collect(),
+        hole,
+        stroke: None,
+        open: false,
+        alpha: 1.0,
+        tone: Tone::Flame,
+        fade: ramp,
+        glow: None,
+    };
+    // The edge runs along the beam's sides only, not round the cursor.
+    let on_cursor = |p: &P| corners(to, 0.0).contains(p);
+    // From the last of the cursor's corners on the outline, round the far
+    // end, to the next of them.
+    let n = outline.len();
+    let start = (0..n)
+        .find(|&i| on_cursor(&outline[i]) && !on_cursor(&outline[(i + 1) % n]))
+        .unwrap_or(0);
+    let mut sides = vec![outline[start]];
+    for k in 1..=n {
+        let p = outline[(start + k) % n];
+        sides.push(p);
+        if on_cursor(&p) {
+            break;
+        }
+    }
+    // Each end where its side leaves the cursor, so no stroke runs along it.
+    let last = sides.len() - 1;
+    (sides[0], sides[last]) = (
+        leaving(to, sides[0], sides[1]),
+        leaving(to, sides[last], sides[last - 1]),
+    );
+    let sides: Vec<Point<Pixels>> = sides.into_iter().map(pt).collect();
+    let edge = Layer {
+        outline: sides,
+        hole: None,
+        stroke: Some(BLAZE_EDGE),
+        open: true,
+        alpha: 1.0,
+        tone: Tone::FlameEdge,
+        fade: ramp,
+        glow: None,
+    };
+    // A move of a px or so leaves no sides to edge.
+    let layers = [halo, body, edge].into_iter().filter(|l| l.outline.len() >= 3).collect();
+    (layers, Some(quad(end)))
+}
+
+/// Where the segment from `p` (in or on `rect`) toward `q` leaves `rect`.
+fn leaving(rect: Bounds<Pixels>, p: P, q: P) -> P {
+    let [lo, _, hi, _] = corners(rect, 0.0);
+    let exit = |a: f32, d: f32, min: f32, max: f32| {
+        if d > 1e-6 {
+            (max - a) / d
+        } else if d < -1e-6 {
+            (min - a) / d
+        } else {
+            f32::INFINITY
+        }
+    };
+    let (dx, dy) = (q.0 - p.0, q.1 - p.1);
+    let u = exit(p.0, dx, lo.0, hi.0)
+        .min(exit(p.1, dy, lo.1, hi.1))
+        .clamp(0.0, 1.0);
+    (p.0 + dx * u, p.1 + dy * u)
 }
 
 /// Warp, a cursor on springs after Neovide's stretching cursor (whose corners
@@ -557,8 +696,9 @@ pub(super) fn arrival(kind: Arrival, at: Bounds<Pixels>, t: f32) -> Vec<Layer> {
         outline,
         hole: None,
         stroke: Some(1.0 + 1.5 * fade),
+        open: false,
         alpha: fade,
-        core: false,
+        tone: Tone::Effect,
         fade: None,
         glow: None,
     };
@@ -630,7 +770,13 @@ mod tests {
         within(&layer.outline, p) && !layer.hole.as_ref().is_some_and(|h| within(h, p))
     }
 
-    const STYLES: [TrailStyle; 3] = [TrailStyle::Comet, TrailStyle::Sweep, TrailStyle::Warp];
+    const STYLES: [TrailStyle; 5] = [
+        TrailStyle::Comet,
+        TrailStyle::Sweep,
+        TrailStyle::Warp,
+        TrailStyle::Blaze,
+        TrailStyle::BlazeTapered,
+    ];
     const PULSES: [Arrival; 4] = [
         Arrival::Ripple,
         Arrival::Boom,
@@ -689,12 +835,15 @@ mod tests {
                                 continue;
                             }
                             assert!(
-                                convex(&layer.outline) && layer.hole.is_none(),
+                                convex(&layer.outline)
+                                    && layer.hole.as_ref().is_none_or(|h| {
+                                        convex(h) && h.iter().all(|p| within(&layer.outline, xy(*p)))
+                                    }),
                                 "{style:?} {dir:?} {len} {t}: {:?}",
                                 layer.outline
                             );
                             assert!(
-                                layer.stroke.is_none() && (0.0..=1.0).contains(&layer.alpha),
+                                (layer.stroke.is_none() || layer.open) && (0.0..=1.0).contains(&layer.alpha),
                                 "{style:?}"
                             );
                             for p in layer.outline.iter().map(|p| xy(*p)) {
@@ -796,7 +945,7 @@ mod tests {
         assert_eq!(
             layers
                 .iter()
-                .map(|l| (l.alpha, l.core, l.glow.is_some()))
+                .map(|l| (l.alpha, l.tone == Tone::Core, l.glow.is_some()))
                 .collect::<Vec<_>>(),
             vec![(1.0, false, true), (0.35, false, false), (1.0, true, false)],
             "one glow behind two streaks, not four stacked fills"
@@ -1343,5 +1492,111 @@ mod tests {
             .fold(0.0f32, f32::max);
         assert!(reach < 16.0 * 0.14 + 0.1, "{reach}");
         assert!(last[2].alpha > 0.0);
+    }
+
+    #[test]
+    fn the_blend_is_smooth_from_zero_to_one() {
+        assert_eq!((blend_smooth(0.0), blend_smooth(1.0)), (0.0, 1.0));
+        assert!((blend_smooth(0.5) - 0.5).abs() < 1e-6);
+        let steps: Vec<f32> = (0..=100).map(|i| blend_smooth(i as f32 / 100.0)).collect();
+        assert!(steps.windows(2).all(|w| w[1] > w[0]), "rising");
+        assert!(steps[10] < 0.05 && steps[90] > 0.95, "slow at both ends");
+        assert_eq!((blend_smooth(-1.0), blend_smooth(2.0)), (0.0, 1.0));
+    }
+
+    fn blaze_at(style: TrailStyle, t: f32) -> (Vec<Layer>, Option<Quad>) {
+        trail(style, quad(cell(0.0, 0.0)), cell(400.0, 0.0), H, t)
+    }
+
+    /// Where the beam's far end is: the jump times (1 - s)^10, s the blend.
+    fn far_end(t: f32) -> f32 {
+        404.0 - 400.0 * (1.0 - blend_smooth(t)).powi(10)
+    }
+
+    #[test]
+    fn the_blaze_is_a_cursor_high_beam_pulled_into_the_cursor() {
+        for t in [0.0, 0.05, 0.2] {
+            let (layers, back) = blaze_at(TrailStyle::Blaze, t);
+            let body = &layers[1];
+            let (x0, x1, y0, y1) = extent(&body.outline);
+            assert!(
+                (x0 - (far_end(t) - 4.0)).abs() < 0.01 && (x1 - 408.0).abs() < 0.01,
+                "{t}: from the far end to the cursor: {x0} {x1}"
+            );
+            assert_eq!((y0, y1), (0.0, 16.0), "{t}: the cursor's height all the way");
+            assert_eq!(
+                (body.alpha, body.tone, body.fade),
+                (1.0, Tone::Flame, Some(((far_end(t), 8.0), (404.0, 8.0)))),
+                "{t}: solid, none at the far end to full at the cursor"
+            );
+            assert!(paints(body, ((far_end(t) + 404.0) / 2.0, 8.0)), "{t}: the beam");
+            for p in [(404.0, 8.0), (401.0, 1.0), (407.0, 15.0)] {
+                assert!(!paints(body, p) && !paints(&layers[0], p), "{t}: the cursor is cut out, {p:?}");
+            }
+            assert_eq!(back.map(|q| centroid(&q)), Some((far_end(t), 8.0)), "a new trail starts at the far end");
+        }
+        // It doesn't travel: only the far end moves, slowly, then fast, then slowly.
+        // How long the beam is (the cursor's width once it's in).
+        let lit = |t: f32| blaze_at(TrailStyle::Blaze, t).0.get(1).map_or(8.0, |l| 408.0 - extent(&l.outline).0);
+        assert!(lit(0.1) > 0.85 * lit(0.0), "barely moved early: {} {}", lit(0.0), lit(0.1));
+        assert!(lit(0.5) < 0.01 * lit(0.0) + 8.0, "nearly in by the middle: {}", lit(0.5));
+        assert_eq!(blaze_at(TrailStyle::Blaze, 1.0), (Vec::new(), None), "gone at the end");
+        assert!(blaze_at(TrailStyle::Blaze, 0.7).0.is_empty(), "within half a px of the cursor, nothing");
+    }
+
+    #[test]
+    fn the_blaze_has_a_red_edge_along_its_sides_not_round_the_cursor() {
+        let (layers, _) = blaze_at(TrailStyle::Blaze, 0.05);
+        let edge = &layers[2];
+        assert_eq!((edge.tone, edge.stroke, edge.open), (Tone::FlameEdge, Some(BLAZE_EDGE), true));
+        let body: Vec<P> = layers[1].outline.iter().map(|p| xy(*p)).collect();
+        let on: Vec<P> = edge.outline.iter().map(|p| xy(*p)).collect();
+        assert_eq!(on.len(), 4, "the two sides and the far end: {on:?}");
+        assert!(on[1..3].iter().all(|p| body.contains(p)), "round the far end of the beam's outline");
+        let mut ends = [on[0], on[3]];
+        ends.sort_by(|a, b| a.1.total_cmp(&b.1));
+        assert_eq!(ends, [(400.0, 0.0), (400.0, 16.0)], "each side ends where it meets the cursor");
+        // No stretch of it lies on the cursor's rect.
+        for w in on.windows(2) {
+            let m = ((w[0].0 + w[1].0) / 2.0, (w[0].1 + w[1].1) / 2.0);
+            assert!(m.0 < 400.0, "{w:?}");
+        }
+        // On a slant too, its ends are on the cursor's edge and the rest outside.
+        let (slant, _) = trail(TrailStyle::Blaze, quad(cell(0.0, 0.0)), cell(300.0, 200.0), H, 0.05);
+        let on: Vec<P> = slant[2].outline.iter().map(|p| xy(*p)).collect();
+        let inside = |p: &P| (300.0..=308.0).contains(&p.0) && (200.0..=216.0).contains(&p.1);
+        assert!(inside(&on[0]) && inside(on.last().unwrap()), "{on:?}");
+        assert!(on[1..on.len() - 1].iter().all(|p| !inside(p)), "{on:?}");
+        // The halo is wider and fainter, the glow round the beam.
+        let (halo, beam) = (extent(&layers[0].outline), extent(&layers[1].outline));
+        assert!(halo.2 < beam.2 && halo.3 > beam.3 && layers[0].alpha < 0.5);
+    }
+
+    #[test]
+    fn the_tapered_blaze_narrows_to_a_line_at_its_far_end() {
+        let (layers, _) = blaze_at(TrailStyle::BlazeTapered, 0.0);
+        let body = &layers[1].outline;
+        let at_far = half_width_at(body, 4.0) * 2.0;
+        assert!((at_far - 16.0 * BLAZE_THIN).abs() < 0.05, "thin at the far end: {at_far}");
+        assert!((half_width_at(body, 400.0) * 2.0 - 16.0).abs() < 0.05, "the cursor's height at the head");
+        let widths: Vec<f32> = [50.0, 150.0, 250.0, 350.0].iter().map(|x| half_width_at(body, *x)).collect();
+        assert!(widths.windows(2).all(|w| w[1] > w[0]), "widening toward the cursor: {widths:?}");
+        let plain = blaze_at(TrailStyle::Blaze, 0.0).0;
+        assert!(layers[0].alpha < plain[0].alpha, "less glow");
+    }
+
+    #[test]
+    fn the_blaze_is_its_flame_unless_a_trail_color_is_chosen() {
+        use super::super::trail_paint::{Tint, deeper};
+        let cursor = gpui::hsla(0.6, 0.5, 0.5, 1.0);
+        let flame = Tint::new(cursor, false).flame;
+        assert_eq!(flame.0.to_rgb().r, 1.0);
+        assert!((flame.0.to_rgb().g - 0.725).abs() < 0.01 && (flame.0.to_rgb().b - 0.161).abs() < 0.01, "amber");
+        let red = flame.1.to_rgb();
+        assert!((red.r, red.g, red.b) == (1.0, 0.0, 0.0), "red edge");
+        let chosen = gpui::hsla(0.3, 0.6, 0.5, 1.0);
+        assert_eq!(Tint::new(chosen, true).flame, (chosen, deeper(chosen)));
+        let d = deeper(chosen);
+        assert!(d.l < chosen.l && d.s > chosen.s && d.h == chosen.h);
     }
 }
