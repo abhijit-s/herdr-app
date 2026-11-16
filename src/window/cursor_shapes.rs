@@ -430,9 +430,18 @@ impl Chase {
             (was.0 + u.0 * off, was.1 + u.1 * off)
         };
         let swept = hull_points(self.before.iter().chain(&self.corners).copied().collect());
-        // Less the quad (drawn on its own) and the cursor's part of the swept ground.
+        // Less the quad (drawn on its own) and the cursor's part of the swept
+        // ground. One hole: the quad, when the cursor's part lies in it (it
+        // mostly does, the quad chasing the cursor); else the hull of the two,
+        // which leaves bare the sliver between them (a diagonal's first
+        // frames, a tail turned back mid-run) rather than paint the cursor.
+        let tail = hull_points(self.corners.to_vec());
         let cursor = clipped(&quad(to), &swept);
-        let kept = hull_points(self.corners.iter().copied().chain(cursor).collect());
+        let kept = if cursor.iter().all(|p| inside_by(&tail, *p, 1e-3)) {
+            tail
+        } else {
+            hull_points(self.corners.iter().copied().chain(cursor).collect())
+        };
         let blur = Layer {
             outline: swept.into_iter().map(pt).collect(),
             hole: (kept.len() >= 3 && area(&kept).abs() > 1e-3).then(|| kept.into_iter().map(pt).collect()),
@@ -640,6 +649,15 @@ fn blaze(
 
 fn xy_of(p: Point<Pixels>) -> P {
     (f32::from(p.x), f32::from(p.y))
+}
+
+/// Whether `p` is inside the convex `outline` (or within `slack` px of it).
+fn inside_by(outline: &[P], p: P, slack: f32) -> bool {
+    let turn = area(outline).signum();
+    (0..outline.len()).all(|i| {
+        let (a, b) = (outline[i], outline[(i + 1) % outline.len()]);
+        cross(a, b, p) * turn / (b.0 - a.0).hypot(b.1 - a.1).max(1e-6) >= -slack
+    })
 }
 
 /// The part of the convex `poly` at least `by` px inside the line from `p`
@@ -1750,7 +1768,6 @@ mod tests {
         // tail alone leaves bare.
         let back = |q: &Quad| q.iter().map(|p| p.0).fold(f32::MAX, f32::min);
         let gap = ((back(&c.before) + back(&c.corners)) / 2.0, 8.0);
-        let _ = before;
         assert!(paints(blur, gap) && !paints(&plain[0], gap), "{gap:?}");
         // Rising from none at the old back edge to full at the new one.
         let fade = blur.fade.unwrap();
@@ -1767,6 +1784,29 @@ mod tests {
         assert!(paints(&layers[1], inside), "the tail there");
         assert!(!paints(&layers[0], inside), "and not its blur too");
         assert!((layers[0].alpha - faded.opacity).abs() < 1e-6 && faded.opacity < 1.0);
+    }
+
+    /// With the cursor inside the tail's quad, the blur paints all the swept
+    /// ground behind it: nothing between the blur and the tail left bare.
+    #[test]
+    fn the_blur_and_the_tail_together_cover_the_swept_ground() {
+        let to = cell(400.0, 0.0);
+        let mut c = Chase::new(quad(cell(0.0, 0.0)));
+        for k in 0..4 {
+            c.step(to, true, k as f32 / 30.0, 0.4);
+        }
+        let layers = c.blurred(to);
+        assert_eq!(layers[0].hole.as_ref().map(|h| h.len()), Some(4), "the quad, as the hole");
+        let swept = hull_points(c.before.iter().chain(&c.corners).copied().collect());
+        let swept: Vec<Point<Pixels>> = swept.into_iter().map(pt).collect();
+        for x in (0..400).step_by(7) {
+            for y in [1.0, 8.0, 15.0] {
+                let p = (x as f32 + 0.5, y);
+                if within(&swept, p) && !(400.0..=408.0).contains(&p.0) {
+                    assert!(layers.iter().any(|l| paints(l, p)), "{p:?} bare");
+                }
+            }
+        }
     }
 
     #[test]
