@@ -252,22 +252,14 @@ mod tests {
             let (layers, _) = p.frame().expect("it draws as it starts");
             assert!(!layers.is_empty(), "{style:?}");
             if style != TrailStyle::Tail {
-                // The panes' layers for the same ends, at about the same time:
-                // the same outlines, within a frame's worth of motion.
+                // At a given moment, the preview's trail draws exactly the
+                // panes' layers for the same ends.
                 let to = p.rect((30, 1)).unwrap();
-                let t = p.trail.as_ref().unwrap().start.elapsed().as_secs_f32() / 0.2;
+                let end = crate::terminal::TrailEnd { cell: to, cursor: to, shown: true };
+                let got = p.trail.as_mut().unwrap().shapes(end, std::time::Duration::from_millis(30)).unwrap();
+                let t = std::time::Duration::from_millis(30).as_secs_f32() / std::time::Duration::from_millis(200).as_secs_f32();
                 let want = cursor_shapes::trail(style, cursor_shapes::quad(from), to, 16.0, t).0;
-                assert_eq!(layers.len(), want.len(), "{style:?}: the panes' layers");
-                for (got, want) in layers.iter().zip(&want) {
-                    assert_eq!(got.outline.len(), want.outline.len(), "{style:?}");
-                    // The same points, wherever each outline starts.
-                    for a in &got.outline {
-                        let near = want.outline.iter().any(|b| {
-                            (f32::from(a.x - b.x)).hypot(f32::from(a.y - b.y)) < 2.0
-                        });
-                        assert!(near, "{style:?}: {a:?} not in {:?}", want.outline);
-                    }
-                }
+                assert_eq!(got, want, "{style:?}: the panes' layers");
             }
         }
         // A setting changed between clicks shows on the next one.

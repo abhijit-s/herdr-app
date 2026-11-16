@@ -77,7 +77,7 @@ fn tinted(
     layers: Vec<Layer>,
     tint: trail_paint::Tint,
     area: Size<Pixels>,
-) -> impl Fn(f32, f32) -> [u8; 4] {
+) -> impl Fn(f32, f32) -> [u8; 4] + use<> {
     let handle = cx
         .open_window(area, |_, cx| cx.new(|_| Scene(layers, tint)))
         .unwrap();
@@ -252,12 +252,28 @@ fn the_blaze_is_an_amber_beam_with_a_red_edge(cx: &mut HeadlessAppContext) {
     .0;
     let tint = trail_paint::Tint::new(hsla(0.6, 0.5, 0.5, 1.0), false);
     let at = tinted(cx, layers, tint, size(px(400.), px(200.)));
-    let (body, edge, cursor, far) = (at(320.0, 100.0), at(320.0, 92.5), at(360.0, 100.0), at(50.0, 100.0));
+    let (body, edge, outside, cursor, far) = (at(320.0, 100.0), at(320.0, 93.0), at(320.0, 91.0), at(360.0, 100.0), at(50.0, 100.0));
     assert!(body[0] > 220 && (130..210).contains(&body[1]) && body[2] < 90, "amber near the cursor: {body:?}");
-    assert!(edge[0] > 200 && edge[1] < body[1] / 2, "red along its side: {edge:?}");
+    assert!(edge[0] > 200 && edge[1] < body[1] / 2, "red just inside its side: {edge:?}");
+    assert!(outside[1] as f32 > outside[0] as f32 * 0.5, "only the amber glow just outside it, no red: {outside:?}");
     assert!(cursor[..3].iter().all(|c| *c < 20), "nothing on the cursor: {cursor:?}");
     assert!(far[0] < body[0] / 3, "faint at the old end: {far:?}");
-    println!("trail pixels: blaze body {body:?}, edge {edge:?}, cursor {cursor:?}, far {far:?}");
+    // On a slant, nothing on the cursor, corners and all.
+    let layers = cursor_shapes::trail(
+        settings::TrailStyle::Blaze,
+        cursor_shapes::quad(cell(40.0, 20.0)),
+        cell(360.0, 180.0),
+        16.0,
+        0.02,
+    )
+    .0;
+    let at = tinted(cx, layers, tint, size(px(400.), px(200.)));
+    let corners: Vec<[u8; 4]> = [(356.5, 172.5), (363.5, 172.5), (356.5, 187.5), (363.5, 187.5), (360.0, 180.0)]
+        .iter()
+        .map(|&(x, y)| at(x, y))
+        .collect();
+    assert!(corners.iter().all(|c| c[..3].iter().all(|v| *v < 20)), "nothing on the slanted cursor: {corners:?}");
+    println!("trail pixels: blaze body {body:?}, edge {edge:?}, outside {outside:?}, cursor {cursor:?}, far {far:?}, slanted cursor {corners:?}");
 }
 
 fn main() {

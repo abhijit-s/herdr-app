@@ -479,9 +479,17 @@ fn blaze(
         (cut.len() >= 3 && area(&cut).abs() > 1e-3).then(|| cut.into_iter().map(pt).collect());
     let (grow, glow) = BLAZE_GLOW[tapered as usize];
     let ramp = Some((far, b));
+    // The glow is round the beam, not round the cursor: it stops at the
+    // cursor grown as far as the glow reaches.
+    let halo_outline = span(end, to, grow * h);
+    let halo_hole = {
+        let around: Vec<P> = halo_outline.iter().map(|p| xy_of(*p)).collect();
+        let cut = clipped(&corners(to, grow * h), &around);
+        (cut.len() >= 3 && area(&cut).abs() > 1e-3).then(|| cut.into_iter().map(pt).collect())
+    };
     let halo = Layer {
-        outline: span(end, to, grow * h),
-        hole: hole.clone(),
+        outline: halo_outline,
+        hole: halo_hole,
         stroke: None,
         open: false,
         alpha: glow,
@@ -499,29 +507,63 @@ fn blaze(
         fade: ramp,
         glow: None,
     };
-    // The edge runs along the beam's sides only, not round the cursor.
+    // The edge, inside the beam's sides and off the cursor: the beam shrunk
+    // half the stroke in from each side (not the cursor's own edges), each
+    // side a half-plane moved inward, so even a thin tip stays one convex
+    // outline; of that, the boundary from where it meets the cursor, round
+    // the far end, to where it meets it again, each end walked on until the
+    // stroke's reach (to the corners of its square end) is clear of the cursor.
+    let half = BLAZE_EDGE / 2.0;
+    let [lo, _, hi, _] = corners(to, 0.0);
     let on_cursor = |p: &P| corners(to, 0.0).contains(p);
-    // From the last of the cursor's corners on the outline, round the far
-    // end, to the next of them.
     let n = outline.len();
-    let start = (0..n)
-        .find(|&i| on_cursor(&outline[i]) && !on_cursor(&outline[(i + 1) % n]))
-        .unwrap_or(0);
-    let mut sides = vec![outline[start]];
-    for k in 1..=n {
-        let p = outline[(start + k) % n];
-        sides.push(p);
-        if on_cursor(&p) {
-            break;
+    let turn = area(&outline).signum();
+    let mut inner = outline.clone();
+    for i in 0..n {
+        let (p, q) = (outline[i], outline[(i + 1) % n]);
+        if !(on_cursor(&p) && on_cursor(&q)) {
+            inner = within_by(&inner, p, q, turn, half);
         }
     }
-    // Each end where its side leaves the cursor, so no stroke runs along it.
-    let last = sides.len() - 1;
-    (sides[0], sides[last]) = (
-        leaving(to, sides[0], sides[1]),
-        leaving(to, sides[last], sides[last - 1]),
-    );
-    let sides: Vec<Point<Pixels>> = sides.into_iter().map(pt).collect();
+    let near = |v: f32, w: f32| (v - w).abs() < 1e-3;
+    let on_rect = |p: &P| {
+        ((near(p.0, lo.0) || near(p.0, hi.0)) && (lo.1 - 1e-3..=hi.1 + 1e-3).contains(&p.1))
+            || ((near(p.1, lo.1) || near(p.1, hi.1)) && (lo.0 - 1e-3..=hi.0 + 1e-3).contains(&p.0))
+    };
+    let m = inner.len();
+    let sides: Vec<P> = match (0..m).find(|&i| on_rect(&inner[i]) && !on_rect(&inner[(i + 1) % m])) {
+        Some(start) if m >= 3 => {
+            let mut line = vec![inner[start]];
+            for k in 1..m {
+                let p = inner[(start + k) % m];
+                line.push(p);
+                if on_rect(&p) {
+                    break;
+                }
+            }
+            line
+        }
+        _ => Vec::new(),
+    };
+    let off = |p: P| ((lo.0 - p.0).max(p.0 - hi.0).max(0.0)).hypot((lo.1 - p.1).max(p.1 - hi.1).max(0.0));
+    let clear = |p: P, q: P| {
+        let (dx, dy) = (q.0 - p.0, q.1 - p.1);
+        let steps = (dx.hypot(dy) / 0.25).ceil().max(1.0) as usize;
+        (0..=steps)
+            .map(|i| i as f32 / steps as f32)
+            .map(|k| (p.0 + dx * k, p.1 + dy * k))
+            .find(|&p| off(p) >= half * std::f32::consts::SQRT_2)
+    };
+    let last = sides.len().saturating_sub(1);
+    // A beam too short to have sides clear of the cursor gets no edge.
+    let sides: Vec<Point<Pixels>> = match (last >= 2).then(|| (clear(sides[0], sides[1]), clear(sides[last], sides[last - 1]))) {
+        Some((Some(a), Some(b))) => {
+            let mut sides = sides;
+            (sides[0], sides[last]) = (a, b);
+            sides.into_iter().map(pt).collect()
+        }
+        _ => Vec::new(),
+    };
     let edge = Layer {
         outline: sides,
         hole: None,
@@ -537,23 +579,29 @@ fn blaze(
     (layers, Some(quad(end)))
 }
 
-/// Where the segment from `p` (in or on `rect`) toward `q` leaves `rect`.
-fn leaving(rect: Bounds<Pixels>, p: P, q: P) -> P {
-    let [lo, _, hi, _] = corners(rect, 0.0);
-    let exit = |a: f32, d: f32, min: f32, max: f32| {
-        if d > 1e-6 {
-            (max - a) / d
-        } else if d < -1e-6 {
-            (min - a) / d
-        } else {
-            f32::INFINITY
+fn xy_of(p: Point<Pixels>) -> P {
+    (f32::from(p.x), f32::from(p.y))
+}
+
+/// The part of the convex `poly` at least `by` px inside the line from `p`
+/// to `q` (inside: the side `turn`, the outline's winding, says).
+fn within_by(poly: &[P], p: P, q: P, turn: f32, by: f32) -> Vec<P> {
+    let len = (q.0 - p.0).hypot(q.1 - p.1).max(1e-6);
+    let depth = |v: P| cross(p, q, v) * turn / len - by;
+    let mut out = Vec::new();
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+        let (da, db) = (depth(a), depth(b));
+        if da >= 0.0 {
+            out.push(a);
         }
-    };
-    let (dx, dy) = (q.0 - p.0, q.1 - p.1);
-    let u = exit(p.0, dx, lo.0, hi.0)
-        .min(exit(p.1, dy, lo.1, hi.1))
-        .clamp(0.0, 1.0);
-    (p.0 + dx * u, p.1 + dy * u)
+        if (da >= 0.0) != (db >= 0.0) {
+            let k = da / (da - db);
+            out.push((a.0 + (b.0 - a.0) * k, a.1 + (b.1 - a.1) * k));
+        }
+    }
+    out.dedup();
+    out
 }
 
 /// Warp, a cursor on springs after Neovide's stretching cursor (whose corners
@@ -1545,31 +1593,45 @@ mod tests {
     }
 
     #[test]
-    fn the_blaze_has_a_red_edge_along_its_sides_not_round_the_cursor() {
+    fn the_blaze_has_a_red_edge_inside_its_sides_and_never_on_the_cursor() {
         let (layers, _) = blaze_at(TrailStyle::Blaze, 0.05);
         let edge = &layers[2];
         assert_eq!((edge.tone, edge.stroke, edge.open), (Tone::FlameEdge, Some(BLAZE_EDGE), true));
-        let body: Vec<P> = layers[1].outline.iter().map(|p| xy(*p)).collect();
         let on: Vec<P> = edge.outline.iter().map(|p| xy(*p)).collect();
         assert_eq!(on.len(), 4, "the two sides and the far end: {on:?}");
-        assert!(on[1..3].iter().all(|p| body.contains(p)), "round the far end of the beam's outline");
+        // Half a stroke in from the beam's sides, so the stroke lies inside it,
+        // and its ends half a stroke short of the cursor.
         let mut ends = [on[0], on[3]];
         ends.sort_by(|a, b| a.1.total_cmp(&b.1));
-        assert_eq!(ends, [(400.0, 0.0), (400.0, 16.0)], "each side ends where it meets the cursor");
-        // No stretch of it lies on the cursor's rect.
-        for w in on.windows(2) {
-            let m = ((w[0].0 + w[1].0) / 2.0, (w[0].1 + w[1].1) / 2.0);
-            assert!(m.0 < 400.0, "{w:?}");
+        let reach = 400.0 - BLAZE_EDGE / 2.0 * std::f32::consts::SQRT_2;
+        assert!(
+            (ends[0].0 - reach).abs() < 0.3 && (ends[0].1 - 1.0).abs() < 0.01
+                && (ends[1].0 - reach).abs() < 0.3 && (ends[1].1 - 15.0).abs() < 0.01,
+            "{ends:?}"
+        );
+        assert!((on[1].0 - (far_end(0.05) - 3.0)).abs() < 0.01, "in from the far end: {on:?}");
+        // Every way it goes, the edge is inside the beam and off the cursor,
+        // by half its width.
+        for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (1.0, 1.0), (-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0)] {
+            for style in [TrailStyle::Blaze, TrailStyle::BlazeTapered] {
+                let to = cell(300.0, 300.0);
+                let from = cell(300.0 - 240.0 * dx, 300.0 - 160.0 * dy);
+                let (layers, _) = trail(style, quad(from), to, H, 0.05);
+                let (body, edge) = (&layers[1], &layers[2]);
+                assert_eq!(edge.tone, Tone::FlameEdge, "{style:?} {dx} {dy}");
+                for p in edge.outline.iter().map(|p| xy(*p)) {
+                    assert!(within(&body.outline, p), "{style:?} {dx} {dy}: {p:?} inside the beam");
+                    let gap = ((300.0 - p.0).max(p.0 - 308.0).max(0.0)).hypot((300.0 - p.1).max(p.1 - 316.0).max(0.0));
+                    assert!(gap >= BLAZE_EDGE / 2.0, "{style:?} {dx} {dy}: {p:?} off the cursor by {gap}");
+                }
+            }
         }
-        // On a slant too, its ends are on the cursor's edge and the rest outside.
-        let (slant, _) = trail(TrailStyle::Blaze, quad(cell(0.0, 0.0)), cell(300.0, 200.0), H, 0.05);
-        let on: Vec<P> = slant[2].outline.iter().map(|p| xy(*p)).collect();
-        let inside = |p: &P| (300.0..=308.0).contains(&p.0) && (200.0..=216.0).contains(&p.1);
-        assert!(inside(&on[0]) && inside(on.last().unwrap()), "{on:?}");
-        assert!(on[1..on.len() - 1].iter().all(|p| !inside(p)), "{on:?}");
-        // The halo is wider and fainter, the glow round the beam.
-        let (halo, beam) = (extent(&layers[0].outline), extent(&layers[1].outline));
-        assert!(halo.2 < beam.2 && halo.3 > beam.3 && layers[0].alpha < 0.5);
+        // The glow is round the beam, not round the cursor.
+        let (halo, beam) = (&layers[0], extent(&layers[1].outline));
+        let h = extent(&halo.outline);
+        assert!(h.2 < beam.2 && h.3 > beam.3 && halo.alpha < 0.5);
+        assert!(!paints(halo, (410.0, 8.0)) && !paints(halo, (404.0, -1.0)), "nothing just past or above the cursor");
+        assert!(paints(halo, (200.0, -1.0)), "but round the beam");
     }
 
     #[test]

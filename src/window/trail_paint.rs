@@ -21,7 +21,8 @@ pub(crate) fn paler(c: Hsla) -> Hsla {
 }
 
 /// The blaze's own flame: amber, with a red edge.
-const AMBER: Hsla = Hsla { h: 40.6 / 360.0, s: 1.0, l: 0.58, a: 1.0 };
+/// sRGB (1.0, 0.725, 0.161).
+const AMBER: Hsla = Hsla { h: 40.33 / 360.0, s: 1.0, l: 0.5805, a: 1.0 };
 const RED: Hsla = Hsla { h: 0.0, s: 1.0, l: 0.5, a: 1.0 };
 
 /// The colors an effect is painted in: its color (the theme's cursor or
