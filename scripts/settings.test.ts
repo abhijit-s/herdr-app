@@ -47,6 +47,8 @@ const values: Record<string, any> = {
   v_virtual_list: (...args: any[]) => { const list = element(); list.calls.v_virtual_list = args; return list; },
   VirtualListScrollHandle: { new: () => { const handle = { scrolls: [] as any[], scroll_to_item(i: number, how: string) { handle.scrolls.push([i, how]); } }; return handle; } },
   toastLooks: () => looksNow,
+  // Herdr's cursor effect preview: an element that remembers its id and props.
+  CursorPreview: { new: (id: string, props: any) => { const el = element(); el.calls.cursorPreview = [id, props]; return el; } },
   themes: () => themeList, layouts: () => ["win98"], setShared: (key: string, value: any) => { sharedDisk[key] = value; },
   settings: () => ({ theme_dark: "ayu-mirage", theme_light: "ayu-light", ...composed }), window: () => windowNow, props: () => propsNow,
   // Pages search reads besides Text and Look: a build from source that checks nothing.
@@ -402,6 +404,27 @@ test("trail style shows only while the trail is on; the arrival effect always", 
   expect(shown({}, "st-cs-Warp")).toBe(false);
   expect(shown({ cursor_trail: "all" }, "st-cs-Warp")).toBe(true);
   expect(shown({}, "st-ca-Boom")).toBe(true);
+});
+
+test("the preview heads the Cursor page while the trail or the pulse is on", () => {
+  const preview = (person: Record<string, any>) => click(person, {}, "st-cursor-preview", ["choicePicker", "shown?"], "cursor");
+  expect(preview({})).toBeUndefined();
+  for (const person of [{ cursor_trail: "panes" }, { cursor_arrival: "boom" }, { cursor_trail: "all", cursor_trail_style: "warp" }]) {
+    const box = preview(person);
+    expect(box).toBeDefined();
+    expect(box.nodes[0].calls.cursorPreview).toEqual(["cursor-effects", {}]);
+    expect(texts(box).join("|")).toContain("Click in the box");
+  }
+  // Above every effect row: the first thing under the heading.
+  const view = new Settings();
+  view.person = { cursor_trail: "panes" };
+  view.choicePicker = element;
+  const page = view.page("cursor", new Proxy({}, { get: () => "#000000" }), {});
+  const shown = texts(page);
+  expect(shown.findIndex((x: string) => x.startsWith("Click in the box"))).toBeLessThan(shown.indexOf("Cursor trail"));
+  expect(shown.indexOf("Cursor trail")).toBeGreaterThan(-1);
+  // Not among search results.
+  expect(texts(search("cursor_trail").root).join("|")).not.toContain("Click in the box");
 });
 
 test("effect time shows while the trail or the pulse is on, and steps by 20 ms within 50 to 1000, leaving 120 out", () => {

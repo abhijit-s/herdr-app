@@ -6,6 +6,7 @@
 
 use crate::git_status;
 use crate::hc::Core;
+pub(crate) mod cursor_preview;
 mod cursor_shapes;
 mod cursor_trail;
 mod trail_paint;

@@ -51,9 +51,20 @@ pub(super) struct Trail {
 }
 
 impl Trail {
+    /// The color it is drawn in.
+    pub(super) fn color(&self) -> Hsla {
+        self.color
+    }
+
+    /// The same effect, started `by` earlier: trail and pulse alike.
+    #[cfg(test)]
+    pub(super) fn age(&mut self, by: Duration) {
+        (self.start, self.pulse) = (self.start - by, self.pulse - by);
+    }
+
     /// A trail from `from` (None: the pulse alone); a tail steered from a
     /// tail (`live`) keeps its fade, as kitty's one opacity does.
-    fn new(
+    pub(super) fn new(
         from: Option<cursor_shapes::Quad>,
         live: Option<&Trail>,
         pane: &str,
@@ -82,7 +93,7 @@ impl Trail {
 
     /// The trail's shapes and the pulse's at `elapsed`, toward `end`, noting
     /// what the trail drew; None once both are over.
-    fn shapes(
+    pub(super) fn shapes(
         &mut self,
         end: crate::terminal::TrailEnd,
         elapsed: Duration,
@@ -136,7 +147,7 @@ pub(super) struct Seen {
 }
 
 /// Where a trail starts: from what the live one drew, else from `cursor`.
-fn start_from(live: Option<&Trail>, cursor: Option<Bounds<Pixels>>) -> Option<cursor_shapes::Quad> {
+pub(super) fn start_from(live: Option<&Trail>, cursor: Option<Bounds<Pixels>>) -> Option<cursor_shapes::Quad> {
     live.and_then(|t| t.drawn)
         .or(cursor.map(cursor_shapes::quad))
 }

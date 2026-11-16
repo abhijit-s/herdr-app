@@ -1378,6 +1378,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
     });
     HostModule::new("herdr")
         .declarations(DECLARATIONS)
+        .component("CursorPreview", |args, window, cx| crate::window::cursor_preview::element(args.id(), window, cx))
         .async_function("exec", |a| {
             let command = a.string(0)?.to_owned();
             if checking() { tracing::warn!("check: mod exec'd `{command}`; the child runs for real"); }
