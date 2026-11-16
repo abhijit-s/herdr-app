@@ -10780,8 +10780,18 @@ export default class Recent extends View {
         focus(cx, "a");
         assert_eq!(state(cx), Some((true, Some(TrailStyle::Warp), Arrival::Ripple, "a".into())), "a warp from b with a ripple at a");
 
+        // Steered back to b on the warp's first frames, a trail starts from the
+        // warp's back end (as from a sweep's old end), still at b: a tail with
+        // nowhere to go, so nothing runs.
+        let back = view.update(cx, |this, _| this.trail.as_ref().and_then(|t| t.drawn));
         set(CursorTrail::Panes, TrailStyle::Tail, Arrival::Off);
         draw(cx);
+        focus(cx, "b");
+        assert!(back.is_some(), "the warp said where it was drawn");
+        assert_eq!(state(cx), None, "a tail from b to b ends at once");
+        // Once it has ended, a move to a and back draws the tail alone.
+        focus(cx, "a");
+        view.update(cx, |this, _| this.trail = None);
         focus(cx, "b");
         assert_eq!(state(cx), Some((true, Some(TrailStyle::Tail), Arrival::Off, "b".into())), "the trail alone");
 

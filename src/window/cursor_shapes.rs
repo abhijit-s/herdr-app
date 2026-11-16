@@ -51,13 +51,6 @@ fn fill(outline: Vec<Point<Pixels>>, alpha: f32) -> Layer {
 /// Below this many px, a trail has gone into the cursor.
 const CAUGHT_UP: f32 = 0.5;
 
-/// Exponential decay with time constant `tau` (a share of the duration): how
-/// much of its way is left at progress `t`, scaled to be none at the end.
-pub(super) fn settle(t: f32, tau: f32) -> f32 {
-    let end = (-1.0 / tau).exp();
-    ((-t.clamp(0.0, 1.0) / tau).exp() - end) / (1.0 - end)
-}
-
 fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
 }
@@ -424,26 +417,120 @@ fn sweep(from: Bounds<Pixels>, to: Bounds<Pixels>, t: f32) -> (Vec<Layer>, Optio
     )
 }
 
-/// Warp: the decay time of its old end, and its soft edges as (grown by this
-/// many cell heights, opacity), back to front.
-const WARP_TAIL: f32 = 1.0 / 4.0;
-const WARP_EDGES: [(f32, f32); 3] = [(0.5, 0.07), (0.25, 0.15), (0.0, 0.35)];
+/// Warp, a cursor on springs after Neovide's stretching cursor (whose corners
+/// are critically damped and never overshoot; the overshoot and the narrowing
+/// are this look's own): its front edge on an underdamped spring
+/// (damping ratio, natural frequency per duration), so it runs past the
+/// cursor, by at most `WARP_REACH` cell heights, and springs back; its back
+/// edge critically damped and slower (natural
+/// frequency per duration), so the block stretches between them. Across the
+/// move it narrows as it stretches, to 1/√stretch and no narrower than
+/// `WARP_NARROWEST` of the cursor. A soft edge (grown this many cell heights,
+/// opacity) behind the block (opacity).
+const WARP_FRONT: (f32, f32) = (0.65, 14.0);
+const WARP_BACK: f32 = 8.0;
+const WARP_NARROWEST: f32 = 0.5;
+const WARP_REACH: f32 = 1.5;
+const WARP_EDGE: (f32, f32) = (0.25, 0.15);
+const WARP_BODY: f32 = 0.85;
 
-/// Neovide's stretched block: the block from its old end (decaying toward the
-/// cursor) to the cursor with soft edges, and its half nearer the cursor drawn
-/// again, so it fades toward the tail.
+/// How much of its way a spring released from rest at 1 still has to go at
+/// progress `t` (negative past its rest), less the little it has left at 1 so
+/// it is at rest exactly at the end: damping ratio `zeta` (1 critical), natural
+/// frequency `omega` per duration.
+pub(super) fn spring(t: f32, zeta: f32, omega: f32) -> f32 {
+    let at = |t: f32| {
+        let decay = (-zeta * omega * t).exp();
+        if zeta < 1.0 {
+            let wd = omega * (1.0 - zeta * zeta).sqrt();
+            decay * ((wd * t).cos() + zeta * omega / wd * (wd * t).sin())
+        } else {
+            decay * (1.0 + omega * t)
+        }
+    };
+    let t = t.clamp(0.0, 1.0);
+    at(t) - t * at(1.0)
+}
+
+/// The cursor block stretched on springs: the cursor's rect (sized
+/// from the old cursor's to the new's as its back edge arrives) centred between
+/// its front and back edges, scaled along the move to reach both and narrowed
+/// across it, so it lengthens, overshoots the cursor, and springs back into it.
+/// The block is a parallelogram (a rect scaled along a slant), so it stays
+/// convex in every direction and is the cursor's own rect once at rest.
 fn warp(from: Bounds<Pixels>, to: Bounds<Pixels>, h: f32, t: f32) -> (Vec<Layer>, Option<Quad>) {
-    let k = settle(t, WARP_TAIL);
-    let end = toward(to, from, k);
-    if (mid(end).0 - mid(to).0).hypot(mid(end).1 - mid(to).1) < CAUGHT_UP {
+    if t >= 1.0 {
         return (Vec::new(), None);
     }
-    let mut layers: Vec<Layer> = WARP_EDGES
-        .iter()
-        .map(|&(grow, alpha)| fill(span(end, to, grow * h), alpha * k))
+    let (a, b) = (mid(from), mid(to));
+    let way = (a.0 - b.0, a.1 - b.1);
+    let (front, back) = (
+        spring(t, WARP_FRONT.0, WARP_FRONT.1),
+        spring(t, 1.0, WARP_BACK),
+    );
+    let d = way.0.hypot(way.1);
+    // Past the cursor, the front's swing is the spring's but held softly
+    // within `WARP_REACH` cell heights, so a jump across the window doesn't
+    // overshoot into the next pane.
+    let reach = WARP_REACH * h;
+    let front = if front < 0.0 && d > 1e-3 {
+        -(reach * (-front * d / reach).tanh()) / d
+    } else {
+        front
+    };
+    let at = |k: f32| (b.0 + way.0 * k, b.1 + way.1 * k);
+    let (head, tail) = (at(front), at(back));
+    let centre = ((head.0 + tail.0) / 2.0, (head.1 + tail.1) / 2.0);
+    let size = toward(to, from, back).size;
+    let (w, ht) = (f32::from(size.width), f32::from(size.height));
+    let u = if d > 1e-3 {
+        (-way.0 / d, -way.1 / d)
+    } else {
+        (1.0, 0.0)
+    };
+    let v = (-u.1, u.0);
+    let along = ((w * u.0).abs() + (ht * u.1).abs()).max(1e-3);
+    let stretch = 1.0 + (head.0 - tail.0).hypot(head.1 - tail.1) / along;
+    let narrow = stretch.sqrt().recip().max(WARP_NARROWEST);
+    let block = Bounds::new(
+        point(px(centre.0 - w / 2.0), px(centre.1 - ht / 2.0)),
+        size,
+    );
+    let across = ((w * v.0).abs() + (ht * v.1).abs()).max(1e-3);
+    // Grown after scaling, so a soft edge stays about `grow` px (up to √2 of
+    // it on a slant) however far the block stretches: the grown rect's
+    // extent along and across, scaled so the
+    // block's own part scales and the growth doesn't.
+    let shape = |grow: f32| -> Quad {
+        let (ea, ec) = (
+            2.0 * grow * (u.0.abs() + u.1.abs()),
+            2.0 * grow * (v.0.abs() + v.1.abs()),
+        );
+        let (sa, sc) = (
+            (stretch * along + ea) / (along + ea),
+            (narrow * across + ec) / (across + ec),
+        );
+        corners(block, grow).map(|p| {
+            let r = (p.0 - centre.0, p.1 - centre.1);
+            let (ra, rc) = ((r.0 * u.0 + r.1 * u.1) * sa, (r.0 * v.0 + r.1 * v.1) * sc);
+            (
+                centre.0 + u.0 * ra + v.0 * rc,
+                centre.1 + u.1 * ra + v.1 * rc,
+            )
+        })
+    };
+    let fade = 1.0 - t.max(0.0).powi(2);
+    let (grow, edge) = WARP_EDGE;
+    // A trail steered from here starts from a cursor-sized block at the back
+    // end, as the sweep's does: a slanted block's enclosing box would be far
+    // bigger than what was drawn.
+    let back_end = Bounds::new(point(px(tail.0 - w / 2.0), px(tail.1 - ht / 2.0)), size);
+    let layers = [(shape(grow * h), edge), (shape(0.0), WARP_BODY)]
+        .into_iter()
+        .map(|(q, alpha)| fill(hull(q.to_vec()), alpha * fade))
+        .filter(|l| l.outline.len() >= 3)
         .collect();
-    layers.push(fill(span(toward(end, to, 0.5), to, 0.0), 0.35 * k));
-    (layers, Some(quad(end)))
+    (layers, Some(quad(back_end)))
 }
 
 /// Arrival pulses: how far they spread, in cell heights from the cursor's
@@ -576,11 +663,23 @@ mod tests {
             for dir in DIRS {
                 for len in [0.6f32, 1.0, 5.0, 10.0, 400.0] {
                     let (from, to) = (cell(0.0, 0.0), cell(dir.0 * len, dir.1 * len));
-                    // Within the cells' box, grown by the widest glow (2.4 cell heights / 2).
-                    let (lo, hi) = ((dir.0 * len).min(0.0) - 20.0, (dir.0 * len).max(0.0) + 28.0);
-                    let (top, bottom) =
-                        ((dir.1 * len).min(0.0) - 20.0, (dir.1 * len).max(0.0) + 36.0);
-                    for t in [0.0, 0.1, 0.3, 0.6, 0.9] {
+                    // Within the cells' box, grown by the widest glow (2.4 cell
+                    // heights / 2), and for the warp by how far its front can
+                    // overshoot the cursor.
+                    let over = if style == TrailStyle::Warp {
+                        (warp_overshoot() * len).min(WARP_REACH * H)
+                    } else {
+                        0.0
+                    };
+                    let (lo, hi) = (
+                        (dir.0 * len).min(0.0) - 20.0 - over,
+                        (dir.0 * len).max(0.0) + 28.0 + over,
+                    );
+                    let (top, bottom) = (
+                        (dir.1 * len).min(0.0) - 20.0 - over,
+                        (dir.1 * len).max(0.0) + 36.0 + over,
+                    );
+                    for t in [0.0, 0.1, 0.2, 0.3, 0.4, 0.6, 0.9, 0.99] {
                         for layer in trail(style, quad(from), to, H, t).0 {
                             if let Some((c, r, blur)) = layer.glow {
                                 assert!(
@@ -736,14 +835,20 @@ mod tests {
             .map(|p| xy(*p).1)
             .fold(f32::MAX, f32::min);
         assert!(top > 13.0, "into the underline: {top}");
-        // The warp ends on the beam, its soft edges a share of the cell's height.
-        let warp = trail(TrailStyle::Warp, quad(from), beam(400.0, 0.0), H, 0.1).0;
-        let top = warp[0]
-            .outline
-            .iter()
-            .map(|p| xy(*p).1)
-            .fold(f32::MAX, f32::min);
-        assert!((top + 8.0).abs() < 0.01, "grown half a cell height: {top}");
+        // The warp's block comes to rest as the beam itself, its soft edge a
+        // share of the cell's height.
+        let warp = trail(TrailStyle::Warp, quad(from), beam(400.0, 0.0), H, 0.999).0;
+        let (x0, x1, y0, y1) = extent(&warp[1].outline);
+        assert!(
+            (x0 - 400.0).abs() < 0.3
+                && (x1 - 402.0).abs() < 0.3
+                && y0.abs() < 0.3
+                && (y1 - 16.0).abs() < 0.3,
+            "{:?}",
+            warp[1].outline
+        );
+        let (_, _, top, _) = extent(&warp[0].outline);
+        assert!((top + 4.0).abs() < 0.3, "grown a quarter cell height: {top}");
         // The tail's corners settle on the beam's.
         let frames = chase(from, beam(400.0, 0.0), 0.12, 1.0 / 60.0);
         let last = &frames.last().unwrap()[0];
@@ -878,22 +983,160 @@ mod tests {
         assert!(width(0.2) > width(0.5) && width(0.5) > width(0.9) && width(0.9) >= 8.0);
     }
 
+    /// The outline's left, right, top and bottom.
+    fn extent(o: &[Point<Pixels>]) -> (f32, f32, f32, f32) {
+        o.iter().map(|p| xy(*p)).fold(
+            (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
+            |(x0, x1, y0, y1), (x, y)| (x0.min(x), x1.max(x), y0.min(y), y1.max(y)),
+        )
+    }
+
+    /// How far past its rest the warp's front spring swings, as a share of
+    /// its way: a damped spring's first overshoot, e^(-πζ/√(1-ζ²)).
+    fn warp_overshoot() -> f32 {
+        let z = WARP_FRONT.0;
+        (-std::f32::consts::PI * z / (1.0 - z * z).sqrt()).exp()
+    }
+
     #[test]
-    fn the_warp_is_strongest_at_the_cursor_with_soft_edges() {
-        let (from, to) = (cell(0.0, 0.0), cell(400.0, 0.0));
-        let layers = trail(TrailStyle::Warp, quad(from), to, H, 0.1).0;
-        assert_eq!(layers.len(), 4);
-        // The soft edges reach past the block, the last layer (the half nearer the cursor) doesn't reach the old end.
-        let reach_left = |l: &Layer| l.outline.iter().map(|p| xy(*p).0).fold(f32::MAX, f32::min);
+    fn springs_start_at_one_end_at_rest_and_only_the_underdamped_one_overshoots() {
+        for (zeta, omega) in [WARP_FRONT, (1.0, WARP_BACK)] {
+            assert!((spring(0.0, zeta, omega) - 1.0).abs() < 1e-6);
+            assert_eq!(spring(1.0, zeta, omega), 0.0, "at rest at the end");
+            assert_eq!(spring(-1.0, zeta, omega), 1.0);
+            assert_eq!(spring(2.0, zeta, omega), 0.0);
+        }
+        let low = |zeta, omega| {
+            (0..=1000)
+                .map(|i| spring(i as f32 / 1000.0, zeta, omega))
+                .fold(f32::MAX, f32::min)
+        };
+        let over = -low(WARP_FRONT.0, WARP_FRONT.1);
         assert!(
-            reach_left(&layers[0]) < reach_left(&layers[2])
-                && reach_left(&layers[2]) < reach_left(&layers[3])
+            over > 0.03 && (over - warp_overshoot()).abs() < 0.01,
+            "the front swings past and back: {over}"
         );
-        let top = |l: &Layer| l.outline.iter().map(|p| xy(*p).1).fold(f32::MAX, f32::min);
+        assert!(low(1.0, WARP_BACK) >= 0.0, "the back never passes the cursor");
+    }
+
+    fn warp_at(to: Bounds<Pixels>, t: f32) -> (Vec<Layer>, Option<Quad>) {
+        trail(TrailStyle::Warp, quad(cell(0.0, 0.0)), to, H, t)
+    }
+
+    #[test]
+    fn the_warp_stretches_along_the_move_and_narrows_across_it() {
+        let to = cell(400.0, 0.0);
+        let (layers, _) = warp_at(to, 0.1);
+        assert_eq!(layers.len(), 2, "a soft edge behind the block");
+        let (x0, x1, y0, y1) = extent(&layers[1].outline);
+        assert!(x1 - x0 > 8.0 * 5.0, "long along the move: {}", x1 - x0);
         assert!(
-            (top(&layers[0]) + 8.0).abs() < 0.01,
-            "grown half a cell height"
+            y1 - y0 < 16.0 * 0.75 && y1 - y0 >= 16.0 * WARP_NARROWEST - 0.01,
+            "narrower across it, never thinner than half: {}",
+            y1 - y0
         );
+        assert!(((y0 + y1) / 2.0 - 8.0).abs() < 0.01, "on the cells' line");
+        assert!(
+            x0 > 4.0 && x1 < 404.0 + 4.0,
+            "it moves as a block, off the old cell: {x0} {x1}"
+        );
+        // Straight down, it's tall and thin instead.
+        let (x0, x1, y0, y1) = extent(&warp_at(cell(0.0, 400.0), 0.1).0[1].outline);
+        assert!(y1 - y0 > 16.0 * 3.0 && x1 - x0 < 8.0 * 0.75, "{x0} {x1} {y0} {y1}");
+        // On a slant it's a parallelogram, convex, along the slant.
+        let o = &warp_at(cell(300.0, 300.0), 0.1).0[1].outline;
+        assert!(convex(o) && o.len() == 4, "{o:?}");
+    }
+
+    #[test]
+    fn the_warp_overshoots_the_cursor_springs_back_and_settles_into_it() {
+        let to = cell(400.0, 0.0);
+        let front = |t: f32| extent(&warp_at(to, t).0[1].outline).1;
+        let fronts: Vec<f32> = (0..100).map(|i| front(i as f32 / 100.0)).collect();
+        let (peak, at) = fronts
+            .iter()
+            .enumerate()
+            .fold((f32::MIN, 0), |(p, a), (i, f)| if *f > p { (*f, i) } else { (p, a) });
+        assert!(
+            peak > 408.0 + 10.0 && peak <= 408.0 + warp_overshoot() * 400.0 + 0.5,
+            "past the cursor's right edge, by the spring's overshoot at most: {peak}"
+        );
+        assert!(
+            (10..60).contains(&at),
+            "early, then back: the peak at t = {}",
+            at as f32 / 100.0
+        );
+        assert!(fronts[at..].windows(2).take(25).all(|w| w[1] <= w[0] + 1e-3));
+        let last = extent(&warp_at(to, 0.999).0[1].outline);
+        assert!(
+            (last.0 - 400.0).abs() < 0.3 && (last.1 - 408.0).abs() < 0.3,
+            "at rest in the cursor's cell: {last:?}"
+        );
+    }
+
+    #[test]
+    fn a_long_warp_overshoots_by_at_most_its_reach_and_short_ones_by_the_spring() {
+        let front = |to: Bounds<Pixels>| {
+            (0..100)
+                .map(|i| extent(&warp_at(to, i as f32 / 100.0).0[1].outline).1)
+                .fold(f32::MIN, f32::max)
+        };
+        let far = front(cell(2000.0, 0.0)) - 2008.0;
+        assert!(
+            far > 16.0 && far <= WARP_REACH * H + 0.01,
+            "across the window, held within 1.5 cell heights: {far}"
+        );
+        let near = front(cell(48.0, 0.0)) - 56.0;
+        assert!(
+            (near - warp_overshoot() * 48.0).abs() < 0.5,
+            "a short jump swings as the spring does: {near}"
+        );
+    }
+
+    #[test]
+    fn a_trail_steered_from_a_slanted_warp_starts_cursor_sized_where_it_was() {
+        let to = cell(300.0, 300.0);
+        for t in [0.1, 0.2, 0.4] {
+            let back = warp_at(to, t).1.unwrap();
+            let (x0, x1, y0, y1) = (back[0].0, back[1].0, back[0].1, back[2].1);
+            assert!(
+                (x1 - x0 - 8.0).abs() < 0.01 && (y1 - y0 - 16.0).abs() < 0.01,
+                "{t}: the cursor's size, not the slanted block's box: {back:?}"
+            );
+            let k = spring(t, 1.0, WARP_BACK);
+            let c = centroid(&back);
+            assert!(
+                (c.0 - (304.0 - 300.0 * k)).abs() < 0.01 && (c.1 - (308.0 - 300.0 * k)).abs() < 0.01,
+                "{t}: at the back end, on the way between the cells: {c:?}"
+            );
+            let (first, _) = trail(TrailStyle::Warp, back, cell(0.0, 300.0), H, 0.0);
+            let (x0, x1, y0, y1) = extent(&first[1].outline);
+            assert!(
+                (x1 - x0 - 8.0).abs() < 0.01 && (y1 - y0 - 16.0).abs() < 0.01,
+                "{t}: a warp steered from it begins as one cursor block: {x0} {x1} {y0} {y1}"
+            );
+        }
+        // From a comet's tail point (no size) at its very start: nothing degenerate.
+        let (layers, _) = trail(TrailStyle::Warp, [(200.0, 8.0); 4], cell(0.0, 100.0), H, 0.0);
+        assert!(
+            !layers.is_empty() && layers.iter().all(|l| l.outline.len() >= 3),
+            "{layers:?}"
+        );
+    }
+
+    #[test]
+    fn the_warp_looks_nothing_like_the_sweep_at_a_short_duration() {
+        // At 160 ms and 60 frames a second, the second and third frames.
+        let to = cell(400.0, 0.0);
+        for t in [1.0 / 9.6, 2.0 / 9.6] {
+            let sweep = extent(&trail(TrailStyle::Sweep, quad(cell(0.0, 0.0)), to, H, t).0[0].outline);
+            let warp = extent(&warp_at(to, t).0[1].outline);
+            assert_eq!((sweep.2, sweep.3), (0.0, 16.0), "the sweep keeps the cell's height");
+            assert!(warp.3 - warp.2 < 12.0, "{t}: the warp is narrower: {warp:?}");
+            assert!(sweep.1 <= 408.01, "the sweep never passes the cursor");
+        }
+        let past = (1..9).any(|i| extent(&warp_at(to, i as f32 / 9.6).0[1].outline).1 > 412.0);
+        assert!(past, "the warp's front visibly passes the cursor in some frame");
     }
 
     #[test]
