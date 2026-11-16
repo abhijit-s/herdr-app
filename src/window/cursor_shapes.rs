@@ -243,36 +243,79 @@ pub(super) fn trail(
     }
 }
 
-/// Comet, as Rex draws it: the glow round the head (radius and blur
-/// against the cell height, opacity), then back to front the outer streak and
-/// the core, each (its half width at the head against the cell height,
-/// opacity, paler core), narrowing to `COMET_END` of that width at the tail
-/// end and brightening from none at the tail to full `COMET_FULL` of the way
-/// to the head (1 / 1.55, where Rex's core and glow on the axis reach 1).
-const COMET_LAYERS: [(f32, f32, bool); 2] = [(0.30, 0.35, false), (0.14, 1.0, true)];
+/// Comet: the glow round the head (radius and blur against the cell height,
+/// opacity), then back to front the outer streak and the core, each (its half
+/// width at the head against the cell height, opacity, paler core), narrowing
+/// to `COMET_END` of that width at the tail end and brightening from none at
+/// the tail to full `COMET_FULL` of the way to the head. The head is about a
+/// cursor block across.
+const COMET_LAYERS: [(f32, f32, bool); 2] = [(0.40, 0.35, false), (0.22, 1.0, true)];
 const COMET_END: f32 = 0.2;
 const COMET_FULL: f32 = 0.65;
-const COMET_GLOW: (f32, f32, f32) = (0.3, 0.3, 1.0);
+const COMET_GLOW: (f32, f32, f32) = (0.5, 0.45, 1.0);
 const ROUND: usize = 16;
 
-/// A glowing streak, as Rex draws: the whole streak from the first frame,
-/// its round nose on the cursor and its tail end rounded at a fifth of its
-/// width; the tail retracts into the head easing out (cubic), the streak
-/// brightest at the head and fading to nothing at the tail, all of it fading
-/// as it goes, and a soft glow round the head.
+/// The head's launch swell: up to `COMET_SWELL` times its size and back to 1
+/// over the first `COMET_SWELL_END` of the effect.
+pub(super) const COMET_SWELL: f32 = 1.25;
+pub(super) const COMET_SWELL_END: f32 = 0.25;
+/// The landing pinch: from `COMET_PINCH_START` of the way on, the head shrinks
+/// (smoothly) to `COMET_PINCH_TO` of its size, ending on the cursor.
+pub(super) const COMET_PINCH_START: f32 = 0.7;
+pub(super) const COMET_PINCH_TO: f32 = 0.3;
+/// The glow rises from `COMET_GLOW_FROM` to full by `COMET_GLOW_PEAK`, then
+/// eases down (quadratic) to none at the end.
+pub(super) const COMET_GLOW_FROM: f32 = 0.85;
+pub(super) const COMET_GLOW_PEAK: f32 = 0.15;
+/// The streak's opacity is `1 - t^COMET_FADE_POW`.
+pub(super) const COMET_FADE_POW: i32 = 3;
+
+fn smoothstep(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
+/// The head's size at progress `t`, against its resting size: the swell, then
+/// the pinch.
+pub(super) fn comet_head_scale(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    let swell = 1.0
+        + (COMET_SWELL - 1.0) * (std::f32::consts::PI * (t / COMET_SWELL_END).min(1.0)).sin();
+    let pinch = 1.0
+        - (1.0 - COMET_PINCH_TO)
+            * smoothstep((t - COMET_PINCH_START) / (1.0 - COMET_PINCH_START));
+    swell * pinch
+}
+
+/// The glow's strength at progress `t`: up to its peak early, then easing down.
+pub(super) fn comet_glow_strength(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    if t < COMET_GLOW_PEAK {
+        COMET_GLOW_FROM + (1.0 - COMET_GLOW_FROM) * smoothstep(t / COMET_GLOW_PEAK)
+    } else {
+        (1.0 - (t - COMET_GLOW_PEAK) / (1.0 - COMET_GLOW_PEAK)).powi(2)
+    }
+}
+
+/// A glowing streak: the whole streak from the first frame, its round nose on
+/// the cursor and its tail end rounded at a fifth of its width; the tail
+/// retracts into the head easing out (cubic), the streak brightest at the head
+/// and fading to nothing at the tail, all of it fading as it goes. The head
+/// swells as it launches and pinches into the cursor as it lands, and its soft
+/// glow peaks early and eases away. Every size is a pure function of `t`.
 fn comet(from: P, to: Bounds<Pixels>, h: f32, t: f32) -> (Vec<Layer>, Option<Quad>) {
     let k = (1.0 - t.clamp(0.0, 1.0)).powi(3);
-    let fade = 1.0 - t.clamp(0.0, 1.0);
+    // Held late, so the landing pinch is seen on the cursor, not lost in a fade.
+    let fade = 1.0 - t.clamp(0.0, 1.0).powi(COMET_FADE_POW);
     if fade <= 0.0 {
         return (Vec::new(), None);
     }
+    let scale = comet_head_scale(t);
     let head = mid(to);
     let tail = (
         head.0 + (from.0 - head.0) * k,
         head.1 + (from.1 - head.1) * k,
     );
-    // Full strength from `COMET_FULL` of the way to the head, as Rex's
-    // `(core + glow) × along`, clamped at 1, is on its axis.
     let full = (
         tail.0 + (head.0 - tail.0) * COMET_FULL,
         tail.1 + (head.1 - tail.1) * COMET_FULL,
@@ -283,14 +326,14 @@ fn comet(from: P, to: Bounds<Pixels>, h: f32, t: f32) -> (Vec<Layer>, Option<Qua
         hole: None,
         stroke: None,
         open: false,
-        alpha: alpha * fade,
+        alpha: alpha * comet_glow_strength(t),
         tone: Tone::Effect,
         fade: None,
-        glow: Some((head, radius * h, blur * h)),
+        glow: Some((head, radius * h * scale, blur * h * scale)),
         disc: None,
     };
     let streaks = COMET_LAYERS.iter().map(|&(half, alpha, core)| Layer {
-        outline: streak(tail, head, half * h),
+        outline: streak(tail, head, half * h * scale),
         hole: None,
         stroke: None,
         open: false,
@@ -1069,7 +1112,7 @@ mod tests {
             .map(|p| xy(*p).0)
             .fold(f32::MAX, f32::min);
         assert!(
-            (far - (back.0 - 16.0 * 0.14 * COMET_END)).abs() < 0.01,
+            (far - (back.0 - 16.0 * 0.22 * comet_head_scale(0.2) * COMET_END)).abs() < 0.01,
             "{back:?} {far}"
         );
         // The sweep's and the warp's are their old ends, between the cells, moving on.
@@ -1105,10 +1148,10 @@ mod tests {
                 .iter()
                 .map(|l| (l.alpha, l.tone == Tone::Core, l.glow.is_some()))
                 .collect::<Vec<_>>(),
-            vec![(1.0, false, true), (0.35, false, false), (1.0, true, false)],
+            vec![(COMET_GLOW_FROM, false, true), (0.35, false, false), (1.0, true, false)],
             "one glow behind two streaks, not four stacked fills"
         );
-        assert_eq!(layers[0].glow, Some(((404.0, 8.0), 16.0 * 0.3, 16.0 * 0.3)));
+        assert_eq!(layers[0].glow, Some(((404.0, 8.0), 16.0 * 0.5, 16.0 * 0.45)));
     }
 
     #[test]
@@ -1121,7 +1164,7 @@ mod tests {
             .iter()
             .map(|p| xy(*p).0)
             .fold(f32::MIN, f32::max);
-        assert!((nose - (401.0 + 16.0 * 0.14)).abs() < 0.01, "{nose}");
+        assert!((nose - (401.0 + 16.0 * 0.22)).abs() < 0.01, "{nose}");
         assert_eq!(
             comet[0].glow.map(|g| g.0),
             Some((401.0, 8.0)),
@@ -1556,7 +1599,7 @@ mod tests {
             4.0,
             "from the old cursor's middle on the first frame"
         );
-        // Cubic ease-out: 1 - (1 - t)^3 of the way, as Rex's shader and its recording.
+        // Cubic ease-out: 1 - (1 - t)^3 of the way.
         for t in [0.1f32, 0.3, 0.5, 0.8] {
             let want = 4.0 + 400.0 * (1.0 - (1.0 - t).powi(3));
             assert!((tail(t) - want).abs() < 0.01, "{t}: {} vs {want}", tail(t));
@@ -1568,27 +1611,27 @@ mod tests {
         assert!(comet_at(1.0).is_empty(), "gone at the end");
         // It fades as it goes: everything at (1 - t).
         let alphas = |t: f32| comet_at(t).iter().map(|l| l.alpha).collect::<Vec<_>>();
-        assert_eq!(alphas(0.5), vec![0.5, 0.35 * 0.5, 0.5]);
+        assert_eq!(alphas(0.5), vec![(1.0f32 - (0.5 - COMET_GLOW_PEAK) / (1.0 - COMET_GLOW_PEAK)).powi(2), 0.35 * 0.875, 0.875]);
     }
 
     #[test]
     fn comet_thin_with_a_round_nose_and_a_rounded_tail_end_brightest_at_the_head() {
         let layers = comet_at(0.0);
         let (glow, core) = (&layers[1], &layers[2]);
-        // Thin: the core is 0.28 of a cell high at the head, the glow 0.6; Rex's
-        // core is a quarter to a third of the cell.
-        assert!((half_width_at(&core.outline, 404.0) - 16.0 * 0.14).abs() < 0.05);
-        assert!((half_width_at(&glow.outline, 404.0) - 16.0 * 0.30).abs() < 0.05);
+        // The core is 0.44 of a cell high at the head, the outer streak 0.8:
+        // about a cursor block.
+        assert!((half_width_at(&core.outline, 404.0) - 16.0 * 0.22).abs() < 0.05);
+        assert!((half_width_at(&glow.outline, 404.0) - 16.0 * 0.40).abs() < 0.05);
         // Rounded at the tail end, a fifth as wide as at the head, not a needle.
         let end = half_width_at(&core.outline, 4.0);
-        assert!((end - 16.0 * 0.14 * COMET_END).abs() < 0.05, "{end}");
+        assert!((end - 16.0 * 0.22 * COMET_END).abs() < 0.05, "{end}");
         let far = core
             .outline
             .iter()
             .map(|p| xy(*p).0)
             .fold(f32::MAX, f32::min);
         assert!(
-            (far - (4.0 - 16.0 * 0.14 * COMET_END)).abs() < 0.01,
+            (far - (4.0 - 16.0 * 0.22 * COMET_END)).abs() < 0.01,
             "round past the tail point: {far}"
         );
         // A round nose half its width ahead of the head, no further.
@@ -1597,7 +1640,7 @@ mod tests {
             .iter()
             .map(|p| xy(*p).0)
             .fold(f32::MIN, f32::max);
-        assert!((nose - (404.0 + 16.0 * 0.14)).abs() < 0.01, "{nose}");
+        assert!((nose - (404.0 + 16.0 * 0.22)).abs() < 0.01, "{nose}");
         // Narrowing steadily from head to tail.
         let widths: Vec<f32> = [380.0, 300.0, 200.0, 100.0, 20.0]
             .iter()
@@ -1648,8 +1691,61 @@ mod tests {
             .iter()
             .map(|p| dist(xy(*p), (404.0, 8.0)))
             .fold(0.0f32, f32::max);
-        assert!(reach < 16.0 * 0.14 + 0.1, "{reach}");
+        assert!(reach < 16.0 * 0.22 * comet_head_scale(0.98) + 0.1, "{reach}");
         assert!(last[2].alpha > 0.0);
+    }
+
+    fn comet_head_half(t: f32) -> f32 {
+        half_width_at(&comet_at(t)[2].outline, 404.0)
+    }
+
+    #[test]
+    fn comet_head_swells_as_it_launches_and_settles() {
+        let peak = COMET_SWELL_END / 2.0;
+        assert!((comet_head_scale(0.0) - 1.0).abs() < 1e-6);
+        assert!((comet_head_scale(peak) - COMET_SWELL).abs() < 1e-5);
+        assert!((comet_head_scale(COMET_SWELL_END) - 1.0).abs() < 1e-5);
+        assert!((comet_head_scale(0.5) - 1.0).abs() < 1e-6, "at rest between");
+        let rising: Vec<f32> = (0..=10).map(|i| comet_head_scale(peak * i as f32 / 10.0)).collect();
+        assert!(rising.windows(2).all(|w| w[1] > w[0]), "{rising:?}");
+        // As drawn: the core's half width at the head follows the scale.
+        assert!((comet_head_half(peak) - 16.0 * 0.22 * COMET_SWELL).abs() < 0.1);
+        assert!((comet_head_half(0.5) - 16.0 * 0.22).abs() < 0.1);
+        assert_eq!(comet_at(peak)[0].glow.map(|g| g.1), Some(16.0 * 0.5 * comet_head_scale(peak)));
+    }
+
+    #[test]
+    fn comet_glow_peaks_early_then_eases_down() {
+        assert!((comet_glow_strength(0.0) - COMET_GLOW_FROM).abs() < 1e-6);
+        assert!((comet_glow_strength(COMET_GLOW_PEAK) - 1.0).abs() < 1e-6);
+        assert_eq!(comet_glow_strength(1.0), 0.0);
+        let s: Vec<f32> = (0..=20).map(|i| comet_glow_strength(i as f32 / 20.0)).collect();
+        let top = s.iter().cloned().fold(0.0, f32::max);
+        assert!((top - 1.0).abs() < 1e-6);
+        // Not a linear fade: past the peak it eases, below the straight line.
+        let lin = |t: f32| 1.0 - (t - COMET_GLOW_PEAK) / (1.0 - COMET_GLOW_PEAK);
+        assert!(comet_glow_strength(0.6) < lin(0.6) - 0.1);
+        assert!(s[4..].windows(2).all(|w| w[1] < w[0]), "falling after the peak {s:?}");
+        assert_eq!(comet_at(COMET_GLOW_PEAK)[0].alpha, 1.0);
+        assert!(comet_at(0.0)[0].alpha < comet_at(COMET_GLOW_PEAK)[0].alpha);
+    }
+
+    #[test]
+    fn comet_head_pinches_into_the_cursor_as_it_lands() {
+        assert!((comet_head_scale(COMET_PINCH_START) - 1.0).abs() < 1e-6);
+        let landing: Vec<f32> = (0..=10)
+            .map(|i| comet_head_scale(COMET_PINCH_START + (1.0 - COMET_PINCH_START) * i as f32 / 10.0))
+            .collect();
+        assert!(landing.windows(2).all(|w| w[1] < w[0]), "{landing:?}");
+        assert!((comet_head_scale(1.0) - COMET_PINCH_TO).abs() < 1e-6);
+        // As drawn: narrower than at rest, and inside the cursor block (8 px wide).
+        let late = comet_head_half(0.95);
+        assert!(late < 16.0 * 0.22 * 0.5 && late < 4.0, "{late}");
+        assert!(comet_head_half(0.85) < comet_head_half(0.7));
+        // Still seen while it pinches: the core keeps much of its strength.
+        let core = &comet_at(0.85)[2];
+        assert!(core.alpha > 0.35, "{}", core.alpha);
+        assert!(core.alpha * comet_head_half(0.85) > 0.8);
     }
 
     #[test]

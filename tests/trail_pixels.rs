@@ -131,10 +131,10 @@ fn streak_brightens_toward_its_head(cx: &mut HeadlessAppContext) {
 }
 
 fn glow_is_soft_and_round(cx: &mut HeadlessAppContext) {
-    // The comet's: spread and blurred 0.3 of a 16 px cell.
+    // The comet's: a radius of 0.5 and a blur of 0.45 of a 16 px cell.
     let at = rendered(
         cx,
-        vec![layer(Vec::new(), None, Some(((200.0, 40.0), 4.8, 4.8)))],
+        vec![layer(Vec::new(), None, Some(((200.0, 40.0), 8.0, 7.2)))],
     );
     let (middle, near, far) = (at(200.0, 40.0), at(208.0, 40.0), at(230.0, 40.0));
     assert!(middle > 90, "bright in the middle, not a hole: {middle}");
@@ -227,8 +227,8 @@ fn the_comet_brightens_to_a_pale_nose(cx: &mut HeadlessAppContext) {
         let n = ((to.1 - from.1), -(to.0 - from.0));
         let len = n.0.hypot(n.1);
         let beside = at(
-            to.0 - 20.0 * (to.0 - from.0) / len.max(1.0) + 3.2 * n.0 / len,
-            to.1 - 20.0 * (to.1 - from.1) / len.max(1.0) + 3.2 * n.1 / len,
+            to.0 - 20.0 * (to.0 - from.0) / len.max(1.0) + 5.0 * n.0 / len,
+            to.1 - 20.0 * (to.1 - from.1) / len.max(1.0) + 5.0 * n.1 / len,
         );
         assert!(
             nose[2] > beside[2] + 20,
