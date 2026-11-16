@@ -187,6 +187,11 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
     for (name, value) in values {
         module = module.function(name, move |_| Ok(to_host(&value)));
     }
+    // The real preview component (a description doesn't build it; the
+    // preview's own tests draw it in a window).
+    module = module.component("CursorPreview", |args, window, cx| {
+        crate::window::cursor_preview::element(args.id(), window, cx)
+    });
     module = module.function("feedbackPreview", |a| {
         Ok(to_host(
             &json!({"available":true,"body":{"message":a.string(0)?,"email":a.string(1)?}}),
@@ -863,6 +868,24 @@ fn cell_rounding_row_shows_the_pick(cx: &mut TestAppContext) {
         assert!(tree.contains("Cell rounding"), "{tree}");
         let picked: Vec<_> = tree.lines().filter(|l| l.contains("st-cr-") && l.contains(".border_1")).collect();
         assert!(picked.len() == 1 && picked[0].contains(want), "{person}: {picked:?}");
+    }
+}
+
+/// The Cursor page draws Herdr's preview above the effect rows while an effect
+/// is on, and none while both are off (the script's description: the component
+/// itself is drawn in window::cursor_preview's tests).
+#[gpui::test]
+fn cursor_page_draws_the_preview_while_an_effect_is_on(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut p = props();
+    p["section"] = json!("cursor");
+    for (person, shown) in [("{}", false), (r#"{ cursor_trail: "panes" }"#, true), (r#"{ cursor_arrival: "boom" }"#, true)] {
+        let values = fixture(true, p.clone(), updates("current", "current"));
+        let tree = describe_with_values(cx, &staged, "frame/settings", values, Some(&format!("this.load = async () => {{}}; this.person = {person};"))).unwrap();
+        let (caption, trail) = (tree.find("Try it: click a cell"), tree.find("Cursor trail").expect("the trail row"));
+        assert_eq!(caption.is_some(), shown, "{person}: {tree}");
+        assert!(caption.is_none_or(|c| c < trail), "above the rows");
     }
 }
 

@@ -2,7 +2,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input, Popup, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { hc, run, theme, themes, fonts, updates, telemetry, settings, layoutSpacing, layouts, shared, setShared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window, headerInfoPreview, cardInfoPreview, toastLooks } from "herdr";
+import { hc, run, theme, themes, fonts, updates, telemetry, settings, layoutSpacing, layouts, shared, setShared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window, headerInfoPreview, cardInfoPreview, toastLooks, CursorPreview } from "herdr";
 
 const I = (name) => `frame/settings/${name}.svg`;
 
@@ -1868,6 +1868,7 @@ export default class Settings extends View {
     return v_flex()
       .w_full()
       .child(this.heading(t, "Cursor effects"))
+      .when((on || pulse) && !this.filtering(), (el) => el.child(this.cursorPreview(t)))
       .child(this.row(t, "Cursor trail", "A trail from one pane's cursor to the next as the focus moves between panes, and with Panes and jumps, as the cursor jumps in the pane you're typing in.", this.choicePicker(t, "st-ct", "cursor_trail", CURSOR_TRAILS), "cursor_trail"))
       .when(on, (el) => el.child(this.row(t, "Trail style", "Comet: a glowing streak. Tail: the cursor stretched, as kitty does. Sweep: a block shrinking into the cursor. Warp: the cursor stretching and springing into place, after Neovide.", this.choicePicker(t, "st-cs", "cursor_trail_style", TRAIL_STYLES), "cursor_trail_style")))
       .when(jumps, (el) =>
@@ -1880,6 +1881,20 @@ export default class Settings extends View {
       .when(on || pulse, (el) =>
         el.child(this.row(t, "Effect time", "How long the trail and the pulse take.", this.stepper(t, "st-cursor_trail_duration_ms", `${ms} ms`, (_e, cx) => step(-20, cx), (_e, cx) => step(20, cx)), "cursor_trail_duration_ms")),
       );
+  }
+
+  // While an effect is on: Herdr's stand-in terminal, where a click moves the cursor and
+  // plays the effect as set at that moment.
+  cursorPreview(t) {
+    return v_flex()
+      .id("st-cursor-preview")
+      .w_full()
+      .gap(6)
+      .pb(12)
+      .border_b(1)
+      .border_color(t.border)
+      .child(CursorPreview.new("cursor-effects", {}))
+      .child(div().text_size(12).text_color(t.dim).child("Try it: click a cell and the cursor jumps there with your trail and pulse."));
   }
 
   activity(t) {

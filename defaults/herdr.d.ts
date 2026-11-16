@@ -785,6 +785,14 @@ export function headerInfoPreview(template: string): HeaderInfo | null;
  *  values; null when nothing would show. For a settings preview. */
 export function cardInfoPreview(template: string | null): CardInfo | null;
 
+/** For the Settings window's Cursor page: a small stand-in terminal (a grid of cells, faint
+ *  placeholder lines and a block cursor) as an element, made with `CursorPreview.new(id, {})` and kept across renders by `id`. A click
+ *  moves its cursor to the clicked cell and plays the cursor effect the settings ask for at
+ *  that moment (`cursor_trail`, `cursor_trail_style`, `cursor_arrival`,
+ *  `cursor_trail_duration_ms`, `cursor_trail_color`), drawn as a pane draws it; it draws frames
+ *  only while the effect runs. `props` takes nothing yet. */
+export const CursorPreview: { new(id: string, props: import("gpui-kit").HostValue): import("gpui-kit").NativeElement };
+
 /** About how wide `text` is in `fontPx` text, as `fitHeaderInfo` estimates it (wide
  *  characters, Chinese, Japanese and Korean (CJK) and emoji, twice): for sizing what sits beside the info. */
 export function headerTextWidth(text: string, fontPx: number): number;
