@@ -6,6 +6,7 @@
 
 use crate::git_status;
 use crate::hc::Core;
+mod cursor_particles;
 pub(crate) mod cursor_preview;
 mod cursor_shapes;
 mod cursor_trail;
@@ -762,6 +763,10 @@ pub struct AppWindow {
     /// The cursor trail being drawn, and the (tab, pane) focused at the last draw (window/cursor_trail.rs).
     trail: Option<cursor_trail::Trail>,
     trail_seen: Option<cursor_trail::Seen>,
+    /// Pixie dust from recent trails (`cursor_trail_particles`), and the
+    /// colors it is drawn in.
+    dust: cursor_particles::Dust,
+    dust_tint: trail_paint::Tint,
     /// The window's drawing below the trail and above it, each drawn again
     /// only when the window is (a frame the trail alone asked for reuses
     /// them), and the trail's own layer between them.
@@ -926,6 +931,8 @@ impl AppWindow {
             focused_pane: None,
             trail: None,
             trail_seen: None,
+            dust: cursor_particles::Dust::default(),
+            dust_tint: trail_paint::Tint::default(),
             lower: cx.new(|_| Body {
                 app: me.clone(),
                 upper: false,

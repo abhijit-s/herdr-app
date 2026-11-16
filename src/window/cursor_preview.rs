@@ -9,6 +9,7 @@
 //! ancestors); the script itself doesn't run. The main window's trail layer
 //! avoids even that with its cached views, which a mod's window doesn't have.
 
+use super::cursor_particles::Dust;
 use super::cursor_shapes;
 use super::cursor_trail::{Trail, start_from};
 use super::trail_paint::paint_layers;
@@ -29,6 +30,9 @@ pub(crate) struct CursorPreview {
     grid: Option<(Point<Pixels>, Size<Pixels>, usize)>,
     /// The effect frames it has painted.
     frames: u64,
+    /// Pixie dust from its moves, and the colors it's drawn in.
+    dust: Dust,
+    tint: super::trail_paint::Tint,
 }
 
 /// What keeps the preview's view across renders. Element state is watched by
@@ -57,6 +61,8 @@ impl CursorPreview {
             trail: None,
             grid: None,
             frames: 0,
+            dust: Dust::default(),
+            tint: Default::default(),
         }
     }
 
@@ -101,10 +107,23 @@ impl CursorPreview {
         self.trail.is_some()
     }
 
-    /// The effect's layers now and its color; None (and the effect dropped)
-    /// once it's over.
+    /// The effect's layers now, the dust under them, and their color; None
+    /// (the effect and the dust dropped) once both are over.
     fn frame(&mut self) -> Option<(Vec<cursor_shapes::Layer>, super::trail_paint::Tint)> {
         let at = self.rect(self.cursor)?;
+        let trail = self.trail_alone(at);
+        if self.dust.is_empty() {
+            return trail;
+        }
+        let dust = self.dust.layers(std::time::Instant::now(), Some(at));
+        match trail {
+            Some((layers, tint)) => Some((dust.into_iter().chain(layers).collect(), tint)),
+            None => (!self.dust.is_empty()).then_some((dust, self.tint)),
+        }
+    }
+
+    /// The trail's own layers now (`frame`), shedding its dust at its first.
+    fn trail_alone(&mut self, at: Bounds<Pixels>) -> Option<(Vec<cursor_shapes::Layer>, super::trail_paint::Tint)> {
         let trail = self.trail.as_mut()?;
         let end = crate::terminal::TrailEnd {
             cell: at,
@@ -112,7 +131,12 @@ impl CursorPreview {
             shown: true,
         };
         let elapsed = trail.start.elapsed();
+        let dust = trail.take_dust(at, at);
+        self.tint = trail.color();
         let frame = trail.shapes(end, elapsed).map(|l| (l, trail.color()));
+        if let Some(burst) = dust {
+            self.dust.add(burst, std::time::Instant::now());
+        }
         if frame.is_none() {
             self.trail = None;
         }
@@ -151,7 +175,7 @@ impl Render for CursorPreview {
                             this.grid = Some((origin, cell, cols));
                             // As in panes: reduced motion ends one running.
                             if reduce_motion {
-                                this.trail = None;
+                                (this.trail, this.dust) = (None, Dust::default());
                             }
                             window.with_content_mask(Some(ContentMask { bounds }), |window| {
                                 paint_grid(this, window);
@@ -355,6 +379,31 @@ mod tests {
         assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0, "no frame asked for once it's over");
         cx.run_until_parked();
         assert_eq!(preview.read_with(cx, |p, _| p.frames), ran.1);
+    }
+
+    /// Pixie dust plays in the preview too, on with any style, and keeps its
+    /// frames coming after the trail, until its last particle has faded.
+    #[test]
+    fn pixie_dust_outlives_the_trail_then_its_frames_stop() {
+        use settings::{Arrival, Particles, TrailStyle};
+        let mut p = preview();
+        let s = settings::Settings { cursor_trail_particles: Particles::Pixiedust, ..on(TrailStyle::Sweep, Arrival::Off) };
+        p.moved((40, 1), &s, false);
+        assert!(p.frame().is_some());
+        assert!(!p.dust.is_empty(), "shed at the first frame");
+        p.trail.as_mut().unwrap().age(std::time::Duration::from_millis(300));
+        p.dust.age(std::time::Duration::from_millis(300));
+        let (layers, _) = p.frame().expect("the dust runs on");
+        assert!(p.trail.is_none(), "the trail is over");
+        assert!(!layers.is_empty() && layers.iter().all(|l| l.disc.is_some()), "dust alone");
+        p.dust.age(std::time::Duration::from_millis(700));
+        assert!(p.frame().is_none(), "no frame once the last particle faded");
+        assert!(p.dust.is_empty());
+        // Off, none.
+        let mut p = preview();
+        p.moved((40, 1), &on(TrailStyle::Sweep, Arrival::Off), false);
+        p.frame();
+        assert!(p.dust.is_empty());
     }
 
     /// Frames are asked for only while the effect runs: once it's over,

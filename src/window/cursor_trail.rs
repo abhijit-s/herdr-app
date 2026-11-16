@@ -28,6 +28,7 @@
 //! lookup and a cell read). Frames are asked for only while an effect is alive, and every
 //! effect ends: its duration is clamped and its progress only grows.
 
+use super::cursor_particles;
 use super::cursor_shapes;
 use super::trail_paint::{self, paint_layers};
 use super::*;
@@ -51,12 +52,28 @@ pub(super) struct Trail {
     pub(super) drawn: Option<cursor_shapes::Quad>,
     /// The tail's motion blur (`cursor_trail_motion_blur`).
     blur: bool,
+    /// Pixie dust still to shed along it (`cursor_trail_particles`), at its
+    /// first frame, once the new cursor is known.
+    dust: bool,
 }
 
 impl Trail {
     /// The colors it is drawn in.
     pub(super) fn color(&self) -> trail_paint::Tint {
         self.color
+    }
+
+    /// Its pixie dust, once, from where it starts to the cursor `to` (whose
+    /// cell is `cell`), if the settings asked for it.
+    pub(super) fn take_dust(
+        &mut self,
+        to: Bounds<Pixels>,
+        cell: Bounds<Pixels>,
+    ) -> Option<cursor_particles::Burst> {
+        let from = self.from.filter(|_| std::mem::take(&mut self.dust))?;
+        let size = f32::from(cell.size.width).max(f32::from(cell.size.height));
+        let mid = |b: Bounds<Pixels>| (f32::from(b.center().x), f32::from(b.center().y));
+        Some(cursor_particles::Burst { from: cursor_shapes::centroid(&from), to: mid(to), size })
     }
 
     /// The same effect, started `by` earlier: trail and pulse alike.
@@ -95,6 +112,7 @@ impl Trail {
                 .map(|from| cursor_shapes::Chase::new(from).faded(opacity)),
             drawn: None,
             blur: s.cursor_trail_motion_blur,
+            dust: from.is_some() && s.cursor_trail_particles == settings::Particles::Pixiedust,
         }
     }
 
@@ -181,6 +199,7 @@ impl AppWindow {
             && s.cursor_arrival == settings::Arrival::Off
         {
             (self.trail_seen, self.trail) = (None, None);
+            self.dust = cursor_particles::Dust::default();
             return;
         }
         let Some((tab, pane)) = self
@@ -189,6 +208,7 @@ impl AppWindow {
             .and_then(|t| Some((t.id.clone(), t.focused_pane()?)))
         else {
             (self.trail_seen, self.trail) = (None, None);
+            self.dust = cursor_particles::Dust::default();
             return;
         };
         let anchor = self
@@ -204,6 +224,10 @@ impl AppWindow {
                 return;
             }
             Some(seen) => {
+                // Dust is in the window's px: a tab change leaves it behind.
+                if seen.tab != tab {
+                    self.dust = cursor_particles::Dust::default();
+                }
                 let live = self.trail.take();
                 let from = start_from(live.as_ref(), seen.anchor)
                     .filter(|_| s.cursor_trail != settings::CursorTrail::Off);
@@ -250,13 +274,38 @@ impl AppWindow {
         self.trail_layer.update(cx, |_, cx| cx.notify());
     }
 
-    /// The live effect's shapes now and their color, asking nothing of the
-    /// window; None (and the effect dropped) once it's over or its pane is gone.
+    /// The live effects' shapes now, the pixie dust under the trail, and
+    /// their color, asking nothing of the window; None once both are over
+    /// (the trail dropped once it's over or its pane is gone, the dust once
+    /// its last particle has faded).
     pub(super) fn trail_frame(&mut self, cx: &App) -> Option<(Vec<cursor_shapes::Layer>, trail_paint::Tint)> {
         if cx.reduce_motion() {
-            self.trail = None;
+            (self.trail, self.dust) = (None, cursor_particles::Dust::default());
             return None;
         }
+        let trail = self.trail_alone(cx);
+        if self.dust.is_empty() {
+            return trail;
+        }
+        // Kept off the focused pane's cursor as it is now, which may have
+        // moved on since the trail ended.
+        let cursor = self
+            .model
+            .active_tab()
+            .and_then(|t| t.focused_pane())
+            .and_then(|pane| self.pane_term(&pane))
+            .and_then(|term| term.view.read(cx).trail_end())
+            .map(|end| end.cursor);
+        let dust = self.dust.layers(Instant::now(), cursor);
+        match trail {
+            Some((layers, tint)) => Some((dust.into_iter().chain(layers).collect(), tint)),
+            None => (!self.dust.is_empty()).then_some((dust, self.dust_tint)),
+        }
+    }
+
+    /// The trail's own shapes now (`trail_frame`), shedding its pixie dust at
+    /// its first frame.
+    fn trail_alone(&mut self, cx: &App) -> Option<(Vec<cursor_shapes::Layer>, trail_paint::Tint)> {
         let to = self
             .pane_term(&self.trail.as_ref()?.pane)
             .map(|term| term.view.clone());
@@ -275,13 +324,17 @@ impl AppWindow {
             return Some((Vec::new(), trail.color));
         };
         let color = trail.color;
-        match trail.shapes(end, elapsed) {
-            Some(layers) => Some((layers, color)),
-            None => {
-                self.trail = None;
-                None
-            }
+        let dust = trail.take_dust(end.cursor, end.cell);
+        let shapes = trail.shapes(end, elapsed);
+        self.dust_tint = color;
+        // From the frame it's shed: a pane drawn late doesn't lose its dust's start.
+        if let Some(burst) = dust {
+            self.dust.add(burst, Instant::now());
         }
+        if shapes.is_none() {
+            self.trail = None;
+        }
+        shapes.map(|layers| (layers, color))
     }
 }
 
@@ -299,7 +352,7 @@ impl Render for TrailLayer {
             |_, _, _| {},
             move |_, _, window, cx| {
                 let Ok((live, frame)) =
-                    app.update(cx, |app, cx| (app.trail.is_some(), app.trail_frame(cx)))
+                    app.update(cx, |app, cx| (app.trail.is_some() || !app.dust.is_empty(), app.trail_frame(cx)))
                 else {
                     return;
                 };

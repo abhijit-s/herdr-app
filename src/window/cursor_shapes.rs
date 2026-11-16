@@ -45,6 +45,25 @@ pub(super) struct Layer {
     pub(super) fade: Option<(P, P)>,
     /// Not an outline but a soft round glow: its middle, radius and blur, px.
     pub(super) glow: Option<(P, f32, f32)>,
+    /// Not an outline but a solid disc: its middle and radius, px.
+    pub(super) disc: Option<(P, f32)>,
+}
+
+impl Layer {
+    /// A solid disc at `alpha` of `tone`.
+    pub(super) fn disc(at: P, radius: f32, alpha: f32, tone: Tone) -> Self {
+        Layer {
+            outline: Vec::new(),
+            hole: None,
+            stroke: None,
+            open: false,
+            alpha,
+            tone,
+            fade: None,
+            glow: None,
+            disc: Some((at, radius)),
+        }
+    }
 }
 
 fn fill(outline: Vec<Point<Pixels>>, alpha: f32) -> Layer {
@@ -57,6 +76,7 @@ fn fill(outline: Vec<Point<Pixels>>, alpha: f32) -> Layer {
         tone: Tone::Effect,
         fade: None,
         glow: None,
+        disc: None,
     }
 }
 
@@ -102,7 +122,7 @@ fn enclosing(q: Quad) -> Bounds<Pixels> {
     Bounds::new(point(px(x0), px(y0)), gpui::size(px(x1 - x0), px(y1 - y0)))
 }
 
-fn centroid(q: &Quad) -> P {
+pub(super) fn centroid(q: &Quad) -> P {
     (
         q.iter().map(|p| p.0).sum::<f32>() / 4.0,
         q.iter().map(|p| p.1).sum::<f32>() / 4.0,
@@ -267,6 +287,7 @@ fn comet(from: P, to: Bounds<Pixels>, h: f32, t: f32) -> (Vec<Layer>, Option<Qua
         tone: Tone::Effect,
         fade: None,
         glow: Some((head, radius * h, blur * h)),
+        disc: None,
     };
     let streaks = COMET_LAYERS.iter().map(|&(half, alpha, core)| Layer {
         outline: streak(tail, head, half * h),
@@ -277,6 +298,7 @@ fn comet(from: P, to: Bounds<Pixels>, h: f32, t: f32) -> (Vec<Layer>, Option<Qua
         tone: if core { Tone::Core } else { Tone::Effect },
         fade: Some((tail, full)),
         glow: None,
+        disc: None,
     });
     (
         std::iter::once(glow).chain(streaks).collect(),
@@ -451,6 +473,7 @@ impl Chase {
             tone: Tone::Effect,
             fade: Some((at(back(&self.before)), at(back(&self.corners)))),
             glow: None,
+            disc: None,
         };
         layers.insert(0, blur);
         layers
@@ -475,6 +498,7 @@ impl Chase {
             tone: Tone::Effect,
             fade: None,
             glow: None,
+            disc: None,
         }]
     }
 }
@@ -555,6 +579,7 @@ fn blaze(
         tone: Tone::Flame,
         fade: ramp,
         glow: None,
+        disc: None,
     };
     let body = Layer {
         outline: outline.iter().copied().map(pt).collect(),
@@ -565,6 +590,7 @@ fn blaze(
         tone: Tone::Flame,
         fade: ramp,
         glow: None,
+        disc: None,
     };
     // The edge, inside the beam's sides and off the cursor: the beam shrunk
     // half the stroke in from each side (not the cursor's own edges), each
@@ -641,6 +667,7 @@ fn blaze(
         tone: Tone::FlameEdge,
         fade: ramp,
         glow: None,
+        disc: None,
     };
     // A move of a px or so leaves no sides to edge.
     let layers = [halo, body, edge].into_iter().filter(|l| l.outline.len() >= 3).collect();
@@ -826,6 +853,7 @@ pub(super) fn arrival(kind: Arrival, at: Bounds<Pixels>, t: f32) -> Vec<Layer> {
         tone: Tone::Effect,
         fade: None,
         glow: None,
+        disc: None,
     };
     match kind {
         Arrival::Off => Vec::new(),

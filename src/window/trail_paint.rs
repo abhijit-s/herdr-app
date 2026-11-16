@@ -28,7 +28,7 @@ const RED: Hsla = Hsla { h: 0.0, s: 1.0, l: 0.5, a: 1.0 };
 /// The colors an effect is painted in: its color (the theme's cursor or
 /// `cursor_trail_color`), and the blaze's flame and edge: amber and red, or,
 /// when `cursor_trail_color` is set, that color and a deeper one.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Tint {
     pub(crate) color: Hsla,
     pub(crate) flame: (Hsla, Hsla),
@@ -66,6 +66,11 @@ pub(crate) fn deeper(c: Hsla) -> Hsla {
 pub(crate) fn paint_layers(layers: &[Layer], tint: &Tint, window: &mut Window) {
     for layer in layers {
         let tint = tint.of(layer.tone);
+        if let Some(((x, y), r)) = layer.disc {
+            let at = Bounds::new(point(px(x - r), px(y - r)), size(px(2.0 * r), px(2.0 * r)));
+            window.paint_quad(gpui::fill(at, tint.opacity(layer.alpha)).corner_radii(px(r)));
+            continue;
+        }
         if let Some(((x, y), radius, blur)) = layer.glow {
             let at = Bounds::new(point(px(x), px(y)), size(px(0.0), px(0.0)));
             let shadow = BoxShadow {
