@@ -320,6 +320,8 @@ pub(super) struct Chase {
     pub(super) opacity: f32,
     /// When it last stepped, in s from the trail's start.
     at: f32,
+    /// The corners before the last step, where a motion blur starts.
+    before: Quad,
 }
 
 impl Chase {
@@ -328,6 +330,7 @@ impl Chase {
             corners: from,
             opacity: 1.0,
             at: 0.0,
+            before: from,
         }
     }
 
@@ -344,6 +347,10 @@ impl Chase {
     /// still to be drawn at `now` (s from the start).
     pub(super) fn step(&mut self, to: Bounds<Pixels>, shown: bool, now: f32, decay: f32) -> bool {
         let dt = (now - self.at).max(0.0);
+        // A repeat at the same moment keeps the last frame's step to blur.
+        if dt > 0.0 {
+            self.before = self.corners;
+        }
         self.at = now;
         let (target, center) = (quad(to), mid(to));
         let diag = (f32::from(to.size.width).hypot(f32::from(to.size.height)) / 2.0).max(1e-3);
@@ -395,6 +402,58 @@ impl Chase {
                 || (target[i].1 - self.corners[i].1).abs() >= CAUGHT_UP
         });
         far && self.opacity > 0.0 && now < decay * TAIL_CAP
+    }
+
+    /// The quad with a motion blur behind it (`cursor_trail_motion_blur`): a
+    /// smear over the ground its back edge swept since the last frame, rising
+    /// from none at the old back edge to full at the new one, along the move.
+    /// On the trailing side that is the average of the quad drawn at many
+    /// points between the two frames while its back edge keeps its shape; the
+    /// head stays as solid as the tail draws it, where a true average would
+    /// fade it too. One layer: the hull of the two quads, less the quad itself
+    /// and the cursor, so nothing is painted twice. Nothing more while it
+    /// barely moved.
+    pub(super) fn blurred(&self, to: Bounds<Pixels>) -> Vec<Layer> {
+        let mut layers = self.layers(to);
+        let (was, now) = (centroid(&self.before), centroid(&self.corners));
+        let (dx, dy) = (now.0 - was.0, now.1 - was.1);
+        if layers.is_empty() || dx.hypot(dy) < CAUGHT_UP {
+            return layers;
+        }
+        // The ramp's ends on one line along the move, at each quad's furthest
+        // point back along it: its back edge.
+        let d = dx.hypot(dy);
+        let u = (dx / d, dy / d);
+        let back = |q: &Quad| q.iter().map(|p| p.0 * u.0 + p.1 * u.1).fold(f32::MAX, f32::min);
+        let at = |s: f32| {
+            let off = s - (was.0 * u.0 + was.1 * u.1);
+            (was.0 + u.0 * off, was.1 + u.1 * off)
+        };
+        let swept = hull_points(self.before.iter().chain(&self.corners).copied().collect());
+        // Less the quad (drawn on its own) and the cursor's part of the swept
+        // ground. One hole: the quad, when the cursor's part lies in it (it
+        // mostly does, the quad chasing the cursor); else the hull of the two,
+        // which leaves bare the sliver between them (a diagonal's first
+        // frames, a tail turned back mid-run) rather than paint the cursor.
+        let tail = hull_points(self.corners.to_vec());
+        let cursor = clipped(&quad(to), &swept);
+        let kept = if cursor.iter().all(|p| inside_by(&tail, *p, 1e-3)) {
+            tail
+        } else {
+            hull_points(self.corners.iter().copied().chain(cursor).collect())
+        };
+        let blur = Layer {
+            outline: swept.into_iter().map(pt).collect(),
+            hole: (kept.len() >= 3 && area(&kept).abs() > 1e-3).then(|| kept.into_iter().map(pt).collect()),
+            stroke: None,
+            open: false,
+            alpha: self.opacity,
+            tone: Tone::Effect,
+            fade: Some((at(back(&self.before)), at(back(&self.corners)))),
+            glow: None,
+        };
+        layers.insert(0, blur);
+        layers
     }
 
     /// The quad as it stands, less the cursor `to` (kitty draws the trail
@@ -590,6 +649,15 @@ fn blaze(
 
 fn xy_of(p: Point<Pixels>) -> P {
     (f32::from(p.x), f32::from(p.y))
+}
+
+/// Whether `p` is inside the convex `outline` (or within `slack` px of it).
+fn inside_by(outline: &[P], p: P, slack: f32) -> bool {
+    let turn = area(outline).signum();
+    (0..outline.len()).all(|i| {
+        let (a, b) = (outline[i], outline[(i + 1) % outline.len()]);
+        cross(a, b, p) * turn / (b.0 - a.0).hypot(b.1 - a.1).max(1e-6) >= -slack
+    })
 }
 
 /// The part of the convex `poly` at least `by` px inside the line from `p`
@@ -815,8 +883,13 @@ mod tests {
     /// Whether `p` is inside the convex outline `o` (or on its edge).
     fn within(o: &[Point<Pixels>], p: P) -> bool {
         let pts: Vec<P> = o.iter().map(|q| xy(*q)).collect();
+        // How far `p` is inside each side, in px (a cross product would
+        // grow with the side's length).
         let sides: Vec<f32> = (0..pts.len())
-            .map(|i| cross(pts[i], pts[(i + 1) % pts.len()], p))
+            .map(|i| {
+                let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+                cross(a, b, p) / (b.0 - a.0).hypot(b.1 - a.1).max(1e-6)
+            })
             .collect();
         sides.iter().all(|s| *s >= -1e-3) || sides.iter().all(|s| *s <= 1e-3)
     }
@@ -1669,5 +1742,112 @@ mod tests {
         assert_eq!(Tint::new(chosen, true).flame, (chosen, deeper(chosen)));
         let d = deeper(chosen);
         assert!(d.l < chosen.l && d.s > chosen.s && d.h == chosen.h);
+    }
+
+    #[test]
+    fn a_blurred_tail_smears_the_ground_it_swept_since_the_last_frame() {
+        let (from, to) = (cell(0.0, 0.0), cell(400.0, 0.0));
+        let mut c = Chase::new(quad(from));
+        assert!(c.step(to, true, 0.0, 0.4));
+        assert_eq!(c.blurred(to), c.layers(to), "no move yet: no blur");
+        // Frames at 30 a second, so the hops are long.
+        assert!(c.step(to, true, 1.0 / 30.0, 0.4));
+        let before = c.before;
+        assert!(c.step(to, true, 2.0 / 30.0, 0.4));
+        let (layers, plain) = (c.blurred(to), c.layers(to));
+        assert_eq!(layers.len(), plain.len() + 1, "one more layer, under the tail");
+        assert_eq!(&layers[1..], &plain[..], "the tail itself as without the blur");
+        let blur = &layers[0];
+        assert!(convex(&blur.outline), "{:?}", blur.outline);
+        assert_eq!((blur.alpha, blur.tone, blur.stroke), (c.opacity, Tone::Effect, None));
+        assert_ne!(c.before, before, "it notes the corners it stepped from");
+        for q in c.before.iter().chain(&c.corners) {
+            assert!(within(&blur.outline, *q), "both quads inside: {q:?}");
+        }
+        // It covers the ground between the two quads' back edges, which the
+        // tail alone leaves bare.
+        let back = |q: &Quad| q.iter().map(|p| p.0).fold(f32::MAX, f32::min);
+        let gap = ((back(&c.before) + back(&c.corners)) / 2.0, 8.0);
+        assert!(paints(blur, gap) && !paints(&plain[0], gap), "{gap:?}");
+        // Rising from none at the old back edge to full at the new one.
+        let fade = blur.fade.unwrap();
+        assert!((fade.0.0 - back(&c.before)).abs() < 1e-3 && (fade.1.0 - back(&c.corners)).abs() < 1e-3, "{fade:?}");
+        // Never over the cursor, nor over the tail itself: a fading tail
+        // isn't painted twice where it stands.
+        for p in [(404.0, 8.0), (401.0, 1.0), (407.0, 15.0)] {
+            assert!(!paints(blur, p), "{p:?}");
+        }
+        let mut faded = c.clone().faded(0.5);
+        assert!(faded.step(to, true, 3.0 / 30.0, 0.4));
+        let layers = faded.blurred(to);
+        let inside = ((back(&faded.corners) + 400.0) / 2.0, 8.0);
+        assert!(paints(&layers[1], inside), "the tail there");
+        assert!(!paints(&layers[0], inside), "and not its blur too");
+        assert!((layers[0].alpha - faded.opacity).abs() < 1e-6 && faded.opacity < 1.0);
+    }
+
+    /// With the cursor inside the tail's quad, the blur paints all the swept
+    /// ground behind it: nothing between the blur and the tail left bare.
+    #[test]
+    fn the_blur_and_the_tail_together_cover_the_swept_ground() {
+        let to = cell(400.0, 0.0);
+        let mut c = Chase::new(quad(cell(0.0, 0.0)));
+        for k in 0..4 {
+            c.step(to, true, k as f32 / 30.0, 0.4);
+        }
+        let layers = c.blurred(to);
+        assert_eq!(layers[0].hole.as_ref().map(|h| h.len()), Some(4), "the quad, as the hole");
+        let swept = hull_points(c.before.iter().chain(&c.corners).copied().collect());
+        let swept: Vec<Point<Pixels>> = swept.into_iter().map(pt).collect();
+        for x in (0..400).step_by(7) {
+            for y in [1.0, 8.0, 15.0] {
+                let p = (x as f32 + 0.5, y);
+                if within(&swept, p) && !(400.0..=408.0).contains(&p.0) {
+                    assert!(layers.iter().any(|l| paints(l, p)), "{p:?} bare");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_blur_ramps_along_the_move_whichever_way_it_goes() {
+        for dir in [(0.6f32, 0.8f32), (-0.8, 0.6), (1.0, 0.0), (0.0, -1.0)] {
+            let to = cell(dir.0 * 400.0, dir.1 * 400.0);
+            let mut c = Chase::new(quad(cell(0.0, 0.0)));
+            c.step(to, true, 0.0, 0.4);
+            c.step(to, true, 1.0 / 30.0, 0.4);
+            c.step(to, true, 2.0 / 30.0, 0.4);
+            let (was, now) = (centroid(&c.before), centroid(&c.corners));
+            let (fa, fb) = c.blurred(to)[0].fade.unwrap();
+            let (rx, ry) = (fb.0 - fa.0, fb.1 - fa.1);
+            let (mx, my) = (now.0 - was.0, now.1 - was.1);
+            let cos = (rx * mx + ry * my) / (rx.hypot(ry) * mx.hypot(my));
+            assert!(cos > 0.9999, "{dir:?}: the ramp along the move, {cos}");
+        }
+    }
+
+    #[test]
+    fn a_blurred_tail_is_convex_and_finite_every_way_and_ends_as_the_tail_does() {
+        for dir in DIRS {
+            for len in [1.0f32, 10.0, 400.0] {
+                let (from, to) = (cell(0.0, 0.0), cell(dir.0 * len, dir.1 * len));
+                let (mut c, mut now, mut frames) = (Chase::new(quad(from)), 0.0, 0);
+                while c.step(to, true, now, 0.4) {
+                    for l in c.blurred(to) {
+                        assert!(convex(&l.outline), "{dir:?} {len}: {:?}", l.outline);
+                        assert!(l.outline.iter().all(|p| xy(*p).0.is_finite() && xy(*p).1.is_finite()));
+                        assert!(
+                            l.hole.as_ref().is_none_or(|h| convex(h) && h.iter().all(|p| within(&l.outline, xy(*p)))),
+                            "{dir:?} {len}: {:?} in {:?}",
+                            l.hole,
+                            l.outline
+                        );
+                    }
+                    now += 1.0 / 60.0;
+                    frames += 1;
+                    assert!(frames < 10_000);
+                }
+            }
+        }
     }
 }

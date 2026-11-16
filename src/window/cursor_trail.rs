@@ -49,6 +49,8 @@ pub(super) struct Trail {
     chase: Option<cursor_shapes::Chase>,
     /// What the trail drew last, where one started meanwhile begins.
     pub(super) drawn: Option<cursor_shapes::Quad>,
+    /// The tail's motion blur (`cursor_trail_motion_blur`).
+    blur: bool,
 }
 
 impl Trail {
@@ -92,6 +94,7 @@ impl Trail {
                 .filter(|_| style == Some(settings::TrailStyle::Tail))
                 .map(|from| cursor_shapes::Chase::new(from).faded(opacity)),
             drawn: None,
+            blur: s.cursor_trail_motion_blur,
         }
     }
 
@@ -114,7 +117,12 @@ impl Trail {
                     self.duration.as_secs_f32(),
                 );
                 if live {
-                    (chase.layers(end.cursor), Some(chase.corners), true)
+                    let layers = if self.blur {
+                        chase.blurred(end.cursor)
+                    } else {
+                        chase.layers(end.cursor)
+                    };
+                    (layers, Some(chase.corners), true)
                 } else {
                     (Vec::new(), None, false)
                 }
@@ -370,6 +378,29 @@ mod tests {
             trail.drawn.is_none(),
             "and nothing for a next trail to steer from"
         );
+    }
+
+    /// With `cursor_trail_motion_blur`, a moving tail draws its blur under
+    /// it; without, the tail alone.
+    #[test]
+    fn a_tail_draws_its_motion_blur_when_asked() {
+        use crate::settings::{Arrival, Settings, TrailStyle};
+        use gpui::{Bounds, point, px, size};
+        let cell = |x: f32| Bounds::new(point(px(x), px(0.0)), size(px(8.0), px(16.0)));
+        let end = crate::terminal::TrailEnd { cell: cell(400.0), cursor: cell(400.0), shown: true };
+        let filled = |blur: bool| {
+            let s = Settings {
+                cursor_trail_style: TrailStyle::Tail,
+                cursor_arrival: Arrival::Off,
+                cursor_trail_duration_ms: 400,
+                cursor_trail_motion_blur: blur,
+                ..Settings::default()
+            };
+            let mut trail = super::Trail::new(Some(super::cursor_shapes::quad(cell(0.0))), None, "a", &s);
+            trail.shapes(end, Duration::ZERO);
+            trail.shapes(end, Duration::from_millis(33)).unwrap().len()
+        };
+        assert_eq!((filled(false), filled(true)), (1, 2));
     }
 
     #[test]

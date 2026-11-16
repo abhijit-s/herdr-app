@@ -593,8 +593,8 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  (see AGENTS.md). `cursor_trail` is `"off" | "panes" | "all"`, `cursor_trail_style`
  *  `"comet" | "tail" | "sweep" | "warp" | "blaze" | "blaze_tapered"`, `cursor_arrival` `"off" | "ripple" | "boom" | "ripple_rect" | "boom_rect"`,
  *  with `cursor_trail_duration_ms`, `cursor_trail_settle_ms`, `cursor_trail_min_cells` (a number
- *  for both axes, or `[columns, rows]`) and `cursor_trail_color` (`null` for the theme's `cursor`)
- *  as written; the app draws the effects.
+ *  for both axes, or `[columns, rows]`), `cursor_trail_color` (`null` for the theme's `cursor`)
+ *  and `cursor_trail_motion_blur` as written; the app draws the effects.
  *  `terminal_font` is the terminals' resolved font in a mod's units (undefined on builds without
  *  it): `{ family: string, size: number, weight: number, line_height: number, fallbacks: string[] }`.
  *  `size` is for `text_size` or an editor's `font_size`: the terminals' px over
