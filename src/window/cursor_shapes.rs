@@ -251,7 +251,7 @@ pub(super) fn trail(
 /// cursor block across.
 const COMET_LAYERS: [(f32, f32, bool); 2] = [(0.40, 0.35, false), (0.22, 1.0, true)];
 const COMET_END: f32 = 0.2;
-const COMET_FULL: f32 = 0.65;
+const COMET_FULL: f32 = 0.4;
 const COMET_GLOW: (f32, f32, f32) = (0.5, 0.45, 1.0);
 const ROUND: usize = 16;
 
@@ -267,6 +267,14 @@ pub(super) const COMET_PINCH_TO: f32 = 0.3;
 /// eases down (quadratic) to none at the end.
 pub(super) const COMET_GLOW_FROM: f32 = 0.85;
 pub(super) const COMET_GLOW_PEAK: f32 = 0.15;
+/// The tail's retraction: an exponential settle of rate `COMET_RETRACT` (per
+/// unit of `t`), rescaled to reach the head exactly at the end. Each frame it closes
+/// about the same share of what is left, so the streak's middle lingers and
+/// thins away gradually rather than collapsing into the head early. Chosen by
+/// replaying the reach at 180 ms and 60 fps against a recording's per-frame
+/// streak length (closest within about 0.03 from the fourth frame on); a plain
+/// share of 0.7 a frame would be about 3.85, less for the rescale.
+pub(super) const COMET_RETRACT: f32 = 3.4;
 /// The streak's opacity is `1 - t^COMET_FADE_POW`.
 pub(super) const COMET_FADE_POW: i32 = 3;
 
@@ -297,14 +305,22 @@ pub(super) fn comet_glow_strength(t: f32) -> f32 {
     }
 }
 
+/// How much of the jump the tail still trails behind the head at progress `t`:
+/// 1 at the start, 0 at the end.
+pub(super) fn comet_tail_reach(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    let end = (-COMET_RETRACT).exp();
+    (((-COMET_RETRACT * t).exp() - end) / (1.0 - end)).max(0.0)
+}
+
 /// A glowing streak: the whole streak from the first frame, its round nose on
 /// the cursor and its tail end rounded at a fifth of its width; the tail
-/// retracts into the head easing out (cubic), the streak brightest at the head
+/// retracts into the head in an exponential settle; the streak brightest at the head
 /// and fading to nothing at the tail, all of it fading as it goes. The head
 /// swells as it launches and pinches into the cursor as it lands, and its soft
 /// glow peaks early and eases away. Every size is a pure function of `t`.
 fn comet(from: P, to: Bounds<Pixels>, h: f32, t: f32) -> (Vec<Layer>, Option<Quad>) {
-    let k = (1.0 - t.clamp(0.0, 1.0)).powi(3);
+    let k = comet_tail_reach(t);
     // Held late, so the landing pinch is seen on the cursor, not lost in a fade.
     let fade = 1.0 - t.clamp(0.0, 1.0).powi(COMET_FADE_POW);
     if fade <= 0.0 {
@@ -1599,9 +1615,9 @@ mod tests {
             4.0,
             "from the old cursor's middle on the first frame"
         );
-        // Cubic ease-out: 1 - (1 - t)^3 of the way.
+        // An exponential settle: 1 - comet_tail_reach(t) of the way.
         for t in [0.1f32, 0.3, 0.5, 0.8] {
-            let want = 4.0 + 400.0 * (1.0 - (1.0 - t).powi(3));
+            let want = 4.0 + 400.0 * (1.0 - comet_tail_reach(t));
             assert!((tail(t) - want).abs() < 0.01, "{t}: {} vs {want}", tail(t));
         }
         assert!(
@@ -1691,8 +1707,42 @@ mod tests {
             .iter()
             .map(|p| dist(xy(*p), (404.0, 8.0)))
             .fold(0.0f32, f32::max);
-        assert!(reach < 16.0 * 0.22 * comet_head_scale(0.98) + 0.1, "{reach}");
+        // The slack is the tail still about 1 px behind the head (it settles,
+        // it does not ease to a stop), not the head growing.
+        assert!(reach < 16.0 * 0.22 * comet_head_scale(0.98) + 1.5, "{reach}");
         assert!(last[2].alpha > 0.0);
+    }
+
+    /// The tail at 60 fps over 180 ms: each frame it closes about the same
+    /// share of what is left, so a long streak is still there late on.
+    #[test]
+    fn comet_tail_settles_gently_and_lingers_late() {
+        assert_eq!(comet_tail_reach(0.0), 1.0);
+        assert_eq!(comet_tail_reach(1.0), 0.0);
+        let frames: Vec<f32> = (1..=8)
+            .map(|n| comet_tail_reach(n as f32 * (1000.0 / 60.0) / 180.0))
+            .collect();
+        assert!(frames.windows(2).all(|w| w[1] < w[0]), "{frames:?}");
+        // About the same share kept from frame to frame.
+        let shares: Vec<f32> = frames.windows(2).map(|w| w[1] / w[0]).collect();
+        assert!(shares.iter().all(|s| (0.6..0.75).contains(s)), "{shares:?}");
+        // Near level (0.72 to 0.61), where a cubic ease-out's fall from 0.72
+        // to 0.50.
+        let spread = shares.iter().fold(0.0f32, |m, s| m.max(*s)) - shares.iter().fold(1.0f32, |m, s| m.min(*s));
+        assert!(spread < 0.12, "{shares:?}");
+        // A long streak still well behind the head late: an eighth of the jump
+        // at frame 6, where a cubic ease-out leaves under a tenth.
+        assert!(frames[5] > 0.11 && frames[7] > 0.04, "{frames:?}");
+        assert!(frames[5] > (1.0f32 - 6.0 * (1000.0 / 60.0) / 180.0).powi(3));
+        // Fully bright from 0.4 of the way, so most of what remains shows.
+        let layers = comet_at(0.5);
+        let k = comet_tail_reach(0.5);
+        let tail = 404.0 - 400.0 * k;
+        let (back, full) = layers[2].fade.unwrap();
+        assert!((back.0 - tail).abs() < 1e-3 && (full.0 - (tail + 400.0 * k * COMET_FULL)).abs() < 1e-3);
+        // The whole streak dims as it goes, not only shortens.
+        assert!(layers[2].alpha < comet_at(0.1)[2].alpha);
+        assert!((layers[2].alpha - (1.0 - 0.5f32.powi(COMET_FADE_POW))).abs() < 1e-6);
     }
 
     fn comet_head_half(t: f32) -> f32 {
