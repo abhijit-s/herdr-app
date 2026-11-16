@@ -1372,6 +1372,33 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Tests: `window::cursor_shapes::tests::{comet_head_swells_as_it_launches_and_settles, comet_glow_peaks_early_then_eases_down, comet_head_pinches_into_the_cursor_as_it_lands}` (widths and strengths at given `t`, and the head still visible while it pinches), with the comet's width, glow and alpha tests updated; `tests/trail_pixels.rs` (the glow at 0.5 and 0.45 of a 16 px cell, and the comet's pale nose sampled past the wider core).
 - Files: `src/window/cursor_shapes.rs`, `src/window/trail_paint.rs`, `src/settings.rs`, `tests/trail_pixels.rs`, `defaults/AGENTS.md`, `FORK.md`
 - Three questions (FORK-ADR-001, fork architecture stance): (1) Does the app act on it? Only to draw it; the trail is drawing in the app's Rust core. (2) Can only the app see it? Yes: the cursor and its trail are painted by the app's renderer, not by a mod. (3) Can a mod not do it? No mod can paint over the terminal's cursor. Verdict: D (fork only), as with the cursor trail it changes.
+
+### Comet tail
+
+`comet-tail` (branched from `master` da2c87c, fork only): the comet's tail retracts more gently, so the middle of the streak stays visible and bright for longer and thins away gradually instead of collapsing into the head early. The feel was matched to a 60 fps recording of Rex's comet; the curve and constants are our own design. The head (swell, pinch, glow, widths) is unchanged.
+
+- Retraction: `comet_tail_reach(t)` is an exponential settle, `(e^(-r·t) - e^(-r)) / (1 - e^(-r))` with `COMET_RETRACT` r = 3.4, rescaled so the tail reaches the head exactly at the end. It replaces the cubic ease-out `(1 - t)^3`. Each frame the tail closes about the same share of what is left (0.72 to 0.61 a frame at 180 ms and 60 fps, where the cubic falls from 0.72 to 0.50), so at frame 6 an eighth of the jump is still trailing instead of under a tenth. Because it settles rather than easing to a stop, about 1 px of tail remains at t = 0.98, when the streak's opacity is near zero.
+- Brightness: `COMET_FULL` 0.65 → 0.4, so the streak is at full strength from two fifths of the way and most of what remains shows. This is a taste choice; no recording backs the exact value.
+- Fade: unchanged, `1 - t^COMET_FADE_POW` (3) over the whole streak, so it dims as it shortens.
+- How 3.4 was chosen: the model's per-frame tail reach at 180 ms and 60 fps was replayed against the per-frame visible streak length in the recordings (warm pixels, 2nd to 98th percentile span along the jump, relative to the first frame). A plain 0.7 share a frame would give about 3.85, and the rescale to end exactly on the head lowers that. The rendered result has not been re-recorded; the user compares the installed build by eye.
+
+| Frame (60 fps) | Rex measured | Old Herdr measured | Old model `(1-t)^3` | New model |
+| --- | --- | --- | --- | --- |
+| 1 | 1.00 | 1.00 | 1.00 | 1.00 |
+| 2 | 0.77 | 0.68 | 0.72 | 0.72 |
+| 3 | 0.46 | 0.45 | 0.50 | 0.51 |
+| 4 | 0.34 | 0.29 | 0.33 | 0.36 |
+| 5 | 0.23 | 0.16 | 0.21 | 0.25 |
+| 6 | 0.16 | 0.09 | 0.12 | 0.17 |
+| 7 | 0.11 | 0.04 | 0.06 | 0.11 |
+| 8 | 0.08 | 0.01 | 0.02 | 0.068 |
+
+- Model values are tail reach relative to frame 1 (absolute new: 0.721, 0.517, 0.368, 0.259, 0.180, 0.122, 0.080, 0.049). Old Herdr's measured column skips one duplicated frame in the recording. Measured length runs 10 to 30% below model late on (fade and the brightness threshold cut it), so the rendered new tail will sit slightly below these model values.
+- Bench: release builds, A/B against master da2c87c, `scripts/bench.py --set leaps --seconds 15 --tmp /tmp` with the comet at 170 ms, one round per side, 1-minute load about 7.9, non-zero window draws in every run. leaps-all Minstr/s (app, core and holder): master 91.8 / branch 91.0; window draws 25.5 / 25.4 a second, trail frames 15.5 / 15.3; frame time 10.0 / 13.2 ms/s. leaps-off: 37.0 / 34.8. Instructions are equal; the frame time difference is within the spread earlier runs showed (11.7 to 14.3 ms/s), and the change adds two `exp` calls a frame.
+- Regression: master 1124 bin tests, scripts all passing; this branch 1125 bin (one new) and 335 script, all passing.
+- Tests: `window::cursor_shapes::tests::comet_tail_settles_gently_and_lingers_late` (reach 1 at the start and 0 at the end, near-level per-frame shares that rule out the cubic, an eighth of the jump still trailing at frame 6, the gradient stop at `COMET_FULL`, the whole streak dimming), with `comet_the_whole_streak_shows_at_once_then_the_tail_eases_into_the_head` and the landing glint test updated; `tests/trail_pixels.rs` (the comet full from two fifths on).
+- Files: `src/window/cursor_shapes.rs`, `tests/trail_pixels.rs`, `FORK.md`
+- Three questions (FORK-ADR-001, fork architecture stance): (1) Does the app act on it? Only to draw it; the trail is drawing in the app's Rust core. (2) Can only the app see it? Yes: the cursor and its trail are painted by the app's renderer, not by a mod. (3) Can a mod not do it? No mod can paint over the terminal's cursor. Verdict: D (fork only), as with the comet head it tunes.
 - Upstream: none
 
 ### Kitty images by file path on this machine
