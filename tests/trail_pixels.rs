@@ -191,7 +191,7 @@ fn gradient_stops_sit_on_their_points(cx: &mut HeadlessAppContext) {
 }
 
 /// The comet as drawn, in an amber cursor color, at any angle: none at its
-/// tail, rising to full strength well before the head and staying there, its
+/// tail, rising to full strength by two fifths of the way and staying there, its
 /// nose whiter than the glow beside it.
 fn the_comet_brightens_to_a_pale_nose(cx: &mut HeadlessAppContext) {
     let amber = hsla(0.11, 1.0, 0.6, 1.0);
@@ -220,8 +220,8 @@ fn the_comet_brightens_to_a_pale_nose(cx: &mut HeadlessAppContext) {
             "{from:?}: brightening toward the head {red:?}"
         );
         assert!(
-            red[0] < 60 && red[3] > 200 && red[4] > 200,
-            "{from:?}: faint at the tail, full from about two thirds on: {red:?}"
+            red[0] < 60 && red[2] > 200 && red[3] > 200 && red[4] > 200,
+            "{from:?}: faint at the tail, full from about two fifths on: {red:?}"
         );
         let nose = point(1.0);
         let n = ((to.1 - from.1), -(to.0 - from.0));
