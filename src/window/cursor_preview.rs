@@ -31,9 +31,10 @@ pub(crate) struct CursorPreview {
     frames: u64,
 }
 
-/// What keeps the preview's view across renders. Its element state is
-/// watched by the view it's rendered in, so it holds the preview rather than
-/// being it: the preview's frames notify the preview alone.
+/// What keeps the preview's view across renders. Element state is watched by
+/// the view it's rendered in, which a notify of it would run again; holding
+/// the preview rather than being it, a frame notifies only the preview (whose
+/// ancestors GPUI then draws again, without their scripts running).
 struct Slot(Entity<CursorPreview>);
 
 /// The preview as a mod element, kept across renders under `id`.
@@ -89,7 +90,8 @@ impl CursorPreview {
     /// system asks for reduced motion. Whether an effect runs.
     fn moved(&mut self, to: (usize, usize), s: &settings::Settings, reduce_motion: bool) -> bool {
         let from = self.rect(self.cursor);
-        self.cursor = to;
+        let cols = self.grid.map_or(COLS, |(_, _, cols)| cols);
+        self.cursor = (to.0.min(cols - 1), to.1.min(ROWS - 1));
         let live = self.trail.take();
         let trail = start_from(live.as_ref(), from)
             .filter(|_| s.cursor_trail != settings::CursorTrail::Off);
@@ -182,9 +184,13 @@ fn fit(bounds: Bounds<Pixels>, cell: Size<Pixels>) -> (Point<Pixels>, Size<Pixel
 /// The stand-in terminal: its placeholder lines in the terminals' ink, faint,
 /// and the cursor block.
 fn paint_grid(preview: &CursorPreview, window: &mut Window) {
-    let Some((origin, cell, _)) = preview.grid else { return };
+    let Some((origin, cell, cols)) = preview.grid else { return };
     let text = settings::color("terminal_foreground").opacity(0.18);
     for (row, &(col, len)) in LINES.iter().enumerate() {
+        let len = len.min(cols.saturating_sub(col));
+        if len == 0 {
+            continue;
+        }
         let bar = Bounds::new(
             point(
                 origin.x + cell.width * col as f32,

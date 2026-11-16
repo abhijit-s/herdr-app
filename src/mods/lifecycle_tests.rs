@@ -1155,3 +1155,66 @@ export default class extends View {
     // The test pointer starts at the window's origin, over the first card.
     assert_eq!(*notes.borrow(), vec!["hover a0", "hover a1", "focus a1", "item a1", "pin a1"]);
 }
+
+/// The Settings window's cursor effect preview through the real shell path: a
+/// mod draws `CursorPreview`, a click in it plays the effect over frames asked
+/// one at a time, none are asked once it ends, and the mod's script renders
+/// once throughout (its frames build the page's elements, not the script).
+#[gpui::test]
+fn the_cursor_preview_plays_in_a_mod_without_running_its_script_per_frame(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let source = r#"
+import { View, div } from "gpui-kit";
+import { CursorPreview, note } from "herdr";
+export default class extends View {
+  render() {
+    note();
+    return div().size_full().child(CursorPreview.new("p", {}));
+  }
+}"#;
+    let fixture = Fixture::new(source);
+    let renders = Rc::new(Cell::new(0u32));
+    let counted = renders.clone();
+    gpui_shell::policy::set_default(Policy::new().with_host_module(
+        HostModule::new("herdr")
+            .component("CursorPreview", |args, window, cx| crate::window::cursor_preview::element(args.id(), window, cx))
+            .function("note", move |_| { counted.set(counted.get() + 1); Ok(HostValue::Null) })
+    ).unwrap());
+    cx.update(|_| crate::settings::set(crate::settings::Settings {
+        cursor_trail: crate::settings::CursorTrail::Panes,
+        cursor_trail_style: crate::settings::TrailStyle::Warp,
+        cursor_arrival: crate::settings::Arrival::Ripple,
+        cursor_trail_duration_ms: 60,
+        ..crate::settings::Settings::default()
+    }));
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&fixture.0, window, cx).unwrap()));
+    let mut visual = VisualTestContext::from_window(*window.deref(), cx);
+    let frame = |visual: &mut VisualTestContext| {
+        let asked = visual.update(|window, cx| {
+            let asked = window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+            asked
+        });
+        visual.run_until_parked();
+        asked
+    };
+    for _ in 0..2 { frame(&mut visual); }
+    assert_eq!(frame(&mut visual), 0, "at rest, no frames");
+    let scripted = renders.get();
+    assert!(scripted >= 1, "the mod rendered");
+    visual.simulate_click(gpui::point(gpui::px(300.), gpui::px(40.)), Default::default());
+    visual.run_until_parked();
+    let (start, mut ran) = (Instant::now(), 0);
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(4));
+        if frame(&mut visual) == 0 { break; }
+        ran += 1;
+        assert!(start.elapsed() < std::time::Duration::from_secs(2), "it ends");
+    }
+    assert!(ran >= 3, "the effect ran over several frames: {ran}");
+    assert_eq!(frame(&mut visual), 0, "and none once it ended");
+    assert_eq!(renders.get(), scripted, "the script didn't run for the preview's frames");
+    visual.update(|window, _| window.remove_window());
+    visual.run_until_parked();
+}
