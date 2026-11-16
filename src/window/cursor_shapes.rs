@@ -525,11 +525,20 @@ fn blaze(
             inner = within_by(&inner, p, q, turn, half);
         }
     }
-    let near = |v: f32, w: f32| (v - w).abs() < 1e-3;
+    // Within f32 rounding at these coordinates (a far-right pane on a large
+    // display is thousands of px out).
+    let tol = 1e-3 * (1.0 + lo.0.abs().max(hi.0.abs()).max(lo.1.abs()).max(hi.1.abs()) / 1000.0);
+    let near = |v: f32, w: f32| (v - w).abs() < tol;
     let on_rect = |p: &P| {
-        ((near(p.0, lo.0) || near(p.0, hi.0)) && (lo.1 - 1e-3..=hi.1 + 1e-3).contains(&p.1))
-            || ((near(p.1, lo.1) || near(p.1, hi.1)) && (lo.0 - 1e-3..=hi.0 + 1e-3).contains(&p.0))
+        ((near(p.0, lo.0) || near(p.0, hi.0)) && (lo.1 - tol..=hi.1 + tol).contains(&p.1))
+            || ((near(p.1, lo.1) || near(p.1, hi.1)) && (lo.0 - tol..=hi.0 + tol).contains(&p.0))
     };
+    // A beam narrower across the move than two strokes (a beam cursor going
+    // up or down) has no room for an edge on each side.
+    let (ux, uy) = (b.0 - far.0, b.1 - far.1);
+    let ul = ux.hypot(uy).max(1e-6);
+    let across = (w * uy / ul).abs() + (ht * ux / ul).abs();
+    let inner = if across < 2.0 * BLAZE_EDGE { Vec::new() } else { inner };
     let m = inner.len();
     let sides: Vec<P> = match (0..m).find(|&i| on_rect(&inner[i]) && !on_rect(&inner[(i + 1) % m])) {
         Some(start) if m >= 3 => {
