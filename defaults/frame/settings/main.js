@@ -1869,7 +1869,7 @@ export default class Settings extends View {
       .w_full()
       .child(this.heading(t, "Cursor effects"))
       .child(this.row(t, "Cursor trail", "A trail from one pane's cursor to the next as the focus moves between panes, and with Panes and jumps, as the cursor jumps in the pane you're typing in.", this.choicePicker(t, "st-ct", "cursor_trail", CURSOR_TRAILS), "cursor_trail"))
-      .when(on, (el) => el.child(this.row(t, "Trail style", "Comet: a glowing streak. Tail: the cursor stretched, as kitty does. Sweep: a block shrinking into the cursor. Warp: a soft stretched block, as Neovide does.", this.choicePicker(t, "st-cs", "cursor_trail_style", TRAIL_STYLES), "cursor_trail_style")))
+      .when(on, (el) => el.child(this.row(t, "Trail style", "Comet: a glowing streak. Tail: the cursor stretched, as kitty does. Sweep: a block shrinking into the cursor. Warp: the cursor stretching and springing into place, after Neovide.", this.choicePicker(t, "st-cs", "cursor_trail_style", TRAIL_STYLES), "cursor_trail_style")))
       .when(jumps, (el) =>
         el
           .child(this.row(t, "Settle time", "How long the program leaves the cursor still before a jump counts, so streaming output draws nothing until it pauses.", this.stepper(t, "st-cursor_trail_settle_ms", `${settle} ms`, settleLess, settleMore), "cursor_trail_settle_ms"))

@@ -1837,7 +1837,7 @@ pub enum TrailStyle {
     Tail,
     /// A block from the old cursor shrinking into the new one.
     Sweep,
-    /// A stretched block with soft edges, as Neovide draws.
+    /// The cursor block on springs, after Neovide's stretching cursor: stretched along the move, narrowed across it, overshooting and settling.
     Warp,
 }
 
