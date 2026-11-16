@@ -347,7 +347,10 @@ impl Chase {
     /// still to be drawn at `now` (s from the start).
     pub(super) fn step(&mut self, to: Bounds<Pixels>, shown: bool, now: f32, decay: f32) -> bool {
         let dt = (now - self.at).max(0.0);
-        self.before = self.corners;
+        // A repeat at the same moment keeps the last frame's step to blur.
+        if dt > 0.0 {
+            self.before = self.corners;
+        }
         self.at = now;
         let (target, center) = (quad(to), mid(to));
         let diag = (f32::from(to.size.width).hypot(f32::from(to.size.height)) / 2.0).max(1e-3);
@@ -401,16 +404,15 @@ impl Chase {
         far && self.opacity > 0.0 && now < decay * TAIL_CAP
     }
 
-    /// The quad as it stands, less the cursor `to` (kitty draws the trail
-    /// only outside the cursor's rect).
-    /// The quad with a motion blur behind it (`cursor_trail_motion_blur`):
-    /// what the eye would see of the quad moving from where it was at the
-    /// last frame to where it is. The average of the quad drawn at many
-    /// points between the two, for a quad that moves without changing shape,
-    /// is a ramp across the ground it swept, from none at its old trailing
-    /// edge to full at its new one, and full under the quad; drawn here as one
-    /// layer, the hull of the two quads in that ramp, under the quad itself,
-    /// both less the cursor. Nothing more while it barely moved.
+    /// The quad with a motion blur behind it (`cursor_trail_motion_blur`): a
+    /// smear over the ground its back edge swept since the last frame, rising
+    /// from none at the old back edge to full at the new one, along the move.
+    /// On the trailing side that is the average of the quad drawn at many
+    /// points between the two frames while its back edge keeps its shape; the
+    /// head stays as solid as the tail draws it, where a true average would
+    /// fade it too. One layer: the hull of the two quads, less the quad itself
+    /// and the cursor, so nothing is painted twice. Nothing more while it
+    /// barely moved.
     pub(super) fn blurred(&self, to: Bounds<Pixels>) -> Vec<Layer> {
         let mut layers = self.layers(to);
         let (was, now) = (centroid(&self.before), centroid(&self.corners));
@@ -418,28 +420,35 @@ impl Chase {
         if layers.is_empty() || dx.hypot(dy) < CAUGHT_UP {
             return layers;
         }
-        // Each quad's corner furthest back along the move: its trailing edge.
-        let back = |q: &Quad| {
-            *q.iter()
-                .min_by(|a, b| (a.0 * dx + a.1 * dy).total_cmp(&(b.0 * dx + b.1 * dy)))
-                .unwrap()
+        // The ramp's ends on one line along the move, at each quad's furthest
+        // point back along it: its back edge.
+        let d = dx.hypot(dy);
+        let u = (dx / d, dy / d);
+        let back = |q: &Quad| q.iter().map(|p| p.0 * u.0 + p.1 * u.1).fold(f32::MAX, f32::min);
+        let at = |s: f32| {
+            let off = s - (was.0 * u.0 + was.1 * u.1);
+            (was.0 + u.0 * off, was.1 + u.1 * off)
         };
         let swept = hull_points(self.before.iter().chain(&self.corners).copied().collect());
-        let cut = clipped(&quad(to), &swept);
+        // Less the quad (drawn on its own) and the cursor's part of the swept ground.
+        let cursor = clipped(&quad(to), &swept);
+        let kept = hull_points(self.corners.iter().copied().chain(cursor).collect());
         let blur = Layer {
             outline: swept.into_iter().map(pt).collect(),
-            hole: (cut.len() >= 3 && area(&cut).abs() > 1e-3).then(|| cut.into_iter().map(pt).collect()),
+            hole: (kept.len() >= 3 && area(&kept).abs() > 1e-3).then(|| kept.into_iter().map(pt).collect()),
             stroke: None,
             open: false,
             alpha: self.opacity,
             tone: Tone::Effect,
-            fade: Some((back(&self.before), back(&self.corners))),
+            fade: Some((at(back(&self.before)), at(back(&self.corners)))),
             glow: None,
         };
         layers.insert(0, blur);
         layers
     }
 
+    /// The quad as it stands, less the cursor `to` (kitty draws the trail
+    /// only outside the cursor's rect).
     pub(super) fn layers(&self, to: Bounds<Pixels>) -> Vec<Layer> {
         let outer = hull_points(self.corners.to_vec());
         if outer.len() < 3 {
@@ -1741,13 +1750,39 @@ mod tests {
         // tail alone leaves bare.
         let back = |q: &Quad| q.iter().map(|p| p.0).fold(f32::MAX, f32::min);
         let gap = ((back(&c.before) + back(&c.corners)) / 2.0, 8.0);
+        let _ = before;
         assert!(paints(blur, gap) && !paints(&plain[0], gap), "{gap:?}");
         // Rising from none at the old back edge to full at the new one.
         let fade = blur.fade.unwrap();
         assert!((fade.0.0 - back(&c.before)).abs() < 1e-3 && (fade.1.0 - back(&c.corners)).abs() < 1e-3, "{fade:?}");
-        // Never over the cursor.
+        // Never over the cursor, nor over the tail itself: a fading tail
+        // isn't painted twice where it stands.
         for p in [(404.0, 8.0), (401.0, 1.0), (407.0, 15.0)] {
             assert!(!paints(blur, p), "{p:?}");
+        }
+        let mut faded = c.clone().faded(0.5);
+        assert!(faded.step(to, true, 3.0 / 30.0, 0.4));
+        let layers = faded.blurred(to);
+        let inside = ((back(&faded.corners) + 400.0) / 2.0, 8.0);
+        assert!(paints(&layers[1], inside), "the tail there");
+        assert!(!paints(&layers[0], inside), "and not its blur too");
+        assert!((layers[0].alpha - faded.opacity).abs() < 1e-6 && faded.opacity < 1.0);
+    }
+
+    #[test]
+    fn the_blur_ramps_along_the_move_whichever_way_it_goes() {
+        for dir in [(0.6f32, 0.8f32), (-0.8, 0.6), (1.0, 0.0), (0.0, -1.0)] {
+            let to = cell(dir.0 * 400.0, dir.1 * 400.0);
+            let mut c = Chase::new(quad(cell(0.0, 0.0)));
+            c.step(to, true, 0.0, 0.4);
+            c.step(to, true, 1.0 / 30.0, 0.4);
+            c.step(to, true, 2.0 / 30.0, 0.4);
+            let (was, now) = (centroid(&c.before), centroid(&c.corners));
+            let (fa, fb) = c.blurred(to)[0].fade.unwrap();
+            let (rx, ry) = (fb.0 - fa.0, fb.1 - fa.1);
+            let (mx, my) = (now.0 - was.0, now.1 - was.1);
+            let cos = (rx * mx + ry * my) / (rx.hypot(ry) * mx.hypot(my));
+            assert!(cos > 0.9999, "{dir:?}: the ramp along the move, {cos}");
         }
     }
 
