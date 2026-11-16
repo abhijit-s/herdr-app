@@ -471,9 +471,9 @@ The tab block says how each pane of the shown tab is wrapped:
   `pane.close`). `scroll` is `{ total, offset, len, from_bottom }` for a
   terminal pane's history viewport (`from_bottom` is 0 at the end; `scroll`
   is null on the alternate screen). Reads get current numbers. Mods refresh
-  on user scrolling and transitions between the end, history, and the
-  alternate screen; ordinary output within one of those states does not
-  refresh them just because the numbers changed. `position`: `top` or
+  only on transitions between the end, history, and the alternate screen;
+  scrolling and output within one of those states do not refresh them just
+  because the numbers changed. `position`: `top` or
   `bottom`; `reveal: "hover"` shows it only while the pointer is on the pane,
   drawn over the terminal so the terminal never resizes. The shipped `pane`
   mod keeps its divider on the terminal-facing edge and reads the frame
@@ -685,7 +685,9 @@ The main ones:
   space shown, the new space is shown), for work the person looks at later;
   such tabs go last in their space, in the order made. `focus` is a boolean.
 - Panes: `pane.split {direction: "right" | "down", pane?, argv? | mod?, props?}` (a new
-  terminal, or a mod pane), `pane.close {pane?}`, `pane.rename {pane?, name}` ("": unnamed again),
+  terminal, or a mod pane; `argv` starts in your interactive shell, for its PATH, and the
+  pane ends with it, keeping its exit code; that shell PATH needs sh, bash, zsh, dash, ksh or
+  fish: with other shells (nushell) and on Windows `argv` runs directly), `pane.close {pane?}`, `pane.rename {pane?, name}` ("": unnamed again),
   `pane.set_icon {pane?, icon}` and `tab.set_icon {id?, icon}` (`icon`: `{kind: "glyph" | "emoji", value}` or `{kind: "letter"}`; null or absent: the automatic icon again, so a misspelt key clears it; kept by id in the machine's layout and gone with the pane or tab; the shipped `menu` offers them as Change icon… and Clear icon, through the shipped `icon-picker`: Suggested, every Symbols Nerd Font glyph and every emoji, searchable by name and keyword. A mod keeping icons of its own opens the same picker with `openOverlay({mod: "icon-picker", kind: "dialog", width: 452, height: 392, props: {shared: "<key>", id, name, letter?, now?, extra?}})`: the pick is written to `shared(key)[id]` as `{kind, value?}` and Clear icon deletes it; `now` (`{kind, text}`) is the icon shown today, `extra` (`[{kind, text, word}]`) adds the mod's own kinds beside the letter),
   `pane.zoom {pane?}`, `pane.menu {pane?}` (the pane's menu at the pointer, the layout's `terminal_menu` as a terminal right-click opens it, with no selection: what a pane header's right-click runs; the shipped `menu` lists Copy with a selection, Copy all, Paste, Copy path when the folder is known, then Rename, Split right and down, Zoom, Change icon… and Clear icon, Float pane (or Dock pane and Bring to front), then where right-clicks go, Send back for a kept sub-agent, and Close pane), `pane.focus {pane | terminal}`, `pane.refocus` (the keyboard back to what has the focus after a mod took it for a moment, as a tab drag does: a focused mod pane gets its `focus` command again, else the focused pane or the agent shown), `pane.go {direction}`, `pane.swap {pane?, direction | target}`.
   `pane.zoom` also makes the pane its tab's focused one (the tab isn't
@@ -744,7 +746,10 @@ The main ones:
   They never act on the terminal's source pane. An explicit `pane` still targets that
   model pane; composition edits belong to the mod (edit its layout instead).
 - Terminals: `terminal.open {argv?, folder?, place?, name?}` (`folder` sets the
-  starting directory for tabs and right/down splits, with or without `argv`), `terminal.kill {terminal}`,
+  starting directory for tabs and right/down splits, with or without `argv`; `argv` starts in
+  your interactive shell wherever it goes: a tab's shell stays after it, a split ends with it;
+  only with sh, bash, zsh, dash, ksh or fish: other shells (nushell) and Windows don't give
+  `argv` that shell's PATH, and a split there runs `argv` directly), `terminal.kill {terminal}`,
   `terminal.keep {terminal, place?}`, `terminal.park {terminal}`,
   `terminal.peek {terminal}` (peek over the tab, with keep-as-tab and close),
   `terminal.popup {argv, cwd?, hold?, wait?, width?, height?}` (start a program on
