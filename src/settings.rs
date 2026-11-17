@@ -1354,9 +1354,6 @@ pub struct Person {
     /// after Herdr starts or the core comes back (resume.rs).
     #[serde(skip_serializing_if = "ResumeAgents::is_ask")]
     pub resume_agents: ResumeAgents,
-    /// A program run for each alert instead of the system notification (alert.rs).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub alert_command: Option<AlertCommand>,
     /// The pointer resting on a terminal pane focuses it (window/follow_mouse.rs).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub focus_follows_mouse: bool,
@@ -1601,14 +1598,6 @@ impl ResumeAgents {
     fn is_ask(&self) -> bool {
         *self == ResumeAgents::Ask
     }
-}
-
-/// One string, run by `/bin/sh -c`, or a program and its arguments.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum AlertCommand {
-    Shell(String),
-    Argv(Vec<String>),
 }
 
 /// The sound each agent alert's system notification plays (alert.rs).
@@ -2631,7 +2620,6 @@ impl Default for Person {
             agents_subagent_click: AgentsSubagentClick::Claude,
             agents_card_info: None,
             resume_agents: ResumeAgents::Ask,
-            alert_command: None,
             focus_follows_mouse: false,
             focus_follows_mouse_delay_ms: FOLLOW_DELAY_DEFAULT_MS,
             default_arrange: None,
@@ -2840,7 +2828,6 @@ pub struct Settings {
     /// How mods draw space avatars: one of `SPACE_AVATARS`, `glyph` when
     /// unset or unknown. Always set once composed; None only in hand-built settings.
     pub space_avatar: Option<String>,
-    pub alert_command: Option<AlertCommand>,
     /// The frames mods animate while an agent works; None: the ring.
     pub working_spinner: Option<SpinnerFrames>,
     /// `pane_header_info` when it says something; None: headers as without it.
@@ -2965,7 +2952,6 @@ impl Default for Settings {
             dock_bounce_on_wait: false,
             pane_auto_names: false,
             space_avatar: Some(SPACE_AVATAR_DEFAULT.into()),
-            alert_command: None,
             working_spinner: None,
             pane_header_info: None,
             agents_subagents: AgentsSubagents::Tree,
@@ -3080,7 +3066,6 @@ impl Settings {
             dock_bounce_on_wait: person.dock_bounce_on_wait,
             pane_auto_names: person.pane_auto_names,
             space_avatar: Some(person.space_avatar.clone().filter(|v| SPACE_AVATARS.contains(&v.as_str())).unwrap_or_else(|| SPACE_AVATAR_DEFAULT.into())),
-            alert_command: person.alert_command.clone(),
             working_spinner,
             pane_header_info: person.pane_header_info.clone().filter(|t| !t.trim().is_empty()),
             agents_subagents: person.agents_subagents,
@@ -5141,7 +5126,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, terminal_cell_width: 0.95, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, copy_on_select: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, alert_command: Some(AlertCommand::Shell(String::new())), focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, pane_header_info: Some(String::new()), agents_card_info: Some(String::new()), cursor_style: CursorStyle::Beam, cursor_trail: CursorTrail::Panes, cursor_trail_style: TrailStyle::Warp, cursor_arrival: Arrival::Ripple, cursor_arrival_size: 1.5, cursor_arrival_intensity: 0.5, cursor_trail_settle_ms: 40, cursor_trail_min_cells: MinCells { x: 3, y: 1 }, cursor_trail_duration_ms: 300, cursor_trail_color: Some("#ff8800".into()), cursor_trail_motion_blur: true, cursor_trail_particles: Particles::Pixiedust, ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, terminal_cell_width: 0.95, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, copy_on_select: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, pane_header_info: Some(String::new()), agents_card_info: Some(String::new()), cursor_style: CursorStyle::Beam, cursor_trail: CursorTrail::Panes, cursor_trail_style: TrailStyle::Warp, cursor_arrival: Arrival::Ripple, cursor_arrival_size: 1.5, cursor_arrival_intensity: 0.5, cursor_trail_settle_ms: 40, cursor_trail_min_cells: MinCells { x: 3, y: 1 }, cursor_trail_duration_ms: 300, cursor_trail_color: Some("#ff8800".into()), cursor_trail_motion_blur: true, cursor_trail_particles: Particles::Pixiedust, ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

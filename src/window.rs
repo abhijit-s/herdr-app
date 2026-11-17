@@ -629,6 +629,53 @@ struct Watched {
     programs: Option<SystemTime>,
 }
 
+/// A click on a mod's system notification brings Herdr forward, then goes to
+/// that mod (alert.rs). Set up before any window opens, so a click that
+/// started Herdr isn't lost. Fork: one a program posted (`system.notify`)
+/// goes to the agent it named.
+pub fn follow_notification_clicks(cx: &mut App) {
+    cx.on_system_notification_response(|response, cx| {
+        cx.activate(true);
+        let main = cx.windows().into_iter().find_map(|w| w.downcast::<AppWindow>());
+        if let Some(main) = main {
+            let _ = main.update(cx, |_, window, _| window.activate_window());
+        }
+        if !crate::alert::clicked(&response.tag)
+            && let Some(main) = main
+        {
+            let _ = main.update(cx, |this, window, cx| {
+                if let Some(addr) = this.notify_clicks.clicked(&response.tag) {
+                    this.run("agent.focus", json!({ "terminal": addr }), window, cx);
+                }
+            });
+        }
+    });
+}
+
+/// Fork: mods that run in every layout and draw nothing, for work that is no
+/// panel's: the shipped `notifications` posts agent alerts to the system
+/// (alert.rs). One copy each, kept across layout switches; a mod folder the
+/// person removed runs nothing.
+const BACKGROUND_MODS: &[&str] = &["notifications"];
+const BACKGROUND_SLOT: &str = "background:";
+
+/// Tests run them only when they ask: every test home has the shipped mods.
+#[cfg(test)]
+static TEST_BACKGROUND_MODS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn background_mods() -> Vec<(String, Instance)> {
+    #[cfg(test)]
+    if !TEST_BACKGROUND_MODS.load(std::sync::atomic::Ordering::Relaxed) {
+        return Vec::new();
+    }
+    let dir = mods::mods_dir();
+    BACKGROUND_MODS
+        .iter()
+        .filter(|name| dir.join(name).join("main.js").is_file())
+        .map(|name| (format!("{BACKGROUND_SLOT}{name}"), Instance { name: (*name).to_owned(), props: Value::Null }))
+        .collect()
+}
+
 pub struct AppWindow {
     core: Arc<Core>,
     runtime: Option<Rc<ShellRuntime>>,
@@ -792,15 +839,10 @@ pub struct AppWindow {
     progress_tick: Option<Task<()>>,
     /// The banner shown when `count_banners` last looked, to restart one coming forward.
     banner_shown: Option<String>,
-    /// Agents with a system notification up (alert.rs), taken down once old
-    /// news (`Notified::withdraw`).
-    notified: crate::alert::Notified,
     /// Which agent each `system.notify` notification focuses when clicked.
     notify_clicks: crate::alert::NotifyClicks,
     /// Agents that don't report (OSC 7501), read off their screens (harness.rs).
     unreported: crate::harness::Watcher,
-    /// Why `alert_command` didn't start, each said once in a toast.
-    alert_command_errors: HashSet<String>,
     /// The system's appearance; a layout with a light and a dark theme follows it.
     system_dark: bool,
     /// The OS tells us when files change (`files.rs`); else the disk is polled.
@@ -948,10 +990,8 @@ impl AppWindow {
             tab_shown: true,
             pane_history: Vec::new(),
             window_active: true,
-            notified: Default::default(),
             notify_clicks: crate::alert::NotifyClicks::default(),
             unreported: Default::default(),
-            alert_command_errors: HashSet::new(),
             system_dark: is_dark(window.appearance()),
             file_events,
             polls: 0,
@@ -1011,28 +1051,6 @@ impl AppWindow {
             w.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": note }), window, cx);
         }
 
-        // Clicking a system notification goes there, as clicking the toast does.
-        let (handle, this) = (window.window_handle(), cx.entity().downgrade());
-        // A `system.notify` one goes to its agent, when it named one.
-        cx.on_system_notification_response(move |response, cx| {
-            let _ = handle.update(cx, |_, window, cx| {
-                let _ = this.update(cx, |this, cx| {
-                    let addr = match crate::alert::address_of(&response.tag) {
-                        Some(addr) => {
-                            this.notified.forget(addr);
-                            addr.to_owned()
-                        }
-                        None => match this.notify_clicks.clicked(&response.tag) {
-                            Some(addr) => addr,
-                            None => return,
-                        },
-                    };
-                    cx.activate(true);
-                    window.activate_window();
-                    this.run("agent.focus", json!({ "terminal": addr }), window, cx);
-                });
-            });
-        });
         w._tasks.push(cx.spawn_in(window, async move |this, cx| {
             loop {
                 if this.update_in(cx, |this, window, cx| this.poll(window, cx)).is_err() {
@@ -1339,10 +1357,6 @@ impl AppWindow {
             mods::note_fonts(cx);
         }
         let s = settings::Settings::compose(&self.person, &self.chrome.look, self.system_dark);
-        // A new command gets its own say about why it fails.
-        if s.alert_command != settings::get().alert_command {
-            self.alert_command_errors.clear();
-        }
         let problems = s.problems();
         if !problems.is_empty() {
             self.report_layout(&problems.join("; "));
@@ -1757,6 +1771,7 @@ impl AppWindow {
                 }
             }
         }
+        mods.extend(background_mods());
         (terms, mods)
     }
 
@@ -1820,6 +1835,7 @@ impl AppWindow {
                 }
             }
         }
+        out.extend(background_mods());
         out
     }
 
@@ -1827,7 +1843,7 @@ impl AppWindow {
     /// tab) and overlays stay.
     fn drop_layout_copies(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let gone: Vec<_> = self.copies.keys().filter(|s| {
-            self.model.tab_of(s).is_none() && !self.overlays.iter().any(|o| o.slot == **s || o.layout.as_ref().is_some_and(|l| l.find(s).is_some()))
+            !s.starts_with(BACKGROUND_SLOT) && self.model.tab_of(s).is_none() && !self.overlays.iter().any(|o| o.slot == **s || o.layout.as_ref().is_some_and(|l| l.find(s).is_some()))
         }).cloned().collect();
         for slot in gone {
             self.remove_copy(&slot, window, cx);
@@ -2975,7 +2991,6 @@ impl AppWindow {
         let mut changed = self.reconcile(window, cx);
         let visible: HashSet<String> = self.visible_addresses().into_iter().collect();
         let mut alerts = Vec::new();
-        let sticky = settings::get().notification_sticky;
         let terms = &self.terms;
         let view = |addr: &str| terms.values().find(|t| t.address == addr).map(|t| t.view.read(cx));
         let unreported = self.unreported.update(crate::harness::registry(), &self.live, Instant::now(), |addr| view(addr).map(|v| v.writes()), |addr, lines| {
@@ -2993,9 +3008,8 @@ impl AppWindow {
             let prev = self.model.agents.get(addr).and_then(|a| a.word.clone());
             let child = rec.get("parent").and_then(Value::as_str).is_some_and(|p| !p.is_empty());
             if let Some(alert) = self.model.alert_for(addr, child, prev.as_deref(), word.as_deref(), looking) {
-                alerts.push((addr.clone(), alert, prev.clone(), looking));
+                alerts.push((addr.clone(), alert, looking));
             }
-            let said = word.clone();
             changed |= self.model.set_word(addr, word, app, looking);
             let turn = rec.get("turn").and_then(Value::as_u64).unwrap_or(0);
             let label = rec.pointer("/labels/herdr.seen").and_then(Value::as_str).and_then(|s| s.parse::<u64>().ok());
@@ -3004,30 +3018,13 @@ impl AppWindow {
             // seen flag does (`Model::status`).
             let seen_turn = if unreported.contains_key(addr) { None } else { label.max(self.written_seen.get(addr).copied()) };
             changed |= self.model.set_turn(addr, turn, seen_turn);
-            // A notification from before Herdr started (a quit, a crash, an
-            // update) can still be up: the core outlived it. Adopt the one the
-            // agent's state would have posted, and take any other down.
-            if !self.listed_once && !child {
-                match (said.as_deref(), self.model.status(addr)) {
-                    (Some("blocked"), _) => self.notified.posted(addr, model::Alert::Blocked),
-                    (Some("error"), _) => self.notified.posted(addr, model::Alert::Error),
-                    (_, Some("done")) => self.notified.posted(addr, model::Alert::Done),
-                    _ => crate::alert::dismiss(&crate::alert::tag(addr), cx),
-                }
-            }
-            if self.notified.withdraw(addr, said.as_deref(), looking, sticky) {
-                crate::alert::dismiss(&crate::alert::tag(addr), cx);
-            }
         }
         self.written_seen.retain(|a, _| self.live.contains_key(a));
-        for gone in self.notified.gone(|a| self.live.contains_key(a)) {
-            crate::alert::dismiss(&crate::alert::tag(&gone), cx);
-        }
         changed |= self.share_seen(cx);
         // Changes already made before Herdr started aren't news.
         if self.listed_once {
-            for (addr, alert, prev, looking) in alerts {
-                self.alert(&addr, alert, prev, looking, window, cx);
+            for (addr, alert, looking) in alerts {
+                self.alert(&addr, alert, looking, window, cx);
             }
         }
         self.track_folders(cx);
@@ -3247,9 +3244,9 @@ impl AppWindow {
 
     /// Tells the person an agent needs them or finished: Herdr's sounds, and a
     /// toast (drawn by the `toast` mod; click it to go there) unless they're
-    /// looking at that agent. Outside the window too, as `system_notifications`
-    /// says: a system notification, or the person's `alert_command` instead.
-    fn alert(&mut self, addr: &str, alert: model::Alert, prev: Option<String>, looking: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// looking at that agent. System notifications are a mod's (the shipped
+    /// `notifications`).
+    fn alert(&mut self, addr: &str, alert: model::Alert, looking: bool, window: &mut Window, cx: &mut Context<Self>) {
         let settings = settings::get();
         if settings.sounds.enabled {
             crate::sound::play(if alert.needs_you() { "blocked" } else { "done" });
@@ -3276,44 +3273,10 @@ impl AppWindow {
             let (p, c) = (self.model.space_of(&pane)?, self.model.tab_of(&pane)?);
             Some(format!("{} / {}", self.model.space_name(p, &self::home()), Model::tab_name(p, c)))
         });
-        let said = crate::alert::Said::of(rec.and_then(|r| r.get("report")));
-        let note = crate::alert::Note { address: addr.to_owned(), alert, prev, app, name, place, said };
-        if crate::alert::should_notify(settings.system_notifications, self.window_active, looking) {
-            match crate::alert::send(&note, &settings, cx) {
-                crate::alert::Sent::Posted => {
-                    self.notified.posted(addr, alert);
-                }
-                crate::alert::Sent::Fallback(why) => {
-                    self.notified.posted(addr, alert);
-                    self.alert_command_failed(why, window, cx);
-                }
-                // It may have shown something before failing: the system
-                // notification goes too, late, but no second toast for the alert.
-                crate::alert::Sent::Ran(failed) => {
-                    let note = note.clone();
-                    cx.spawn_in(window, async move |this, cx| {
-                        let Ok(why) = failed.recv().await else { return };
-                        let _ = this.update_in(cx, |this, window, cx| {
-                            // Up to 30 s on: only if it is still news and the
-                            // person isn't looking at the agent now.
-                            let settings = settings::get();
-                            let looking = this.window_active && this.visible_addresses().contains(&note.address);
-                            let word = this.model.agents.get(&note.address).and_then(|a| a.word.clone());
-                            if this.live.contains_key(&note.address) && crate::alert::still_says(note.alert, word.as_deref()) && crate::alert::should_notify(settings.system_notifications, this.window_active, looking) {
-                                crate::alert::post(&note, &settings, cx);
-                                this.notified.posted(&note.address, note.alert);
-                            }
-                            this.alert_command_failed(why, window, cx);
-                        });
-                    })
-                    .detach();
-                }
-            }
-        }
         if alert.needs_you() && settings.dock_bounce && !self.window_active {
             window.request_attention();
         }
-        let agent = AlertedAgent { address: addr.to_owned(), name: note.name, place: note.place };
+        let agent = AlertedAgent { address: addr.to_owned(), name, place };
         if self.join_alert_toast(alert, agent.clone(), cx) {
             return;
         }
@@ -3464,15 +3427,6 @@ impl AppWindow {
         // Banners waiting behind the shown one draw no bar, and their clocks don't run.
         let shortest = self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast && !self.waiting_banner(o)).filter_map(|o| Some(o.expires?.saturating_duration_since(o.opened))).min()?;
         Some((shortest / PROGRESS_STEPS).clamp(PROGRESS_STEP_MIN, PROGRESS_STEP_MAX))
-    }
-
-    /// The error toast for an `alert_command` that didn't start or failed:
-    /// said once per reason, not on every alert.
-    fn alert_command_failed(&mut self, why: String, window: &mut Window, cx: &mut Context<Self>) {
-        if self.alert_command_errors.insert(why.clone()) {
-            let failed = json!({ "title": "alert_command failed", "body": why, "level": "error" });
-            self.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": failed }), window, cx);
-        }
     }
 
     /// Keeps the model true to core, on every listing: drops panes whose terminal
@@ -5073,6 +5027,7 @@ impl AppWindow {
                 return;
             }
             "app.check_updates" => crate::update::check_now(),
+            "app.test_notification" => cx.show_system_notification(crate::alert::test_notification()),
             "app.update_core" => {
                 if crate::update::core().ready.is_none() && crate::update::core().error.is_none() {
                     return self.fail("herdr-core is up to date");
@@ -5863,6 +5818,11 @@ impl AppWindow {
             Request::CloseOverlay { id } => self.close_overlay(&id, window, cx),
             Request::SetWindowTitle(title) => window.set_window_title(title.as_deref().unwrap_or("Herdr")),
             Request::SetBadge(text) => crate::badge::set(text.as_deref()),
+            Request::SystemNotify(mut notification, agent) => {
+                let icon = agent.and_then(|agent| crate::alert::dress(&mut notification, &agent, crate::alert::Look::of(&agent, &settings::get())));
+                crate::alert::show(notification, icon, cx)
+            }
+            Request::WithdrawSystemNotification(tag) => crate::alert::dismiss(&tag, cx),
             Request::Refresh => self.refresh_mods(cx),
             Request::Changed => self.refresh_snapshot_mods(cx),
             Request::Git(update) => {
@@ -7516,9 +7476,12 @@ impl AppWindow {
         let tracker = self.float_tracker(cx);
         let win_tracker = self.window_tracker(cx);
         let pane_drag = self.pane_drag_layer(cx);
+        // Background mods render only when drawn: drawn at no size, out of sight.
+        let background = self.copies.iter().filter(|(slot, _)| slot.starts_with(BACKGROUND_SLOT)).filter_map(|(_, c)| c.root.clone());
         div()
             .size_full()
             .relative()
+            .child(div().absolute().size_0().overflow_hidden().invisible().children(background))
             .children(overlays)
             .children(tracker)
             .children(win_tracker)
@@ -8512,7 +8475,7 @@ mod tests {
             view.update_in(cx, |this, window, cx| {
                 this.person.sounds.enabled = false;
                 this.live.insert(addr.into(), json!({ "name": format!("agent {addr}") }));
-                this.alert(addr, Alert::Done, None, false, window, cx);
+                this.alert(addr, Alert::Done, false, window, cx);
             });
             cx.run_until_parked();
         };
@@ -10265,6 +10228,9 @@ export default class Recent extends View {
         assert!(scrolled.len() <= 30 && scrolled.iter().all(|n| n.as_str() < "grid-100"), "after scrolling up: {scrolled:?}");
     }
 
+    /// The shipped mod that posts agent alerts to the system.
+    const NOTIFICATIONS_MOD: &str = include_str!("../defaults/mods/notifications/main.js");
+
     /// Runs `window::tests::<name>` alone in a test process of its own, on a
     /// fresh app home: a window takes process-wide things (the app home, the
     /// mods' request channel) that tests beside it would otherwise share.
@@ -11858,59 +11824,6 @@ export default class Recent extends View {
     }
 
     #[test]
-    fn a_failing_alert_command_says_why_once_and_posts_the_notification() {
-        in_own_process("alert_errors");
-    }
-
-    /// Each reason one error toast however many alerts hit it, for a program
-    /// that doesn't start and for a shell line that exits 127 later; a new
-    /// `alert_command` gets its own say.
-    #[gpui::test]
-    fn alert_errors(cx: &mut gpui::TestAppContext) {
-        use crate::settings::{AlertCommand, SystemNotifications};
-        use serde_json::json;
-        if !running_alone("alert_errors") {
-            return;
-        }
-        cx.update(|cx| cx.set_app_identity("dev.herdr.test", "Herdr"));
-        // The shell's exit comes back from the reaper's own thread.
-        cx.executor().allow_parking();
-        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
-        // Still running when the late notification comes: it posts only then.
-        view.update(cx, |this, _| { this.live.insert("t1".into(), json!({ "address": "t1", "state": "live" })); });
-        let toasts = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.overlays.iter().filter(|o| o.kind == super::OverlayKind::Toast).count());
-        let alert_with = |command: AlertCommand, cx: &mut gpui::VisualTestContext| {
-            cx.update(|window, cx| view.update(cx, |this, cx| {
-                this.person.sounds.enabled = false;
-                this.person.system_notifications = SystemNotifications::Always;
-                this.person.alert_command = Some(command);
-                this.apply_look(window, cx);
-                for _ in 0..2 {
-                    this.alert("t1", crate::model::Alert::Done, None, false, window, cx);
-                }
-            }));
-        };
-        alert_with(AlertCommand::Argv(vec!["/nonexistent/herdr-notify".into()]), cx);
-        assert_eq!(toasts(cx), 2, "one alert toast (the second alert joined it) and one error toast");
-        assert_eq!(cx.shown_system_notifications().len(), 2, "both fell back");
-
-        alert_with(AlertCommand::Shell("/nonexistent/herdr-notify -s done".into()), cx);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while cx.shown_system_notifications().len() < 4 {
-            assert!(std::time::Instant::now() < deadline, "the shell's exit 127 never came back");
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            cx.run_until_parked();
-        }
-        cx.run_until_parked();
-        assert_eq!(toasts(cx), 3, "the alerts joined the same toast, one more error toast for the new command");
-        view.update(cx, |this, _| {
-            assert!(this.alert_command_errors.iter().any(|why| why.contains("command not found (exit 127)")), "{:?}", this.alert_command_errors);
-            assert_eq!(this.alert_command_errors.len(), 1, "cleared when alert_command changed");
-            assert!(this.notified.contains("t1"));
-        });
-    }
-
-    #[test]
     fn an_alert_toast_names_one_agent_and_counts_more() {
         use super::{AlertToast, AlertedAgent};
         use crate::model::Alert;
@@ -11958,7 +11871,7 @@ export default class Recent extends View {
             cx.update(|window, cx| view.update(cx, |this, cx| {
                 this.person.sounds.enabled = false;
                 this.live.insert(addr.into(), json!({ "name": format!("agent {addr}") }));
-                this.alert(addr, kind, None, false, window, cx);
+                this.alert(addr, kind, false, window, cx);
             }));
             cx.run_until_parked();
         };
@@ -12112,8 +12025,9 @@ export default class Recent extends View {
         in_own_process("alert_message");
     }
 
-    /// The 7501 record in the core's listing reaches the notification: its
-    /// `msg` over "space / tab", and `error` told apart from `blocked`.
+    /// The 7501 record in the core's listing reaches the shipped
+    /// `notifications` mod's notification: its `msg` over "space / tab", and
+    /// `error` told apart from `blocked`.
     #[gpui::test]
     fn alert_message(cx: &mut gpui::TestAppContext) {
         use crate::settings::SystemNotifications;
@@ -12122,26 +12036,32 @@ export default class Recent extends View {
             return;
         }
         cx.update(|cx| cx.set_app_identity("dev.herdr.test", "Herdr"));
-        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
+        super::TEST_BACKGROUND_MODS.store(true, std::sync::atomic::Ordering::Relaxed);
+        let (view, cx) = open_window(cx, "notifications", NOTIFICATIONS_MOD, json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
         view.update(cx, |this, _| this.model.add_space("p1", "api", "/src/api", crate::model::Tab::new("c1", "fix login", "x1", "t1")));
         let list = |status: serde_json::Value, cx: &mut gpui::VisualTestContext| {
             cx.update(|window, cx| view.update(cx, |this, cx| {
                 this.person.sounds.enabled = false;
                 this.person.system_notifications = SystemNotifications::Always;
-                this.person.alert_command = None;
                 this.apply_look(window, cx);
                 this.window_active = false;
+                // As the window does when its focus changes.
+                if crate::mods::publish_window(this.window_json(window)) {
+                    this.refresh_snapshot_mods(cx);
+                }
                 this.terminals_listed(json!({ "terminals": [{ "address": "t1", "name": "Claude", "status": status }] }), window, cx);
             }));
         };
         list(json!({ "state": "working", "app": "claude-code" }), cx);
+        cx.run_until_parked();
         list(json!({ "state": "blocked", "kind": "permission", "app": "claude-code", "msg": "approve Bash: make" }), cx);
         // Its program icon is made off the main thread first.
         cx.run_until_parked();
         let shown = cx.shown_system_notifications();
         let last = shown.last().expect("posted");
-        assert_eq!((last.title.as_ref(), last.body.lines().next()), ("Claude needs you", Some("approve Bash: make")));
+        assert_eq!((last.tag.as_ref(), last.title.as_ref(), last.body.lines().next()), ("herdr-mod/notifications/agent:t1", "Claude needs you", Some("approve Bash: make")));
         list(json!({ "state": "working", "app": "claude-code" }), cx);
+        cx.run_until_parked();
         list(json!({ "state": "error", "app": "claude-code" }), cx);
         cx.run_until_parked();
         let shown = cx.shown_system_notifications();
@@ -12202,7 +12122,8 @@ export default class Recent extends View {
         in_own_process("sticky_needs_you");
     }
 
-    /// Through the window's own listings: a "needs you" notification outlives
+    /// Through the window's own listings and the shipped `notifications` mod,
+    /// run in the background of a layout that doesn't name it: a "needs you" notification outlives
     /// the person looking at the agent, and goes once the agent unblocks or
     /// its terminal goes; with `notification_sticky: false`, seeing it is enough.
     #[gpui::test]
@@ -12213,7 +12134,8 @@ export default class Recent extends View {
             return;
         }
         cx.update(|cx| cx.set_app_identity("dev.herdr.test", "Herdr"));
-        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
+        super::TEST_BACKGROUND_MODS.store(true, std::sync::atomic::Ordering::Relaxed);
+        let (view, cx) = open_window(cx, "notifications", NOTIFICATIONS_MOD, json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
         view.update(cx, |this, _| this.model.add_space("p1", "api", "/src/api", crate::model::Tab::new("c1", "one", "x1", "t1")));
         let set = |sticky: bool, cx: &mut gpui::VisualTestContext| cx.update(|window, cx| view.update(cx, |this, cx| {
             this.person.sounds.enabled = false;
@@ -12229,8 +12151,18 @@ export default class Recent extends View {
                 (Some(state), None) => json!([{ "address": "t1", "state": "live", "status": { "state": state } }]),
                 (None, _) => json!([]),
             };
+            // The window's own poll reads the platform's focus: say the same.
+            if looking {
+                cx.update(|window, _| window.activate_window());
+            } else {
+                cx.deactivate_window();
+            }
             cx.update(|window, cx| view.update(cx, |this, cx| {
                 this.window_active = looking;
+                // As the window does when its focus changes.
+                if crate::mods::publish_window(this.window_json(window)) {
+                    this.refresh_snapshot_mods(cx);
+                }
                 this.terminals_listed(json!({ "terminals": terminals }), window, cx);
             }));
             cx.run_until_parked();
@@ -12255,15 +12187,19 @@ export default class Recent extends View {
         list(Some("working"), false, cx);
 
         // Herdr restarts while a notification is up: the core kept the agent,
-        // and the new window adopts what may be up from its first listing.
+        // and the mod's new copy adopts what may be up from the first listing.
         // A new window knows nothing of the terminals until the core lists them.
-        let restart = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| {
-            this.notified = Default::default();
-            this.listed_once = false;
-            this.model.agents.clear();
-            this.live.clear();
-            this.written_seen.clear();
-        });
+        let restart = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                this.remove_copy(&format!("{}notifications", super::BACKGROUND_SLOT), window, cx);
+                this.listed_once = false;
+                this.model.agents.clear();
+                this.live.clear();
+                this.written_seen.clear();
+                this.sync(window, cx);
+            }));
+            cx.run_until_parked();
+        };
         assert_eq!(list(Some("blocked"), false, cx), ["An agent needs you"]);
         restart(cx);
         assert_eq!(list(Some("blocked"), false, cx), ["An agent needs you"], "adopted, still up");
@@ -12369,6 +12305,69 @@ export default class Recent extends View {
         assert_eq!(popup(&view, cx), (true, true), "on the new VM the popup shows its mod again");
         assert!(view.update(cx, |this, _| !this.overlays.iter().any(|o| o.id == "note")), "a toast is not shown twice");
         assert_eq!(view.update(cx, |this, _| this.copies.values().filter(|c| c.root.is_some()).count()), 2, "the block and the popup");
+    }
+
+    #[test]
+    fn mods_post_system_notifications() {
+        in_own_process("system_notifications");
+    }
+
+    /// A mod posts and withdraws its own notifications; the same tag replaces.
+    /// A click comes back to the mod that posted it, also one from before the
+    /// mod loaded (a click that started Herdr), and never to another mod.
+    #[gpui::test]
+    fn system_notifications(cx: &mut gpui::TestAppContext) {
+        use gpui::SystemNotificationResponse;
+        use serde_json::json;
+        if !running_alone("system_notifications") {
+            return;
+        }
+        let click = |tag: &str| SystemNotificationResponse { tag: tag.to_owned().into(), action_id: None };
+        let main_js = r#"
+import { View, div } from "gpui-kit";
+import { systemNotify, withdrawSystemNotification, nextSystemNotificationClick, shared, setShared } from "herdr";
+export default class extends View {
+  init(_props, cx) {
+    systemNotify({ tag: "t1", title: "Claude finished" });
+    systemNotify({ tag: "t1", title: "Claude needs you", body: "approve Bash: make" });
+    systemNotify({ tag: "t2", title: "Codex finished" });
+    withdrawSystemNotification("t2");
+    cx.spawn(async () => {
+      for (;;) {
+        const { tag } = await nextSystemNotificationClick();
+        setShared("clicks", [...(shared("clicks") ?? []), tag]);
+      }
+    });
+  }
+  render() { return div(); }
+}
+"#;
+        cx.update(|cx| {
+            cx.set_app_identity("dev.herdr.test", "Herdr");
+            super::follow_notification_clicks(cx);
+        });
+        // Clicked in Notification Center while Herdr wasn't running.
+        cx.simulate_system_notification_response(click("herdr-mod/notes/t0"));
+        cx.simulate_system_notification_response(click("herdr-mod/other/x"));
+        let (view, cx) = open_window(cx, "notes", main_js, json!({ "id": "notes", "type": "block", "content": { "mod": "notes" } }));
+        cx.run_until_parked();
+        let clicks = || crate::mods::shared("clicks").unwrap_or(json!([]));
+        assert_eq!(clicks(), json!(["t0"]), "the held click reaches its mod once it loads");
+
+        let delivered: Vec<(String, String, String)> = cx.delivered_system_notifications().iter().map(|n| (n.tag.to_string(), n.title.to_string(), n.body.to_string())).collect();
+        assert_eq!(delivered, [("herdr-mod/notes/t1".to_owned(), "Claude needs you".to_owned(), "approve Bash: make".to_owned())], "the same tag replaces, a withdrawn one goes");
+        assert!(cx.dismissed_system_notifications().iter().any(|t| t.as_ref() == "herdr-mod/notes/t2"));
+
+        cx.simulate_system_notification_response(click("herdr-mod/notes/t1"));
+        cx.run_until_parked();
+        assert_eq!(clicks(), json!(["t0", "t1"]));
+
+        // Settings' test button posts with its own tag; a click on it reaches no mod.
+        cx.update(|window, cx| view.update(cx, |this, cx| this.run("app.test_notification", serde_json::Value::Null, window, cx)));
+        assert_eq!(cx.shown_system_notifications().last().map(|n| n.tag.to_string()), Some("herdr-test".into()));
+        cx.simulate_system_notification_response(click("herdr-test"));
+        cx.run_until_parked();
+        assert_eq!(clicks(), json!(["t0", "t1"]));
     }
 
     #[test]

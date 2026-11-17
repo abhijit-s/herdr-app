@@ -578,6 +578,11 @@ pub enum Request {
     SetWindowTitle(Option<String>),
     /// The app icon's badge (the Dock on macOS); `None` clears it.
     SetBadge(Option<String>),
+    /// A native notification a mod posts (alert.rs); the same tag replaces it.
+    /// Fork: with an agent's look, it sounds and looks as the settings say.
+    SystemNotify(gpui::SystemNotification, Option<crate::alert::AgentLook>),
+    /// Takes down the notification with this system tag (alert.rs).
+    WithdrawSystemNotification(String),
     /// Every copy re-renders.
     Refresh,
     /// Copies whose reads changed re-render (`snapshot_changed`).
@@ -1376,6 +1381,8 @@ fn module(inst: Instance, copy: u64) -> HostModule {
         commands.retain(|(_, _, tx)| !tx.is_closed());
         commands.push((copy, inst.name.clone(), cmd_tx));
     });
+    let clicks = crate::alert::listen(&inst.name);
+    let (notify_as, withdraw_as) = (inst.name.clone(), inst.name.clone());
     HostModule::new("herdr")
         .declarations(DECLARATIONS)
         .component("CursorPreview", |args, window, cx| crate::window::cursor_preview::element(args.id(), window, cx))
@@ -1537,6 +1544,21 @@ fn module(inst: Instance, copy: u64) -> HostModule {
             request(Request::SetBadge(text));
             Ok(HostValue::Null)
         })
+        .function("systemNotify", move |a| {
+            let n = from_host(a.value(0)?);
+            let field = |k: &str| n.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+            let (tag, title) = (field("tag"), field("title"));
+            if tag.is_empty() || title.is_empty() {
+                return Err(HostError::new("systemNotify needs { tag, title }"));
+            }
+            let look = crate::alert::AgentLook::of(n.get("agent")).map_err(HostError::new)?;
+            request(Request::SystemNotify(crate::alert::notification(&notify_as, &tag, title, field("body")), look));
+            Ok(HostValue::Null)
+        })
+        .function("withdrawSystemNotification", move |a| {
+            request(Request::WithdrawSystemNotification(crate::alert::system_tag(&withdraw_as, a.string(0)?)));
+            Ok(HostValue::Null)
+        })
         .function("terminals", reader(reads.clone(), "terminals", |s| &s.terminals))
         .function("focused", reader(reads.clone(), "focused", |s| &s.focused))
         .function("recentPlaces", reader(reads.clone(), "places", |s| &s.places))
@@ -1642,6 +1664,13 @@ fn module(inst: Instance, copy: u64) -> HostModule {
         .async_function("nextCommand", move |_| {
             let rx = commands.clone();
             Ok(async move { rx.recv().await.map(HostValue::Str).map_err(|_| HostError::new("herdr-app is shutting down")) })
+        })
+        .async_function("nextSystemNotificationClick", move |_| {
+            let rx = clicks.clone();
+            Ok(async move {
+                let tag = rx.recv().await.map_err(|_| HostError::new("herdr-app is shutting down"))?;
+                Ok(HostObject::new().field("tag", tag).into())
+            })
         })
 }
 

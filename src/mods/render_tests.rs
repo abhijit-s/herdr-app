@@ -206,7 +206,7 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
         shared.borrow_mut().shared.insert(a.string(0)?.into(), from_host(a.value(1)?));
         Ok(HostValue::Null)
     });
-    for name in ["run", "playSound", "setAgentOrder", "setWindowTitle", "setBadge", "openOverlay", "closeOverlay", "notify", "presentUpdateNotes"] {
+    for name in ["run", "playSound", "setAgentOrder", "setWindowTitle", "setBadge", "systemNotify", "withdrawSystemNotification", "openOverlay", "closeOverlay", "notify", "presentUpdateNotes"] {
         let calls = calls.clone();
         module = module.function(name, move |a| {
             if name == "run" {
@@ -242,7 +242,7 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
     module = module.function("cardInfoPreview", |a| Ok(to_host(&crate::header_info::card_preview_for_mods(a.get(0).and_then(HostValue::as_str)))));
     module = module.function("headerTextWidth", |a| Ok(HostValue::Number(crate::header_info::width(a.string(0)?, a.number(1)? as f32) as f64)));
     module = module.function("refreshGitStatus", |_| Ok(HostValue::Null));
-    for name in ["nextCommand", "nextGitStatus"] {
+    for name in ["nextCommand", "nextGitStatus", "nextSystemNotificationClick"] {
         module = module.async_function(name, |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
     }
     module = module.cancellable_async_function("watchFolder", HostValue::Array(vec![]), |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
