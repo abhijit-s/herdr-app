@@ -251,7 +251,7 @@ export interface AgentInfo {
   /** Pinned with `terminal.pin`, on any Herdr client. */
   pinned: boolean;
   focused: boolean;
-  /** The agents mod's `card_info` (`mods.agents.card_info`) resolved for it (its schema's default, `@{remote} · {space}`, while unset), when
+  /** The agents mod's `card_info` (`mods.agents.card_info`) resolved for it (its schema's default, `{remote} · {space}`, while unset), when
    *  what it shows changes (and on the minute for `{elapsed}`): what its card shows beside its
    *  name, a chip or a word per segment. null when set empty and when every segment is empty;
    *  undefined on builds without it (draw the machine). */
@@ -592,7 +592,7 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  `agents_card_info` is the agents cards' template as written (`""` for none): the agents mod's
  *  `card_info` setting (`mods.agents.card_info`, else the older top-level key), or `null` while
  *  unset (the default, which `modSettings()` gives the agents mod); agents carry it resolved as `card_info`. The shipped agents mod always draws
- *  `card_info`, the default too (another machine's agents read `@vps`).
+ *  `card_info`, the default too (another machine's agents read its bare name, `vps`).
  *  `toast_duration`, `toast_style`, `toast_corners`, `toast_mark`, `toast_design` and `toast_progress` are the person's toast choices
  *  (see AGENTS.md). `cursor_style` is the terminals' default cursor shape, `"block" | "beam" | "underline" | "block_hollow"`
  *  (undefined on builds without it); a program's DECSCUSR still wins. `cursor_trail` is `"off" | "panes" | "all"`, `cursor_trail_style`

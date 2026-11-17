@@ -397,8 +397,10 @@ for (const sort of ["priority", "grouped"]) test(`${sort}: a row shows its card 
     return r.texts.get("ag-vps/t1");
   };
   // The default, as Herdr resolves it: the info without its space, which the header or the name already says.
-  expect(remote({ card_info: info("@vps · Project", "@vps") })).toContain("@vps");
-  expect(remote({ card_info: info("@vps · Project", "@vps") })).not.toContain("@vps · Project");
+  // The default, `{remote} · {space}`: the machine's bare name, as the rows always drew it.
+  expect(remote({ card_info: info("vps · Project", "vps") })).toContain("vps");
+  expect(remote({ card_info: info("vps · Project", "vps") })).not.toContain("@vps");
+  expect(remote({ card_info: info("vps · Project", "vps") })).not.toContain("vps · Project");
   // A template without {space} has no no_space: its info as it is.
   expect(remote({ card_info: info("main · idle") })).toContain("main · idle");
   // Nothing to show, or nothing once the space is left out: no machine either.

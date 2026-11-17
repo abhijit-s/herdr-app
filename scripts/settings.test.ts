@@ -104,7 +104,7 @@ const values: Record<string, any> = {
 };
 // What cardInfoPreview gives: the default resolved as Herdr does, else the template's segments as written.
 let cardPreviewOf = (template: string | null): any => {
-  const parts = (template ?? "@{remote} · {space}").split(/[·|]/).map((p) => p.trim()).filter(Boolean)
+  const parts = (template ?? "{remote} · {space}").split(/[·|]/).map((p) => p.trim()).filter(Boolean)
     .map((p) => p.replace("{remote}", "vps").replace("{space}", "herdr-app"));
   return parts.length ? { text: parts.join(" · "), segments: parts.map((text, i) => ({ sep: i ? " · " : "", text, ask: false })) } : null;
 };
@@ -1733,9 +1733,9 @@ test("mods: text settings read and write only through modSettings / setModSettin
   expect(modWrites.length).toBe(2);
   // Card info: the default is the schema's, blank is kept as off.
   const card = modPage("agents");
-  expect(card.view.modInputs["agents.card_info"].value()).toBe("@{remote} · {space}");
+  expect(card.view.modInputs["agents.card_info"].value()).toBe("{remote} · {space}");
   expect(find(card.page, "st-mod-agents-card_info-example")).toBeUndefined();
-  expect(texts(find(card.page, "st-ci-preview"))).toEqual(["@vps", "herdr-app"]);
+  expect(texts(find(card.page, "st-ci-preview"))).toEqual(["vps", "herdr-app"]);
   card.view.setModValue("agents", "card_info", modSchemaList[0].settings.card_info, "", clickCx());
   expect(modWrites[2]).toEqual(["agents", "card_info", ""]);
   expect(texts(find(modPage("agents").page, "st-ci-preview")).join("")).toContain("Off");

@@ -2669,9 +2669,9 @@ fn agents_rows_draw_card_info_the_default_too(cx: &mut TestAppContext) {
         });
         describe_with_values(cx, &staged, "mods/agents", values, None).unwrap()
     };
-    let default = json!({"text":"@vps · Local","segments":[{"sep":"","text":"@vps","ask":false},{"sep":" · ","text":"Local","ask":false}],"no_space":{"text":"@vps","segments":[]}});
+    let default = json!({"text":"vps · Local","segments":[{"sep":"","text":"vps","ask":false},{"sep":" · ","text":"Local","ask":false}],"no_space":{"text":"vps","segments":[]}});
     let shown = draw(true, Some(default), cx);
-    assert!(shown.contains("text \"@vps\"") && !shown.contains("@vps · Local"), "the default, without its space: {shown}");
+    assert!(shown.contains("text \"vps\"") && !shown.contains("@vps") && !shown.contains("vps · Local"), "the default, without its space: the bare machine: {shown}");
     let own = json!({"text":"main · Local","segments":[],"no_space":{"text":"main","segments":[]}});
     let set = draw(false, Some(own), cx);
     assert!(set.contains("text \"main\"") && !set.contains("main · Local"), "{set}");

@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn shipped_schemas_declare_header_and_card_info() {
         assert_eq!(shipped_default(PANE, "header_info"), json!(""));
-        assert_eq!(shipped_default(AGENTS, "card_info"), json!("@{remote} · {space}"));
+        assert_eq!(shipped_default(AGENTS, "card_info"), json!("{remote} · {space}"));
         for schema in [PANE, AGENTS] {
             let v: Value = serde_json::from_str(schema).unwrap();
             for (key, spec) in declared(&v) {
