@@ -101,7 +101,7 @@ impl CursorPreview {
         let live = self.trail.take();
         let trail = start_from(live.as_ref(), from)
             .filter(|_| s.cursor_trail != settings::CursorTrail::Off);
-        if !reduce_motion && (trail.is_some() || s.cursor_arrival != settings::Arrival::Off) {
+        if !reduce_motion && (trail.is_some() || s.pulse() != settings::Arrival::Off) {
             self.trail = Some(Trail::new(trail, live.as_ref(), "preview", s));
         }
         self.trail.is_some()
@@ -319,6 +319,37 @@ mod tests {
         assert_ne!(got, cursor_shapes::arrival(Arrival::Ripple, cell, t, 1.0, 1.0), "scaled, not the default");
         let (got, cell) = drawn(&pulse(0.5, 0.25), (3, 1));
         assert_eq!(got, cursor_shapes::arrival(Arrival::Ripple, cell, t, 0.5, 0.25), "the next click takes the change");
+    }
+
+    /// A size or intensity of 0 is the pulse off: alone, a click starts no
+    /// effect (no frames asked for); with a trail, the trail runs as it does
+    /// with the pulse off, layer for layer.
+    #[test]
+    fn a_zero_pulse_starts_nothing_and_leaves_a_trail_as_with_the_pulse_off() {
+        use settings::{Arrival, CursorTrail, TrailStyle};
+        for (size, intensity) in [(0.0, 1.0), (1.0, 0.0), (0.0, 0.0)] {
+            let zero = |trail: CursorTrail| settings::Settings {
+                cursor_trail: trail,
+                cursor_arrival_size: size,
+                cursor_arrival_intensity: intensity,
+                ..on(TrailStyle::Comet, Arrival::Ripple)
+            };
+            let mut p = preview();
+            assert!(!p.moved((12, 2), &zero(CursorTrail::Off), false), "{size} x{intensity}: no effect alone");
+            assert!(p.trail.is_none() && p.frame().is_none());
+            let mut with_zero = preview();
+            let mut with_off = preview();
+            assert!(with_zero.moved((30, 1), &zero(CursorTrail::Panes), false));
+            assert!(with_off.moved((30, 1), &on(TrailStyle::Comet, Arrival::Off), false));
+            assert_eq!(with_zero.trail.as_ref().unwrap().arrival, Arrival::Off);
+            let to = with_zero.rect((30, 1)).unwrap();
+            let end = crate::terminal::TrailEnd { cell: to, cursor: to, shown: true };
+            for ms in [0, 30, 120, 199, 200] {
+                let at = std::time::Duration::from_millis(ms);
+                let (a, b) = (with_zero.trail.as_mut().unwrap().shapes(end, at), with_off.trail.as_mut().unwrap().shapes(end, at));
+                assert_eq!(a, b, "{size} x{intensity} at {ms}ms");
+            }
+        }
     }
 
     /// A tail chases into the clicked cell and ends there, as in a pane.

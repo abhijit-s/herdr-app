@@ -10889,6 +10889,25 @@ export default class Recent extends View {
         assert_eq!(state(cx), None, "both off: nothing");
         focus(cx, "a");
         assert_eq!(state(cx), None);
+
+        // A size or intensity of 0 is the pulse off: alone it starts nothing
+        // and asks for no frames; with the trail, the trail runs alone.
+        let zero = |trail: CursorTrail, size: f32, intensity: f32| {
+            let before = crate::settings::get();
+            crate::settings::set(crate::settings::Settings { cursor_trail: trail, cursor_trail_style: TrailStyle::Comet, cursor_arrival: Arrival::Ripple, cursor_arrival_size: size, cursor_arrival_intensity: intensity, cursor_trail_duration_ms: 1000, ..(*before).clone() });
+        };
+        for (size, intensity, to) in [(0.0, 1.0, "b"), (1.0, 0.0, "a")] {
+            zero(CursorTrail::Off, size, intensity);
+            draw(cx);
+            focus(cx, to);
+            assert_eq!(state(cx), None, "{size} x{intensity}: a zero pulse alone starts nothing");
+            assert!(!layer(cx), "and asks for no frames");
+        }
+        zero(CursorTrail::Panes, 0.0, 1.0);
+        draw(cx);
+        focus(cx, "b");
+        assert_eq!(state(cx), Some((true, Some(TrailStyle::Comet), Arrival::Off, "b".into())), "the trail alone, as with the pulse off");
+        assert!(layer(cx), "the trail draws as ever");
     }
 
     #[test]

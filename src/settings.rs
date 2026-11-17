@@ -2562,10 +2562,10 @@ impl Person {
 
 pub const UI_ZOOM_RANGE: (f32, f32) = (0.75, 1.5);
 pub const UI_TEXT_SCALE_RANGE: (f32, f32) = (0.8, 1.3);
-/// `cursor_arrival_size` and `cursor_arrival_intensity`: from half to twice
-/// the reach, and from a quarter to twice the strength.
-pub const ARRIVAL_SIZE_RANGE: (f32, f32) = (0.5, 2.0);
-pub const ARRIVAL_INTENSITY_RANGE: (f32, f32) = (0.25, 2.0);
+/// `cursor_arrival_size` and `cursor_arrival_intensity`: up to twice the
+/// reach and the strength; 0 on either turns the pulse off.
+pub const ARRIVAL_SIZE_RANGE: (f32, f32) = (0.0, 2.0);
+pub const ARRIVAL_INTENSITY_RANGE: (f32, f32) = (0.0, 2.0);
 
 /// A person's scale, within `(lo, hi)`; anything unreadable is 1.
 fn clamp_scale(v: f32, (lo, hi): (f32, f32)) -> f32 {
@@ -3611,6 +3611,16 @@ impl Settings {
     /// `cursor_trail_settle_ms`, within `SETTLE_MS`.
     pub fn trail_settle(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.cursor_trail_settle_ms.min(*SETTLE_MS.end()).into())
+    }
+
+    /// The arrival pulse to draw: `cursor_arrival`, but off while its size or
+    /// intensity is 0, so a pulse that would draw nothing never runs.
+    pub fn pulse(&self) -> Arrival {
+        if self.cursor_arrival_size > 0.0 && self.cursor_arrival_intensity > 0.0 {
+            self.cursor_arrival
+        } else {
+            Arrival::Off
+        }
     }
 
     /// `cursor_trail_duration_ms`, within `TRAIL_MS`.
@@ -5040,16 +5050,34 @@ mod tests {
             let s = Settings::compose(&p, &crate::layout::Look::default(), true);
             (s.cursor_arrival_size, s.cursor_arrival_intensity)
         };
-        assert_eq!(read(0.1.into(), 0.0.into()), (0.5, 0.25));
-        assert_eq!(read((-3).into(), (-1).into()), (0.5, 0.25));
+        assert_eq!(read(0.1.into(), 0.0.into()), (0.1, 0.0));
+        assert_eq!(read((-3).into(), (-1).into()), (0.0, 0.0));
         assert_eq!(read(9.0.into(), 40.into()), (2.0, 2.0));
-        assert_eq!(read(0.5.into(), 0.25.into()), (0.5, 0.25));
+        assert_eq!(read(0.0.into(), 0.25.into()), (0.0, 0.25));
+        assert_eq!(read(0.5.into(), 0.0.into()), (0.5, 0.0));
         assert_eq!(read(2.0.into(), 2.0.into()), (2.0, 2.0));
         assert_eq!(read(0.75.into(), 1.25.into()), (0.75, 1.25));
-        assert_eq!((ARRIVAL_SIZE_RANGE, ARRIVAL_INTENSITY_RANGE), ((0.5, 2.0), (0.25, 2.0)));
+        assert_eq!((ARRIVAL_SIZE_RANGE, ARRIVAL_INTENSITY_RANGE), ((0.0, 2.0), (0.0, 2.0)));
         let unreadable = Person { cursor_arrival_size: f32::NAN, cursor_arrival_intensity: f32::INFINITY, ..Person::default() };
         let s = Settings::compose(&unreadable, &crate::layout::Look::default(), true);
         assert_eq!((s.cursor_arrival_size, s.cursor_arrival_intensity), (1.0, 1.0));
+    }
+
+    #[test]
+    fn a_zero_arrival_size_or_intensity_is_the_pulse_off() {
+        let pulse = |size: f32, intensity: f32| {
+            let p = Person { cursor_arrival: Arrival::Ripple, cursor_arrival_size: size, cursor_arrival_intensity: intensity, ..Person::default() };
+            Settings::compose(&p, &crate::layout::Look::default(), true).pulse()
+        };
+        assert_eq!(pulse(1.0, 1.0), Arrival::Ripple);
+        assert_eq!(pulse(0.25, 0.25), Arrival::Ripple);
+        assert_eq!(pulse(0.0, 1.0), Arrival::Off);
+        assert_eq!(pulse(1.0, 0.0), Arrival::Off);
+        assert_eq!(pulse(-0.0, 2.0), Arrival::Off);
+        assert_eq!(pulse(-1.0, 1.0), Arrival::Off);
+        assert_eq!(pulse(f32::NAN, 1.0), Arrival::Ripple, "unreadable is 1");
+        let off = Person { cursor_arrival_size: 1.0, ..Person::default() };
+        assert_eq!(Settings::compose(&off, &crate::layout::Look::default(), true).pulse(), Arrival::Off);
     }
 
     /// The guide agents read (written to the home folder) explains every

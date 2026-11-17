@@ -893,9 +893,9 @@ const CIRCLE: usize = 40;
 /// it's over. `size` (`cursor_arrival_size`) scales how far it spreads;
 /// `intensity` (`cursor_arrival_intensity`) its opacity, held to 1, and a
 /// ring's stroke. At 1 and 1 each product is exact, so the pulse is the
-/// unscaled one bit for bit.
+/// unscaled one bit for bit. A size or intensity of 0 (or less) draws nothing.
 pub(super) fn arrival(kind: Arrival, at: Bounds<Pixels>, t: f32, size: f32, intensity: f32) -> Vec<Layer> {
-    if t.is_nan() || !(0.0..1.0).contains(&t) {
+    if t.is_nan() || !(0.0..1.0).contains(&t) || !(size > 0.0 && intensity > 0.0) {
         return Vec::new();
     }
     let (c, h, e) = (mid(at), f32::from(at.size.height), ease_out(t));
@@ -1601,6 +1601,19 @@ mod tests {
                     assert_eq!(layer_bits(&now), layer_bits(&was), "{kind:?} at {t}");
                     assert_eq!(format!("{now:?}"), format!("{was:?}"), "{kind:?} at {t}");
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn a_size_or_intensity_of_zero_draws_no_pulse() {
+        let at = cell(100.0, 100.0);
+        for kind in PULSES {
+            for t in [0.0, 0.001, 0.25, 0.5, 0.9, 0.999] {
+                for (size, intensity) in [(0.0, 1.0), (1.0, 0.0), (0.0, 0.0), (-0.0, 2.0), (2.0, -1.0)] {
+                    assert!(arrival(kind, at, t, size, intensity).is_empty(), "{kind:?} at {t}, {size} x{intensity}");
+                }
+                assert!(!arrival(kind, at, t, 0.25, 0.25).is_empty(), "{kind:?} at {t}: the smallest step still draws");
             }
         }
     }
