@@ -1564,6 +1564,37 @@ fn module(inst: Instance, copy: u64) -> HostModule {
             }
         })
         .function("settings", |_| Ok(HostValue::Json(crate::settings::for_mods())))
+        .function("modSettings", {
+            // The schema is read when the mod loads: changing it changes the
+            // mod's folder, which loads it again. The frame (Settings) may
+            // name another mod, whose schema it reads then.
+            let schema_defaults = |name: &str| crate::mod_settings::read_schema(&crate::mod_settings::dir_of(name)).map(|s| crate::mod_settings::defaults(&crate::mod_settings::declared(&s))).unwrap_or_default();
+            let own = schema_defaults(&inst.name);
+            let name = inst.name.clone();
+            move |a| {
+                let other = a.get(0).and_then(HostValue::as_str).filter(|_| name.starts_with("frame-")).map(str::to_owned);
+                let (defaults, of) = match &other {
+                    Some(m) => (schema_defaults(m), m.as_str()),
+                    None => (own.clone(), name.as_str()),
+                };
+                Ok(to_host(&crate::mod_settings::merged(&defaults, &crate::settings::get().mods, of)))
+            }
+        })
+        .function("setModSetting", {
+            let name = inst.name.clone();
+            move |a| {
+                let key = a.string(0)?.to_owned();
+                let value = a.get(1).map(from_host).filter(|v| !v.is_null());
+                let of = match a.get(2).and_then(HostValue::as_str) {
+                    Some(m) if name.starts_with("frame-") => m.to_owned(),
+                    Some(_) => return Err(HostError::new("setModSetting: only Settings writes another mod's settings")),
+                    None => name.clone(),
+                };
+                crate::mod_settings::write(&of, &key, value).map_err(HostError::new)?;
+                Ok(HostValue::Null)
+            }
+        })
+        .function("modSchemas", |_| Ok(to_host(&crate::mod_settings::schemas(&scan()))))
         .function("toastLooks", |_| Ok(HostValue::Json(crate::settings::toast_looks())))
         .function("keys", |_| Ok(HostValue::Json(keys_part())))
         .function("openOverlay", |a| {

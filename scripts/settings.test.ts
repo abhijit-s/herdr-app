@@ -40,7 +40,23 @@ const fakeInput = () => {
 let fieldsOf: (tree: any) => any = () => null;
 const source = await readFile(new URL("../defaults/frame/settings/main.js", import.meta.url), "utf8");
 let composed: Record<string, any> = {};
+// The shipped mods' schemas, as modSchemas() lists them; the person's values as Herdr keeps
+// them (behind modSettings / setModSetting), and every write.
+const schemaOf = async (mod: string) => JSON.parse(await readFile(new URL(`../defaults/mods/${mod}/mod.schema.json`, import.meta.url), "utf8")).properties.settings.properties;
+const modSchemaList = [{ mod: "agents", title: "Agents", settings: await schemaOf("agents") }, { mod: "pane", title: "Pane header", settings: await schemaOf("pane") }];
+const modDisk: Record<string, Record<string, any>> = {};
+const modWrites: any[] = [];
+const modDefaults = (mod: string) => Object.fromEntries(Object.entries(modSchemaList.find((m) => m.mod === mod)?.settings ?? {}).map(([k, s]: [string, any]) => [k, s.default]));
 const values: Record<string, any> = {
+  modSchemas: () => modSchemaList,
+  modSettings: (mod: string) => ({ ...modDefaults(mod), ...modDisk[mod] }),
+  setModSetting: (key: string, value: any, mod: string) => {
+    modWrites.push([mod, key, value]);
+    modDisk[mod] ??= {};
+    if (value === null) delete modDisk[mod][key];
+    else modDisk[mod][key] = value;
+    return null;
+  },
   View: class {}, div: element, svg: element, image: element, v_flex: element, h_flex: element,
   Scrollbar: { vertical: element }, Input: { new: element }, InputState: { new: () => fakeInput() }, Popup: { new: element },
   // The theme grid's list: what it was given, and where its handle was asked to scroll.
@@ -1675,109 +1691,66 @@ test("a fork build shows its commit beside the version", () => {
   expect(forkTag(undefined)).toBe("");
 });
 
-test("header info: Use suggested writes the template, a blank field leaves it out, the preview follows the field", () => {
+const modPage = (mod: string) => {
+  composed = {};
+  const view = new Settings();
+  view.person = {};
+  const page = view.page(`mod:${mod}`, new Proxy({}, { get: (_t, k) => `#${String(k)}` }), {});
+  return { view, page };
+};
+const resetMods = () => {
+  for (const k of Object.keys(modDisk)) delete modDisk[k];
+  modWrites.length = 0;
+};
+
+test("mods: each mod with a schema gets a page under Mods, its rows from the schema; header and card info left Activity", () => {
+  expect(pageFor("mod:pane")).toBe("mod:pane");
+  expect(pageFor("mod:agents")).toBe("mod:agents");
+  resetMods();
+  expect(texts(modPage("pane").page)).toContain("Header info");
+  expect(texts(modPage("agents").page)).toContain("Card info");
+  composed = {};
+  const view = new Settings();
+  view.person = {};
+  const activity = texts(view.page("activity", new Proxy({}, { get: () => "#000000" }), {}));
+  expect(activity).not.toContain("Header info");
+  expect(activity).not.toContain("Card info");
+});
+
+test("mods: text settings read and write only through modSettings / setModSetting, the default written as null", () => {
+  resetMods();
   const suggested = "{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed} · {subagents}";
-  expect(click({ zoom: 1.1 }, {}, "st-hi-suggested", [], "activity")).toEqual({ zoom: 1.1, pane_header_info: suggested });
-  expect(click({ pane_header_info: suggested }, {}, "st-hi-suggested", ["shown?"], "activity")).toBeUndefined();
-  const field = (person: Record<string, any>) => {
-    composed = {};
-    const view = new Settings();
-    view.person = person;
-    let written: Record<string, any> | undefined;
-    view.change = (edit: (q: Record<string, any>) => void) => { written = structuredClone(person); edit(written); };
-    const preview = find(view.page("activity", new Proxy({}, { get: () => "#000000" }), {}), "st-hi-preview");
-    return { view, preview, written: () => written };
-  };
-  const on = field({ pane_header_info: "{state} {elapsed}" });
-  expect(texts(on.preview)).toEqual(["{state} {elapsed}"]);
-  on.view.setHeaderInfo("  ", clickCx());
-  expect(on.written()).toEqual({});
-  const off = field({});
-  expect(texts(off.preview).join("")).toContain("Off");
-  off.view.setHeaderInfo("", clickCx());
-  expect(off.written()).toBeUndefined();
+  const { view, page } = modPage("pane");
+  expect(view.modInputs["pane.header_info"].value()).toBe("");
+  find(page, "st-mod-pane-header_info-example").calls.on_click[0]({}, clickCx());
+  expect(modWrites).toEqual([["pane", "header_info", suggested]]);
+  view.setModValue("pane", "header_info", modSchemaList[1].settings.header_info, "  ", clickCx());
+  expect(modWrites[1]).toEqual(["pane", "header_info", null]);
+  view.setModValue("pane", "header_info", modSchemaList[1].settings.header_info, "", clickCx());
+  expect(modWrites.length).toBe(2);
+  // Card info: the default is the schema's, blank is kept as off.
+  const card = modPage("agents");
+  expect(card.view.modInputs["agents.card_info"].value()).toBe("@{remote} · {space}");
+  expect(find(card.page, "st-mod-agents-card_info-example")).toBeUndefined();
+  expect(texts(find(card.page, "st-ci-preview"))).toEqual(["@vps", "herdr-app"]);
+  card.view.setModValue("agents", "card_info", modSchemaList[0].settings.card_info, "", clickCx());
+  expect(modWrites[2]).toEqual(["agents", "card_info", ""]);
+  expect(texts(find(modPage("agents").page, "st-ci-preview")).join("")).toContain("Off");
+  // Opening fills fields from what Herdr gives.
+  modDisk.pane = { header_info: "{state}" };
+  expect(modPage("pane").view.modInputs["pane.header_info"].value()).toBe("{state}");
 });
 
-test("header info: a save keeps what the field holds; opening fills it from settings.json", async () => {
-  Object.assign(disk, { raw: '{"pane_header_info": "{state}"}', writes: 0, fail: undefined, readFail: undefined, toasts: [] });
-  const view = new Settings();
-  view.person = {};
-  const input = view.headerInputState();
-  await view.load(true);
-  expect(input.value()).toBe("{state}");
-  input.set_value("{branch}");
-  let done: () => void;
-  const finished = new Promise<void>((resolve) => (done = resolve));
-  view.setHeaderInfo("{branch}", { spawn: (f: (cx: any) => Promise<void>) => f({ notify: () => done() }), notify() {} });
-  await finished;
-  expect(JSON.parse(disk.raw!)).toEqual({ pane_header_info: "{branch}" });
-  expect(input.value()).toBe("{branch}");
-});
-
-test("header info: the preview draws separators as the pane header does, the mark with 4 px either side", () => {
+test("mods: the header preview draws separators as the pane header does, the mark with 4 px either side", () => {
+  resetMods();
   const one = previewOf;
-  previewOf = (template: string) => ({ text: template, segments: [{ sep: "", text: "approve", ask: true }, { sep: " · ", text: "main", ask: false }, { sep: "|", text: "idle", ask: false }] });
-  const view = new Settings();
-  view.person = { pane_header_info: "{ask} · {branch}|{state}" };
-  composed = {};
-  view.headerInputState();
-  const row = (template: string) => {
-    view.headerInput.set_value(template);
-    return find(view.page("activity", new Proxy({}, { get: (_t, k) => `#${String(k)}` }), {}), "st-hi-preview");
-  };
+  previewOf = () => ({ text: "x", segments: [{ sep: "", text: "approve", ask: true }, { sep: " · ", text: "main", ask: false }, { sep: "|", text: "idle", ask: false }] });
+  modDisk.pane = { header_info: "{ask} · {branch}|{state}" };
+  const shown = find(modPage("pane").page, "st-hi-preview");
   const seps = (n: any) => (n?.nodes ?? []).filter((c: any) => c?.calls?.px);
-  const shown = row("{ask} · {branch}|{state}");
-  expect(texts(shown)).toEqual(["approve", "\u00b7", "main", "|", "idle"]);
-  expect(seps(shown).map((c: any) => [c.calls.px, c.calls.text_color, texts(c)])).toEqual([[[4], ["#dim"], ["\u00b7"]], [[4], ["#dim"], ["|"]]]);
+  expect(texts(shown)).toEqual(["approve", "·", "main", "|", "idle"]);
+  expect(seps(shown).map((c: any) => [c.calls.px, c.calls.text_color, texts(c)])).toEqual([[[4], ["#dim"], ["·"]], [[4], ["#dim"], ["|"]]]);
   previewOf = one;
+  resetMods();
 });
 
-test("card info: the field holds the default until set, Use suggested and the default leave it out, blank is kept as off", () => {
-  const field = (person: Record<string, any>) => {
-    composed = {};
-    const view = new Settings();
-    view.person = person;
-    let written: Record<string, any> | undefined;
-    view.change = (edit: (q: Record<string, any>) => void) => { written = structuredClone(person); edit(written); };
-    const page = view.page("activity", new Proxy({}, { get: (_t, k) => `#${String(k)}` }), {});
-    return { view, page, preview: find(page, "st-ci-preview"), written: () => written };
-  };
-  const unset = field({});
-  expect(unset.view.cardInput.value()).toBe("@{remote} · {space}");
-  expect(find(unset.page, "st-ci-suggested")).toBeUndefined();
-  // Each segment a chip, as the agents panel draws them.
-  expect(texts(unset.preview)).toEqual(["@vps", "herdr-app"]);
-  expect(unset.preview.nodes.map((c: any) => [c.calls.px, c.calls.rounded, c.calls.bg])).toEqual([[[5], [4], ["#chrome"]], [[5], [4], ["#chrome"]]]);
-  unset.view.setCardInfo("@{remote} · {space}", clickCx());
-  expect(unset.written()).toBeUndefined();
-  unset.view.setCardInfo("{machine} · {space}", clickCx());
-  expect(unset.written()).toEqual({ agents_card_info: "{machine} · {space}" });
-  const blank = field({ zoom: 1.1 });
-  blank.view.setCardInfo("", clickCx());
-  expect(blank.written()).toEqual({ zoom: 1.1, agents_card_info: "" });
-  const set = field({ agents_card_info: "{space} · {branch}", zoom: 1.1 });
-  expect(set.view.cardInput.value()).toBe("{space} · {branch}");
-  set.view.setCardInfo("@{remote} · {space}", clickCx());
-  expect(set.written()).toEqual({ zoom: 1.1 });
-  expect(click({ agents_card_info: "{space}", zoom: 1.1 }, {}, "st-ci-suggested", [], "activity")).toEqual({ zoom: 1.1 });
-  const off = field({ agents_card_info: "" });
-  expect(off.view.cardInput.value()).toBe("");
-  expect(texts(off.preview).join("")).toContain("Off");
-  const none = field({ agents_card_info: " · " });
-  expect(texts(none.preview)).toEqual(["Nothing to show"]);
-});
-
-test("card info: its row follows Header info; opening fills the field from settings.json", async () => {
-  composed = {};
-  const view = new Settings();
-  view.person = {};
-  const drawn = texts(view.page("activity", new Proxy({}, { get: () => "#000000" }), {}));
-  expect(drawn.indexOf("Card info")).toBeGreaterThan(drawn.indexOf("Header info"));
-  expect(drawn.indexOf("Card info")).toBeLessThan(drawn.indexOf("Resume agents after restart"));
-  Object.assign(disk, { raw: '{"agents_card_info": ""}', writes: 0, fail: undefined, readFail: undefined, toasts: [] });
-  await view.load(true);
-  expect(view.cardInput.value()).toBe("");
-  Object.assign(disk, { raw: "{}" });
-  await view.load(true);
-  expect(view.cardInput.value()).toBe("@{remote} · {space}");
-});

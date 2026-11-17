@@ -242,6 +242,9 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
     module = module.function("cardInfoPreview", |a| Ok(to_host(&crate::header_info::card_preview_for_mods(a.get(0).and_then(HostValue::as_str)))));
     module = module.function("headerTextWidth", |a| Ok(HostValue::Number(crate::header_info::width(a.string(0)?, a.number(1)? as f32) as f64)));
     module = module.function("refreshGitStatus", |_| Ok(HostValue::Null));
+    module = module.function("modSettings", |_| Ok(to_host(&serde_json::json!({}))));
+    module = module.function("modSchemas", |_| Ok(to_host(&serde_json::json!([]))));
+    module = module.function("setModSetting", |_| Ok(HostValue::Null));
     for name in ["nextCommand", "nextGitStatus"] {
         module = module.async_function(name, |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
     }

@@ -1,4 +1,5 @@
 {
+  "$schema": "./mod.schema.json",
   "place": "none",
   "title": "Agents",
   "actions": [

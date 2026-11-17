@@ -347,14 +347,21 @@ impl Values {
 /// `{machine}` for this computer.
 pub const LOCAL: &str = "local";
 
-/// `agents_card_info` while settings.json leaves it out: the cards the agents
-/// lists drew before it, another machine's name and the space.
-pub const DEFAULT_CARD_INFO: &str = "@{remote} · {space}";
+/// The agents mod's `card_info` while settings.json leaves it out: the cards
+/// the agents lists drew before it, another machine's name and the space.
+/// Declared once, in the agents mod's schema.
+pub fn default_card_info() -> &'static str {
+    static DEFAULT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let default = crate::mod_settings::shipped_default(include_str!("../defaults/mods/agents/mod.schema.json"), "card_info");
+        default.as_str().expect("card_info's default is a template").to_owned()
+    });
+    &DEFAULT
+}
 
 /// The card template in effect: settings.json's, else the default; None
 /// when it shows nothing.
 pub fn card_template(set: Option<&str>) -> Option<Template> {
-    Some(Template::parse(set.unwrap_or(DEFAULT_CARD_INFO))).filter(|t| !t.is_empty())
+    Some(Template::parse(set.unwrap_or(default_card_info()))).filter(|t| !t.is_empty())
 }
 
 /// An agent's resolved card info, as `AgentInfo.card_info`. `no_space`, there
