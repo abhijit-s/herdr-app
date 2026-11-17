@@ -1909,9 +1909,9 @@ mod tests {
             .collect();
         assert!(landing.windows(2).all(|w| w[1] < w[0]), "{landing:?}");
         assert!((comet_head_scale(1.0) - COMET_PINCH_TO).abs() < 1e-6);
-        // As drawn: narrower than at rest, and inside the cursor block (8 px wide).
+        // As drawn: narrower than at rest, which also keeps it inside the 8 px cursor block.
         let late = comet_head_half(0.95);
-        assert!(late < 16.0 * 0.22 * 0.5 && late < 4.0, "{late}");
+        assert!(late < 16.0 * 0.22 * 0.5, "{late}");
         assert!(comet_head_half(0.85) < comet_head_half(0.7));
         // Still seen while it pinches: the core keeps much of its strength.
         let core = &comet_at(0.85)[2];
