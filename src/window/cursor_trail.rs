@@ -107,7 +107,7 @@ impl Trail {
                 s.trail_color().is_some(),
             ),
             style,
-            arrival: s.cursor_arrival,
+            arrival: s.pulse(),
             arrival_scale: (s.cursor_arrival_size, s.cursor_arrival_intensity),
             pulse: now,
             chase: from
@@ -199,7 +199,7 @@ impl AppWindow {
     pub(super) fn watch_cursor_trail(&mut self, cx: &App) {
         let s = settings::get();
         if s.cursor_trail == settings::CursorTrail::Off
-            && s.cursor_arrival == settings::Arrival::Off
+            && s.pulse() == settings::Arrival::Off
         {
             (self.trail_seen, self.trail) = (None, None);
             self.dust = cursor_particles::Dust::default();
@@ -237,7 +237,7 @@ impl AppWindow {
                 if seen.tab == tab
                     && !cx.reduce_motion()
                     && self.pane_term(&pane).is_some()
-                    && (from.is_some() || s.cursor_arrival != settings::Arrival::Off)
+                    && (from.is_some() || s.pulse() != settings::Arrival::Off)
                 {
                     self.trail = Some(Trail::new(from, live.as_ref(), &pane, &s));
                 }
@@ -262,14 +262,14 @@ impl AppWindow {
         if s.cursor_trail != settings::CursorTrail::All
             || cx.reduce_motion()
             || focused.as_deref() != Some(pane)
-            || (from.is_none() && s.cursor_arrival == settings::Arrival::Off)
+            || (from.is_none() && s.pulse() == settings::Arrival::Off)
         {
             return;
         }
         let reshaped = from.is_none() && self.trail.as_ref().is_some_and(|t| t.pane == pane);
         if let Some(live) = self.trail.as_mut().filter(|_| reshaped) {
             // A shape change while a trail runs: it runs on, the pulse anew.
-            (live.arrival, live.pulse) = (s.cursor_arrival, Instant::now());
+            (live.arrival, live.pulse) = (s.pulse(), Instant::now());
         } else {
             let start = from.and_then(|cursor| start_from(self.trail.as_ref(), Some(cursor)));
             self.trail = Some(Trail::new(start, self.trail.as_ref(), pane, &s));

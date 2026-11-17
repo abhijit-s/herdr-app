@@ -471,14 +471,15 @@ test("arrival size and intensity show next to the arrival picker while the pulse
   const on = { cursor_arrival: "ripple" };
   expect(step(on, "st-cursor_arrival_size-plus")).toEqual({ ...on, cursor_arrival_size: 1.25 });
   expect(step(on, "st-cursor_arrival_size-minus")).toEqual({ ...on, cursor_arrival_size: 0.75 });
-  expect(step({ ...on, cursor_arrival_size: 0.5 }, "st-cursor_arrival_size-minus")).toEqual({ ...on, cursor_arrival_size: 0.5 });
+  expect(step({ ...on, cursor_arrival_size: 0.5 }, "st-cursor_arrival_size-minus")).toEqual({ ...on, cursor_arrival_size: 0.25 });
   expect(step({ ...on, cursor_arrival_size: 2 }, "st-cursor_arrival_size-plus")).toEqual({ ...on, cursor_arrival_size: 2 });
   expect(step({ ...on, cursor_arrival_size: 9 }, "st-cursor_arrival_size-minus")).toEqual({ ...on, cursor_arrival_size: 1.75 });
   expect(step({ ...on, cursor_arrival_size: 1.25 }, "st-cursor_arrival_size-minus")).toEqual(on);
   expect(step(on, "st-cursor_arrival_intensity-plus")).toEqual({ ...on, cursor_arrival_intensity: 1.25 });
-  expect(step({ ...on, cursor_arrival_intensity: 0.25 }, "st-cursor_arrival_intensity-minus")).toEqual({ ...on, cursor_arrival_intensity: 0.25 });
+  expect(step({ ...on, cursor_arrival_intensity: 0.25 }, "st-cursor_arrival_intensity-minus")).toEqual({ ...on, cursor_arrival_intensity: 0 });
   expect(step({ ...on, cursor_arrival_intensity: 2 }, "st-cursor_arrival_intensity-plus")).toEqual({ ...on, cursor_arrival_intensity: 2 });
-  expect(step({ ...on, cursor_arrival_intensity: 0 }, "st-cursor_arrival_intensity-plus")).toEqual({ ...on, cursor_arrival_intensity: 0.5 });
+  expect(step({ ...on, cursor_arrival_intensity: 0 }, "st-cursor_arrival_intensity-plus")).toEqual({ ...on, cursor_arrival_intensity: 0.25 });
+  expect(step({ ...on, cursor_arrival_intensity: -3 }, "st-cursor_arrival_intensity-plus")).toEqual({ ...on, cursor_arrival_intensity: 0.25 });
   expect(step({ ...on, cursor_arrival_intensity: 0.75 }, "st-cursor_arrival_intensity-plus")).toEqual(on);
   // Right after the arrival picker, before the effect time.
   const view = new Settings();
@@ -491,6 +492,32 @@ test("arrival size and intensity show next to the arrival picker while the pulse
   expect(at("Arrival size")).toBeLessThan(at("Arrival intensity"));
   expect(at("Arrival intensity")).toBeLessThan(at("Effect time"));
   expect(shown).toContain("1×");
+});
+
+test("an arrival size or intensity of 0 shows Off, the minus button stops there, and the rows stay to step back up", () => {
+  const step = (person: Record<string, any>, id: string) => click(person, {}, id, [], "cursor");
+  const on = { cursor_arrival: "ripple" };
+  for (const key of ["cursor_arrival_size", "cursor_arrival_intensity"]) {
+    expect(step({ ...on, [key]: 0.25 }, `st-${key}-minus`)).toEqual({ ...on, [key]: 0 });
+    expect(step({ ...on, [key]: 0 }, `st-${key}-minus`)).toEqual({ ...on, [key]: 0 });
+    expect(step({ ...on, [key]: 0 }, `st-${key}-plus`)).toEqual({ ...on, [key]: 0.25 });
+  }
+  const shown = (person: Record<string, any>) => {
+    const view = new Settings();
+    view.person = person;
+    view.choicePicker = element;
+    return texts(view.page("cursor", new Proxy({}, { get: () => "#000000" }), {}));
+  };
+  const offs = (texts: string[]) => texts.filter((s) => s === "Off").length;
+  const zero = shown({ ...on, cursor_arrival_size: 0, cursor_arrival_intensity: 0 });
+  expect(offs(zero)).toBe(offs(shown(on)) + 2);
+  expect(zero).toContain("Arrival size");
+  expect(zero).toContain("Arrival intensity");
+  expect(zero).not.toContain("0×");
+  const one = shown({ ...on, cursor_arrival_size: 0 });
+  expect(offs(one)).toBe(offs(shown(on)) + 1);
+  expect(one).toContain("1×");
+  expect(one).not.toContain("0×");
 });
 
 test("settle time and ignored moves show only for Panes and jumps, within their ranges, defaults left out", () => {
