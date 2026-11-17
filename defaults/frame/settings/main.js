@@ -107,9 +107,20 @@ const MOD_SCHEMAS = modSchemas() ?? [];
 // Where mods' values are stored is Herdr's to know: they are read through
 // modSettings(mod) and written through setModSetting(key, value, mod) only.
 
-/** A mod setting's value: the person's, else the schema's default. */
-function modValue(mod, key, spec) {
-  const values = modSettings(mod) ?? {};
+// How long what setModSetting handed back outranks modSettings(), which catches up once
+// Herdr reads settings.json again; after that an edit made elsewhere shows.
+const MOD_WRITTEN_MS = 3000;
+
+/** A mod setting's value: the person's, else the schema's default. `written`: what the
+ *  window's last setModSetting for each mod handed back, `{ values, at }`, drawn until
+ *  modSettings(mod) catches up so a click shows at once. */
+function modValue(mod, key, spec, written = {}) {
+  let values = modSettings(mod) ?? {};
+  const w = written[mod];
+  if (w) {
+    if (JSON.stringify(w.values) === JSON.stringify(values) || Date.now() - w.at > MOD_WRITTEN_MS) delete written[mod];
+    else values = w.values;
+  }
   return Object.hasOwn(values, key) ? values[key] : spec.default;
 }
 
@@ -754,7 +765,7 @@ export default class Settings extends View {
     if (!syncFields) return;
     for (const { mod, key, spec } of modTextSettings()) {
       const id = `${mod}.${key}`;
-      const now = String(modValue(mod, key, spec) ?? "");
+      const now = String(modValue(mod, key, spec, this.modWritten) ?? "");
       const input = this.modInputs[id];
       if (input && this.modFocused !== id && input.value() !== now) input.set_value(now);
     }
@@ -768,7 +779,7 @@ export default class Settings extends View {
     for (const { mod, key, spec } of modTextSettings()) {
       const id = `${mod}.${key}`;
       const input = (this.modInputs[id] = InputState.new({ placeholder: spec.default ? String(spec.default) : "Off" }));
-      input.set_value(String(modValue(mod, key, spec) ?? ""));
+      input.set_value(String(modValue(mod, key, spec, this.modWritten) ?? ""));
       input.on("change", (_e, cx) => cx.notify());
       input.on("focus", (_e, cx) => { this.modFocused = id; cx.notify(); });
       input.on("blur", (_e, cx) => { if (this.modFocused === id) this.modFocused = null; this.setModValue(mod, key, spec, input.value(), cx); });
@@ -778,8 +789,11 @@ export default class Settings extends View {
 
   // Writes one mod setting, unless it already holds `value`.
   setModValue(mod, key, spec, value, cx) {
-    if (JSON.stringify(value) === JSON.stringify(modValue(mod, key, spec))) return cx.notify();
-    try { setModSetting(key, toWrite(spec, value), mod); } catch (e) { notify({ title: "Not saved to settings.json", body: String(e?.message ?? e), level: "error" }); }
+    if (JSON.stringify(value) === JSON.stringify(modValue(mod, key, spec, this.modWritten))) return cx.notify();
+    try {
+      const now = setModSetting(key, toWrite(spec, value), mod);
+      if (now && typeof now === "object") (this.modWritten ??= {})[mod] = { values: now, at: Date.now() };
+    } catch (e) { notify({ title: "Not saved to settings.json", body: String(e?.message ?? e), level: "error" }); }
     cx.notify();
   }
 
@@ -2048,7 +2062,7 @@ export default class Settings extends View {
   // The control a mod setting's schema asks for, using the window's own pieces.
   modControl(t, mod, key, spec) {
     const id = `st-mod-${mod}-${key}`;
-    const now = modValue(mod, key, spec);
+    const now = modValue(mod, key, spec, this.modWritten);
     const set = (value, cx) => this.setModValue(mod, key, spec, value, cx);
     switch (modControlKind(spec)) {
       case "choice": {

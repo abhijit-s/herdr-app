@@ -43,19 +43,22 @@ let composed: Record<string, any> = {};
 // The shipped mods' schemas, as modSchemas() lists them; the person's values as Herdr keeps
 // them (behind modSettings / setModSetting), and every write.
 const schemaOf = async (mod: string) => JSON.parse(await readFile(new URL(`../defaults/mods/${mod}/mod.schema.json`, import.meta.url), "utf8")).properties.settings.properties;
-const modSchemaList = [{ mod: "agents", title: "Agents", settings: await schemaOf("agents") }, { mod: "pane", title: "Pane header", settings: await schemaOf("pane") }];
+const modSchemaList = [{ mod: "agents", title: "Agents", settings: await schemaOf("agents") }, { mod: "pane", title: "Pane header", settings: await schemaOf("pane") }, { mod: "demo", title: "Demo", settings: { look: { title: "Look", type: "string", enum: ["a", "b"], "x-labels": ["A", "B"], default: "a" }, on: { title: "On", type: "boolean", default: false } } }];
 const modDisk: Record<string, Record<string, any>> = {};
 const modWrites: any[] = [];
+// While set, a write lands on disk but modSettings() still gives what Herdr read before it.
+const modLag: { on: boolean; seen: Record<string, Record<string, any>> } = { on: false, seen: {} };
 const modDefaults = (mod: string) => Object.fromEntries(Object.entries(modSchemaList.find((m) => m.mod === mod)?.settings ?? {}).map(([k, s]: [string, any]) => [k, s.default]));
 const values: Record<string, any> = {
   modSchemas: () => modSchemaList,
-  modSettings: (mod: string) => ({ ...modDefaults(mod), ...modDisk[mod] }),
+  modSettings: (mod: string) => ({ ...modDefaults(mod), ...(modLag.on ? modLag.seen[mod] : modDisk[mod]) }),
   setModSetting: (key: string, value: any, mod: string) => {
     modWrites.push([mod, key, value]);
+    if (modLag.on) modLag.seen[mod] ??= { ...modDisk[mod] };
     modDisk[mod] ??= {};
     if (value === null) delete modDisk[mod][key];
     else modDisk[mod][key] = value;
-    return null;
+    return { ...modDefaults(mod), ...modDisk[mod] };
   },
   View: class {}, div: element, svg: element, image: element, v_flex: element, h_flex: element,
   Scrollbar: { vertical: element }, Input: { new: element }, InputState: { new: () => fakeInput() }, Popup: { new: element },
@@ -1751,6 +1754,29 @@ test("mods: the header preview draws separators as the pane header does, the mar
   expect(texts(shown)).toEqual(["approve", "·", "main", "|", "idle"]);
   expect(seps(shown).map((c: any) => [c.calls.px, c.calls.text_color, texts(c)])).toEqual([[[4], ["#dim"], ["·"]], [[4], ["#dim"], ["|"]]]);
   previewOf = one;
+  resetMods();
+});
+
+test("mods: a click shows what setModSetting handed back at once, before Herdr reads settings.json again", () => {
+  resetMods();
+  Object.assign(modLag, { on: true, seen: {} });
+  const view = new Settings();
+  view.person = {};
+  composed = {};
+  const t = new Proxy({}, { get: (_t, k) => `#${String(k)}` });
+  const picked = (page: any) => find(page, "st-mod-demo-look-B").calls.bg;
+  find(view.page("mod:demo", t, {}), "st-mod-demo-look-B").calls.on_click[0]({}, clickCx());
+  expect(modWrites).toEqual([["demo", "look", "b"]]);
+  expect(values.modSettings("demo").look).toBe("a");
+  expect(picked(view.page("mod:demo", t, {}))).toEqual(["#raised"]);
+  find(view.page("mod:demo", t, {}), "st-mod-demo-on").calls.on_click[0]({}, clickCx());
+  expect(modWrites[1]).toEqual(["demo", "on", true]);
+  expect(find(view.page("mod:demo", t, {}), "st-mod-demo-on").calls.bg).toEqual(["#accent"]);
+  // Herdr catches up: its values count again, an edit made elsewhere too.
+  Object.assign(modLag, { on: false });
+  expect(picked(view.page("mod:demo", t, {}))).toEqual(["#raised"]);
+  modDisk.demo = { look: "a" };
+  expect(find(view.page("mod:demo", t, {}), "st-mod-demo-look-B").calls.bg).toBeUndefined();
   resetMods();
 });
 

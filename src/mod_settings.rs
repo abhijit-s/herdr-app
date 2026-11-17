@@ -61,10 +61,12 @@ pub fn stored(person: &crate::settings::Person) -> Map<String, Value> {
 
 /// Writes one of mod `name`'s settings to settings.json: `None` (or the
 /// schema's default) removes it, so the default applies; the top-level key
-/// it moved from goes either way. Other keys are kept as written.
-pub fn write(name: &str, key: &str, value: Option<Value>) -> Result<(), String> {
-    let default = read_schema(&dir_of(name)).and_then(|s| declared(&s).get(key)?.get("default").cloned());
-    let value = value.filter(|v| Some(v) != default.as_ref());
+/// it moved from goes either way. Other keys are kept as written. Returns the
+/// mod's values as `modSettings()` gives them once this is written, before
+/// the app reads settings.json again.
+pub fn write(name: &str, key: &str, value: Option<Value>) -> Result<Value, String> {
+    let defaults = read_schema(&dir_of(name)).map(|s| defaults(&declared(&s))).unwrap_or_default();
+    let value = value.filter(|v| Some(v) != defaults.get(key));
     let path = crate::settings::path();
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -73,7 +75,14 @@ pub fn write(name: &str, key: &str, value: Option<Value>) -> Result<(), String> 
     };
     let mut raw: Map<String, Value> = serde_json::from_str(&text).map_err(|e| format!("settings.json has errors: {e}"))?;
     edit(&mut raw, name, key, value);
-    crate::persist::write_atomic(&path, serde_json::to_string_pretty(&raw).map_err(|e| e.to_string())? + "\n").map_err(|e| e.to_string())
+    crate::persist::write_atomic(&path, serde_json::to_string_pretty(&raw).map_err(|e| e.to_string())? + "\n").map_err(|e| e.to_string())?;
+    Ok(merged_after(&raw, &defaults, name))
+}
+
+/// A mod's merged values from settings.json as `raw` holds it.
+fn merged_after(raw: &Map<String, Value>, defaults: &Map<String, Value>, name: &str) -> Value {
+    let person: crate::settings::Person = serde_json::from_value(Value::Object(raw.clone())).unwrap_or_default();
+    merged(defaults, &stored(&person), name)
 }
 
 fn edit(raw: &mut Map<String, Value>, name: &str, key: &str, value: Option<Value>) {
@@ -197,6 +206,12 @@ mod tests {
         edit(&mut raw, "x", "b", Some(json!(2)));
         edit(&mut raw, "x", "a", None);
         assert_eq!(raw["mods"], json!({ "x": { "b": 2 } }));
+        let defaults = json!({ "a": true, "b": 1 }).as_object().unwrap().clone();
+        assert_eq!(merged_after(&raw, &defaults, "x"), json!({ "a": true, "b": 2 }), "a write hands back the values it leaves");
+        let mut legacy = json!({ "pane_header_info": "{state}" }).as_object().unwrap().clone();
+        assert_eq!(merged_after(&legacy, &Map::new(), "pane"), json!({ "header_info": "{state}" }), "the old key still counts until written");
+        edit(&mut legacy, "pane", "header_info", None);
+        assert_eq!(merged_after(&legacy, &json!({ "header_info": "" }).as_object().unwrap().clone(), "pane"), json!({ "header_info": "" }));
         let person: crate::settings::Person = serde_json::from_value(json!({ "pane_header_info": "{state}", "agents_card_info": "", "mods": { "agents": { "card_info": "{space}" } } })).unwrap();
         let mods = stored(&person);
         assert_eq!(text(&mods, "pane", "header_info").as_deref(), Some("{state}"), "an older settings.json keeps its value");

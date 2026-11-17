@@ -1590,8 +1590,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
                     Some(_) => return Err(HostError::new("setModSetting: only Settings writes another mod's settings")),
                     None => name.clone(),
                 };
-                crate::mod_settings::write(&of, &key, value).map_err(HostError::new)?;
-                Ok(HostValue::Null)
+                Ok(to_host(&crate::mod_settings::write(&of, &key, value).map_err(HostError::new)?))
             }
         })
         .function("modSchemas", |_| Ok(to_host(&crate::mod_settings::schemas(&scan()))))

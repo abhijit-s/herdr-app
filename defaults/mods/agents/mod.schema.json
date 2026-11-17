@@ -14,7 +14,7 @@
       "properties": {
         "card_info": {
           "title": "Card info",
-          "description": "What an agent's card in the agents list shows beside its name, as Header info's template: the same keys, and {machine} (local for this computer), {remote} (another machine's name, else nothing), {space}. Each segment is a chip; {space} is left out where a space header or the name already says it. Empty: off. The shipped agents list keeps its own look (the machine's name) until you set one.",
+          "description": "What an agent's card in the agents list shows beside its name, as Header info's template: the same keys, and {machine} (local for this computer), {remote} (another machine's name, else nothing), {space}. Each segment is a chip; {space} is left out where a space header or the name already says it. Empty: off. The shipped agents list draws it in place of the machine's name.",
           "type": "string",
           "default": "@{remote} · {space}",
           "examples": ["@{remote} · {space}"]

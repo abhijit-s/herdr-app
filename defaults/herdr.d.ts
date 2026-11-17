@@ -591,8 +591,8 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  `"claude"` when unset (undefined on builds without it); the shipped agents mod doesn't read it.
  *  `agents_card_info` is the agents cards' template as written (`""` for none): the agents mod's
  *  `card_info` setting (`mods.agents.card_info`, else the older top-level key), or `null` while
- *  unset (the default, which `modSettings()` gives the agents mod); agents carry it resolved as `card_info`. The shipped agents mod draws
- *  `card_info` only once it is set, so its rows stay as they were by default.
+ *  unset (the default, which `modSettings()` gives the agents mod); agents carry it resolved as `card_info`. The shipped agents mod always draws
+ *  `card_info`, the default too (another machine's agents read `@vps`).
  *  `toast_duration`, `toast_style`, `toast_corners`, `toast_mark`, `toast_design` and `toast_progress` are the person's toast choices
  *  (see AGENTS.md). `cursor_style` is the terminals' default cursor shape, `"block" | "beam" | "underline" | "block_hollow"`
  *  (undefined on builds without it); a program's DECSCUSR still wins. `cursor_trail` is `"off" | "panes" | "all"`, `cursor_trail_style`
@@ -819,8 +819,9 @@ export function modSettings(mod?: string): Record<string, unknown>;
 /** Sets one of this mod's settings for the person (`null`, or the schema's default, puts it back
  *  to the default). Where Herdr keeps the values is its own: read them back with `modSettings()`.
  *  Throws when they can't be written (settings.json has errors). `mod` (another mod's settings)
- *  is for the Settings window only. */
-export function setModSetting(key: string, value: unknown, mod?: string): null;
+ *  is for the Settings window only. Returns that mod's values as `modSettings()` will give them, at
+ *  once, before Herdr has read settings.json again. */
+export function setModSetting(key: string, value: unknown, mod?: string): Record<string, unknown>;
 
 /** Every mod folder whose `mod.schema.json` declares settings: its folder name, title (mod.json's,
  *  else the folder's) and declared settings in schema order. Read from disk on each call: for
