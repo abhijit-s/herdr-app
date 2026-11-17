@@ -156,15 +156,6 @@ Close a pane and end its terminal.
 |---|---|
 | `pane` | no |
 
-## `pane.rename`
-
-Name a pane (default: the focused one; asks the person when no name, starting from the name it shows: its own or, with pane_auto_names, its automatic one; an empty name: its program's again).
-
-| Argument | Required |
-|---|---|
-| `pane` | no |
-| `name` | no |
-
 ## `pane.set_icon`
 
 Choose a pane's icon (default: the focused one): icon {"kind": "glyph" | "emoji", "value": one glyph or emoji} or {"kind": "letter"} (the first letter of its label); null or absent (a misspelt key too): its automatic icon again. Kept with the pane.
@@ -354,6 +345,15 @@ Put a terminal pane's text (default: the focused terminal) back at the app's siz
 |---|---|
 | `pane` | no |
 
+## `pane.rename`
+
+Name a pane (default: the focused one; asks the person when no name, starting from its name or, with pane_auto_names, its automatic one; an empty name: unnamed again).
+
+| Argument | Required |
+|---|---|
+| `pane` | no |
+| `name` | no |
+
 ## `pane.focus`
 
 Focus a pane (or the pane showing a terminal).
@@ -376,6 +376,16 @@ Focus the pane or focusable mod to the "left", "right", "up" or "down".
 | Argument | Required |
 |---|---|
 | `direction` | yes |
+
+## `pane.resize`
+
+Move the border of a pane (default: the focused one) "left", "right", "up" or "down" by px (default 40), like dragging the divider.
+
+| Argument | Required |
+|---|---|
+| `direction` | yes |
+| `pane` | no |
+| `px` | no |
 
 ## `pane.swap`
 

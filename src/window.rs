@@ -2481,7 +2481,7 @@ impl AppWindow {
                     rows.push(crate::dock_badge::Listed { address: addr, status, pinned });
                     agents.push(json!({
                         "address": addr, "pane": p.id, "space": pr.id, "space_name": space_name,
-                        "tab": ctx.id, "tab_index": ci + 1, "tab_name": Model::tab_name(pr, ctx),
+                        "tab": ctx.id, "tab_index": ci + 1, "tab_name": Model::tab_name(pr, ctx), "pane_name": p.title,
                         "status": status, "app": a.and_then(|a| a.app.clone()), "program": self.program(addr), "title": title.unwrap_or_default(),
                         "label": label, "session": session, "icon": icon,
                         "seq": a.map(|a| a.seq).unwrap_or(0),
@@ -4254,7 +4254,7 @@ impl AppWindow {
             if !args.is_object() { args = json!({}); }
             args["machine"] = json!(machine);
         }
-        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "tab.move_to_space" | "tab.move_left" | "tab.move_right" | "tab.set_icon" | "pane.split" | "pane.close" | "pane.rename" | "pane.set_icon" | "pane.swap" | "pane.arrange" | "terminal.keep" | "terminal.park")
+        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "tab.move_to_space" | "tab.move_left" | "tab.move_right" | "tab.set_icon" | "pane.split" | "pane.close" | "pane.rename" | "pane.set_icon" | "pane.swap" | "pane.arrange" | "pane.resize" | "terminal.keep" | "terminal.park")
             || pane_floats::COMMANDS.contains(&name)
         {
             let node = ["id", "space", "pane"].into_iter().find_map(|k| Self::arg(&args, k))
@@ -4290,12 +4290,13 @@ impl AppWindow {
                 ("rename space", "empty: named after its folder", current)
             }
             "pane.rename" => {
-                let pane = Self::owned(&args, "pane").or_else(|| self.model.focused_pane());
-                let given = pane.as_deref().and_then(|p| self.model.pane_name(p));
-                let auto = pane.as_deref().and_then(|p| self.auto_names.get(p));
-                let hint = if given.is_none() && auto.is_some() { "empty: its automatic name" } else { "empty: its program's name" };
+                let id = Self::owned(&args, "pane").or_else(|| self.model.focused_pane());
+                let given = id.as_deref().and_then(|i| self.model.pane_name(i));
+                // Fork: an unnamed pane's pane_auto_names name, which Enter keeps as its own.
+                let auto = id.as_deref().and_then(|i| self.auto_names.get(i)).filter(|_| given.is_none());
+                let hint = if auto.is_some() { "empty: its automatic name" } else { "empty: unnamed" };
                 let current = given.or(auto.map(String::as_str)).map(str::to_owned);
-                args["pane"] = json!(pane);
+                args["pane"] = json!(id);
                 ("rename pane", hint, current)
             }
             _ => {
@@ -4426,6 +4427,16 @@ impl AppWindow {
                 let step = if name == "tab.move_left" { -1 } else { 1 };
                 if self.model.step_tab(&id, step).is_none() { return self.fail(format!("no tab {id:?}")); }
             }
+            "pane.rename" => {
+                let Some(pane) = Self::owned(a, "pane").or_else(|| self.model.focused_pane()) else { return self.fail("no pane to rename") };
+                let Some(name) = Self::arg(a, "name") else { return self.fail("pane.rename needs name (empty: unnamed)") };
+                let tab = self.model.tab_of(&pane).map(|c| c.id.clone());
+                let Some(node) = tab.and_then(|t| self.model.tab_mut(&t)).and_then(|c| c.find_mut(&pane)).filter(|n| n.is_pane()) else {
+                    return self.fail(format!("no pane {pane:?}"));
+                };
+                let name = name.trim();
+                node.title = (!name.is_empty()).then(|| name.to_owned());
+            }
             "tab.settle" | "tab.unsettle" => {
                 let Some(id) = Self::owned(a, "id").or(active_ctx) else { return self.fail("no tab") };
                 let found = if name == "tab.settle" { self.model.settle(&id, model::now_ms()) } else { self.model.tab(&id).is_some() && { self.model.unsettle(&id); true } };
@@ -4480,11 +4491,6 @@ impl AppWindow {
                 let addr = self.model.address_of(&pane);
                 self.model.remove_pane(&pane);
                 self.kill(&addr.into_iter().collect::<Vec<_>>(), cx);
-            }
-            "pane.rename" => {
-                let Some(pane) = Self::owned(a, "pane").or_else(|| self.model.focused_pane()) else { return self.fail("no pane to rename") };
-                let Some(name) = Self::arg(a, "name") else { return self.fail("pane.rename needs name (empty: its program's)") };
-                if !self.model.rename_pane(&pane, name) { return self.fail(format!("no pane {pane:?}")) }
             }
             "pane.set_icon" | "tab.set_icon" => {
                 let target = if name == "pane.set_icon" { Self::owned(a, "pane").or_else(|| self.model.focused_pane()) } else { Self::owned(a, "id").or(active_ctx) };
@@ -4554,6 +4560,17 @@ impl AppWindow {
                     return self.fail(format!("{name} direction is left, right, up or down, not {dir:?}"));
                 }
                 return self.go(dir, window, cx);
+            }
+            "pane.resize" => {
+                let dir = Self::owned(a, "direction").unwrap_or_default();
+                let amount = a.get("px").and_then(Value::as_f64).unwrap_or(40.0) as f32;
+                let Some(pane) = Self::owned(a, "pane").or_else(|| self.model.focused_pane()) else {
+                    return self.fail("no pane to resize");
+                };
+                if let Err(e) = self.resize_pane(&pane, &dir, amount) {
+                    return self.fail(e);
+                }
+                self.save();
             }
             "pane.swap" => {
                 let by = match swap_by(a) {
@@ -5213,6 +5230,70 @@ impl AppWindow {
     /// Its mod.json says `"focusable": true` (`go` asks only of visible blocks).
     fn focusable(&self, id: &str) -> bool {
         self.copies.get(id).and_then(|c| self.folders.get(&c.inst.name)).is_some_and(|f| f.hint.focusable)
+    }
+
+    /// Moves the divider nearest a pane along `dir`'s axis, as a mouse drag would.
+    /// The border moves in `dir` whichever side of it the pane is on (like tmux).
+    fn resize_pane(&mut self, pane: &str, dir: &str, amount: f32) -> Result<(), String> {
+        let (axis, sign) = match dir {
+            "left" => (Axis::Row, -1.0),
+            "right" => (Axis::Row, 1.0),
+            "up" => (Axis::Column, -1.0),
+            "down" => (Axis::Column, 1.0),
+            _ => return Err(format!("direction must be left, right, up or down, not {dir:?}")),
+        };
+        let found = {
+            let tab = self.model.tab_of(pane).ok_or_else(|| format!("no pane {pane:?}"))?;
+            // Measurements of a tab not drawn now are stale (or missing).
+            if !self.shows_tab() || self.model.active_tab().map(|t| &t.id) != Some(&tab.id) {
+                return Err("that pane isn't on screen".into());
+            }
+            if tab.zoomed.is_some() {
+                return Ok(());
+            }
+            if tab.float(pane).is_some() {
+                return Err("a floating pane has no border: use pane.float_resize".into());
+            }
+            let root = &tab.root;
+            let path = root.path_to(pane).ok_or_else(|| format!("no pane {pane:?}"))?;
+            if path.iter().any(|id| root.find(id).is_some_and(|n| n.hidden)) {
+                return Err("that pane isn't on screen".into());
+            }
+            let mut found = None;
+            for i in (0..path.len().saturating_sub(1)).rev() {
+                let Some(node) = root.find(&path[i]) else { continue };
+                if node.axis() != Some(axis) || !node.resizable() {
+                    continue;
+                }
+                let shown: Vec<&Node> = node.children().iter().filter(|c| !c.hidden).collect();
+                if shown.len() < 2 {
+                    continue;
+                }
+                let Some(idx) = shown.iter().position(|c| c.id == path[i + 1]) else { continue };
+                let index = if sign > 0.0 {
+                    if idx + 1 < shown.len() { idx } else { idx - 1 }
+                } else if idx > 0 {
+                    idx - 1
+                } else {
+                    idx
+                };
+                found = Some((node.id.clone(), index, shown[index].id.clone()));
+                break;
+            }
+            found
+        };
+        // Nothing split that way: a no-op, like a keyboard resize in a terminal multiplexer.
+        let Some((container, index, a_id)) = found else { return Ok(()) };
+        let b = self.bounds.borrow().get(&a_id).copied().ok_or("that pane isn't on screen")?;
+        let delta = px(sign * amount * settings::zoom());
+        let pos = match axis {
+            Axis::Row => point(b.right() + delta, b.top()),
+            Axis::Column => point(b.left(), b.bottom() + delta),
+        };
+        self.drag = Some(Drag { container, index, axis });
+        self.drag_to(pos);
+        self.drag = None;
+        Ok(())
     }
 
     fn swap_pane(&mut self, from: &str, explicit: bool, dir: &str) -> Result<(), String> {
@@ -7041,7 +7122,7 @@ fn swap_by(args: &Value) -> Result<SwapBy<'_>, String> {
 
 fn needs_model_pane(name: &str, args: &Value) -> bool {
     match name {
-        "pane.split" | "pane.close" | "pane.rename" | "pane.set_icon" | "pane.zoom" | "pane.swap" | "pane.menu" | "terminal.show" => AppWindow::arg(args, "pane").is_none(),
+        "pane.split" | "pane.close" | "pane.rename" | "pane.set_icon" | "pane.zoom" | "pane.swap" | "pane.menu" | "pane.resize" | "terminal.show" => AppWindow::arg(args, "pane").is_none(),
         name if pane_floats::COMMANDS.contains(&name) => AppWindow::arg(args, "pane").is_none(),
         "pane.go" => true,
         "terminal.open" | "terminal.keep" => matches!(AppWindow::arg(args, "place"), Some("right" | "down")),
@@ -12229,13 +12310,16 @@ export default class Recent extends View {
             assert_eq!(auto_name("p1"), Some(json!(expected)), "turning it on publishes it");
             assert_eq!(auto_name("p2"), Some(json!(null)), "a running command names the pane");
             assert_eq!(prompt(this, "p1", window, cx), json!(expected), "Enter keeps the automatic name");
+            this.run("pane.rename", json!({ "pane": "p1" }), window, cx);
+            assert_eq!(this.copies["overlay:rename"].inst.props["hint"], json!("empty: its automatic name"));
+            this.run("pane.rename", json!({ "pane": "p1" }), window, cx);
 
-            // The window's own rename waits on the core's layout, which this one never has.
-            assert!(this.model.rename_pane("p1", "build"));
+            this.documents.entry(String::new()).or_default().available = true;
+            assert!(this.run_as("pane.rename", json!({ "pane": "p1", "name": "build" }), false, window, cx).get("error").is_none());
             this.publish(cx);
             assert_eq!(auto_name("p1"), Some(json!(null)), "the person's name wins");
             assert_eq!(prompt(this, "p1", window, cx), json!("build"));
-            assert!(this.model.rename_pane("p1", ""));
+            assert!(this.run_as("pane.rename", json!({ "pane": "p1", "name": "" }), false, window, cx).get("error").is_none());
             this.publish(cx);
             assert_eq!(auto_name("p1"), Some(json!(expected)), "the same name again");
 
@@ -12933,6 +13017,135 @@ export default class Keeper extends View {
         listed("nvim", None, cx);
         assert_eq!(label(cx), "Neovim");
         assert_eq!(resolved() - after_session, 2, "a new foreground: both panes once");
+    }
+
+    #[test]
+    fn panes_resize_from_the_keyboard() {
+        in_own_process("pane_resize_checks_direction");
+    }
+
+    #[gpui::test]
+    fn pane_resize_checks_direction(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("pane_resize_checks_direction") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({
+            "id": "root", "type": "block", "content": { "tab": "active" }
+        }));
+        cx.simulate_resize(gpui::size(gpui::px(1000.0), gpui::px(600.0)));
+        let mut split = crate::model::Tab::new("tb1", "", "p1", "t1");
+        split.root.split("p1", super::Axis::Row, crate::model::pane("p2", "t2"), "row".into());
+        view.update_in(cx, |this, window, cx| {
+            this.model.add_space("sp1", "", "/tmp", split);
+            this.documents.entry(String::new()).or_default().available = true;
+            this.sync(window, cx);
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let sizes = |this: &super::AppWindow| serde_json::to_value(&this.model.tab("tb1").unwrap().root).unwrap();
+        view.update_in(cx, |this, window, cx| {
+            let before = sizes(this);
+            let r = this.run_as("pane.resize", json!({ "pane": "p1", "direction": "sideways" }), false, window, cx);
+            assert!(r.get("error").is_some(), "{r}");
+            assert!(this.run_as("pane.resize", json!({ "pane": "nope", "direction": "left" }), false, window, cx).get("error").is_some());
+            this.documents.get_mut("").unwrap().available = false;
+            let r = this.run_as("pane.resize", json!({ "pane": "p1", "direction": "right" }), false, window, cx);
+            assert!(r.get("error").is_some(), "its machine's layout is unavailable: {r}");
+            assert_eq!(sizes(this), before);
+            this.documents.get_mut("").unwrap().available = true;
+            let r = this.run_as("pane.resize", json!({ "pane": "p1", "direction": "right" }), false, window, cx);
+            assert!(r.get("error").is_none(), "{r}");
+            assert_ne!(sizes(this), before, "the divider moved");
+            this.model.tab_mut("tb1").unwrap().root.split("p1", super::Axis::Column, crate::model::pane("p3", "t3"), "col".into());
+            this.sync(window, cx);
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let hide = |this: &mut super::AppWindow, hidden: bool| this.model.tab_mut("tb1").unwrap().root.find_mut("col").unwrap().hidden = hidden;
+        view.update_in(cx, |this, window, cx| {
+            hide(this, true);
+            let before = sizes(this);
+            let r = this.run_as("pane.resize", json!({ "pane": "p1", "direction": "down" }), false, window, cx);
+            assert!(r.get("error").is_some(), "drawn before, but in a hidden branch now: {r}");
+            assert_eq!(sizes(this), before);
+            hide(this, false);
+            this.model.add_tab("sp1", crate::model::Tab::new("tb2", "", "q1", "u1"));
+            this.sync(window, cx);
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        view.update_in(cx, |this, window, cx| {
+            let before = sizes(this);
+            let r = this.run_as("pane.resize", json!({ "pane": "p1", "direction": "left" }), false, window, cx);
+            assert!(r.get("error").is_some(), "drawn before, but not on screen now: {r}");
+            assert_eq!(sizes(this), before);
+            let r = this.run_as("pane.resize", json!({ "direction": "left" }), false, window, cx);
+            assert!(r.get("error").is_none(), "the focused pane, with nothing beside it: nothing to move, {r}");
+        });
+    }
+
+    #[test]
+    fn floating_panes_take_names() {
+        in_own_process("pane_rename_reaches_floating_panes");
+    }
+
+    /// Fork: upstream's pane.rename looks in the tiled tree only; floating panes are the fork's.
+    #[gpui::test]
+    fn pane_rename_reaches_floating_panes(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("pane_rename_reaches_floating_panes") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({
+            "id": "root", "type": "block", "content": { "tab": "active" }
+        }));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model.add_space("sp1", "", "/tmp", crate::model::Tab::new("tb1", "", "p1", "t1"));
+            this.model.split("p1", crate::layout::Axis::Row, "p2", "t2");
+            this.documents.entry(String::new()).or_default().available = true;
+            this.sync(window, cx);
+            this.model.float_pane("p2", [0.1, 0.1, 0.5, 0.5]).unwrap();
+            let r = this.run_as("pane.rename", json!({ "pane": "p2", "name": " logs " }), false, window, cx);
+            assert!(r.get("error").is_none(), "{r}");
+            assert_eq!(this.model.pane_name("p2"), Some("logs"));
+            assert!(this.run_as("pane.rename", json!({ "pane": "p2", "name": "" }), false, window, cx).get("error").is_none());
+            assert_eq!(this.model.pane_name("p2"), None);
+            assert!(this.run_as("pane.rename", json!({ "pane": "tb1", "name": "x" }), false, window, cx).get("error").is_some(), "a tab is no pane");
+            this.run("pane.rename", json!({ "pane": "p2" }), window, cx);
+            assert_eq!(this.copies["overlay:rename"].inst.props["hint"], json!("empty: unnamed"), "upstream's hint with no automatic name");
+            this.run("pane.rename", json!({ "pane": "p2" }), window, cx);
+            let r = this.run_as("pane.resize", json!({ "pane": "p2", "direction": "left" }), false, window, cx);
+            assert!(r["error"].as_str().is_some_and(|e| e.contains("pane.float_resize")), "{r}");
+        }));
+    }
+
+    #[test]
+    fn panes_take_names() {
+        in_own_process("pane_rename_names_and_clears");
+    }
+
+    #[gpui::test]
+    fn pane_rename_names_and_clears(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("pane_rename_names_and_clears") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({
+            "id": "root", "type": "block", "content": { "tab": "active" }
+        }));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model.add_space("sp1", "", "/tmp", crate::model::Tab::new("tb1", "", "p1", "t1"));
+            this.documents.entry(String::new()).or_default().available = true;
+            this.sync(window, cx);
+            let title = |this: &super::AppWindow| this.model.tab("tb1").and_then(|c| c.root.find("p1")).and_then(|n| n.title.clone());
+            let r = this.run_as("pane.rename", json!({ "pane": "p1", "name": "  server  " }), false, window, cx);
+            assert!(r.get("error").is_none(), "{r}");
+            assert_eq!(title(this).as_deref(), Some("server"), "trimmed");
+            assert!(this.run_as("pane.rename", json!({ "name": "" }), false, window, cx).get("error").is_none());
+            assert_eq!(title(this), None, "empty: unnamed again (default: the focused pane)");
+            assert!(this.run_as("pane.rename", json!({ "pane": "nope", "name": "x" }), false, window, cx).get("error").is_some());
+            assert!(this.run_as("pane.rename", json!({ "pane": "p1" }), false, window, cx).get("error").is_some(), "scripts get no prompt");
+            this.run("pane.rename", json!({}), window, cx);
+            assert_eq!(this.overlays.iter().filter(|o| o.id == "rename").count(), 1, "a person is asked");
+        }));
     }
 
     #[test]

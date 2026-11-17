@@ -552,7 +552,7 @@ mod tests {
             let mut m = Model::default();
             read.replace(&mut m, machine);
             let id = |s: &str| qualify(s, machine);
-            m.rename_pane(&id("p"), "build");
+            m.name_pane(&id("p"), "build");
             m.split(&id("p"), Axis::Row, &id("p2"), &id("t3"));
             let written = serde_json::to_value(Document::capture(&m, machine)).unwrap();
             assert_eq!(written["spaces"][0]["color"], "teal", "{machine:?}");
@@ -647,7 +647,7 @@ mod tests {
     #[test]
     fn pane_names_are_shared_and_older_documents_have_none() {
         let mut m = model();
-        m.rename_pane("p", "build");
+        m.name_pane("p", "build");
         let doc: Document = serde_json::from_str(&serde_json::to_string(&Document::capture(&m, None)).unwrap()).unwrap();
         let mut other = Model::default();
         doc.replace(&mut other, Some("mac"));

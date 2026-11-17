@@ -78,8 +78,8 @@ export function playSound(sound: string): null;
  * Panes: pane.split {direction: "right" | "down", pane?}, pane.close {pane?}, pane.zoom {pane?},
  *   pane.zoom_text_in|zoom_text_out|zoom_text_reset {pane?} (a terminal pane's own text size, on top of the app's zoom),
  *   pane.focus {pane | terminal}, pane.refocus (the keyboard back to what has the focus, a focused mod pane included, after a mod took it), pane.go {direction},
- *   pane.swap {pane?, direction | target},
- *   pane.rename {pane?, name?} ("": unnamed again), pane.set_icon {pane?, icon} and tab.set_icon {id?, icon}
+ *   pane.swap {pane?, direction | target}, pane.resize {direction, pane?, px?},
+ *   pane.rename {pane?, name?} (no name: the person is asked; "": unnamed again), pane.set_icon {pane?, icon} and tab.set_icon {id?, icon}
  *   (icon: {kind: "glyph" | "emoji", value} or {kind: "letter"}; null or absent: the automatic icon again),
  *   pane.menu {pane?} (the pane's menu at the pointer: the layout's terminal_menu mod, else menu).
  *   Pane menus get target { pane, terminal, cwd, selected? } (cwd: the terminal's folder or null;
@@ -244,6 +244,8 @@ export interface AgentInfo {
   session: string | null;
   /** Its pane's icon: as `PaneInfo.icon`. */
   icon: Icon | null;
+  /** Its pane's name (`pane.rename`), or null. */
+  pane_name: string | null;
   /** Higher = changed more recently. */
   seq: number;
   /** Pinned with `terminal.pin`, on any Herdr client. */
@@ -287,7 +289,7 @@ export interface PaneInfo {
   tab: string;
   /** The terminal's title (what the program set), or the mod's name. */
   title: string;
-  /** The name given with pane.rename; null: none, show the program's. */
+  /** The name someone gave it (`pane.rename`), or null. */
   name: string | null;
   /** With `pane_auto_names` on: two words from the pane's id ("hazy-inlet"),
    *  the same every time, set only while nobody named the pane, no agent or

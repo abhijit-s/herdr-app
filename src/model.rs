@@ -456,12 +456,10 @@ impl Model {
         self.tab_of(pane).and_then(|c| c.pane(pane)).and_then(|n| n.title.as_deref())
     }
 
-    /// Names a pane; an empty name goes back to its program's. False: no such pane.
-    pub fn rename_pane(&mut self, pane: &str, name: &str) -> bool {
-        let Some(n) = self.tab_of_mut(pane).and_then(|c| c.find_mut(pane)).filter(|n| n.is_pane()) else { return false };
-        let name = name.trim();
-        n.title = (!name.is_empty()).then(|| name.to_owned());
-        true
+    /// Test fixture: gives a pane a name as `pane.rename` would (window.rs).
+    #[cfg(test)]
+    pub fn name_pane(&mut self, pane: &str, name: &str) {
+        self.tab_of_mut(pane).and_then(|c| c.find_mut(pane)).expect("a pane").title = Some(name.to_owned());
     }
 
     /// Keeps only the spaces, and their icons, of machines `keep` names (and this machine's).
@@ -1242,21 +1240,6 @@ mod tests {
         assert_eq!(m.all_addresses(), ["u1", "v1", "t1"], "every terminal still has its pane");
         assert_eq!((m.active.as_deref(), m.active_tab().map(|c| c.id.as_str())), (Some("p3"), Some("c1")));
         assert_eq!(m.recent.first().map(|r| r.name.as_str()), Some("kept"), "remembered, as a closed space is");
-    }
-
-    #[test]
-    fn panes_are_named_and_an_empty_name_is_their_programs_again() {
-        let mut m = Model::default();
-        m.add_space("p1", "", "/home/me", Tab::new("c1", "", "x1", "t1"));
-        assert_eq!(m.pane_name("x1"), None);
-        assert!(m.rename_pane("x1", "  build "));
-        assert_eq!(m.pane_name("x1"), Some("build"));
-        assert!(m.rename_pane("x1", " "));
-        assert_eq!(m.pane_name("x1"), None);
-        // Only panes: not tabs, containers or unknown ids.
-        assert!(!m.rename_pane("c1", "x"));
-        assert!(!m.rename_pane("nope", "x"));
-        assert_eq!(m.tab("c1").unwrap().root.title, None);
     }
 
     #[test]
