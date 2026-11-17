@@ -1,6 +1,7 @@
 //! The Settings window's cursor effect preview (`CursorPreview` from the
 //! "herdr" mod module): a small stand-in terminal, a grid of cells with a few
-//! faint lines of placeholder output and a block cursor. A click moves the
+//! faint lines of placeholder output and the cursor in `cursor_style`'s shape,
+//! as a focused pane draws it. A click moves the
 //! cursor to the clicked cell and plays the effect the settings ask for at
 //! that moment, drawn by the panes' own `Trail` and `paint_layers`, so it is
 //! the effect a pane draws, not a copy of it. It asks for frames only while an
@@ -33,6 +34,9 @@ pub(crate) struct CursorPreview {
     /// Pixie dust from its moves, and the colors it's drawn in.
     dust: Dust,
     tint: super::trail_paint::Tint,
+    /// The cursor's shape (`cursor_style`), as last painted or clicked with:
+    /// the one source for the cursor, its trail and its dust.
+    style: settings::CursorStyle,
 }
 
 /// What keeps the preview's view across renders. Element state is watched by
@@ -63,6 +67,7 @@ impl CursorPreview {
             frames: 0,
             dust: Dust::default(),
             tint: Default::default(),
+            style: settings::CursorStyle::Block,
         }
     }
 
@@ -95,7 +100,8 @@ impl CursorPreview {
     /// unless `cursor_trail` is off, and the arrival pulse; none while the
     /// system asks for reduced motion. Whether an effect runs.
     fn moved(&mut self, to: (usize, usize), s: &settings::Settings, reduce_motion: bool) -> bool {
-        let from = self.rect(self.cursor);
+        self.style = s.cursor_style;
+        let from = self.drawn(self.style).map(|(_, cursor)| cursor);
         let cols = self.grid.map_or(COLS, |(_, _, cols)| cols);
         self.cursor = (to.0.min(cols - 1), to.1.min(ROWS - 1));
         let live = self.trail.take();
@@ -107,15 +113,22 @@ impl CursorPreview {
         self.trail.is_some()
     }
 
+    /// The cursor as a focused pane draws it in `style` at the cursor's cell:
+    /// the cell and what it covers.
+    fn drawn(&self, style: settings::CursorStyle) -> Option<(Bounds<Pixels>, Bounds<Pixels>)> {
+        let cell = self.rect(self.cursor)?;
+        Some((cell, crate::terminal::cursor_rect(cell.origin, cell.size.width, cell.size, style.shape(), true)))
+    }
+
     /// The effect's layers now, the dust under them, and their color; None
     /// (the effect and the dust dropped) once both are over.
     fn frame(&mut self) -> Option<(Vec<cursor_shapes::Layer>, super::trail_paint::Tint)> {
-        let at = self.rect(self.cursor)?;
-        let trail = self.trail_alone(at);
+        let (cell, cursor) = self.drawn(self.style)?;
+        let trail = self.trail_alone(cell, cursor);
         if self.dust.is_empty() {
             return trail;
         }
-        let dust = self.dust.layers(std::time::Instant::now(), Some(at));
+        let dust = self.dust.layers(std::time::Instant::now(), Some(cursor));
         match trail {
             Some((layers, tint)) => Some((dust.into_iter().chain(layers).collect(), tint)),
             None => (!self.dust.is_empty()).then_some((dust, self.tint)),
@@ -123,15 +136,11 @@ impl CursorPreview {
     }
 
     /// The trail's own layers now (`frame`), shedding its dust at its first.
-    fn trail_alone(&mut self, at: Bounds<Pixels>) -> Option<(Vec<cursor_shapes::Layer>, super::trail_paint::Tint)> {
+    fn trail_alone(&mut self, cell: Bounds<Pixels>, cursor: Bounds<Pixels>) -> Option<(Vec<cursor_shapes::Layer>, super::trail_paint::Tint)> {
         let trail = self.trail.as_mut()?;
-        let end = crate::terminal::TrailEnd {
-            cell: at,
-            cursor: at,
-            shown: true,
-        };
+        let end = crate::terminal::TrailEnd { cell, cursor, shown: true };
         let elapsed = trail.start.elapsed();
-        let dust = trail.take_dust(at, at);
+        let dust = trail.take_dust(cursor, cell);
         self.tint = trail.color();
         let frame = trail.shapes(end, elapsed).map(|l| (l, trail.color()));
         if let Some(burst) = dust {
@@ -173,6 +182,7 @@ impl Render for CursorPreview {
                         let reduce_motion = cx.reduce_motion();
                         let _ = view.update(cx, |this, _| {
                             this.grid = Some((origin, cell, cols));
+                            this.style = settings::get().cursor_style;
                             // As in panes: reduced motion ends one running.
                             if reduce_motion {
                                 (this.trail, this.dust) = (None, Dust::default());
@@ -224,8 +234,13 @@ fn paint_grid(preview: &CursorPreview, window: &mut Window) {
         );
         window.paint_quad(fill(bar, text).corner_radii(cell.height * 0.2));
     }
-    if let Some(at) = preview.rect(preview.cursor) {
-        window.paint_quad(fill(at, settings::color("cursor")));
+    let style = preview.style;
+    if let Some((_, cursor)) = preview.drawn(style) {
+        let color = settings::color("cursor");
+        window.paint_quad(match style {
+            settings::CursorStyle::BlockHollow => outline(cursor, color, BorderStyle::Solid),
+            _ => fill(cursor, color),
+        });
     }
 }
 
@@ -292,6 +307,27 @@ mod tests {
         p.moved((3, 3), &on(TrailStyle::Sweep, Arrival::Ripple), false);
         let t = p.trail.as_ref().unwrap();
         assert_eq!((t.style, t.arrival), (Some(TrailStyle::Sweep), Arrival::Ripple));
+    }
+
+    /// The cursor is drawn in `cursor_style`'s shape, as a focused pane draws
+    /// it, and a trail starts from that shape and ends on it.
+    #[test]
+    fn the_cursor_and_its_trail_take_the_cursor_style() {
+        use settings::{Arrival, CursorStyle, TrailStyle};
+        let p = preview();
+        let cell = p.rect(p.cursor).unwrap();
+        assert_eq!(p.drawn(CursorStyle::Block), Some((cell, cell)));
+        assert_eq!(p.drawn(CursorStyle::BlockHollow), Some((cell, cell)));
+        let beam = gpui::Bounds::new(cell.origin, size(px(2.0), cell.size.height));
+        assert_eq!(p.drawn(CursorStyle::Beam), Some((cell, beam)));
+        let underline = gpui::Bounds::new(cell.origin + point(px(0.0), cell.size.height - px(2.0)), size(cell.size.width, px(2.0)));
+        assert_eq!(p.drawn(CursorStyle::Underline), Some((cell, underline)));
+        for (style, from) in [(CursorStyle::Beam, beam), (CursorStyle::Underline, underline), (CursorStyle::Block, cell)] {
+            let mut p = preview();
+            let s = settings::Settings { cursor_style: style, ..on(TrailStyle::Sweep, Arrival::Off) };
+            assert!(p.moved((30, 1), &s, false));
+            assert_eq!(p.trail.as_ref().unwrap().from, Some(cursor_shapes::quad(from)), "{style:?}");
+        }
     }
 
     /// The pulse's size and intensity, as set at the click, show in the
