@@ -462,6 +462,37 @@ test("effect time shows while the trail or the pulse is on, and steps by 20 ms w
   expect(step({ ...on, cursor_trail_duration_ms: 140 }, "st-cursor_trail_duration_ms-minus")).toEqual(on);
 });
 
+test("arrival size and intensity show next to the arrival picker while the pulse is on, in quarter steps within their ranges, 1 left out", () => {
+  const step = (person: Record<string, any>, id: string) => click(person, {}, id, [], "cursor");
+  for (const key of ["cursor_arrival_size", "cursor_arrival_intensity"]) {
+    expect(() => step({}, `st-${key}-plus`)).toThrow();
+    expect(() => step({ cursor_trail: "panes" }, `st-${key}-plus`)).toThrow();
+  }
+  const on = { cursor_arrival: "ripple" };
+  expect(step(on, "st-cursor_arrival_size-plus")).toEqual({ ...on, cursor_arrival_size: 1.25 });
+  expect(step(on, "st-cursor_arrival_size-minus")).toEqual({ ...on, cursor_arrival_size: 0.75 });
+  expect(step({ ...on, cursor_arrival_size: 0.5 }, "st-cursor_arrival_size-minus")).toEqual({ ...on, cursor_arrival_size: 0.5 });
+  expect(step({ ...on, cursor_arrival_size: 2 }, "st-cursor_arrival_size-plus")).toEqual({ ...on, cursor_arrival_size: 2 });
+  expect(step({ ...on, cursor_arrival_size: 9 }, "st-cursor_arrival_size-minus")).toEqual({ ...on, cursor_arrival_size: 1.75 });
+  expect(step({ ...on, cursor_arrival_size: 1.25 }, "st-cursor_arrival_size-minus")).toEqual(on);
+  expect(step(on, "st-cursor_arrival_intensity-plus")).toEqual({ ...on, cursor_arrival_intensity: 1.25 });
+  expect(step({ ...on, cursor_arrival_intensity: 0.25 }, "st-cursor_arrival_intensity-minus")).toEqual({ ...on, cursor_arrival_intensity: 0.25 });
+  expect(step({ ...on, cursor_arrival_intensity: 2 }, "st-cursor_arrival_intensity-plus")).toEqual({ ...on, cursor_arrival_intensity: 2 });
+  expect(step({ ...on, cursor_arrival_intensity: 0 }, "st-cursor_arrival_intensity-plus")).toEqual({ ...on, cursor_arrival_intensity: 0.5 });
+  expect(step({ ...on, cursor_arrival_intensity: 0.75 }, "st-cursor_arrival_intensity-plus")).toEqual(on);
+  // Right after the arrival picker, before the effect time.
+  const view = new Settings();
+  view.person = { cursor_arrival: "boom" };
+  view.choicePicker = element;
+  const shown = texts(view.page("cursor", new Proxy({}, { get: () => "#000000" }), {}));
+  const at = (label: string) => shown.indexOf(label);
+  expect(at("Arrival effect")).toBeGreaterThan(-1);
+  expect(at("Arrival effect")).toBeLessThan(at("Arrival size"));
+  expect(at("Arrival size")).toBeLessThan(at("Arrival intensity"));
+  expect(at("Arrival intensity")).toBeLessThan(at("Effect time"));
+  expect(shown).toContain("1×");
+});
+
 test("settle time and ignored moves show only for Panes and jumps, within their ranges, defaults left out", () => {
   const step = (person: Record<string, any>, id: string) => click(person, {}, id, [], "cursor");
   expect(() => step({ cursor_trail: "panes" }, "st-cursor_trail_settle_ms-plus")).toThrow();

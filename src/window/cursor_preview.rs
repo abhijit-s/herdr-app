@@ -294,6 +294,33 @@ mod tests {
         assert_eq!((t.style, t.arrival), (Some(TrailStyle::Sweep), Arrival::Ripple));
     }
 
+    /// The pulse's size and intensity, as set at the click, show in the
+    /// preview: the panes' own scaled pulse, and a later change on the next click.
+    #[test]
+    fn a_click_plays_the_pulse_at_its_size_and_intensity() {
+        use settings::{Arrival, CursorTrail, TrailStyle};
+        let pulse = |size: f32, intensity: f32| settings::Settings {
+            cursor_trail: CursorTrail::Off,
+            cursor_arrival_size: size,
+            cursor_arrival_intensity: intensity,
+            ..on(TrailStyle::Comet, Arrival::Ripple)
+        };
+        let mut p = preview();
+        let at = std::time::Duration::from_millis(60);
+        let t = at.as_secs_f32() / std::time::Duration::from_millis(200).as_secs_f32();
+        let mut drawn = |s: &settings::Settings, to: (usize, usize)| {
+            assert!(p.moved(to, s, false));
+            let cell = p.rect(to).unwrap();
+            let end = crate::terminal::TrailEnd { cell, cursor: cell, shown: true };
+            (p.trail.as_mut().unwrap().shapes(end, at).unwrap(), cell)
+        };
+        let (got, cell) = drawn(&pulse(2.0, 1.5), (12, 2));
+        assert_eq!(got, cursor_shapes::arrival(Arrival::Ripple, cell, t, 2.0, 1.5));
+        assert_ne!(got, cursor_shapes::arrival(Arrival::Ripple, cell, t, 1.0, 1.0), "scaled, not the default");
+        let (got, cell) = drawn(&pulse(0.5, 0.25), (3, 1));
+        assert_eq!(got, cursor_shapes::arrival(Arrival::Ripple, cell, t, 0.5, 0.25), "the next click takes the change");
+    }
+
     /// A tail chases into the clicked cell and ends there, as in a pane.
     #[test]
     fn a_tail_chases_into_the_clicked_cell_and_ends() {

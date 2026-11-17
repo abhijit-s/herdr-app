@@ -43,6 +43,8 @@ pub(super) struct Trail {
     color: trail_paint::Tint,
     pub(super) style: Option<settings::TrailStyle>,
     pub(super) arrival: settings::Arrival,
+    /// The pulse's `cursor_arrival_size` and `cursor_arrival_intensity`.
+    arrival_scale: (f32, f32),
     /// When the pulse started: the trail's start, or a later shape change.
     pulse: Instant,
     /// The tail's corners as they chase the cursor (`TrailStyle::Tail`),
@@ -106,6 +108,7 @@ impl Trail {
             ),
             style,
             arrival: s.cursor_arrival,
+            arrival_scale: (s.cursor_arrival_size, s.cursor_arrival_intensity),
             pulse: now,
             chase: from
                 .filter(|_| style == Some(settings::TrailStyle::Tail))
@@ -158,7 +161,7 @@ impl Trail {
         self.drawn = drawn;
         let since = self.pulse.saturating_duration_since(self.start);
         let pulse_t = elapsed.saturating_sub(since).as_secs_f32() / self.duration.as_secs_f32();
-        let pulse = cursor_shapes::arrival(self.arrival, end.cell, pulse_t);
+        let pulse = cursor_shapes::arrival(self.arrival, end.cell, pulse_t, self.arrival_scale.0, self.arrival_scale.1);
         if layers.is_empty() && pulse.is_empty() && !chasing {
             return None;
         }

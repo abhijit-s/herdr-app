@@ -329,6 +329,10 @@ const ARRIVALS = [
   ["ripple_rect", "Ripple box"],
   ["boom_rect", "Boom box"],
 ];
+// cursor_arrival_size and cursor_arrival_intensity: the app's ARRIVAL_SIZE_RANGE and
+// ARRIVAL_INTENSITY_RANGE (settings.rs), in steps of 0.25; 1 is left out of settings.json.
+const ARRIVAL_SIZE = [0.5, 2];
+const ARRIVAL_INTENSITY = [0.25, 2];
 // cursor_trail_settle_ms and cursor_trail_min_cells: the app's SETTLE_MS and MIN_CELLS ranges and defaults (settings.rs).
 const SETTLE_MS = [0, 500];
 const SETTLE_MS_DEFAULT = 10;
@@ -1827,7 +1831,8 @@ export default class Settings extends View {
   }
 
   // Cursor effects: the trail (Off, Between panes, or that and the focused pane's cursor
-  // jumps), its style while it's on, the arrival pulse, how long they take (20 ms steps)
+  // jumps), its style while it's on, the arrival pulse with its size and intensity while it's
+  // on (0.25 steps, 1 left out), how long they take (20 ms steps)
   // while either is on, and, for jumps, how still the cursor must be (10 ms steps) and
   // how small a move it ignores. Off, Comet, Off, 120 ms, 10 ms and 2 cells are the defaults,
   // left out of settings.json.
@@ -1855,6 +1860,8 @@ export default class Settings extends View {
       return [clampTo(this.person[key] ?? def), (_e, cx) => go(-by, cx), (_e, cx) => go(by, cx)];
     };
     const [settle, settleLess, settleMore] = within("cursor_trail_settle_ms", SETTLE_MS, SETTLE_MS_DEFAULT, 10);
+    const [arrivalSize, smaller, larger] = within("cursor_arrival_size", ARRIVAL_SIZE, 1, 0.25);
+    const [arrivalIntensity, fainter, stronger] = within("cursor_arrival_intensity", ARRIVAL_INTENSITY, 1, 0.25);
     // cursor_trail_min_cells: one number for both axes, or [columns, rows];
     // written back as one number while they're equal, left out at the default.
     const cellsKey = "cursor_trail_min_cells";
@@ -1902,6 +1909,11 @@ export default class Settings extends View {
           .child(this.row(t, "Ignore moves down up to", "The same for rows: a move of more rows than this draws, however few columns it crosses.", this.stepper(t, "st-cursor_trail_min_cells_y", cellsLabel(cells[1]), cellStep(1, -1), cellStep(1, 1)), cellsKey)),
       )
       .child(this.row(t, "Arrival effect", "A pulse at the cursor as the focus lands in another pane, with the trail or without it; with Panes and jumps, also after a jump or a cursor shape change.", this.choicePicker(t, "st-ca", "cursor_arrival", ARRIVALS), "cursor_arrival"))
+      .when(pulse, (el) =>
+        el
+          .child(this.row(t, "Arrival size", "How far the pulse spreads, from half to twice its usual reach.", this.stepper(t, "st-cursor_arrival_size", `${arrivalSize}×`, smaller, larger), "cursor_arrival_size"))
+          .child(this.row(t, "Arrival intensity", "How strongly the pulse is drawn: its opacity and, for a ring, how bold its stroke is.", this.stepper(t, "st-cursor_arrival_intensity", `${arrivalIntensity}×`, fainter, stronger), "cursor_arrival_intensity")),
+      )
       .when(on || pulse, (el) =>
         el.child(this.row(t, "Effect time", "How long the trail and the pulse take.", this.stepper(t, "st-cursor_trail_duration_ms", `${ms} ms`, (_e, cx) => step(-20, cx), (_e, cx) => step(20, cx)), "cursor_trail_duration_ms")),
       );

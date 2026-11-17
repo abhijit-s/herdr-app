@@ -890,13 +890,18 @@ const BOX_REACH: f32 = 1.2;
 const CIRCLE: usize = 40;
 
 /// The pulse of `kind` at the cursor cell `at` at progress `t`: nothing once
-/// it's over.
-pub(super) fn arrival(kind: Arrival, at: Bounds<Pixels>, t: f32) -> Vec<Layer> {
+/// it's over. `size` (`cursor_arrival_size`) scales how far it spreads;
+/// `intensity` (`cursor_arrival_intensity`) its opacity, held to 1, and a
+/// ring's stroke. At 1 and 1 each product is exact, so the pulse is the
+/// unscaled one bit for bit.
+pub(super) fn arrival(kind: Arrival, at: Bounds<Pixels>, t: f32, size: f32, intensity: f32) -> Vec<Layer> {
     if t.is_nan() || !(0.0..1.0).contains(&t) {
         return Vec::new();
     }
     let (c, h, e) = (mid(at), f32::from(at.size.height), ease_out(t));
     let fade = 1.0 - t;
+    let (pulse_reach, box_reach) = (PULSE_REACH * size, BOX_REACH * size);
+    let opacity = |a: f32| (a * intensity).min(1.0);
     let ring = |r: f32| {
         (0..CIRCLE)
             .map(|i| i as f32 * std::f32::consts::TAU / CIRCLE as f32)
@@ -906,9 +911,9 @@ pub(super) fn arrival(kind: Arrival, at: Bounds<Pixels>, t: f32) -> Vec<Layer> {
     let stroked = |outline| Layer {
         outline,
         hole: None,
-        stroke: Some(1.0 + 1.5 * fade),
+        stroke: Some(1.0 + 1.5 * fade * intensity),
         open: false,
-        alpha: fade,
+        alpha: opacity(fade),
         tone: Tone::Effect,
         fade: None,
         glow: None,
@@ -916,14 +921,14 @@ pub(super) fn arrival(kind: Arrival, at: Bounds<Pixels>, t: f32) -> Vec<Layer> {
     };
     match kind {
         Arrival::Off => Vec::new(),
-        Arrival::Ripple => vec![stroked(ring(h * (0.5 + PULSE_REACH * e)))],
-        Arrival::Boom => vec![fill(ring(h * (0.25 + PULSE_REACH * e)), 0.45 * fade)],
+        Arrival::Ripple => vec![stroked(ring(h * (0.5 + pulse_reach * e)))],
+        Arrival::Boom => vec![fill(ring(h * (0.25 + pulse_reach * e)), opacity(0.45 * fade))],
         Arrival::RippleRect => vec![stroked(
-            corners(at, h * BOX_REACH * e).into_iter().map(pt).collect(),
+            corners(at, h * box_reach * e).into_iter().map(pt).collect(),
         )],
         Arrival::BoomRect => vec![fill(
-            corners(at, h * BOX_REACH * e).into_iter().map(pt).collect(),
-            0.4 * fade,
+            corners(at, h * box_reach * e).into_iter().map(pt).collect(),
+            opacity(0.4 * fade),
         )],
     }
 }
@@ -1510,7 +1515,7 @@ mod tests {
         let at = cell(100.0, 100.0);
         let c = (104.0, 108.0);
         for kind in PULSES {
-            let size = |t: f32| trail_reach(&arrival(kind, at, t), c);
+            let size = |t: f32| trail_reach(&arrival(kind, at, t, 1.0, 1.0), c);
             assert!(
                 size(0.0) < size(0.5) && size(0.5) < size(0.9),
                 "{kind:?} grows"
@@ -1520,15 +1525,15 @@ mod tests {
                 "{kind:?} stays within its reach"
             );
             assert!(
-                arrival(kind, at, 0.5)[0].alpha > arrival(kind, at, 0.9)[0].alpha,
+                arrival(kind, at, 0.5, 1.0, 1.0)[0].alpha > arrival(kind, at, 0.9, 1.0, 1.0)[0].alpha,
                 "{kind:?} fades"
             );
             assert!(
-                arrival(kind, at, 1.0).is_empty() && arrival(kind, at, f32::NAN).is_empty(),
+                arrival(kind, at, 1.0, 1.0, 1.0).is_empty() && arrival(kind, at, f32::NAN, 1.0, 1.0).is_empty(),
                 "{kind:?} ends"
             );
             for t in [0.0, 0.4, 0.95] {
-                let l = &arrival(kind, at, t)[0];
+                let l = &arrival(kind, at, t, 1.0, 1.0)[0];
                 assert!(convex(&l.outline), "{kind:?} {t}");
                 let rings = matches!(kind, Arrival::Ripple | Arrival::RippleRect);
                 assert_eq!(
@@ -1538,7 +1543,110 @@ mod tests {
                 );
             }
         }
-        assert!(arrival(Arrival::Off, at, 0.3).is_empty());
+        assert!(arrival(Arrival::Off, at, 0.3, 1.0, 1.0).is_empty());
+    }
+
+    /// `arrival` as it was before `cursor_arrival_size` and
+    /// `cursor_arrival_intensity`, frozen: the defaults must draw this.
+    fn unscaled_arrival(kind: Arrival, at: Bounds<Pixels>, t: f32) -> Vec<Layer> {
+        if t.is_nan() || !(0.0..1.0).contains(&t) {
+            return Vec::new();
+        }
+        let (c, h, e) = (mid(at), f32::from(at.size.height), ease_out(t));
+        let fade = 1.0 - t;
+        let ring = |r: f32| {
+            (0..CIRCLE)
+                .map(|i| i as f32 * std::f32::consts::TAU / CIRCLE as f32)
+                .map(|a| pt((c.0 + r * a.cos(), c.1 + r * a.sin())))
+                .collect::<Vec<_>>()
+        };
+        let stroked = |outline| Layer {
+            outline,
+            hole: None,
+            stroke: Some(1.0 + 1.5 * fade),
+            open: false,
+            alpha: fade,
+            tone: Tone::Effect,
+            fade: None,
+            glow: None,
+            disc: None,
+        };
+        match kind {
+            Arrival::Off => Vec::new(),
+            Arrival::Ripple => vec![stroked(ring(h * (0.5 + 2.0 * e)))],
+            Arrival::Boom => vec![fill(ring(h * (0.25 + 2.0 * e)), 0.45 * fade)],
+            Arrival::RippleRect => vec![stroked(corners(at, h * 1.2 * e).into_iter().map(pt).collect())],
+            Arrival::BoomRect => vec![fill(corners(at, h * 1.2 * e).into_iter().map(pt).collect(), 0.4 * fade)],
+        }
+    }
+
+    /// Every number in `layers`, as bits: equal only if drawn bit for bit alike.
+    fn layer_bits(layers: &[Layer]) -> Vec<Vec<u32>> {
+        layers
+            .iter()
+            .map(|l| {
+                let mut v: Vec<u32> = l.outline.iter().flat_map(|p| [f32::from(p.x).to_bits(), f32::from(p.y).to_bits()]).collect();
+                v.extend([l.alpha.to_bits(), l.stroke.map_or(u32::MAX, f32::to_bits)]);
+                v
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_default_size_and_intensity_draw_every_pulse_bit_for_bit_as_before() {
+        for at in [cell(100.0, 100.0), cell(3.5, 917.25), Bounds::new(point(px(40.0), px(60.0)), gpui::size(px(9.6), px(21.0)))] {
+            for kind in [Arrival::Off, Arrival::Ripple, Arrival::Boom, Arrival::RippleRect, Arrival::BoomRect] {
+                for t in [0.0, 0.001, 0.1, 0.25, 1.0 / 3.0, 0.5, 0.7, 0.9, 0.999, 1.0, -0.1, f32::NAN] {
+                    let (now, was) = (arrival(kind, at, t, 1.0, 1.0), unscaled_arrival(kind, at, t));
+                    assert_eq!(layer_bits(&now), layer_bits(&was), "{kind:?} at {t}");
+                    assert_eq!(format!("{now:?}"), format!("{was:?}"), "{kind:?} at {t}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_size_scales_how_far_each_pulse_spreads() {
+        let at = cell(100.0, 100.0);
+        let c = (104.0, 108.0);
+        for kind in PULSES {
+            // Half its width: for a ring its radius, for a box the cell's half plus the growth.
+            let half_width = |l: Vec<Layer>| l[0].outline.iter().map(|p| (f32::from(p.x) - c.0).abs()).fold(0.0f32, f32::max);
+            let reach = |size: f32| half_width(arrival(kind, at, 0.6, size, 1.0));
+            let start = half_width(arrival(kind, at, 0.0, 1.0, 1.0));
+            assert!(reach(0.5) < reach(1.0) && reach(1.0) < reach(2.0), "{kind:?} grows with size");
+            // Only the growth is scaled: twice the size, twice as far past where it starts.
+            let (one, two) = (reach(1.0) - start, reach(2.0) - start);
+            assert!((two - 2.0 * one).abs() < 0.05, "{kind:?}: {one} then {two}");
+            assert_eq!(layer_bits(&arrival(kind, at, 0.0, 2.0, 1.0)), layer_bits(&arrival(kind, at, 0.0, 0.5, 1.0)), "{kind:?} starts the same at any size");
+        }
+    }
+
+    #[test]
+    fn the_intensity_scales_opacity_held_to_one_and_a_ring_s_stroke() {
+        let at = cell(100.0, 100.0);
+        for kind in PULSES {
+            let layer = |t: f32, i: f32| arrival(kind, at, t, 1.0, i).remove(0);
+            let (base, half, double) = (layer(0.5, 1.0), layer(0.5, 0.5), layer(0.5, 2.0));
+            assert!((half.alpha - base.alpha * 0.5).abs() < 1e-6, "{kind:?} half as opaque");
+            assert!((double.alpha - (base.alpha * 2.0).min(1.0)).abs() < 1e-6, "{kind:?} twice as opaque");
+            for (t, i) in [(0.0, 2.0), (0.1, 2.0), (0.0, 3.0), (0.2, 5.0)] {
+                assert!(layer(t, i).alpha <= 1.0, "{kind:?} at {t} x{i}: opacity is held to 1");
+            }
+            assert_eq!(layer(0.0, 3.0).alpha, 1.0, "{kind:?}: held at 1, not past it");
+            if matches!(kind, Arrival::Ripple | Arrival::RippleRect) {
+                assert_eq!(layer(0.1, 2.0).alpha, 1.0, "{kind:?}: a ring at 0.9 doubled is held at 1");
+            }
+            assert_eq!(double.outline, base.outline, "{kind:?}: intensity leaves the shape");
+            match (base.stroke, half.stroke, double.stroke) {
+                (Some(b), Some(h), Some(d)) => {
+                    assert!(h < b && b < d, "{kind:?}: a stronger ring is bolder");
+                    assert!(((d - 1.0) - 2.0 * (b - 1.0)).abs() < 1e-6, "{kind:?}: the stroke's growth doubles");
+                }
+                (None, None, None) => {}
+                other => panic!("{kind:?}: {other:?}"),
+            }
+        }
     }
 
     fn trail_reach(layers: &[Layer], c: P) -> f32 {

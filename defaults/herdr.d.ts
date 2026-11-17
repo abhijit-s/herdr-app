@@ -593,7 +593,7 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  `card_info` only once it is set, so its rows stay as they were by default.
  *  `toast_duration`, `toast_style`, `toast_corners`, `toast_mark`, `toast_design` and `toast_progress` are the person's toast choices
  *  (see AGENTS.md). `cursor_trail` is `"off" | "panes" | "all"`, `cursor_trail_style`
- *  `"comet" | "tail" | "sweep" | "warp" | "blaze" | "blaze_tapered"`, `cursor_arrival` `"off" | "ripple" | "boom" | "ripple_rect" | "boom_rect"`,
+ *  `"comet" | "tail" | "sweep" | "warp" | "blaze" | "blaze_tapered"`, `cursor_arrival` `"off" | "ripple" | "boom" | "ripple_rect" | "boom_rect"`, `cursor_arrival_size` (0.5 to 2) and `cursor_arrival_intensity` (0.25 to 2), held to their ranges,
  *  with `cursor_trail_duration_ms`, `cursor_trail_settle_ms`, `cursor_trail_min_cells` (a number
  *  for both axes, or `[columns, rows]`), `cursor_trail_color` (`null` for the theme's `cursor`),
  *  `cursor_trail_motion_blur` and `cursor_trail_particles` (`"off" | "pixiedust"`) as written; the app draws the effects.
@@ -790,7 +790,7 @@ export function cardInfoPreview(template: string | null): CardInfo | null;
 /** For the Settings window's Cursor page: a small stand-in terminal (a grid of cells, faint
  *  placeholder lines and a block cursor) as an element, made with `CursorPreview.new(id, {})` and kept across renders by `id`. A click
  *  moves its cursor to the clicked cell and plays the cursor effect the settings ask for at
- *  that moment (`cursor_trail`, `cursor_trail_style`, `cursor_arrival`,
+ *  that moment (`cursor_trail`, `cursor_trail_style`, `cursor_arrival`, `cursor_arrival_size`, `cursor_arrival_intensity`,
  *  `cursor_trail_duration_ms`, `cursor_trail_color`), drawn as a pane draws it; it draws frames
  *  only while the effect runs. `props` takes nothing yet. */
 export const CursorPreview: { new(id: string, props: import("gpui-kit").HostValue): import("gpui-kit").NativeElement };
