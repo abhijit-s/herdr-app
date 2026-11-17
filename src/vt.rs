@@ -529,6 +529,10 @@ pub struct Vt {
     pub cols: u16,
     pub rows: u16,
     theme: Theme,
+    /// `cursor_style`, as last handed to libghostty (`set_default_cursor`).
+    default_cursor: crate::settings::CursorStyle,
+    /// The screen (alternate: true) not yet told `default_cursor`.
+    cursor_stale_on: Option<bool>,
     /// The built-in 256-color palette, which the theme's 16 colors override.
     base_palette: [GhosttyColorRgb; 256],
     /// Ghostty's own click/double-click/triple-click/drag selection logic.
@@ -805,6 +809,8 @@ impl Vt {
                 cols,
                 rows,
                 theme: theme(),
+                default_cursor: crate::settings::CursorStyle::Block,
+                cursor_stale_on: None,
                 base_palette: colors.palette,
                 gesture,
                 press,
@@ -818,8 +824,38 @@ impl Vt {
                 win32: Default::default(),
             };
             vt.apply_theme();
+            vt.set_default_cursor(crate::settings::get().cursor_style);
             vt
         }
+    }
+
+    /// The cursor shape shown until a program picks its own (DECSCUSR) and
+    /// again once it resets it (`CSI 0 SP q`, RIS): libghostty keeps it, and
+    /// applies it now only while the program hasn't picked one. Block is
+    /// libghostty's own default, so a terminal left at it is never told.
+    /// Telling it also resets mode 12 (blink) to libghostty's default while the
+    /// program hasn't picked a shape; Herdr never blinks, so nothing shows.
+    pub fn set_default_cursor(&mut self, style: crate::settings::CursorStyle) {
+        if style == self.default_cursor {
+            return;
+        }
+        self.default_cursor = style;
+        self.tell_default_cursor();
+        // libghostty applies it to the active screen only, and leaving the
+        // alternate screen doesn't bring its cursor shape back: the other
+        // screen is told once the program switches to it (`write`).
+        self.cursor_stale_on = Some(!self.alt_screen());
+    }
+
+    fn tell_default_cursor(&mut self) {
+        use crate::settings::CursorStyle;
+        let s: GhosttyTerminalCursorStyle = match self.default_cursor {
+            CursorStyle::Block => GHOSTTY_TERMINAL_CURSOR_STYLE_BLOCK,
+            CursorStyle::Beam => GHOSTTY_TERMINAL_CURSOR_STYLE_BAR,
+            CursorStyle::Underline => GHOSTTY_TERMINAL_CURSOR_STYLE_UNDERLINE,
+            CursorStyle::BlockHollow => GHOSTTY_TERMINAL_CURSOR_STYLE_BLOCK_HOLLOW,
+        };
+        unsafe { ok(ghostty_terminal_set(self.term, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE, &s as *const _ as *const c_void), "default_cursor_style") };
     }
 
     /// Switches colors live (settings.json changed).
@@ -1576,6 +1612,10 @@ impl Vt {
         self.placements_cache.get_mut().take();
         self.win32.watch(bytes);
         unsafe { ghostty_terminal_vt_write(self.term, bytes.as_ptr(), bytes.len()) };
+        if self.cursor_stale_on.is_some_and(|alt| self.alt_screen() == alt) {
+            self.cursor_stale_on = None;
+            self.tell_default_cursor();
+        }
         self.feed_search();
     }
 
@@ -2276,6 +2316,105 @@ impl Drop for Vt {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::settings::CursorStyle;
+
+    fn shape(vt: &mut Vt) -> CursorShape {
+        vt.frame().cursor.expect("a visible cursor").shape
+    }
+
+    /// `cursor_style` is the shape drawn until a program picks one.
+    #[test]
+    fn each_cursor_style_is_drawn_at_the_default() {
+        for (style, want) in [(CursorStyle::Block, CursorShape::Block), (CursorStyle::Beam, CursorShape::Bar), (CursorStyle::Underline, CursorShape::Underline), (CursorStyle::BlockHollow, CursorShape::Hollow)] {
+            let mut vt = Vt::new(20, 3);
+            vt.set_default_cursor(style);
+            assert_eq!(shape(&mut vt), want, "{style:?}");
+            vt.write(b"$ ls\r\n");
+            assert_eq!(shape(&mut vt), want, "{style:?} after output");
+            vt.write(b"\x1b[?1049h");
+            assert_eq!(shape(&mut vt), want, "{style:?} on the alternate screen");
+        }
+    }
+
+    /// A program's DECSCUSR wins over the setting, and a later change of the
+    /// setting leaves the program's choice alone.
+    #[test]
+    fn a_programs_cursor_shape_wins_over_the_setting() {
+        let mut vt = Vt::new(20, 3);
+        vt.set_default_cursor(CursorStyle::Beam);
+        for (seq, want) in [(&b"\x1b[2 q"[..], CursorShape::Block), (b"\x1b[1 q", CursorShape::Block), (b"\x1b[4 q", CursorShape::Underline), (b"\x1b[6 q", CursorShape::Bar)] {
+            vt.write(seq);
+            assert_eq!(shape(&mut vt), want, "{seq:?}");
+        }
+        vt.write(b"\x1b[2 q");
+        vt.set_default_cursor(CursorStyle::Underline);
+        assert_eq!(shape(&mut vt), CursorShape::Block, "the program's block stays");
+    }
+
+    /// `CSI 0 SP q` and RIS go back to the setting, as in Ghostty and kitty,
+    /// including a setting changed while the program's shape was shown.
+    #[test]
+    fn a_reset_goes_back_to_the_setting() {
+        let mut vt = Vt::new(20, 3);
+        vt.set_default_cursor(CursorStyle::Underline);
+        vt.write(b"\x1b[2 q");
+        assert_eq!(shape(&mut vt), CursorShape::Block);
+        vt.write(b"\x1b[0 q");
+        assert_eq!(shape(&mut vt), CursorShape::Underline, "Ps 0");
+        vt.write(b"\x1b[6 q");
+        vt.set_default_cursor(CursorStyle::Beam);
+        vt.write(b"\x1b[ q");
+        assert_eq!(shape(&mut vt), CursorShape::Bar, "Ps left out is 0, to the newer setting");
+        vt.write(b"\x1b[4 q\x1bc");
+        assert_eq!(shape(&mut vt), CursorShape::Bar, "RIS");
+    }
+
+    /// A change made while a program is on the alternate screen reaches the
+    /// primary screen once the program leaves it, either way it leaves.
+    #[test]
+    fn a_change_on_the_alternate_screen_reaches_the_primary() {
+        for (enter, leave) in [(&b"\x1b[?1049h"[..], &b"\x1b[?1049l"[..]), (b"\x1b[?1047h", b"\x1b[?1047l"), (b"\x1b[?47h", b"\x1b[?47l")] {
+            let mut vt = Vt::new(20, 3);
+            vt.write(enter);
+            vt.set_default_cursor(CursorStyle::Beam);
+            assert_eq!(shape(&mut vt), CursorShape::Bar, "{enter:?}");
+            vt.write(leave);
+            assert_eq!(shape(&mut vt), CursorShape::Bar, "{leave:?}");
+            vt.set_default_cursor(CursorStyle::Underline);
+            vt.write(enter);
+            assert_eq!(shape(&mut vt), CursorShape::Underline, "{enter:?} again");
+        }
+    }
+
+    /// A change of the setting shows at once in a terminal whose program
+    /// hasn't picked a shape, and is news for a frame.
+    #[test]
+    fn a_changed_setting_shows_at_once() {
+        let mut vt = Vt::new(20, 3);
+        assert_eq!(shape(&mut vt), CursorShape::Block);
+        vt.set_default_cursor(CursorStyle::Beam);
+        assert!(vt.shows_change());
+        assert_eq!(shape(&mut vt), CursorShape::Bar);
+        vt.set_default_cursor(CursorStyle::Block);
+        assert_eq!(shape(&mut vt), CursorShape::Block);
+    }
+
+    /// At the default (`block`), shapes are libghostty's own, as before the
+    /// setting: libghostty is never told of one.
+    #[test]
+    fn the_block_default_draws_as_without_the_setting() {
+        let mut vt = Vt::new(20, 3);
+        // Away and back: block again is told to libghostty, not only remembered.
+        vt.set_default_cursor(CursorStyle::Beam);
+        vt.set_default_cursor(CursorStyle::Block);
+        let mut shapes = vec![shape(&mut vt)];
+        for seq in [&b"\x1b[6 q"[..], b"\x1b[0 q", b"\x1b[4 q", b"\x1bc", b"\x1b[5 q", b"\x1b[ q"] {
+            vt.write(seq);
+            shapes.push(shape(&mut vt));
+        }
+        use CursorShape::*;
+        assert_eq!(shapes, [Block, Bar, Block, Underline, Block, Bar, Block]);
+    }
 
     #[test]
     fn keyboard_selection_tracks_history_while_output_arrives() {

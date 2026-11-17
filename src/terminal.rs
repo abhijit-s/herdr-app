@@ -338,6 +338,7 @@ impl Grid {
 
     fn refresh_theme(&mut self, theme: &vt::Theme, cell: (u32, u32)) {
         self.vt.set_theme(theme.clone());
+        self.vt.set_default_cursor(crate::settings::get().cursor_style);
         if let Some(chan) = self.channel
             && let Some(facts) = display_update(&mut self.told_display, theme, cell)
         {

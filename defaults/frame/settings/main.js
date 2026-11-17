@@ -301,6 +301,13 @@ const FOCUS_WIDTHS = [
   [2, "2 px"],
   [3, "3 px"],
 ];
+// The terminals' cursor shape until a program sets its own (cursor_style); Block is the default, left out of settings.json.
+const CURSOR_STYLES = [
+  ["block", "Block"],
+  ["beam", "Beam"],
+  ["underline", "Underline"],
+  ["block_hollow", "Hollow block"],
+];
 // When a cursor trail is drawn (cursor_trail); Off is the default, left out of settings.json.
 const CURSOR_TRAILS = [
   ["off", "Off"],
@@ -1841,6 +1848,7 @@ export default class Settings extends View {
     const on = (this.person.cursor_trail ?? "off") !== "off";
     const jumps = this.person.cursor_trail === "all";
     const pulse = (this.person.cursor_arrival ?? "off") !== "off";
+    const shaped = (this.person.cursor_style ?? "block") !== "block";
     const clamp = (ms) => Math.max(TRAIL_MS[0], Math.min(TRAIL_MS[1], ms));
     const ms = clamp(this.person.cursor_trail_duration_ms ?? TRAIL_MS_DEFAULT);
     const step = (d, cx) =>
@@ -1884,7 +1892,8 @@ export default class Settings extends View {
     return v_flex()
       .w_full()
       .child(this.heading(t, "Cursor effects"))
-      .when((on || pulse) && !this.filtering(), (el) => el.child(this.cursorPreview(t)))
+      .when((on || pulse || shaped) && !this.filtering(), (el) => el.child(this.cursorPreview(t)))
+      .child(this.row(t, "Cursor style", "The cursor's shape in your terminals until a program sets its own, and again when it resets it. A pane without the focus shows a hollow box.", this.choicePicker(t, "st-cst", "cursor_style", CURSOR_STYLES), "cursor_style"))
       .child(this.row(t, "Cursor trail", "A trail from one pane's cursor to the next as the focus moves between panes, and with Panes and jumps, as the cursor jumps in the pane you're typing in.", this.choicePicker(t, "st-ct", "cursor_trail", CURSOR_TRAILS), "cursor_trail"))
       .when(on, (el) => el.child(this.row(t, "Trail style", "Comet: a glowing streak. Tail: the cursor stretched, as kitty does. Sweep: a block shrinking into the cursor. Warp: the cursor stretching and springing into place, after Neovide. Blaze: a flame-colored beam pulled into the cursor, after kitty; tapered, it narrows to a line.", this.choicePicker(t, "st-cs", "cursor_trail_style", TRAIL_STYLES), "cursor_trail_style")))
       .when(on, (el) => el.child(this.row(t, "Particles", "Pixie dust: glittering particles shed along the trail's path, flying off, falling and fading, with any trail style.", this.choicePicker(t, "st-cp", "cursor_trail_particles", PARTICLES), "cursor_trail_particles")))

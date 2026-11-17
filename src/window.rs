@@ -10673,6 +10673,123 @@ export default class Recent extends View {
     }
 
     #[test]
+    fn the_cursor_style_setting_shapes_panes_and_their_trails() {
+        in_own_process("cursor_style_in_panes");
+    }
+
+    /// Tab t: a | b, a focused, `cursor_trail: "panes"`. With `cursor_style`
+    /// a beam or an underline, the focused pane draws that shape and a trail
+    /// ends on it and starts from it; the pane without the focus keeps the
+    /// hollow box (its whole cell). A program's DECSCUSR still wins, and
+    /// `CSI 0 SP q` goes back to the setting.
+    #[gpui::test]
+    fn cursor_style_in_panes(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use crate::settings::{CursorStyle, CursorTrail};
+        use serde_json::json;
+        if !running_alone("cursor_style_in_panes") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        let set = |cx: &mut gpui::VisualTestContext, style: CursorStyle| {
+            view.update_in(cx, |this, window, cx| {
+                (this.person.cursor_style, this.person.cursor_trail, this.person.cursor_trail_duration_ms) = (style, CursorTrail::Panes, 1000);
+                this.apply_look(window, cx);
+            });
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                this.close_overlay(&id, window, cx);
+            }
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.select_tab("t");
+            this.model.focus_pane("a");
+            this.sync(window, cx);
+        });
+        cx.run_until_parked();
+        let end = |cx: &mut gpui::VisualTestContext, pane: &str| view.update(cx, |this, cx| this.terms[pane].view.read(cx).trail_end()).expect("drawn");
+        let focus = |cx: &mut gpui::VisualTestContext, pane: &str| {
+            view.update_in(cx, |this, window, cx| {
+                this.model.focus_pane(pane);
+                this.sync(window, cx);
+            });
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+        let feed = |cx: &mut gpui::VisualTestContext, pane: &str, bytes: &str| {
+            view.update(cx, |this, cx| {
+                this.terms[pane].view.clone().update(cx, |t, cx| {
+                    t.feed(bytes.as_bytes(), cx);
+                    cx.notify();
+                });
+            });
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+        let size = |b: gpui::Bounds<gpui::Pixels>| (f32::from(b.size.width), f32::from(b.size.height));
+
+        set(cx, CursorStyle::Block);
+        let cell = end(cx, "a").cell;
+        assert_eq!(end(cx, "a").cursor, cell, "block: the whole cell");
+
+        set(cx, CursorStyle::Beam);
+        let (a, b) = (end(cx, "a"), end(cx, "b"));
+        assert_eq!(size(a.cursor), (2.0, f32::from(a.cell.size.height)), "a, focused, draws the beam");
+        assert_eq!(a.cursor.origin, a.cell.origin, "at the cell's left");
+        assert_eq!(b.cursor, b.cell, "b, unfocused, keeps the hollow box");
+        focus(cx, "b");
+        let from = view.update(cx, |this, _| this.trail.as_ref().and_then(|t| t.from)).expect("a trail from a");
+        assert_eq!(from, super::cursor_shapes::quad(a.cursor), "from a's beam");
+        let b = end(cx, "b");
+        assert_eq!(size(b.cursor), (2.0, f32::from(b.cell.size.height)), "to b's beam, now focused");
+        assert_eq!(end(cx, "a").cursor, a.cell, "a, unfocused now, the hollow box");
+
+        set(cx, CursorStyle::Underline);
+        let b = end(cx, "b");
+        assert_eq!(size(b.cursor), (f32::from(b.cell.size.width), 2.0), "the underline");
+        assert_eq!(f32::from(b.cursor.origin.y), f32::from(b.cell.origin.y + b.cell.size.height) - 2.0, "at the cell's foot");
+        view.update(cx, |this, _| this.trail = None);
+        focus(cx, "a");
+        let from = view.update(cx, |this, _| this.trail.as_ref().and_then(|t| t.from)).expect("a trail from b");
+        assert_eq!(from, super::cursor_shapes::quad(b.cursor), "from b's underline");
+        let a = end(cx, "a");
+        assert_eq!(size(a.cursor), (f32::from(a.cell.size.width), 2.0), "to a's underline");
+
+        feed(cx, "a", "\x1b[6 q");
+        assert_eq!(size(end(cx, "a").cursor).0, 2.0, "the program's beam wins over the setting");
+        feed(cx, "a", "\x1b[0 q");
+        assert_eq!(size(end(cx, "a").cursor).1, 2.0, "Ps 0: the setting's underline again");
+
+        set(cx, CursorStyle::BlockHollow);
+        let a = end(cx, "a");
+        assert_eq!(a.cursor, a.cell, "the hollow box: the whole cell");
+
+        // With jumps and a pulse on, changing the setting reshapes the focused
+        // cursor but is no jump: a settings change only re-settles.
+        let all = |cx: &mut gpui::VisualTestContext, style: CursorStyle| {
+            view.update_in(cx, |this, window, cx| {
+                (this.person.cursor_style, this.person.cursor_trail, this.person.cursor_arrival, this.person.cursor_trail_settle_ms) = (style, CursorTrail::All, crate::settings::Arrival::Ripple, 10);
+                this.apply_look(window, cx);
+            });
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            cx.executor().advance_clock(std::time::Duration::from_millis(200));
+            cx.run_until_parked();
+        };
+        all(cx, CursorStyle::Block);
+        view.update(cx, |this, _| this.trail = None);
+        all(cx, CursorStyle::Beam);
+        assert_eq!(size(end(cx, "a").cursor).0, 2.0, "reshaped");
+        assert!(view.update(cx, |this, _| this.trail.is_none()), "no pulse for a settings change");
+    }
+
+    #[test]
     fn trail_frames_draw_the_trail_and_reuse_the_rest_of_the_window() {
         in_own_process("trail_frames");
     }

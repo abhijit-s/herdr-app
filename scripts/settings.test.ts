@@ -401,6 +401,21 @@ test("cursor effects sit on their own Cursor page, each writing its choice and l
   expect(shown).toContain("Appearance › Cursor|CURSOR EFFECTS|Arrival");
 });
 
+test("the cursor style picker writes its shape, leaves block out, and shows the preview", () => {
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "cursor");
+  expect(pick({}, "st-cst-Beam")).toEqual({ cursor_style: "beam" });
+  expect(pick({}, "st-cst-Underline")).toEqual({ cursor_style: "underline" });
+  expect(pick({ cursor_style: "beam" }, "st-cst-Hollow block")).toEqual({ cursor_style: "block_hollow" });
+  expect(pick({ cursor_style: "underline", zoom: 1.1 }, "st-cst-Block")).toEqual({ zoom: 1.1 });
+  const shown = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker", "shown?"], "cursor") !== undefined;
+  expect(shown({}, "st-cst-Beam")).toBe(true);
+  expect(shown({ cursor_trail: "all" }, "st-cst-Beam")).toBe(true);
+  const preview = (person: Record<string, any>) => click(person, {}, "st-cursor-preview", ["choicePicker", "shown?"], "cursor");
+  expect(preview({ cursor_style: "block" })).toBeUndefined();
+  expect(preview({ cursor_style: "beam" })).toBeDefined();
+  expect(texts(search("cursor_style").root).join("|")).toContain("Appearance › Cursor|CURSOR EFFECTS|Cursor| |style|");
+});
+
 test("trail style shows only while the trail is on; the arrival effect always", () => {
   const shown = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker", "shown?"], "cursor") !== undefined;
   expect(shown({}, "st-cs-Warp")).toBe(false);
