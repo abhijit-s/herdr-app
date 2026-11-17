@@ -79,7 +79,7 @@ export function playSound(sound: string): null;
  *   pane.zoom_text_in|zoom_text_out|zoom_text_reset {pane?} (a terminal pane's own text size, on top of the app's zoom),
  *   pane.focus {pane | terminal}, pane.refocus (the keyboard back to what has the focus, a focused mod pane included, after a mod took it), pane.go {direction},
  *   pane.swap {pane?, direction | target}, pane.resize {direction, pane?, px?},
- *   pane.rename {pane?, name} ("": unnamed again), pane.set_icon {pane?, icon} and tab.set_icon {id?, icon}
+ *   pane.rename {pane?, name?} (no name: the person is asked; "": unnamed again), pane.set_icon {pane?, icon} and tab.set_icon {id?, icon}
  *   (icon: {kind: "glyph" | "emoji", value} or {kind: "letter"}; null or absent: the automatic icon again),
  *   pane.menu {pane?} (the pane's menu at the pointer: the layout's terminal_menu mod, else menu).
  *   Pane menus get target { pane, terminal, cwd, selected? } (cwd: the terminal's folder or null;

@@ -5251,6 +5251,9 @@ impl AppWindow {
             if tab.zoomed.is_some() {
                 return Ok(());
             }
+            if tab.float(pane).is_some() {
+                return Err("a floating pane has no border: use pane.float_resize".into());
+            }
             let root = &tab.root;
             let path = root.path_to(pane).ok_or_else(|| format!("no pane {pane:?}"))?;
             if path.iter().any(|id| root.find(id).is_some_and(|n| n.hidden)) {
@@ -12307,8 +12310,11 @@ export default class Recent extends View {
             assert_eq!(auto_name("p1"), Some(json!(expected)), "turning it on publishes it");
             assert_eq!(auto_name("p2"), Some(json!(null)), "a running command names the pane");
             assert_eq!(prompt(this, "p1", window, cx), json!(expected), "Enter keeps the automatic name");
+            this.run("pane.rename", json!({ "pane": "p1" }), window, cx);
+            assert_eq!(this.copies["overlay:rename"].inst.props["hint"], json!("empty: its automatic name"));
+            this.run("pane.rename", json!({ "pane": "p1" }), window, cx);
 
-            // The window's own rename waits on the core's layout, which this one never has.
+            this.documents.entry(String::new()).or_default().available = true;
             assert!(this.run_as("pane.rename", json!({ "pane": "p1", "name": "build" }), false, window, cx).get("error").is_none());
             this.publish(cx);
             assert_eq!(auto_name("p1"), Some(json!(null)), "the person's name wins");
@@ -13103,6 +13109,11 @@ export default class Keeper extends View {
             assert!(this.run_as("pane.rename", json!({ "pane": "p2", "name": "" }), false, window, cx).get("error").is_none());
             assert_eq!(this.model.pane_name("p2"), None);
             assert!(this.run_as("pane.rename", json!({ "pane": "tb1", "name": "x" }), false, window, cx).get("error").is_some(), "a tab is no pane");
+            this.run("pane.rename", json!({ "pane": "p2" }), window, cx);
+            assert_eq!(this.copies["overlay:rename"].inst.props["hint"], json!("empty: unnamed"), "upstream's hint with no automatic name");
+            this.run("pane.rename", json!({ "pane": "p2" }), window, cx);
+            let r = this.run_as("pane.resize", json!({ "pane": "p2", "direction": "left" }), false, window, cx);
+            assert!(r["error"].as_str().is_some_and(|e| e.contains("pane.float_resize")), "{r}");
         }));
     }
 
