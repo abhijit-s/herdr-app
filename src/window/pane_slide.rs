@@ -1,19 +1,13 @@
-//! Pane slide (`pane_motion`): after an arrange, swap, split or close in the
-//! shown tab, its panes move from where they were to where they now are.
-//!
-//! The tree is laid out at its target at once; while the slide runs each
-//! block is drawn absolutely at its eased rect, and its terminal's grid keeps
-//! its old size (top left, clipped, the rest the pane's background), so each
-//! program is resized once, on landing. `land` is the one way out: the slide
-//! ending, any other layout change, a press, a tab switch or a new cell.
-//! Mods and `panes()` only ever see the target rects.
+//! Pane slide (`pane_motion`): see FORK.md, Pane slide.
 
 use super::*;
 use crate::terminal::TerminalView;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-/// The commands whose layout change slides; the rest land any slide first.
+/// The commands whose layout change slides.
 const SLIDES: [&str; 5] = ["pane.split", "pane.close", "pane.swap", "pane.arrange", "terminal.open"];
+/// Commands starting with these land a running slide first.
+const LANDS: [&str; 5] = ["pane.", "tab.", "space.", "layout.", "terminal.open"];
 
 /// The shown tab's blocks before a command that may slide them.
 pub(super) struct Before {
@@ -24,10 +18,9 @@ pub(super) struct Before {
 
 pub(super) struct Slide {
     tab: String,
-    /// The tree it slides to: once the tab shows any other, it lands.
     tree: Node,
     start: Instant,
-    ms: f32,
+    duration: Duration,
     /// The tiled tree's area in window coordinates, and what sized it.
     area: Bounds<Pixels>,
     cell: Size<Pixels>,
@@ -37,6 +30,9 @@ pub(super) struct Slide {
     blocks: Vec<(String, Bounds<Pixels>, Bounds<Pixels>)>,
     dividers: Vec<Divider>,
     frozen: Vec<Entity<TerminalView>>,
+    /// Blocks whose terminal isn't there yet (a split's starts with the core's
+    /// answer): frozen once it appears, so it never fits while it grows.
+    waiting: Vec<String>,
 }
 
 /// A container's line between two of its children, placed each frame from
@@ -116,8 +112,8 @@ impl Divider {
     fn rect(&self, at: &HashMap<&str, Bounds<Pixels>>, scale: f32) -> Option<Bounds<Pixels>> {
         let pick = |ids: &[String]| ids.iter().filter_map(|id| at.get(id.as_str()).copied()).collect::<Vec<_>>();
         let (before, after, across) = (pick(&self.before), pick(&self.after), pick(&self.across));
-        let max = |v: &[Bounds<Pixels>], f: fn(&Bounds<Pixels>) -> Pixels| v.iter().map(f).fold(None, |m: Option<Pixels>, x| Some(m.map_or(x, |m| m.max(x))));
-        let min = |v: &[Bounds<Pixels>], f: fn(&Bounds<Pixels>) -> Pixels| v.iter().map(f).fold(None, |m: Option<Pixels>, x| Some(m.map_or(x, |m| m.min(x))));
+        let max = |v: &[Bounds<Pixels>], f: fn(&Bounds<Pixels>) -> Pixels| v.iter().map(f).reduce(Pixels::max);
+        let min = |v: &[Bounds<Pixels>], f: fn(&Bounds<Pixels>) -> Pixels| v.iter().map(f).reduce(Pixels::min);
         let snap = |v: f32| px((v * scale).round() / scale);
         let (end, start) = if self.row { (max(&before, Bounds::right)?, min(&after, Bounds::left)?) } else { (max(&before, Bounds::bottom)?, min(&after, Bounds::top)?) };
         let at = snap((f32::from(end) + f32::from(start) - self.width) / 2.0);
@@ -134,7 +130,7 @@ impl Divider {
 
 impl Slide {
     fn progress(&self, now: Instant) -> f32 {
-        if self.ms <= 0.0 { 1.0 } else { now.saturating_duration_since(self.start).as_secs_f32() * 1000.0 / self.ms }
+        now.saturating_duration_since(self.start).as_secs_f32() / self.duration.as_secs_f32()
     }
 
     /// Where `block` is published while the slide runs: its target, in window coordinates.
@@ -144,6 +140,11 @@ impl Slide {
 
     pub(super) fn shows(&self, tab: &str) -> bool {
         self.tab == tab
+    }
+
+    #[cfg(test)]
+    pub(super) fn waiting(&self) -> &[String] {
+        &self.waiting
     }
 }
 
@@ -173,7 +174,7 @@ impl AppWindow {
     /// Before command `name`: lands a slide it would disturb, and notes the
     /// blocks it may slide.
     pub(super) fn slide_before(&mut self, name: &str, window: &Window, cx: &mut Context<Self>) -> Option<Before> {
-        if ["pane.", "tab.", "space.", "layout.", "terminal.open"].iter().any(|p| name.starts_with(p)) {
+        if LANDS.iter().any(|p| name.starts_with(p)) {
             self.land(cx);
         }
         if !SLIDES.contains(&name) || settings::get().pane_motion == settings::PaneMotion::None || cx.reduce_motion() {
@@ -185,10 +186,7 @@ impl AppWindow {
         Some(Before { tab: tab.id.clone(), tree: tab.shown().clone(), slots: slots.into_iter().collect() })
     }
 
-    /// After the command: slides the shown tab from `before` to its new
-    /// layout, unless it lands at once (another tab, zoomed, drawn with
-    /// chrome between its blocks, nothing moving, or more than
-    /// `pane_motion_max_panes` moving).
+    /// After the command: slides the shown tab from `before` to its new layout.
     pub(super) fn slide_after(&mut self, before: Before, window: &Window, cx: &mut Context<Self>) {
         let s = settings::get();
         let Some(tab) = self.model.active_tab().filter(|t| t.id == before.tab && t.zoomed.is_none()) else { return };
@@ -211,23 +209,19 @@ impl AppWindow {
         }
         let mut lines = Vec::new();
         dividers(tree, zoom, &mut lines);
-        let mut frozen = Vec::new();
+        let (mut frozen, mut waiting) = (Vec::new(), Vec::new());
         for (id, ..) in &blocks {
-            let Some(t) = self.pane_term(id) else { continue };
-            // A new terminal starts at its landing size, so it is sized once.
-            if !before.slots.contains_key(id)
-                && let Some(area) = self.shown_area(tab, id)
-            {
-                t.view.read(cx).fit(area, window);
+            match self.freeze(tab, id, !before.slots.contains_key(id), window, cx) {
+                Some(view) => frozen.push(view),
+                None if tree.find(id).is_some_and(|n| n.terminal().is_some()) => waiting.push(id.clone()),
+                None => {}
             }
-            t.view.read(cx).set_frozen(true);
-            frozen.push(t.view.clone());
         }
         self.slide = Some(Slide {
             tab: tab.id.clone(),
             tree: tree.clone(),
             start: Instant::now(),
-            ms: s.pane_motion_duration().as_secs_f32() * 1000.0,
+            duration: s.pane_motion_duration(),
             area,
             cell: crate::terminal::cell_size(window),
             scale: window.scale_factor(),
@@ -235,8 +229,20 @@ impl AppWindow {
             blocks,
             dividers: lines,
             frozen,
+            waiting,
         });
         cx.notify();
+    }
+
+    /// Freezes the terminal `id` shows, if it has one yet; a `new` one is
+    /// first fitted where it lands, so it is sized once.
+    fn freeze(&self, tab: &Tab, id: &str, new: bool, window: &Window, cx: &App) -> Option<Entity<TerminalView>> {
+        let view = self.pane_term(id)?.view.clone();
+        if new && let Some(area) = self.shown_area(tab, id) {
+            view.read(cx).fit(area, window);
+        }
+        view.read(cx).set_frozen(true);
+        Some(view)
     }
 
     /// Each draw, before the layout: lands a slide that is done or whose tab,
@@ -252,6 +258,19 @@ impl AppWindow {
             && self.model.active_tab().and_then(|t| self.tab_area(t.panes().len())).is_some_and(|(area, _)| area == slide.area);
         if !still {
             return self.land(cx);
+        }
+        let waiting = std::mem::take(&mut self.slide.as_mut().unwrap().waiting);
+        if let Some(tab) = self.model.active_tab() {
+            let (mut frozen, mut left) = (Vec::new(), Vec::new());
+            for id in waiting {
+                match self.freeze(tab, &id, true, window, cx) {
+                    Some(view) => frozen.push(view),
+                    None => left.push(id),
+                }
+            }
+            let slide = self.slide.as_mut().unwrap();
+            slide.frozen.extend(frozen);
+            slide.waiting = left;
         }
         let app = cx.entity().downgrade();
         window.on_next_frame(move |_, cx| {

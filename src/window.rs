@@ -11239,6 +11239,30 @@ export default class Recent extends View {
         run(cx, "pane.arrange", json!({ "mode": "rows" }));
         assert!(!sliding(cx), "more panes moving than the cap land at once");
         motion(PaneMotion::Basic, 16);
+        // A terminal that isn't there yet when its pane starts sliding (a split's
+        // starts with the core's answer) is frozen once it appears, sized once.
+        let held = view.update(cx, |this, _| this.terms.remove("d").unwrap());
+        let waiting = view.update_in(cx, |this, window, cx| {
+            // The seam alone: `run_as`'s sync would attach d at once.
+            let before = this.slide_before("pane.arrange", window, cx).unwrap();
+            this.model.arrange_tab("t", crate::arrange::Mode::Columns).unwrap();
+            this.slide_after(before, window, cx);
+            this.slide.as_ref().map(|s| s.waiting().to_vec())
+        });
+        assert_eq!(waiting, Some(vec!["d".to_owned()]));
+        view.update(cx, |this, cx| {
+            this.terms.insert("d".into(), held);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.slide.as_ref().map(|s| s.waiting().len())), Some(0), "d is frozen once it appears");
+        let appeared = resizes(cx)[3];
+        view.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert_eq!(resizes(cx)[3], appeared, "and isn't fitted again mid-slide");
+        view.update(cx, |this, cx| this.land(cx));
+        cx.run_until_parked();
+        assert_eq!(resizes(cx)[3], appeared, "it was already at its landing size");
         run(cx, "pane.close", json!({ "pane": "e" }));
         assert!(sliding(cx), "close slides the rest into the space");
         view.update(cx, |this, cx| this.land(cx));
