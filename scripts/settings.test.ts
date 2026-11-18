@@ -1780,3 +1780,21 @@ test("mods: a click shows what setModSetting handed back at once, before Herdr r
   resetMods();
 });
 
+test("search indexes again after a change to only a mod's settings, and finds the new value", () => {
+  resetMods();
+  const { view } = search("card info");
+  let builds = 0;
+  const build = view.buildIndex.bind(view);
+  view.buildIndex = (...a: any[]) => { builds++; return build(...a); };
+  view.results(t, searchCx);
+  expect(builds).toBe(0);
+  // Herdr installs new values for one mod: settings() and settings.json's other keys are as they were.
+  modDisk.demo = { look: "b" };
+  const drawn = view.results(t, searchCx);
+  expect(builds).toBe(1);
+  expect(texts(drawn)).toContain("Mods › Agents");
+  view.results(t, searchCx);
+  expect(builds).toBe(1);
+  resetMods();
+});
+

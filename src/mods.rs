@@ -1593,13 +1593,22 @@ fn module(inst: Instance, copy: u64) -> HostModule {
             let schema_defaults = |name: &str| crate::mod_settings::read_schema(&crate::mod_settings::dir_of(name)).map(|s| crate::mod_settings::defaults(&crate::mod_settings::declared(&s))).unwrap_or_default();
             let own = schema_defaults(&inst.name);
             let name = inst.name.clone();
+            let reads = reads.clone();
             move |a| {
                 let other = a.get(0).and_then(HostValue::as_str).filter(|_| name.starts_with("frame-")).map(str::to_owned);
                 let (defaults, of) = match &other {
                     Some(m) => (schema_defaults(m), m.as_str()),
                     None => (own.clone(), name.as_str()),
                 };
+                record(&reads, &crate::mod_settings::read_key(of));
                 Ok(to_host(&crate::mod_settings::merged(&defaults, &crate::settings::get().mods, of)))
+            }
+        })
+        .async_function("nextModSettings", {
+            let changes = crate::mod_settings::listen(&inst.name, crate::mod_settings::read_schema(&crate::mod_settings::dir_of(&inst.name)).map(|s| crate::mod_settings::defaults(&crate::mod_settings::declared(&s))).unwrap_or_default());
+            move |_| {
+                let rx = changes.clone();
+                Ok(async move { rx.recv().await.map(|v| to_host(&v)).map_err(|_| HostError::new("herdr-app is shutting down")) })
             }
         })
         .function("setModSetting", {

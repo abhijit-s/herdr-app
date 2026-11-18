@@ -143,6 +143,59 @@ pub fn merged(defaults: &Map<String, Value>, mods: &Map<String, Value>, name: &s
     Value::Object(values)
 }
 
+/// What a mod copy's render reads with `modSettings()`: a change redraws the
+/// copies that read it, and only those.
+pub fn read_key(name: &str) -> String {
+    format!("mod_settings\u{0}{name}")
+}
+
+type Listener = (String, Map<String, Value>, async_channel::Sender<Value>);
+
+thread_local! {
+    static LISTENERS: std::cell::RefCell<Vec<Listener>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `nextModSettings()` for one loaded copy of mod `name`: its merged values
+/// each time they change.
+pub fn listen(name: &str, defaults: Map<String, Value>) -> async_channel::Receiver<Value> {
+    let (tx, rx) = async_channel::unbounded();
+    LISTENERS.with_borrow_mut(|listeners| {
+        listeners.retain(|(_, _, tx)| !tx.is_closed());
+        listeners.push((name.to_owned(), defaults, tx));
+    });
+    rx
+}
+
+/// The mods whose values differ between two maps from `stored`, by name.
+pub fn changed_mods(before: &Map<String, Value>, after: &Map<String, Value>) -> Vec<String> {
+    let mut names: Vec<&String> = before.keys().chain(after.keys()).collect();
+    names.sort();
+    names.dedup();
+    names.into_iter().filter(|n| before.get(*n) != after.get(*n)).cloned().collect()
+}
+
+/// After settings load with new mod values: each mod whose values changed gets
+/// them (`nextModSettings()`), and the copies that read them redraw. Returns
+/// whether any changed.
+pub fn notify_changes(before: &Map<String, Value>, after: &Map<String, Value>) -> bool {
+    let names = changed_mods(before, after);
+    if names.is_empty() {
+        return false;
+    }
+    LISTENERS.with_borrow_mut(|listeners| {
+        listeners.retain(|(_, _, tx)| !tx.is_closed());
+        for (name, defaults, tx) in listeners.iter() {
+            if names.contains(name) {
+                let _ = tx.try_send(merged(defaults, after, name));
+            }
+        }
+    });
+    for name in &names {
+        crate::mods::bump_revision(&read_key(name));
+    }
+    true
+}
+
 /// What `modSchemas()` gives the Settings window: each mod folder whose schema
 /// declares settings, by name, with its title (mod.json's, else the folder's)
 /// and the declared settings in schema order.
@@ -216,6 +269,33 @@ mod tests {
         let mods = stored(&person);
         assert_eq!(text(&mods, "pane", "header_info").as_deref(), Some("{state}"), "an older settings.json keeps its value");
         assert_eq!(text(&mods, "agents", "card_info").as_deref(), Some("{space}"), "the new key wins");
+    }
+
+    /// A change tells only the mods whose values changed, each with its merged
+    /// values, and redraws only the copies that read them; the same values
+    /// again tell nobody.
+    #[test]
+    fn only_the_mod_whose_values_changed_is_told() {
+        std::thread::spawn(|| {
+            let a = listen("a", json!({ "x": 1, "y": true }).as_object().unwrap().clone());
+            let b = listen("b", Map::new());
+            let before = json!({ "a": { "x": 2 }, "b": { "z": "same" } }).as_object().unwrap().clone();
+            let after = json!({ "a": { "x": 3 }, "b": { "z": "same" } }).as_object().unwrap().clone();
+            let (ra, rb) = (crate::mods::revision(&read_key("a")), crate::mods::revision(&read_key("b")));
+            assert!(notify_changes(&before, &after));
+            assert_eq!(a.try_recv().unwrap(), json!({ "x": 3, "y": true }), "merged over its defaults");
+            assert!(b.try_recv().is_err(), "b's values didn't change: nothing");
+            assert_eq!(crate::mods::revision(&read_key("a")), ra + 1);
+            assert_eq!(crate::mods::revision(&read_key("b")), rb, "copies reading only b don't redraw");
+            assert!(!notify_changes(&after, &after), "no change: no event");
+            assert!(a.try_recv().is_err());
+            let gone = json!({ "b": { "z": "same" } }).as_object().unwrap().clone();
+            assert!(notify_changes(&after, &gone));
+            assert_eq!(a.try_recv().unwrap(), json!({ "x": 1, "y": true }), "back to the defaults");
+            assert_eq!(changed_mods(&before, &json!({ "c": {} }).as_object().unwrap().clone()), vec!["a", "b", "c"]);
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

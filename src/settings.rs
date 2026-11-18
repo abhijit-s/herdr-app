@@ -923,6 +923,30 @@ mod derivation_tests {
         assert!(!settings_js.contains(crate::header_info::default_card_info()), "the Settings window takes the default from the agents mod's schema");
     }
 
+    /// A settings load that changes only a mod's own values isn't a change
+    /// for every mod (`set` says false, so nothing redraws them all), yet the
+    /// values are installed and that mod's readers are told. One that moves an
+    /// app-read setting (header info) still is.
+    #[test]
+    fn a_mod_only_change_redraws_only_that_mod() {
+        std::thread::spawn(|| {
+            let compose = |v: serde_json::Value| Settings::compose(&serde_json::from_value(v).unwrap(), &crate::layout::Look::default(), true);
+            set(compose(serde_json::json!({})));
+            let events = crate::mod_settings::listen("demo", serde_json::Map::new());
+            let seen = crate::mods::revision(&crate::mod_settings::read_key("demo"));
+            assert!(!set(compose(serde_json::json!({ "mods": { "demo": { "on": true } } }))), "no redraw of every mod");
+            assert_eq!(get().mods["demo"], serde_json::json!({ "on": true }), "but the values are the new ones");
+            assert_eq!(events.try_recv().unwrap(), serde_json::json!({ "on": true }));
+            assert_eq!(crate::mods::revision(&crate::mod_settings::read_key("demo")), seen + 1);
+            assert!(!set(compose(serde_json::json!({ "mods": { "demo": { "on": true } } }))));
+            assert!(events.try_recv().is_err(), "the same values again: nothing");
+            assert!(set(compose(serde_json::json!({ "mods": { "demo": { "on": true }, "pane": { "header_info": "{state}" } } }))), "header info is the app's to resolve: every mod redraws");
+            assert!(set(compose(serde_json::json!({ "zoom": 1.2, "mods": { "demo": { "on": true }, "pane": { "header_info": "{state}" } } }))));
+        })
+        .join()
+        .unwrap();
+    }
+
     /// Header and card info live in `mods.pane` and `mods.agents`; the
     /// top-level keys they moved from are read while the new ones are unset,
     /// and a value under `mods` wins. Non-text there falls back to the
@@ -3430,7 +3454,19 @@ pub fn set(s: Settings) -> bool {
         PALETTE.set((p, own));
         FOR_MODS.set(std::sync::Arc::new(s.for_mods()));
         TOAST_LOOKS.set(std::sync::Arc::new(s.toast_looks()));
-        if *c.borrow().0 == s && *c.borrow().1 == theme {
+        // Mods' own values tell only those mods (and redraw the copies that
+        // read them), not every mod: the rest of the settings decide that.
+        let mods_changed = crate::mod_settings::notify_changes(&c.borrow().0.mods, &s.mods);
+        let same_but_mods = mods_changed && {
+            let mut old = (*c.borrow().0).clone();
+            old.mods = s.mods.clone();
+            old == s
+        };
+        if (*c.borrow().0 == s || same_but_mods) && *c.borrow().1 == theme {
+            if same_but_mods {
+                c.borrow_mut().0 = Rc::new(s);
+                crate::mods::request(crate::mods::Request::Changed);
+            }
             return false;
         }
         let (pixels, text) = s.mod_scales();

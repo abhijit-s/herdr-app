@@ -245,7 +245,7 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
     module = module.function("modSettings", |_| Ok(to_host(&serde_json::json!({}))));
     module = module.function("modSchemas", |_| Ok(to_host(&serde_json::json!([]))));
     module = module.function("setModSetting", |_| Ok(HostValue::Null));
-    for name in ["nextCommand", "nextGitStatus", "nextSystemNotificationClick"] {
+    for name in ["nextCommand", "nextGitStatus", "nextSystemNotificationClick", "nextModSettings"] {
         module = module.async_function(name, |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
     }
     module = module.cancellable_async_function("watchFolder", HostValue::Array(vec![]), |_| Ok(std::future::pending::<gpui_shell::HostResult>()));

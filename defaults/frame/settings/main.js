@@ -933,8 +933,9 @@ export default class Settings extends View {
   // Every page with a match, each showing only its matches under their headings.
   results(t, cx) {
     // What the pages draw from: descriptions and conditional rows follow it (an
-    // update check, a theme's panels), so a change means a new index.
-    const from = JSON.stringify([settings(), updates(), telemetry(), layoutSpacing(), this.person, this.machineList, this.layoutFile?.name, this.layoutFile?.raw]);
+    // update check, a theme's panels, a mod's settings: reading them here also redraws search
+    // when only they change), so a change means a new index.
+    const from = JSON.stringify([settings(), updates(), telemetry(), layoutSpacing(), this.person, this.machineList, this.layoutFile?.name, this.layoutFile?.raw, MOD_SCHEMAS.map((m) => modSettings(m.mod))]);
     if (!this.index || this.indexStale || from !== this.indexedFrom) this.buildIndex(t, cx);
     this.indexedFrom = from;
     const m = this.match();
