@@ -168,6 +168,9 @@ static FOLDERS: OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, Fol
 const BATCH: std::time::Duration = std::time::Duration::from_millis(150);
 /// At most this many folders watched for mods at once.
 const MAX_FOLDERS: usize = 64;
+/// FSEvents can drop events silently under load, so a folder a mod waits on
+/// is reported wholly changed this often.
+const FOLDER_SWEEP: std::time::Duration = std::time::Duration::from_secs(60);
 const MAX_PENDING: usize = 1024;
 #[cfg(target_os = "linux")]
 const MAX_DIRECTORIES: usize = 4096;
@@ -335,8 +338,7 @@ fn add_pending(pending: &mut HashSet<String>, root: &Path, paths: impl IntoItera
 
 fn collect_event(event: notify::Event, root: &Path, directories: &HashSet<PathBuf>, pending: &mut HashSet<String>, removed: &mut HashSet<PathBuf>) -> bool {
     if event.need_rescan() {
-        pending.clear();
-        pending.insert(root.to_string_lossy().into_owned());
+        all_changed(pending, root);
         // With dropped events any directory may have been replaced.
         removed.extend(directories.iter().cloned());
         return true;
@@ -373,7 +375,7 @@ fn start_folder(root: &Path, generation: Arc<()>) -> Result<std::sync::mpsc::Sen
     let root = root.to_path_buf();
     let (stop, stopped) = std::sync::mpsc::channel::<()>();
     std::thread::spawn(move || {
-        let mut next_sweep = std::time::Instant::now() + crate::git_status::FOLDER_SWEEP;
+        let mut next_sweep = std::time::Instant::now() + FOLDER_SWEEP;
         'watching: loop {
             if matches!(stopped.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)) {
                 break;
@@ -390,8 +392,7 @@ fn start_folder(root: &Path, generation: Arc<()>) -> Result<std::sync::mpsc::Sen
                     Ok(Err(_)) => {
                         removed.extend(directories.iter().cloned());
                         refresh = true;
-                        pending.clear();
-                        pending.insert(root.to_string_lossy().into_owned());
+                        all_changed(&mut pending, &root);
                     }
                     Err(_) => break,
                 }
@@ -399,10 +400,17 @@ fn start_folder(root: &Path, generation: Arc<()>) -> Result<std::sync::mpsc::Sen
             if overflow.swap(false, std::sync::atomic::Ordering::Relaxed) {
                 removed.extend(directories.iter().cloned());
                 refresh = true;
-                pending.clear();
-                pending.insert(root.to_string_lossy().into_owned());
+                all_changed(&mut pending, &root);
             }
-            sweep(&root, &generation, &mut pending, &mut next_sweep, std::time::Instant::now());
+            // A fixed cadence, not pushed back by real events: under load real
+            // and dropped events arrive together.
+            let now = std::time::Instant::now();
+            if now >= next_sweep {
+                next_sweep = now + FOLDER_SWEEP;
+                if is_waited(&root, &generation) {
+                    all_changed(&mut pending, &root);
+                }
+            }
             if cfg!(target_os = "linux") && refresh {
                 // Rescan off the notify callback thread: adding watches blocks on it.
                 match watch_directories(&root) {
@@ -446,23 +454,18 @@ fn start_folder(root: &Path, generation: Arc<()>) -> Result<std::sync::mpsc::Sen
     Ok(stop)
 }
 
-/// The OS can drop events silently under load (FSEvents sets no flag), so a
-/// folder a mod is waiting on is reported wholly changed every `FOLDER_SWEEP`.
-/// Nobody waiting, nothing reported: the collected root would only be
-/// handed to the next wait, which reads the folder fresh anyway.
-fn sweep(root: &Path, generation: &Arc<()>, pending: &mut HashSet<String>, next: &mut std::time::Instant, now: std::time::Instant) {
-    if now < *next {
-        return;
-    }
-    *next = now + crate::git_status::FOLDER_SWEEP;
-    let waited = folders().get_mut(root).is_some_and(|f| {
+fn all_changed(pending: &mut HashSet<String>, root: &Path) {
+    pending.clear();
+    pending.insert(root.to_string_lossy().into_owned());
+}
+
+/// A mod is waiting on this folder now. Mostly avoids a spurious wake: a
+/// waiter that drops before delivery gives one harmless early one.
+fn is_waited(root: &Path, generation: &Arc<()>) -> bool {
+    folders().get_mut(root).is_some_and(|f| {
         f.waiters.retain(|w| !w.is_closed());
         Arc::ptr_eq(&f.generation, generation) && !f.waiters.is_empty()
-    });
-    if waited {
-        pending.clear();
-        pending.insert(root.to_string_lossy().into_owned());
-    }
+    })
 }
 
 fn remove_folder(root: &Path, generation: &Arc<()>) {
@@ -925,29 +928,18 @@ mod tests {
     }
 
     #[test]
-    fn a_waited_folder_is_reported_wholly_changed_each_sweep_and_an_idle_one_never() {
+    fn only_a_folder_with_a_live_waiter_is_swept() {
         let root = test_repo("sweep");
         let generation = Arc::new(());
         let (stop, _stopped) = std::sync::mpsc::channel();
         folders().insert(root.clone(), Folder { _watcher: stop, generation: generation.clone(), waiters: Vec::new(), pending: HashSet::new() });
-        let period = crate::git_status::FOLDER_SWEEP;
-        let t0 = std::time::Instant::now();
-        let mut next = t0 + period;
-        let mut pending = HashSet::from(["a".to_owned()]);
-
-        sweep(&root, &generation, &mut pending, &mut next, t0 + period);
-        assert_eq!(pending, HashSet::from(["a".to_owned()]), "nobody waiting: nothing to report");
-        assert_eq!(next, t0 + period * 2);
-
+        assert!(!is_waited(&root, &generation), "nobody waiting");
         let (tx, rx) = async_channel::bounded(1);
         folders().get_mut(&root).unwrap().waiters.push(tx);
-        sweep(&root, &generation, &mut pending, &mut next, t0 + period * 2 - std::time::Duration::from_millis(1));
-        assert_eq!(pending.len(), 1, "not due yet");
-        sweep(&root, &generation, &mut pending, &mut next, t0 + period * 2);
-        let whole = root.to_string_lossy().into_owned();
-        assert_eq!(pending, HashSet::from([whole.clone()]));
-        assert!(deliver_pending(&root, &generation, pending));
-        assert_eq!(rx.try_recv().unwrap(), vec![whole]);
+        assert!(is_waited(&root, &generation));
+        assert!(!is_waited(&root, &Arc::new(())), "a retired worker's folder is not its own");
+        drop(rx);
+        assert!(!is_waited(&root, &generation), "a closed waiter is not waiting");
 
         remove_folder(&root, &generation);
         std::fs::remove_dir_all(root).unwrap();

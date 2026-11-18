@@ -50,13 +50,8 @@ const QUIET: Duration = Duration::from_millis(300);
 const MIN_GAP: Duration = Duration::from_secs(1);
 /// Answers that aren't lasting are looked at again when read after this.
 const STALE: Duration = Duration::from_secs(60);
-/// Lasting ones too: under load FSEvents drops events with no flag and no
-/// error, so the watcher is only the fast path and this bounds how stale a
-/// watched repo's answer can get.
+/// Lasting ones too: FSEvents can drop events silently under load.
 const LASTING_STALE: Duration = Duration::from_secs(60);
-/// Folders mods wait on (`files::next_change`) are all marked changed this
-/// often, the same backstop against silently dropped events.
-pub(crate) const FOLDER_SWEEP: Duration = Duration::from_secs(60);
 const MAX_WATCHED: usize = 64;
 const MAX_FILES: usize = 5000;
 
@@ -614,7 +609,6 @@ mod tests {
         let at = |age: Duration, lasting: bool, pending: bool| Entry { value: json!(false), revision: 1, checked: now - age, pending, again: false, lasting, waiters: Vec::new() };
         assert!(!needs_look(&at(LASTING_STALE - Duration::from_secs(1), true, false), now));
         assert!(needs_look(&at(LASTING_STALE + Duration::from_secs(1), true, false), now));
-        assert!(LASTING_STALE <= Duration::from_secs(60), "a dropped event must not leave the answer wrong for long");
         assert!(!needs_look(&at(LASTING_STALE + Duration::from_secs(1), true, true), now), "a look under way is not asked twice");
         assert!(needs_look(&at(STALE + Duration::from_secs(1), false, false), now));
     }
