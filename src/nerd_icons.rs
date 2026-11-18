@@ -1,5 +1,6 @@
-//! How Nerd Font icons from the bundled Symbols Nerd Font fit their cells:
-//! Ghostty's constraints (`src/font/Glyph.zig` `constrain`), with its
+//! How symbols, and Nerd Font icons from the bundled Symbols Nerd Font, fit
+//! their cells: Ghostty's symbol set and constraint width
+//! (`src/renderer/cell.zig`) and its constraints (`src/font/Glyph.zig` `constrain`), with its
 //! per-range rules from `src/font/nerd_font_tables.zig`, which
 //! `src/font/nerd_font_codegen.py` generates from Nerd Fonts' font-patcher.
 
@@ -167,9 +168,33 @@ pub fn fit(rule: Rule, ink: (f32, f32), face: Face, cell_width: f32, cells: u8) 
 }
 
 /// Ghostty's constraint width: two cells when the next is blank, unless the
-/// cell is the row's last or follows another icon, so runs of icons line up.
-pub fn cells(next_blank: bool, last: bool, after_icon: bool) -> u8 {
-    if next_blank && !last && !after_icon { 2 } else { 1 }
+/// cell is the row's last or follows another symbol, so runs of them line up.
+pub fn cells(next_blank: bool, last: bool, after_symbol: bool) -> u8 {
+    if next_blank && !last && !after_symbol { 2 } else { 1 }
+}
+
+/// The blocks Ghostty counts as symbols besides private use
+/// (`src/build/uucode_config.zig` `IsSymbolComponent`): Arrows, Enclosed
+/// Alphanumerics, Miscellaneous Symbols, Dingbats, Enclosed Alphanumeric
+/// Supplement, Miscellaneous Symbols and Pictographs, Emoticons, Transport
+/// and Map Symbols.
+const SYMBOL_BLOCKS: &[RangeInclusive<u32>] = &[
+    0x2190..=0x21FF,
+    0x2460..=0x24FF,
+    0x2600..=0x26FF,
+    0x2700..=0x27BF,
+    0x1F100..=0x1F1FF,
+    0x1F300..=0x1F5FF,
+    0x1F600..=0x1F64F,
+    0x1F680..=0x1F6FF,
+];
+
+/// Whether Ghostty fits `c` to its cells (and lets it take two before a
+/// blank): private use and the symbol blocks. Anything else draws as its
+/// font draws it.
+pub fn is_symbol(c: char) -> bool {
+    let c = c as u32;
+    matches!(c, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD) || SYMBOL_BLOCKS.iter().any(|block| block.contains(&c))
 }
 
 #[cfg(test)]
@@ -268,6 +293,16 @@ mod tests {
         assert!((narrow.y + h / 2.0 - (1.5 + f.height / 2.0)).abs() < 1e-3, "centred on the face");
         let wide = fit(ICON, (12.0, 12.0), f, 9.0, 2);
         assert_eq!(wide.x, 0.0, "wider than its first cell, it starts there and never left of it");
+    }
+
+    #[test]
+    fn symbols_are_ghosttys_blocks_and_private_use() {
+        for c in ['❯', '✻', '★', '☀', '→', '①', '🚀', '\u{f015}', '\u{f0219}'] {
+            assert!(is_symbol(c), "{c}");
+        }
+        for c in ['⏺', '◐', '∑', 'a', '界', '─'] {
+            assert!(!is_symbol(c), "{c}");
+        }
     }
 
     #[test]
