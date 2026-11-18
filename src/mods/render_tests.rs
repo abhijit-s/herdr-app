@@ -206,7 +206,7 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
         shared.borrow_mut().shared.insert(a.string(0)?.into(), from_host(a.value(1)?));
         Ok(HostValue::Null)
     });
-    for name in ["run", "playSound", "setAgentOrder", "setWindowTitle", "setBadge", "openOverlay", "closeOverlay", "notify", "presentUpdateNotes"] {
+    for name in ["run", "playSound", "setAgentOrder", "setWindowTitle", "setBadge", "systemNotify", "withdrawSystemNotification", "openOverlay", "closeOverlay", "notify", "presentUpdateNotes"] {
         let calls = calls.clone();
         module = module.function(name, move |a| {
             if name == "run" {
@@ -245,7 +245,7 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
     module = module.function("modSettings", |_| Ok(to_host(&serde_json::json!({}))));
     module = module.function("modSchemas", |_| Ok(to_host(&serde_json::json!([]))));
     module = module.function("setModSetting", |_| Ok(HostValue::Null));
-    for name in ["nextCommand", "nextGitStatus"] {
+    for name in ["nextCommand", "nextGitStatus", "nextSystemNotificationClick"] {
         module = module.async_function(name, |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
     }
     module = module.cancellable_async_function("watchFolder", HostValue::Array(vec![]), |_| Ok(std::future::pending::<gpui_shell::HostResult>()));

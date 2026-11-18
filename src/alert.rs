@@ -1,30 +1,92 @@
-//! Alerts outside the window: a system notification, or the person's own
-//! `alert_command` in its place. The toast and the sounds stay in window.rs.
+//! System notifications mods post (`systemNotify`). Each carries the posting
+//! mod's name in its tag, so a click goes back to that mod, also a click on one
+//! from an earlier run (it can start Herdr): that one is held until a mod with
+//! that name loads.
+//!
+//! Fork: an agent notification's look (`systemNotify({ agent })`: the person's
+//! notification sounds, marks and program icons), the toast titles, and
+//! `system.notify` for programs.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
 
 use gpui::{App, SystemNotification, SystemNotificationSound};
 use serde_json::Value;
 
 use crate::model::Alert;
 use crate::notification_icon::Source;
-use crate::settings::{AlertCommand, Settings, SystemNotifications};
+use crate::settings::{Settings, SystemNotifications};
 
-/// One alert, as the notification and the command see it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Note {
-    pub address: String,
-    pub alert: Alert,
-    /// The status word the agent left.
-    pub prev: Option<String>,
-    pub app: Option<String>,
-    pub name: String,
-    /// "space / tab", as the toast shows it.
-    pub place: Option<String>,
-    /// What the agent's 7501 report said with it.
-    pub said: Said,
+const PREFIX: &str = "herdr-mod/";
+
+/// The tag the system sees: a mod's own tag, scoped to the mod, so two mods
+/// never replace each other's notifications. Mod names are folder names, so
+/// they hold no `/`.
+pub fn system_tag(mod_name: &str, tag: &str) -> String {
+    format!("{PREFIX}{mod_name}/{tag}")
+}
+
+fn parse(system_tag: &str) -> Option<(&str, &str)> {
+    let (name, tag) = system_tag.strip_prefix(PREFIX)?.split_once('/')?;
+    (!name.is_empty()).then_some((name, tag))
+}
+
+pub fn notification(mod_name: &str, tag: &str, title: String, body: String) -> SystemNotification {
+    SystemNotification { tag: system_tag(mod_name, tag).into(), title: title.into(), body: body.into(), actions: Vec::new(), ..Default::default() }
+}
+
+/// What Settings > Alerts sends on request: the person is there when macOS
+/// asks for permission, so no mod's notification is the one lost to the
+/// question.
+pub fn test_notification() -> SystemNotification {
+    SystemNotification {
+        tag: "herdr-test".into(),
+        title: "Herdr can reach you here".into(),
+        body: "Mods that post system notifications show like this.".into(),
+        actions: Vec::new(),
+        ..Default::default()
+    }
+}
+
+thread_local! {
+    /// Where each loaded copy's clicks go: (mod, sender).
+    static LISTENERS: RefCell<Vec<(String, async_channel::Sender<String>)>> = const { RefCell::new(Vec::new()) };
+    /// Clicks for a mod not loaded yet: (mod, tag).
+    static HELD: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Clicks on the notifications `mod_name` posted, for one loaded copy. Clicks
+/// held for that mod go to it now.
+pub fn listen(mod_name: &str) -> async_channel::Receiver<String> {
+    let (tx, rx) = async_channel::unbounded();
+    HELD.with_borrow_mut(|held| {
+        held.retain(|(name, tag)| name != mod_name || tx.try_send(tag.clone()).is_err());
+    });
+    LISTENERS.with_borrow_mut(|listeners| {
+        listeners.retain(|(_, tx)| !tx.is_closed());
+        listeners.push((mod_name.to_owned(), tx));
+    });
+    rx
+}
+
+/// Delivers a click to every loaded copy of the mod that posted it, or holds
+/// it until one loads. Returns whether a mod posted it.
+pub fn clicked(system_tag: &str) -> bool {
+    let Some((name, tag)) = parse(system_tag) else { return false };
+    let delivered = LISTENERS.with_borrow_mut(|listeners| {
+        listeners.retain(|(_, tx)| !tx.is_closed());
+        let mut any = false;
+        for (n, tx) in listeners.iter() {
+            if n == name {
+                any |= tx.try_send(tag.to_owned()).is_ok();
+            }
+        }
+        any
+    });
+    if !delivered {
+        HELD.with_borrow_mut(|held| held.push((name.to_owned(), tag.to_owned())));
+    }
+    true
 }
 
 /// The agent's own words from its 7501 report, as given; empty when it said
@@ -46,20 +108,6 @@ impl Said {
     }
 }
 
-impl Note {
-    pub fn title(&self) -> String {
-        title(self.alert, &self.name)
-    }
-
-    fn state(&self) -> &'static str {
-        match self.alert {
-            Alert::Blocked => "blocked",
-            Alert::Error => "error",
-            Alert::Done => "done",
-        }
-    }
-}
-
 /// "<name> needs you", "<name> hit an error" or "<name> finished".
 pub fn title(alert: Alert, name: &str) -> String {
     match alert {
@@ -78,80 +126,28 @@ pub fn merged_title(alert: Alert, count: usize) -> String {
     }
 }
 
-/// Whether an alert leaves the window. `app_active`: Herdr's window is key in
-/// the app in front. `looking`: that agent is on screen in it.
-pub fn should_notify(mode: SystemNotifications, app_active: bool, looking: bool) -> bool {
-    match mode {
-        SystemNotifications::Off => false,
-        _ if looking => false,
-        SystemNotifications::Background => !app_active,
-        SystemNotifications::Always => true,
-    }
+/// Fork: `systemNotify({ agent: { app, state } })`, a notification about an
+/// agent, which sounds and looks as the person's notification settings say for
+/// that state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentLook {
+    /// What the agent reported as its `app`, for its glyph and program icon.
+    pub app: Option<String>,
+    pub alert: Alert,
 }
 
-const TAG_PREFIX: &str = "herdr-agent:";
-
-/// One notification per agent: a newer alert replaces the older one.
-pub fn tag(address: &str) -> String {
-    format!("{TAG_PREFIX}{address}")
-}
-
-pub fn address_of(tag: &str) -> Option<&str> {
-    tag.strip_prefix(TAG_PREFIX).filter(|a| !a.is_empty())
-}
-
-/// Whether an agent that now says `word` is still as `alert` found it: an
-/// alert posted late (`alert_command` failed after it started) is otherwise
-/// old news, or would replace a newer one.
-pub fn still_says(alert: Alert, word: Option<&str>) -> bool {
-    match alert {
-        Alert::Blocked => word == Some("blocked"),
-        Alert::Error => word == Some("error"),
-        Alert::Done => !matches!(word, Some("working" | "blocked" | "error")),
-    }
-}
-
-/// The agents with a system notification up, and the alert each one is for.
-#[derive(Debug, Default)]
-pub struct Notified(std::collections::HashMap<String, Alert>);
-
-impl Notified {
-    pub fn posted(&mut self, address: &str, alert: Alert) {
-        self.0.insert(address.to_owned(), alert);
-    }
-
-    /// Clicked: the notification center took it down itself.
-    pub fn forget(&mut self, address: &str) {
-        self.0.remove(address);
-    }
-
-    /// Tests check the record against what is up; the app only asks `withdraw`.
-    #[cfg(test)]
-    pub fn contains(&self, address: &str) -> bool {
-        self.0.contains_key(address)
-    }
-
-    /// Whether `address`'s notification is old news now that its agent says
-    /// `word`, and is forgotten so the caller takes it down. With `sticky`, a
-    /// "needs you" one stays until the agent no longer needs the person (it
-    /// works, idles, finishes or stops reporting), however often it is seen;
-    /// any other goes once the person looks at the agent or it is back at work.
-    pub fn withdraw(&mut self, address: &str, word: Option<&str>, looking: bool, sticky: bool) -> bool {
-        let Some(&alert) = self.0.get(address) else { return false };
-        let stale = if sticky && alert == Alert::Blocked {
-            !matches!(word, Some("blocked" | "error"))
-        } else {
-            looking || word == Some("working")
+impl AgentLook {
+    /// From `systemNotify`'s `agent`; absent or null is none.
+    pub fn of(agent: Option<&Value>) -> Result<Option<AgentLook>, String> {
+        let Some(agent) = agent.filter(|a| !a.is_null()) else { return Ok(None) };
+        let alert = match agent.get("state").and_then(Value::as_str) {
+            Some("blocked") => Alert::Blocked,
+            Some("error") => Alert::Error,
+            Some("done") => Alert::Done,
+            _ => return Err("systemNotify: agent.state must be \"blocked\", \"error\" or \"done\"".into()),
         };
-        if stale {
-            self.0.remove(address);
-        }
-        stale
-    }
-
-    /// Forgets the agents whose terminals are gone, and returns them.
-    pub fn gone(&mut self, live: impl Fn(&str) -> bool) -> Vec<String> {
-        self.0.extract_if(|address, _| !live(address)).map(|(address, _)| address).collect()
+        let app = agent.get("app").and_then(Value::as_str).filter(|a| !a.is_empty()).map(str::to_owned);
+        Ok(Some(AgentLook { app, alert }))
     }
 }
 
@@ -167,16 +163,15 @@ pub struct Look {
 }
 
 impl Look {
-    /// For posting `note`: with `notification_icons`, its program's icon
-    /// (notification_icon.rs).
-    pub fn of(note: &Note, settings: &Settings) -> Look {
+    /// With `notification_icons`, its program's icon (notification_icon.rs).
+    pub fn of(agent: &AgentLook, settings: &Settings) -> Look {
         let sounds = &settings.notification_sounds;
-        let sound = match note.alert {
+        let sound = match agent.alert {
             Alert::Blocked => &sounds.blocked,
             Alert::Error => &sounds.error,
             Alert::Done => &sounds.done,
         };
-        let icon = if settings.notification_icons { note.app.as_deref().and_then(Source::program) } else { None };
+        let icon = if settings.notification_icons { agent.app.as_deref().and_then(Source::program) } else { None };
         Look { sound: sound.clone(), marks: settings.notification_marks, icon }
     }
 }
@@ -214,25 +209,16 @@ pub fn state_mark(alert: Alert) -> &'static str {
     }
 }
 
-pub fn system_notification(note: &Note, look: &Look) -> SystemNotification {
-    let (mut title, mut body) = (note.title(), body(note));
+/// Gives a mod's notification about `agent` its sound and marks, and returns
+/// the program icon to attach (`show`).
+pub fn dress(notification: &mut SystemNotification, agent: &AgentLook, look: Look) -> Option<Source> {
     if look.marks {
-        title = format!("{} {title}", agent_glyph(note.app.as_deref()));
-        body = if body.is_empty() { state_mark(note.alert).to_owned() } else { format!("{} {body}", state_mark(note.alert)) };
+        notification.title = format!("{} {}", agent_glyph(agent.app.as_deref()), notification.title).into();
+        let mark = state_mark(agent.alert);
+        notification.body = if notification.body.is_empty() { mark.into() } else { format!("{mark} {}", notification.body).into() };
     }
-    SystemNotification {
-        tag: tag(&note.address).into(),
-        title: title.into(),
-        body: body.into(),
-        sound: look.sound.clone(),
-        ..Default::default()
-    }
-}
-
-/// Posts `note` as its system notification, looking as the settings say.
-pub fn post(note: &Note, settings: &Settings, cx: &App) {
-    let look = Look::of(note, settings);
-    show(system_notification(note, &look), look.icon, cx);
+    notification.sound = look.sound;
+    look.icon
 }
 
 thread_local! {
@@ -278,170 +264,6 @@ pub fn dismiss(tag: &str, cx: &App) {
     tracing::debug!(tag, "system notification withdrawn");
     WAITING.with(|w| w.borrow_mut().remove(tag));
     cx.dismiss_system_notification(tag);
-}
-
-/// The agent's own message when it gave one, over "space / tab".
-fn body(note: &Note) -> String {
-    let lines = [note.said.message.trim(), note.place.as_deref().unwrap_or_default()];
-    lines.into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
-}
-
-/// The program and its arguments; `None` when there is nothing to run.
-pub fn command_argv(command: &AlertCommand) -> Option<Vec<String>> {
-    match command {
-        AlertCommand::Shell(line) if line.trim().is_empty() => None,
-        AlertCommand::Shell(line) => Some(vec!["/bin/sh".into(), "-c".into(), line.clone()]),
-        AlertCommand::Argv(argv) if argv.first().is_none_or(|p| p.is_empty()) => None,
-        AlertCommand::Argv(argv) => Some(argv.clone()),
-    }
-}
-
-/// The environment `alert_command` gets (defaults/AGENTS.md lists it).
-pub fn command_env(note: &Note) -> Vec<(&'static str, String)> {
-    let mut env = vec![("HERDR_AGENT_STATE", note.state().to_owned())];
-    if let Some(prev) = &note.prev {
-        env.push(("HERDR_AGENT_PREV_STATE", prev.clone()));
-    }
-    env.extend([
-        ("HERDR_AGENT_APP", note.app.clone().unwrap_or_default()),
-        ("HERDR_AGENT_NAME", note.name.clone()),
-        ("HERDR_AGENT_ADDRESS", note.address.clone()),
-        ("HERDR_AGENT_PLACE", note.place.clone().unwrap_or_default()),
-        ("HERDR_ALERT_TITLE", note.title()),
-        ("HERDR_AGENT_MESSAGE", note.said.message.clone()),
-        ("HERDR_AGENT_KIND", note.said.kind.clone()),
-        ("HERDR_AGENT_TITLE", note.said.title.clone()),
-    ]);
-    env
-}
-
-/// What `send` did.
-#[derive(Debug)]
-pub enum Sent {
-    Posted,
-    /// The command started; why it failed comes here if it exits non-zero.
-    Ran(async_channel::Receiver<String>),
-    /// The command didn't start (why): the system notification went instead.
-    Fallback(String),
-}
-
-/// Sends the alert: the person's `alert_command` when they set one, else (or
-/// when it doesn't start) the system notification.
-pub fn send(note: &Note, settings: &Settings, cx: &App) -> Sent {
-    let sent = match settings.alert_command.as_ref().and_then(|c| Some((c, command_argv(c)?))) {
-        Some((c, argv)) => match run(&argv, label(c), note) {
-            Ok(failed) => return Sent::Ran(failed),
-            Err(error) => Sent::Fallback(error),
-        },
-        None => Sent::Posted,
-    };
-    post(note, settings, cx);
-    sent
-}
-
-/// The command as the person wrote it, for the error toast: a shell line
-/// rather than `/bin/sh`.
-fn label(command: &AlertCommand) -> &str {
-    match command {
-        AlertCommand::Shell(line) => line,
-        AlertCommand::Argv(argv) => argv.first().map_or("", String::as_str),
-    }
-}
-
-/// How long an `alert_command` may run before it is killed.
-const ALERT_COMMAND_LIMIT: Duration = Duration::from_secs(30);
-
-/// The process `run` starts: in the home folder (Herdr's own is `/` when
-/// opened from the Finder), in its own process group, so a hung one is
-/// killed with everything it started.
-fn command(argv: &[String], note: &Note) -> Command {
-    let mut cmd = Command::new(&argv[0]);
-    cmd.args(&argv[1..])
-        .envs(command_env(note))
-        .current_dir(crate::mods::home())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    own_group(&mut cmd);
-    cmd
-}
-
-/// Why an exit counts as a failure, or `None` when it doesn't. A shell line
-/// always starts, so a missing program only shows here (127).
-fn exit_failure(label: &str, code: Option<i32>) -> Option<String> {
-    match code? {
-        0 => None,
-        127 => Some(format!("alert_command {label:?} failed: command not found (exit 127)")),
-        126 => Some(format!("alert_command {label:?} failed: cannot run (exit 126)")),
-        code => Some(format!("alert_command {label:?} exited with code {code}")),
-    }
-}
-
-/// Fire and forget: a thread waits for the program so it leaves no zombie,
-/// and the window never waits for it. Why it didn't start, if not; once
-/// started, why it failed arrives on the receiver.
-fn run(argv: &[String], label: &str, note: &Note) -> Result<async_channel::Receiver<String>, String> {
-    match command(argv, note).spawn() {
-        Ok(child) => {
-            let (tx, rx) = async_channel::bounded(1);
-            let label = label.to_owned();
-            std::thread::spawn(move || {
-                let Some(status) = reap(child, ALERT_COMMAND_LIMIT) else { return };
-                if let Some(why) = exit_failure(&label, status.code()) {
-                    tracing::warn!("{why}");
-                    let _ = tx.try_send(why);
-                } else if !status.success() {
-                    tracing::warn!("alert_command {label:?} {status}");
-                }
-            });
-            Ok(rx)
-        }
-        Err(error) => {
-            let error = format!("alert_command {:?} did not start: {error}", argv[0]);
-            tracing::warn!("{error}");
-            Err(error)
-        }
-    }
-}
-
-fn own_group(cmd: &mut Command) {
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(cmd, 0);
-    #[cfg(not(unix))]
-    let _ = cmd;
-}
-
-/// Kills `child` and, on Unix, the process group it leads (`own_group`).
-/// The leader goes first: killpg signals the group one process at a time, so
-/// a shell whose child died first could exit with that child's 137 before its
-/// own kill landed, and its exit would not say it was killed. Until it is
-/// waited on, the leader is a zombie that keeps the group's id.
-fn kill(child: &mut std::process::Child) {
-    let _ = child.kill();
-    #[cfg(unix)]
-    if let Ok(group) = libc::pid_t::try_from(child.id()) {
-        // SAFETY: killpg takes plain integers. Its errors are ignored: ESRCH when
-        // the group is gone, EPERM on Darwin when only the zombie leader is left.
-        unsafe { libc::killpg(group, libc::SIGKILL) };
-    }
-}
-
-/// Waits for `child` up to `limit`, then kills it with its group: a hung
-/// command must not keep a thread (and the programs) forever.
-fn reap(mut child: std::process::Child, limit: Duration) -> Option<std::process::ExitStatus> {
-    let deadline = Instant::now() + limit;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100).min(deadline.saturating_duration_since(Instant::now()))),
-            Ok(None) => {
-                tracing::warn!("alert_command still running after {}s: killed", limit.as_secs());
-                kill(&mut child);
-                return child.wait().ok();
-            }
-            Err(_) => return None,
-        }
-    }
 }
 
 /// `system.notify`: a notification any program posts as Herdr.
@@ -630,224 +452,65 @@ pub fn can_post(cx: &App) -> bool {
     cx.system_notifications_allowed() != Some(false)
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::settings::Person;
 
-    fn note(alert: Alert) -> Note {
-        Note {
-            address: "local:t7".into(),
-            alert,
-            prev: Some("working".into()),
-            app: Some("claude-code".into()),
-            name: "Claude".into(),
-            place: Some("herdr / main".into()),
-            said: Said::default(),
-        }
+    #[test]
+    fn a_tag_names_the_posting_mod() {
+        assert_eq!(system_tag("toast", "agent:t1"), "herdr-mod/toast/agent:t1");
+        assert_eq!(parse("herdr-mod/toast/agent:t1"), Some(("toast", "agent:t1")));
+        assert_eq!(parse("herdr-mod/toast/a/b"), Some(("toast", "a/b")));
+        assert_eq!(parse("herdr-mod/toast/"), Some(("toast", "")));
+        assert_eq!(parse("herdr-mod//x"), None);
+        assert_eq!(parse("herdr-test"), None);
+    }
+
+    #[test]
+    fn a_click_goes_to_the_mod_that_posted_it() {
+        std::thread::spawn(|| {
+            let toast = listen("toast");
+            let other = listen("tower");
+            assert!(clicked(&system_tag("toast", "t1")));
+            assert_eq!(toast.try_recv().unwrap(), "t1");
+            assert!(other.is_empty());
+            assert!(!clicked("herdr-test"), "not a mod's");
+            assert!(toast.is_empty() && other.is_empty());
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn a_click_from_an_earlier_run_waits_for_its_mod() {
+        std::thread::spawn(|| {
+            // Clicked in Notification Center, which started Herdr.
+            assert!(clicked(&system_tag("toast", "t2")));
+            let other = listen("tower");
+            assert!(other.is_empty());
+            let toast = listen("toast");
+            assert_eq!(toast.try_recv().unwrap(), "t2");
+            // Delivered once: a later copy doesn't get it again.
+            assert!(listen("toast").is_empty());
+            // A copy that unloaded doesn't take a click from the next one.
+            drop(toast);
+            let next = listen("toast");
+            assert!(clicked(&system_tag("toast", "t3")));
+            assert_eq!(next.try_recv().unwrap(), "t3");
+        })
+        .join()
+        .unwrap();
+    }
+
+    fn claude(alert: Alert) -> AgentLook {
+        AgentLook { app: Some("claude-code".into()), alert }
     }
 
     /// The settings with no program icons (their files are the person's).
     fn plain() -> Settings {
         Settings { notification_icons: false, ..Settings::default() }
-    }
-
-    fn said(message: &str) -> Said {
-        Said { kind: "permission".into(), title: "fix the build".into(), message: message.into() }
-    }
-
-    #[test]
-    fn notifies_only_when_away_unless_always_and_never_while_looking() {
-        use SystemNotifications::*;
-        let cases = [
-            // mode, app_active, looking, notify
-            (Background, false, false, true),
-            (Background, true, false, false),
-            (Background, false, true, false),
-            (Always, true, false, true),
-            (Always, false, false, true),
-            (Always, true, true, false),
-            (Off, false, false, false),
-            (Off, true, false, false),
-        ];
-        for (mode, active, looking, want) in cases {
-            assert_eq!(should_notify(mode, active, looking), want, "{mode:?} active={active} looking={looking}");
-        }
-    }
-
-    #[test]
-    fn the_setting_parses_and_stays_out_of_settings_json_by_default() {
-        let person: Person = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert_eq!((person.system_notifications, person.dock_bounce, person.alert_command.clone()), (SystemNotifications::Background, false, None));
-        let saved = serde_json::to_value(&person).unwrap();
-        for key in ["system_notifications", "dock_bounce", "alert_command"] {
-            assert!(saved.get(key).is_none(), "{key} written at its default");
-        }
-        for (word, mode) in [("always", SystemNotifications::Always), ("off", SystemNotifications::Off), ("background", SystemNotifications::Background)] {
-            let person: Person = serde_json::from_value(serde_json::json!({ "system_notifications": word })).unwrap();
-            assert_eq!(person.system_notifications, mode);
-        }
-        let shell: Person = serde_json::from_value(serde_json::json!({ "alert_command": "notify -s done", "dock_bounce": true })).unwrap();
-        assert_eq!(shell.alert_command, Some(AlertCommand::Shell("notify -s done".into())));
-        assert!(shell.dock_bounce);
-        let argv: Person = serde_json::from_value(serde_json::json!({ "alert_command": ["notify", "-s"] })).unwrap();
-        assert_eq!(argv.alert_command, Some(AlertCommand::Argv(vec!["notify".into(), "-s".into()])));
-    }
-
-    #[test]
-    fn the_notification_says_what_the_toast_says_tagged_by_agent() {
-        let n = system_notification(&note(Alert::Blocked), &Look::default());
-        assert_eq!((n.tag.as_ref(), n.title.as_ref(), n.body.as_ref()), ("herdr-agent:local:t7", "Claude needs you", "herdr / main"));
-        let done = system_notification(&Note { place: None, ..note(Alert::Done) }, &Look::default());
-        assert_eq!((done.title.as_ref(), done.body.as_ref()), ("Claude finished", ""));
-        assert_eq!(address_of(&n.tag), Some("local:t7"));
-        assert_eq!(address_of("herdr-agent:"), None);
-        assert_eq!(address_of("other:local:t7"), None);
-    }
-
-    #[test]
-    fn the_command_gets_argv_and_the_alert_environment() {
-        assert_eq!(command_argv(&AlertCommand::Shell("notify -s \"$HERDR_AGENT_STATE\"".into())), Some(vec!["/bin/sh".into(), "-c".into(), "notify -s \"$HERDR_AGENT_STATE\"".into()]));
-        assert_eq!(command_argv(&AlertCommand::Argv(vec!["/usr/local/bin/notify".into(), "-q".into()])), Some(vec!["/usr/local/bin/notify".into(), "-q".into()]));
-        assert_eq!(command_argv(&AlertCommand::Shell("  ".into())), None);
-        assert_eq!(command_argv(&AlertCommand::Argv(Vec::new())), None);
-        assert_eq!(command_argv(&AlertCommand::Argv(vec![String::new()])), None);
-
-        let env = command_env(&note(Alert::Blocked));
-        let expected: Vec<(&str, String)> = vec![
-            ("HERDR_AGENT_STATE", "blocked".into()),
-            ("HERDR_AGENT_PREV_STATE", "working".into()),
-            ("HERDR_AGENT_APP", "claude-code".into()),
-            ("HERDR_AGENT_NAME", "Claude".into()),
-            ("HERDR_AGENT_ADDRESS", "local:t7".into()),
-            ("HERDR_AGENT_PLACE", "herdr / main".into()),
-            ("HERDR_ALERT_TITLE", "Claude needs you".into()),
-            ("HERDR_AGENT_MESSAGE", String::new()),
-            ("HERDR_AGENT_KIND", String::new()),
-            ("HERDR_AGENT_TITLE", String::new()),
-        ];
-        assert_eq!(env, expected);
-        let bare = command_env(&Note { prev: None, app: None, place: None, ..note(Alert::Done) });
-        assert_eq!(bare.iter().find(|(k, _)| *k == "HERDR_AGENT_STATE").map(|(_, v)| v.as_str()), Some("done"));
-        assert!(bare.iter().all(|(k, _)| *k != "HERDR_AGENT_PREV_STATE"));
-    }
-
-    #[test]
-    fn the_agents_own_words_reach_the_command_and_the_notification_as_given() {
-        let quoted = "approve Bash: echo \"$HOME\" 'x' $(id); `id`";
-        let n = Note { said: said(quoted), ..note(Alert::Blocked) };
-        let env = command_env(&n);
-        let get = |key: &str| env.iter().find(|(k, _)| *k == key).map(|(_, v)| v.as_str());
-        assert_eq!(get("HERDR_AGENT_MESSAGE"), Some(quoted));
-        assert_eq!(get("HERDR_AGENT_KIND"), Some("permission"));
-        assert_eq!(get("HERDR_AGENT_TITLE"), Some("fix the build"));
-        assert_eq!(system_notification(&n, &Look::default()).body.as_ref(), format!("{quoted}\nherdr / main"));
-        let alone = Note { place: None, said: said("  done: 3 files  "), ..note(Alert::Done) };
-        assert_eq!(system_notification(&alone, &Look::default()).body.as_ref(), "done: 3 files");
-        let report = serde_json::json!({ "state": "blocked", "kind": "question", "title": "t", "msg": "which one?" });
-        assert_eq!(Said::of(Some(&report)), Said { kind: "question".into(), title: "t".into(), message: "which one?".into() });
-        assert_eq!(Said::of(Some(&serde_json::json!("blocked"))), Said::default(), "a bare word says nothing more");
-        assert_eq!(Said::of(None), Said::default());
-    }
-
-    #[test]
-    fn an_error_is_told_apart_from_blocked() {
-        let n = note(Alert::Error);
-        assert_eq!(command_env(&n)[0], ("HERDR_AGENT_STATE", "error".to_owned()));
-        assert_eq!(n.title(), "Claude hit an error");
-        assert!(Alert::Error.needs_you() && Alert::Blocked.needs_you() && !Alert::Done.needs_you());
-    }
-
-    #[test]
-    fn a_command_runs_with_the_environment() {
-        let out = std::env::temp_dir().join(format!("herdr-alert-command-{}", std::process::id()));
-        let _ = std::fs::remove_file(&out);
-        let line = format!("printf '%s|%s|%s' \"$HERDR_AGENT_STATE\" \"$HERDR_AGENT_ADDRESS\" \"$HERDR_ALERT_TITLE\" > '{}'", out.display());
-        let shell = AlertCommand::Shell(line.clone());
-        run(&command_argv(&shell).unwrap(), &line, &note(Alert::Done)).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !out.exists() || std::fs::read_to_string(&out).unwrap().is_empty() {
-            assert!(std::time::Instant::now() < deadline, "the command never ran");
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        assert_eq!(std::fs::read_to_string(&out).unwrap(), "done|local:t7|Claude finished");
-        let _ = std::fs::remove_file(&out);
-    }
-
-    #[gpui::test]
-    fn send_posts_one_notification_per_agent_or_runs_the_command(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| cx.set_app_identity("dev.herdr.test", "Herdr"));
-        cx.update(|cx| {
-            assert!(matches!(send(&note(Alert::Done), &plain(), cx), Sent::Posted));
-            assert!(matches!(send(&note(Alert::Blocked), &plain(), cx), Sent::Posted));
-        });
-        assert_eq!(cx.delivered_system_notifications(), [system_notification(&note(Alert::Blocked), &Look::default())]);
-        let command = |c: AlertCommand| Settings { alert_command: Some(c), ..plain() };
-        let ran = cx.update(|cx| send(&note(Alert::Done), &command(AlertCommand::Argv(vec!["/usr/bin/true".into()])), cx));
-        let Sent::Ran(failed) = ran else { panic!("{ran:?}") };
-        assert!(failed.recv_blocking().is_err(), "a command that succeeds reports nothing");
-        assert_eq!(cx.shown_system_notifications().len(), 2);
-        // A command that doesn't start: the system notification instead, and why.
-        let missing = AlertCommand::Argv(vec!["/nonexistent/herdr-notify".into()]);
-        let sent = cx.update(|cx| send(&note(Alert::Done), &command(missing), cx));
-        assert!(matches!(&sent, Sent::Fallback(why) if why.contains("/nonexistent/herdr-notify")), "{sent:?}");
-        assert_eq!(cx.shown_system_notifications().len(), 3);
-        cx.update(|cx| cx.dismiss_system_notification(&tag("local:t7")));
-        assert!(cx.delivered_system_notifications().is_empty());
-    }
-
-    #[test]
-    fn a_shell_line_that_fails_says_why_once_it_exits() {
-        let failed = |line: &str| {
-            let shell = AlertCommand::Shell(line.into());
-            run(&command_argv(&shell).unwrap(), line, &note(Alert::Done)).expect("a shell always starts").recv_blocking()
-        };
-        let missing = failed("/nonexistent/herdr-notify -s done").expect("reported");
-        assert_eq!(missing, "alert_command \"/nonexistent/herdr-notify -s done\" failed: command not found (exit 127)");
-        assert_eq!(failed("exit 3").expect("reported"), "alert_command \"exit 3\" exited with code 3");
-        assert!(failed("true").is_err(), "success reports nothing");
-        assert_eq!(exit_failure("x", Some(126)).as_deref(), Some("alert_command \"x\" failed: cannot run (exit 126)"));
-        assert_eq!(exit_failure("x", None), None, "killed by a signal: only logged");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_hung_alert_command_is_killed_after_its_limit_with_what_it_started() {
-        use std::io::BufRead;
-        use std::os::unix::process::ExitStatusExt;
-        // A shell line, as `alert_command` runs one: the shell waits on a child
-        // of its own. The child is a subshell looping on short sleeps, so a stray
-        // kill of a `sleep` (pkill, killall) only ends one of them; it stops by
-        // itself after 30 s, so a kill that never comes fails the test rather
-        // than hanging it. `wait $!`, not a bare `wait`, which returns 0 however
-        // its child ended.
-        let argv = command_argv(&AlertCommand::Shell("(i=0; while [ $i -lt 30 ]; do sleep 1; i=$((i+1)); done) & echo $!; wait $!".into())).unwrap();
-        let mut child = command(&argv, &note(Alert::Done)).stdout(Stdio::piped()).spawn().unwrap();
-        let mut line = String::new();
-        std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
-        let sleep: libc::pid_t = line.trim().parse().unwrap();
-        let started = Instant::now();
-        let status = reap(child, Duration::from_millis(300)).expect("reaped");
-        // SAFETY: signal 0 only asks whether the process is there.
-        let alive = unsafe { libc::kill(sleep, 0) } == 0;
-        assert_eq!(
-            status.signal(),
-            Some(libc::SIGKILL),
-            "the limit killed the shell: got {status} after {:?}, its child {sleep} {}",
-            started.elapsed(),
-            if alive { "not yet reaped" } else { "already gone" },
-        );
-        assert!(started.elapsed() < Duration::from_secs(5));
-        // SAFETY: signal 0 only asks whether the process is there.
-        let gone = || unsafe { libc::kill(sleep, 0) } != 0;
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while !gone() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(gone(), "the shell's child {sleep} outlived it");
-        let quick = Command::new("true").spawn().unwrap();
-        assert!(reap(quick, Duration::from_secs(5)).unwrap().success());
     }
 
     fn sounds(v: serde_json::Value) -> Settings {
@@ -856,30 +519,46 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_look_is_read_from_systemnotify() {
+        use serde_json::json;
+        assert_eq!(AgentLook::of(None), Ok(None));
+        assert_eq!(AgentLook::of(Some(&Value::Null)), Ok(None));
+        assert_eq!(AgentLook::of(Some(&json!({ "app": "claude-code", "state": "error" }))), Ok(Some(claude(Alert::Error))));
+        assert_eq!(AgentLook::of(Some(&json!({ "app": "", "state": "done" }))), Ok(Some(AgentLook { app: None, alert: Alert::Done })));
+        for bad in [json!({}), json!({ "state": "working" }), json!("blocked")] {
+            assert!(AgentLook::of(Some(&bad)).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn each_state_plays_its_own_sound() {
         use SystemNotificationSound::*;
-        let s = sounds(serde_json::json!({ "done": "Glass", "blocked": "Purr", "error": "Basso" }));
-        let look = |alert| Look::of(&note(alert), &Settings { notification_icons: false, ..s.clone() }).sound;
+        let s = Settings { notification_icons: false, ..sounds(serde_json::json!({ "done": "Glass", "blocked": "Purr", "error": "Basso" })) };
+        let look = |alert| Look::of(&claude(alert), &s).sound;
         assert_eq!(look(Alert::Done), Named("Glass".into()));
         assert_eq!(look(Alert::Blocked), Named("Purr".into()));
         assert_eq!(look(Alert::Error), Named("Basso".into()));
-        assert_eq!(Look::of(&note(Alert::Done), &plain()).sound, Silent, "silent unless set");
-        let n = system_notification(&note(Alert::Error), &Look { sound: Named("Basso".into()), ..Look::default() });
+        assert_eq!(Look::of(&claude(Alert::Done), &plain()).sound, Silent, "silent unless set");
+        let mut n = notification("notifications", "agent:t7", "Claude hit an error".into(), String::new());
+        dress(&mut n, &claude(Alert::Error), Look { sound: Named("Basso".into()), ..Look::default() });
         assert_eq!(n.sound, Named("Basso".into()));
     }
 
     #[test]
     fn marks_put_the_agents_glyph_on_the_title_and_the_states_on_the_body() {
-        let marked = Look { marks: true, ..Look::default() };
-        let n = system_notification(&Note { said: said("approve Bash: make"), ..note(Alert::Blocked) }, &marked);
+        let marked = || Look { marks: true, ..Look::default() };
+        let mut n = notification("notifications", "agent:t7", "Claude needs you".into(), "approve Bash: make\nherdr / main".into());
+        dress(&mut n, &claude(Alert::Blocked), marked());
         assert_eq!((n.title.as_ref(), n.body.as_ref()), ("🤖 Claude needs you", "✋ approve Bash: make\nherdr / main"));
-        let codex = Note { app: Some("codex".into()), name: "Codex".into(), ..note(Alert::Error) };
-        let n = system_notification(&codex, &marked);
+        let mut n = notification("notifications", "agent:t8", "Codex hit an error".into(), "herdr / main".into());
+        dress(&mut n, &AgentLook { app: Some("codex".into()), alert: Alert::Error }, marked());
         assert_eq!((n.title.as_ref(), n.body.as_ref()), ("🧠 Codex hit an error", "🔴 herdr / main"));
-        let bare = system_notification(&Note { place: None, ..note(Alert::Done) }, &marked);
+        let mut bare = notification("notifications", "agent:t7", "Claude finished".into(), String::new());
+        dress(&mut bare, &claude(Alert::Done), marked());
         assert_eq!(bare.body.as_ref(), "✅");
-        let plain_look = system_notification(&note(Alert::Done), &Look::default());
-        assert_eq!(plain_look.title.as_ref(), "Claude finished", "no marks unless asked");
+        let mut unmarked = notification("notifications", "agent:t7", "Claude finished".into(), String::new());
+        dress(&mut unmarked, &claude(Alert::Done), Look::default());
+        assert_eq!((unmarked.title.as_ref(), unmarked.body.as_ref()), ("Claude finished", ""), "no marks unless asked");
         // By programs.json's key (github-copilot is copilot's), else the app
         // without -code, -cli or -agent, else the robot.
         let glyphs: Vec<_> = [Some("claude-code"), Some("gemini-cli"), Some("github-copilot"), Some("cursor-agent"), Some("aider"), Some("someone-new"), Some(""), None]
@@ -892,10 +571,12 @@ mod tests {
 
     #[test]
     fn the_icon_comes_from_the_program_unless_notification_icons_is_off() {
-        assert_eq!(Look::of(&note(Alert::Done), &plain()).icon, None, "notification_icons off");
-        let on = Look::of(&note(Alert::Done), &Settings { notification_icons: true, ..plain() });
+        assert_eq!(Look::of(&claude(Alert::Done), &plain()).icon, None, "notification_icons off");
+        let on = Look::of(&claude(Alert::Done), &Settings { notification_icons: true, ..plain() });
         assert!(matches!(on.icon, Some(Source::Program(ref shown)) if shown["key"] == "claude"), "{on:?}");
-        assert_eq!(system_notification(&note(Alert::Done), &on).image, None, "the image comes later, off the main thread");
+        let mut n = notification("notifications", "agent:t7", "Claude finished".into(), String::new());
+        assert!(dress(&mut n, &claude(Alert::Done), on).is_some());
+        assert_eq!(n.image, None, "the image comes later, off the main thread");
     }
 
     /// The icon's file work happens off the main thread: nothing shows until
@@ -906,7 +587,8 @@ mod tests {
         cx.update(|cx| cx.set_app_identity("dev.herdr.test", "Herdr"));
         let png = std::env::temp_dir().join(format!("herdr-alert-icon-{}.png", std::process::id()));
         std::fs::write(&png, b"png").unwrap();
-        let notification = |title: &str| SystemNotification { tag: tag("local:t7").into(), title: title.to_owned().into(), ..Default::default() };
+        let tag = system_tag("notifications", "agent:t7");
+        let notification = |title: &str| SystemNotification { tag: tag.clone().into(), title: title.to_owned().into(), ..Default::default() };
         cx.update(|cx| show(notification("first"), Source::file(&png), cx));
         assert!(cx.shown_system_notifications().is_empty(), "posting didn't wait for the file work");
         cx.run_until_parked();
@@ -927,78 +609,31 @@ mod tests {
         // Dismissed while its image is made: never shown.
         cx.update(|cx| {
             show(notification("dismissed"), Source::file(&png), cx);
-            dismiss(&tag("local:t7"), cx);
+            dismiss(&tag, cx);
         });
         cx.run_until_parked();
         assert_eq!(cx.shown_system_notifications().len(), 2);
         let _ = std::fs::remove_file(&png);
     }
 
-    /// One agent's listings as the window takes them (`tend_terminals`): an
-    /// old notification comes down, then a new alert posts unless the person
-    /// is looking. Each step: the agent's word, whether the person looks.
-    fn notifications_after(steps: &[(&str, bool)], sticky: bool, cx: &mut gpui::TestAppContext) -> Vec<String> {
-        let address = "local:t7";
-        let (mut notified, mut prev) = (Notified::default(), None::<&str>);
-        for &(word, looking) in steps {
-            if notified.withdraw(address, Some(word), looking, sticky) {
-                cx.update(|cx| dismiss(&tag(address), cx));
-            }
-            if let Some(alert) = crate::model::Model::alert(prev, Some(word), looking)
-                && should_notify(SystemNotifications::Background, looking, looking)
-            {
-                cx.update(|cx| post(&note(alert), &plain(), cx));
-                notified.posted(address, alert);
-            }
-            prev = Some(word);
-        }
-        assert_eq!(notified.contains(address), !cx.delivered_system_notifications().is_empty(), "the window's record matches what is up");
-        let up = cx.delivered_system_notifications().iter().map(|n| n.title.to_string()).collect();
-        cx.update(|cx| dismiss(&tag(address), cx));
-        up
-    }
-
-    #[gpui::test]
-    fn a_needs_you_notification_stays_until_the_agent_is_no_longer_blocked(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| cx.set_app_identity("dev.herdr.test", "Herdr"));
-        let needs_you = ["Claude needs you"];
-        let none: [&str; 0] = [];
-        assert_eq!(notifications_after(&[("working", false), ("blocked", false), ("blocked", true), ("blocked", false)], true, cx), needs_you, "seen: it stays");
-        assert_eq!(notifications_after(&[("working", false), ("blocked", false), ("blocked", true), ("error", true)], true, cx), needs_you, "still needs the person");
-        for after in ["working", "idle", "done"] {
-            assert_eq!(notifications_after(&[("working", false), ("blocked", false), (after, true)], true, cx), none, "unblocked to {after}: withdrawn");
-        }
-        assert_eq!(notifications_after(&[("working", false), ("blocked", false), ("idle", false)], true, cx), ["Claude finished"], "unblocked unseen: the finish replaces it");
-        assert_eq!(notifications_after(&[("working", true), ("blocked", true), ("blocked", false)], true, cx), none, "blocked while looking: nothing posted");
-        assert_eq!(notifications_after(&[("working", false), ("blocked", false), ("done", false), ("done", true)], true, cx), none, "done, then seen: withdrawn");
-        assert_eq!(notifications_after(&[("working", false), ("error", false), ("error", true)], true, cx), none, "an error goes once seen");
-        assert_eq!(notifications_after(&[("working", false), ("blocked", false), ("blocked", true)], false, cx), none, "not sticky: seen takes it down");
-
-        // Unblocked then blocked again: the second replaces the first under
-        // the same tag, never two at once.
-        let before = cx.shown_system_notifications().len();
-        assert_eq!(notifications_after(&[("working", false), ("blocked", false), ("working", false), ("blocked", false)], true, cx), needs_you);
-        let shown = &cx.shown_system_notifications()[before..];
-        assert_eq!(shown.len(), 2);
-        assert!(shown.iter().all(|n| n.tag.as_ref() == "herdr-agent:local:t7"));
-    }
-
+    /// The `notifications` mod reads these through `settings()`; keys the app
+    /// no longer reads (`alert_command`) are ignored, not refused.
     #[test]
-    fn notified_agents_whose_terminals_are_gone_are_forgotten() {
-        let mut notified = Notified::default();
-        notified.posted("local:t1", Alert::Blocked);
-        notified.posted("local:t2", Alert::Done);
-        assert_eq!(notified.gone(|a| a == "local:t2"), ["local:t1"]);
-        assert!(!notified.contains("local:t1") && notified.contains("local:t2"));
-        notified.forget("local:t2");
-        assert!(!notified.withdraw("local:t2", None, true, true), "nothing up: nothing to take down");
-    }
-
-    #[test]
-    fn a_late_alert_posts_only_while_the_agent_still_says_so() {
-        assert!(still_says(Alert::Blocked, Some("blocked")) && !still_says(Alert::Blocked, Some("working")) && !still_says(Alert::Blocked, Some("error")));
-        assert!(still_says(Alert::Error, Some("error")) && !still_says(Alert::Error, Some("idle")));
-        assert!(still_says(Alert::Done, Some("idle")) && still_says(Alert::Done, None) && !still_says(Alert::Done, Some("blocked")), "a finish never replaces a newer needs-you");
+    fn the_notification_settings_parse_and_stay_out_of_settings_json_by_default() {
+        let person: Person = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!((person.system_notifications, person.dock_bounce, person.notification_sticky), (SystemNotifications::Background, false, true));
+        let saved = serde_json::to_value(&person).unwrap();
+        for key in ["system_notifications", "dock_bounce", "notification_sticky"] {
+            assert!(saved.get(key).is_none(), "{key} written at its default");
+        }
+        for (word, mode) in [("always", SystemNotifications::Always), ("off", SystemNotifications::Off), ("background", SystemNotifications::Background)] {
+            let person: Person = serde_json::from_value(serde_json::json!({ "system_notifications": word })).unwrap();
+            assert_eq!(person.system_notifications, mode);
+        }
+        let old: Person = serde_json::from_value(serde_json::json!({ "alert_command": "notify -s done", "dock_bounce": true, "notification_sticky": false })).unwrap();
+        assert!(old.dock_bounce && !old.notification_sticky);
+        let mods = Settings::compose(&old, &crate::layout::Look::default(), false).for_mods();
+        assert_eq!((mods["system_notifications"].clone(), mods["notification_sticky"].clone()), (serde_json::json!("background"), serde_json::json!(false)));
     }
 
     #[test]
@@ -1092,7 +727,7 @@ mod tests {
         assert_ne!(a, b, "without an id each one stands");
         let delivered: Vec<String> = cx.delivered_system_notifications().iter().map(|n| n.title.to_string()).collect();
         assert_eq!(delivered, ["build 2", "ping", "ping"]);
-        assert_eq!(address_of(&first), None, "not an agent alert's tag");
+        assert_eq!(parse(&first), None, "not a mod's tag");
     }
 
     #[test]

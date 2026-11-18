@@ -2802,11 +2802,9 @@ export default class Settings extends View {
         this.row(
           t,
           "System notifications",
-          this.person.alert_command
-            ? "Your alert_command runs instead of a system notification."
-            : "When away: only while Herdr isn't the app in front. Never for the agent you're looking at.",
+          "When away: only while Herdr isn't the app in front. Never for the agent you're looking at. Posted by the notifications mod.",
           this.choicePicker(t, "st-sn", "system_notifications", SYSTEM_NOTIFICATIONS),
-          ["system_notifications", "alert_command"],
+          "system_notifications",
         ),
       )
       .child(
@@ -2883,6 +2881,16 @@ export default class Settings extends View {
             }, cx),
           ),
           "dock_badge",
+        ),
+      )
+      .child(
+        this.row(
+          t,
+          "Send a test notification",
+          window()?.platform === "macos"
+            ? "The first time, macOS asks whether Herdr may send notifications. Answer here, so no mod's notification is lost to the question."
+            : "See how a notification shows outside Herdr.",
+          this.button(t, "st-test-notification", "Send", () => run("app.test_notification")),
         ),
       );
   }

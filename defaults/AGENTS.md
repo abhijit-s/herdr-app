@@ -906,9 +906,11 @@ What's about the user, never a look:
   including the Play buttons in Settings > Alerts.
 - `resume_agents`: `"ask"` (default), `"auto"` or `"off"`: what happens after Herdr starts or reconnects to the core when recorded agents (see `resume` in Programs) are in terminals back to a bare shell, as after a reboot. `ask`: one toast, "Resume N sessions", whose click runs `session.resume`; `auto`: resumes them at once; `off`: leaves the shells (records are still kept, and `session.resume` still works). Settings > Agents > Activity has it under After a restart, as "Resume agents after restart".
 - `system_notifications`: `"background"` (default), `"always"` or `"off"`.
-  The same alerts also go to the system's notification center: titled as
-  the toast, with "space / tab" as the body, one per agent (a newer alert
-  replaces the older one). `background` sends them only while Herdr isn't
+  The same alerts also go to the system's notification center, posted by
+  the shipped `notifications` mod (`mods/notifications/`, run in every
+  layout without drawing): titled as the toast, the agent's own message
+  over "space / tab" as the body, one per agent (a newer alert replaces
+  the older one). `background` sends them only while Herdr isn't
   the app in front; `always` also while it is. Never for the agent the
   person is looking at. Clicking one brings Herdr forward on that agent.
   A "needs you" one stays until the agent is no longer blocked (see
@@ -982,27 +984,6 @@ What's about the user, never a look:
   way asked). Absent (the default), or any other
   value: new tabs have none. Tabs already open keep theirs. The Settings
   window's Panes page sets it ("New tabs arrange").
-- `alert_command`: a program run for each alert in place of the system
-  notification, under the same `system_notifications` rule: one string
-  (run by `/bin/sh -c`) or an argv array (`["notify", "-q"]`). Herdr
-  doesn't wait for it, and gives it `HERDR_AGENT_STATE` (`blocked`,
-  `error` or `done`), `HERDR_AGENT_PREV_STATE` (the status it left, when
-  known), `HERDR_AGENT_APP` (e.g. `claude-code`), `HERDR_AGENT_NAME`,
-  `HERDR_AGENT_ADDRESS`, `HERDR_AGENT_PLACE` ("space / tab"),
-  `HERDR_ALERT_TITLE` (the toast's title), and the agent's own words from
-  its status report, as given and empty when it said nothing:
-  `HERDR_AGENT_MESSAGE` (its summary, e.g. "approve Bash: make"),
-  `HERDR_AGENT_KIND` (`permission`, `question` or `auth`) and
-  `HERDR_AGENT_TITLE`. They are environment variables only, never part of
-  the command line; quote them in a shell line (`"$HERDR_AGENT_MESSAGE"`).
-  The system notification shows the same message above "space / tab". It runs with Herdr's
-  environment, whose PATH may be short when Herdr was opened from the
-  Dock: give a full path. It starts in the home folder; one still running
-  after 30 s is killed with everything it started. One that doesn't start,
-  or exits non-zero (a shell line naming a missing program exits 127), gets
-  the system notification instead, and a toast says why (once per reason,
-  and again after `alert_command` changes); one killed by a signal is only
-  logged.
 - `core`: the herdr-core binary to use, when it isn't where Herdr looks
   (PATH, the login shell's PATH, `~/.local/bin`, Homebrew, mise, Nix,
   cargo). Read at start.
@@ -1565,6 +1546,20 @@ All of it is in `herdr.d.ts`. In short:
   ignore it), e.g. `setBadge(blocked ? String(blocked) : null)`. The last call wins; `null` or `""`
   clears it. A mod's badge shows over the waiting-agents count (`dock_badge`); clearing it shows
   the count again.
+- System notifications: `systemNotify({ tag, title, body })` posts a native notification
+  (Notification Center on macOS) as Herdr. A newer one from this mod with the same `tag`
+  replaces the older one; other mods' tags never clash with yours. `withdrawSystemNotification(tag)`
+  takes it down. `nextSystemNotificationClick()` resolves with `{ tag }` when the person clicks
+  one this mod posted, after Herdr comes forward; the mod decides what a click does
+  (e.g. `run("agent.focus", { terminal })`). A click on one from an earlier run (it can start
+  Herdr) waits until this mod loads. Herdr posts none on its own, and decides nothing about when:
+  check `window().active` if one should only show while the person is away. macOS asks permission
+  the first time; Send a test notification in Settings > Alerts (`app.test_notification`) asks
+  while the person is there. A build not run from an app bundle posts none.
+  Fork: `agent: { app, state }` (state `blocked`, `error` or `done`) gives it the person's
+  `notification_sounds`, `notification_marks` and `notification_icons` for that agent. The
+  shipped `notifications` mod posts the agent alerts this way; Herdr runs it in every layout
+  without drawing it (a background mod).
 - `notify({ ..., action: { name, args } })`: the toast runs the command when clicked.
 - This copy: `props()`, `shared(key)` / `setShared(key, value)` (every mod
   sees it; setting re-renders the copies that read that key), `nextCommand()` (key commands for this
