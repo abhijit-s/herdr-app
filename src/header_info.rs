@@ -9,7 +9,7 @@
 //!
 //! Grammar, all of it:
 //! - `{ask}`, `{state}`, `{elapsed}`, `{branch}`, `{ahead}`, `{behind}`,
-//!   `{dirty}`, `{subagents}`, `{machine}`, `{remote}`, `{space}` are keys;
+//!   `{dirty}`, `{subagents}`, `{subagent_count}`, `{subagents_blocked}`, `{machine}`, `{remote}`, `{space}` are keys;
 //!   any other text, an unknown `{word}` too, is literal.
 //! - `·` and `|` split the template into segments; a separator shows between
 //!   two segments that show.
@@ -43,6 +43,8 @@ enum Key {
     Behind,
     Dirty,
     Subagents,
+    SubagentCount,
+    SubagentsBlocked,
     Machine,
     Remote,
     Space,
@@ -59,12 +61,24 @@ impl Key {
             "behind" => Key::Behind,
             "dirty" => Key::Dirty,
             "subagents" => Key::Subagents,
+            "subagent_count" => Key::SubagentCount,
+            "subagents_blocked" => Key::SubagentsBlocked,
             "machine" => Key::Machine,
             "remote" => Key::Remote,
             "space" => Key::Space,
             _ => return None,
         })
     }
+
+    /// A sub-agent key: a segment whose only shown key is one goes first when room is short.
+    fn is_subagents(self) -> bool {
+        matches!(self, Key::Subagents | Key::SubagentCount | Key::SubagentsBlocked)
+    }
+}
+
+/// A count as a bare number, empty for none, for a label of the person's own (`{subagent_count} 🤖`).
+fn count(n: usize) -> String {
+    if n == 0 { String::new() } else { n.to_string() }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -134,9 +148,9 @@ impl Template {
         self.uses(Key::Elapsed)
     }
 
-    /// Whether it shows `{subagents}` (publish then counts them).
+    /// Whether it shows `{subagents}`, `{subagent_count}` or `{subagents_blocked}` (publish then counts them).
     pub fn uses_subagents(&self) -> bool {
-        self.uses(Key::Subagents)
+        self.uses(Key::Subagents) || self.uses(Key::SubagentCount) || self.uses(Key::SubagentsBlocked)
     }
 
     /// Whether it shows `{space}` (a card then also resolves without it).
@@ -155,7 +169,7 @@ impl Template {
         let mut segments: Vec<Shown> = Vec::new();
         for s in &self.0 {
             let mut text = String::new();
-            let (mut keys, mut filled, mut ask, mut minor) = (0, 0, false, false);
+            let (mut keys, mut filled, mut subs, mut ask) = (0, 0, 0, false);
             // The last thing written was a key that showed: the next one that
             // shows goes a space after it.
             let mut after_key = false;
@@ -172,8 +186,8 @@ impl Template {
                             continue;
                         }
                         filled += 1;
-                        ask |= (*k == Key::Ask && v.blocked) || (*k == Key::Subagents && v.subagents.blocked > 0);
-                        minor |= *k == Key::Subagents;
+                        ask |= (*k == Key::Ask && v.blocked) || (matches!(k, Key::Subagents | Key::SubagentsBlocked) && v.subagents.blocked > 0);
+                        subs += usize::from(k.is_subagents());
                         if after_key {
                             text.push(' ');
                         }
@@ -190,9 +204,9 @@ impl Template {
                 continue;
             }
             let sep = if segments.is_empty() { String::new() } else { s.sep.clone() };
-            // Minor only when the count is all it shows: a segment that also
+            // Minor only when sub-agent counts are all it shows: a segment that also
             // holds other keys goes no sooner than any other.
-            segments.push(Shown { sep, text, ask, minor: minor && filled == 1 && !ask });
+            segments.push(Shown { sep, text, ask, minor: subs > 0 && subs == filled && !ask });
         }
         if segments.is_empty() {
             return None;
@@ -310,6 +324,8 @@ impl Values {
             // reads as one more separator beside ` · `.
             Key::Dirty => if self.dirty { "*".into() } else { String::new() },
             Key::Subagents => self.subagents.text(),
+            Key::SubagentCount => count(self.subagents.live),
+            Key::SubagentsBlocked => count(self.subagents.blocked),
             Key::Machine => self.machine.clone(),
             Key::Remote => self.remote.clone(),
             Key::Space => self.space.clone(),
@@ -336,7 +352,7 @@ impl Values {
             ahead: 2,
             behind: 0,
             dirty: true,
-            subagents: Subagents { live: 2, blocked: 0 },
+            subagents: Subagents { live: 2, blocked: 1 },
             machine: "vps".into(),
             remote: "vps".into(),
             space: "herdr-app".into(),
@@ -530,7 +546,7 @@ mod tests {
         assert!(counts_git(Some(SUGGESTED), None) && !counts_git(Some("{branch}"), None) && !counts_git(None, None));
         assert!(counts_git(None, Some("{space} · {dirty}")) && !counts_git(None, Some("")), "the card template counts too, the default doesn't");
         let info = Template::parse(SUGGESTED).resolve(&Values::sample()).unwrap();
-        assert_eq!(info.text, "approve Bash: make · main ↑2 * · blocked 3m · 2 sub-agents", "the whole line, for the tooltip");
+        assert_eq!(info.text, "approve Bash: make · main ↑2 * · blocked 3m · 2 sub-agents, 1 blocked", "the whole line, for the tooltip");
     }
 
     #[test]
@@ -646,6 +662,30 @@ mod tests {
         assert_eq!(minor("{state} {subagents}", &Values { state: "idle".into(), ..v(3, 0) }), vec![false], "beside another key: not minor");
         assert_eq!(minor("{branch} {subagents}", &v(3, 0)), vec![true], "the only key that shows: minor");
         assert!(Template::parse(SUGGESTED).uses_subagents() && !Template::parse("{state}").uses_subagents());
+    }
+
+    /// `{subagent_count}` and `{subagents_blocked}` are bare numbers for a
+    /// label of the person's own: empty at zero, so the segment goes with its
+    /// label; blocked ones draw as a blocked `{subagents}` does, and a segment
+    /// of only these goes first.
+    #[test]
+    fn bare_sub_agent_counts_take_the_persons_own_label() {
+        let v = |live, blocked| Values { subagents: Subagents { live, blocked }, state: "idle".into(), ..Values::default() };
+        assert_eq!(shown("{subagent_count} 🤖", &v(3, 0)), vec![("".into(), "3 🤖".into(), false)]);
+        assert_eq!(shown("{subagents_blocked} ⚠", &v(3, 2)), vec![("".into(), "2 ⚠".into(), true)], "blocked: drawn as the ask is");
+        assert_eq!(shown("{state} · {subagent_count} 🤖", &v(0, 0)), vec![("".into(), "idle".into(), false)], "none: the label goes with it");
+        assert_eq!(shown("{state} · {subagents_blocked} blocked", &v(3, 0)), vec![("".into(), "idle".into(), false)], "none blocked: dropped");
+        assert_eq!(shown("{subagent_count}/{subagents_blocked}", &v(4, 1))[0].1, "4/1");
+        let minor = |t: &str, v: &Values| Template::parse(t).resolve(v).unwrap().segments.iter().map(|s| s.minor).collect::<Vec<_>>();
+        assert_eq!(minor("{state} · {subagent_count} 🤖", &v(3, 0)), vec![false, true], "only counts: minor");
+        assert_eq!(minor("{state} · {subagent_count} {subagents_blocked}", &v(3, 0)), vec![false, true]);
+        assert_eq!(minor("{state} · {subagent_count} {subagents_blocked}", &v(3, 1)), vec![false, false], "one blocked: a warning, not minor");
+        assert_eq!(minor("{state} {subagent_count}", &v(3, 0)), vec![false], "beside another key: not minor");
+        for t in ["{subagent_count}", "x {subagents_blocked}", "{state} · {subagents}"] {
+            assert!(Template::parse(t).uses_subagents(), "{t} counts sub-agents");
+        }
+        assert!(!Template::parse("{subagent} · {state}").uses_subagents(), "an unknown key is text");
+        assert_eq!(Template::parse("{subagents} · {subagent_count}").resolve(&v(2, 0)).unwrap().text, "2 sub-agents · 2", "{{subagents}} stays as it was");
     }
 
     #[test]

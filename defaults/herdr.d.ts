@@ -348,8 +348,8 @@ export interface HeaderInfo {
 
 /** One segment: its text, the separator before it as written ("" for the first one shown;
  *  draw it as `sep.trim()` with 4 px either side, as `fitHeaderInfo` measures it),
- *  whether it holds the request of an agent that needs the person or a blocked `{subagents}`
- *  (draw it in `theme().blocked`; it is the last to go), and whether `{subagents}` is all it
+ *  whether it holds the request of an agent that needs the person or a blocked `{subagents}` or `{subagents_blocked}`
+ *  (draw it in `theme().blocked`; it is the last to go), and whether sub-agent counts (`{subagents}`, `{subagent_count}`, `{subagents_blocked}`) are all it
  *  shows, none blocked (`minor`: the first to go; absent when false). */
 export interface HeaderSegment {
   sep: string;
