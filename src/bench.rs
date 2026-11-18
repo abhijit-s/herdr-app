@@ -10,6 +10,9 @@ pub static GRID: AtomicU64 = AtomicU64::new(0);
 /// asked for reuses them), and frames a cursor trail or arrival painted.
 pub static BODY: AtomicU64 = AtomicU64::new(0);
 pub static TRAIL: AtomicU64 = AtomicU64::new(0);
+/// Draws of a tiled tree mid-slide, and terminals resized (window/pane_slide.rs).
+pub static SLIDE: AtomicU64 = AtomicU64::new(0);
+pub static RESIZES: AtomicU64 = AtomicU64::new(0);
 /// Terminal rows whose drawing was built again (the rest were kept).
 pub static ROWS: AtomicU64 = AtomicU64::new(0);
 /// Microseconds spent in the window's renders: its root, and its layout and
@@ -80,7 +83,7 @@ pub fn start() {
             use gpui::frame_counts as fc;
             let _ = writeln!(
                 f,
-                r#"{{"t":{t},"scripts":{},"script_ms":{},"materialize":{},"materialize_ms":{},"window":{},"body":{},"trail":{},"terminal":{},"grid":{},"rows":{},"window_ms":{},"frame_ms":{},"presents":{},"spin_steps":{},"spin_late_ms":{},"spin_late_max_ms":{},"link_starts":{}}}"#,
+                r#"{{"t":{t},"scripts":{},"script_ms":{},"materialize":{},"materialize_ms":{},"window":{},"body":{},"trail":{},"slide":{},"resizes":{},"terminal":{},"grid":{},"rows":{},"window_ms":{},"frame_ms":{},"presents":{},"spin_steps":{},"spin_late_ms":{},"spin_late_max_ms":{},"link_starts":{}}}"#,
                 d[0],
                 d[1] as f64 / 1000.0,
                 d[2],
@@ -88,6 +91,8 @@ pub fn start() {
                 WINDOW.swap(0, Relaxed),
                 BODY.swap(0, Relaxed),
                 TRAIL.swap(0, Relaxed),
+                SLIDE.swap(0, Relaxed),
+                RESIZES.swap(0, Relaxed),
                 TERMINAL.swap(0, Relaxed),
                 GRID.swap(0, Relaxed),
                 ROWS.swap(0, Relaxed),
