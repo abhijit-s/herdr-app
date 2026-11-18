@@ -26,6 +26,7 @@ mod links;
 mod model;
 mod mirror;
 mod mirror_sync;
+mod nerd_icons;
 mod mod_settings;
 mod place;
 mod persist;
