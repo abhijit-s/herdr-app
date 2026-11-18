@@ -50,8 +50,8 @@ const QUIET: Duration = Duration::from_millis(300);
 const MIN_GAP: Duration = Duration::from_secs(1);
 /// Answers that aren't lasting are looked at again when read after this.
 const STALE: Duration = Duration::from_secs(60);
-/// Lasting ones too, in case the OS dropped an event.
-const LASTING_STALE: Duration = Duration::from_secs(600);
+/// Lasting ones too: FSEvents can drop events silently under load.
+const LASTING_STALE: Duration = Duration::from_secs(60);
 const MAX_WATCHED: usize = 64;
 const MAX_FILES: usize = 5000;
 
@@ -103,13 +103,17 @@ fn entry<R>(place: &Place, f: impl FnOnce(&mut Entry) -> R) -> R {
             ask(place);
             Entry { value: Value::Null, revision: 0, checked: now, pending: true, again: false, lasting: false, waiters: Vec::new() }
         });
-        let stale = if e.lasting { LASTING_STALE } else { STALE };
-        if !e.pending && now.duration_since(e.checked) > stale {
+        if needs_look(e, now) {
             ask(place);
             e.pending = true;
         }
         f(e)
     })
+}
+
+fn needs_look(e: &Entry, now: Instant) -> bool {
+    let stale = if e.lasting { LASTING_STALE } else { STALE };
+    !e.pending && now.duration_since(e.checked) > stale
 }
 
 /// An answer for `place` as if git had given it, lasting, with no git asked.
@@ -597,6 +601,16 @@ mod tests {
         assert_eq!(shown(&v, 3, false), json!({ "branch": "main", "revision": 3 }));
         assert_eq!(shown(&v, 3, true)["files"][0]["path"], "a");
         assert_eq!(shown(&Value::Bool(false), 3, true), Value::Bool(false));
+    }
+
+    #[test]
+    fn a_lasting_answer_older_than_its_bound_is_looked_at_again() {
+        let now = Instant::now();
+        let at = |age: Duration, lasting: bool, pending: bool| Entry { value: json!(false), revision: 1, checked: now - age, pending, again: false, lasting, waiters: Vec::new() };
+        assert!(!needs_look(&at(LASTING_STALE - Duration::from_secs(1), true, false), now));
+        assert!(needs_look(&at(LASTING_STALE + Duration::from_secs(1), true, false), now));
+        assert!(!needs_look(&at(LASTING_STALE + Duration::from_secs(1), true, true), now), "a look under way is not asked twice");
+        assert!(needs_look(&at(STALE + Duration::from_secs(1), false, false), now));
     }
 
     #[test]

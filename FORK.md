@@ -1076,6 +1076,17 @@ Each batch the item renderer describes records its handlers into a callback gene
 - Tests: `git_status::tests::{detached_initial_and_linked_worktrees, mods_get_the_file_list_only_when_they_ask, events_in_ignored_folders_objects_and_locks_do_not_count, a_burst_of_events_is_one_look_after_it_settles_and_looks_are_spaced, a_watched_repo_is_looked_at_again_when_it_changes_and_not_for_ignored_churn, a_new_ignored_folder_does_not_count_whatever_its_first_event, a_folder_outside_any_repo_is_false, reads_share_one_look_and_answers_redraw_only_on_change}`, `mods::tests::{a_shared_value_redraws_only_the_copies_that_read_it, a_copy_coming_into_view_is_told_and_catches_up_on_missed_refreshes}`, `window::tests::folder_info_comes_from_the_git_status`.
 - Files: `src/git_status.rs`, `src/mods.rs`, `src/window.rs`, `src/files.rs`, `src/main.rs`, `src/mods/render_tests.rs`, `defaults/herdr.d.ts`, `defaults/AGENTS.md`
 - Upstream: none yet. Issue #549 proposes the shared git status; the title-spin part overlaps upstream #640 and #626.
+
+### Backstop for dropped watch events
+
+`fix/stale-watch-fallback` (branched from `master`, fork only for the git half): under heavy load macOS FSEvents loses most per-file events (creates and deletes alike) with no MustScanSubDirs, UserDropped or KernelDropped flag and no error, whatever the latency or flags. The watchers are therefore only the fast path, with a slow, cheap backstop behind each.
+
+- Git status: a watched (lasting) answer is looked at again when read after `LASTING_STALE` (60 s, `src/git_status.rs`), so a dropped event leaves git status wrong for at most a minute. Cost: each watched repo that is read (up to `MAX_WATCHED`, 64) runs one `git status` a minute.
+- Folder watches (`watchFolder`, `files::next_change`): every `FOLDER_SWEEP` (60 s, `src/files.rs`), a folder that a mod is waiting on right now is reported wholly changed (its root path, the same root invalidation rescans, errors and overflow use). The cadence is fixed, not pushed back by real events, because under load real and dropped events arrive together. Cost: each waiting mod re-lists its whole folder once a minute. A folder nobody waits on reports nothing. The check runs on the folder's own worker thread, which already wakes every `BATCH` (150 ms), so it adds no thread or timer and costs nothing with no folder watched. A waiter that drops between the check and delivery can get one harmless early wake.
+- Tests: `git_status::tests::a_lasting_answer_older_than_its_bound_is_looked_at_again` (injected instants, no sleeps), `files::tests::only_a_folder_with_a_live_waiter_is_swept`.
+- Files: `src/git_status.rs`, `src/files.rs`
+- Upstream: the folder sweep is a candidate (it lives wholly in `src/files.rs`, which upstream shares, with the same exposure and no fallback); the git half depends on `perf/events`, which is fork only.
+
 ### Name-matched icons
 
 `feat/name-icons` (branched from `master`, fork only): spaces and panes get an icon that matches their name, with nothing to pick and nothing stored.
