@@ -1798,3 +1798,30 @@ test("search indexes again after a change to only a mod's settings, and finds th
   resetMods();
 });
 
+test("keys typed into a mod's text setting stay in the field, braces and arrows too, and esc leaves it", () => {
+  resetMods();
+  const { view } = opened("mod:pane");
+  let focused = 0, closed = 0;
+  view.handle = { focus: () => focused++ };
+  view.close = () => closed++;
+  view.modFocused = "pane.header_info";
+  let stopped = 0;
+  const cx = { ...searchCx, stop_propagation: () => stopped++ };
+  for (const c of ["{", "s", "u", "b", "}"]) view.onKey({ key: c, key_char: c, modifiers: {} }, cx);
+  view.onKey({ key: "down", modifiers: {} }, cx);
+  view.onKey({ key: "enter", modifiers: {} }, cx);
+  expect([view.query, view.section, stopped]).toEqual(["", "mod:pane", 0]);
+  // While a search shows the row, typing still goes to the field, not the search.
+  view.setQuery("header");
+  view.onKey({ key: "x", key_char: "x", modifiers: {} }, cx);
+  expect(view.query).toBe("header");
+  view.onKey({ key: "escape", modifiers: {} }, cx);
+  expect([focused, closed, view.query]).toEqual([1, 0, "header"]);
+  // With nothing focused, a key starts a search as before.
+  view.modFocused = null;
+  view.setQuery("");
+  view.onKey({ key: "z", key_char: "z", modifiers: {} }, cx);
+  expect(view.query).toBe("z");
+  resetMods();
+});
+
