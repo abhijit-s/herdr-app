@@ -251,7 +251,7 @@ export interface AgentInfo {
   /** Pinned with `terminal.pin`, on any Herdr client. */
   pinned: boolean;
   focused: boolean;
-  /** `agents_card_info` resolved for it (the default, `@{remote} · {space}`, while unset), when
+  /** The agents mod's `card_info` (`mods.agents.card_info`) resolved for it (its schema's default, `{remote} · {space}`, while unset), when
    *  what it shows changes (and on the minute for `{elapsed}`): what its card shows beside its
    *  name, a chip or a word per segment. null when set empty and when every segment is empty;
    *  undefined on builds without it (draw the machine). */
@@ -332,7 +332,7 @@ export interface PaneInfo {
    *  area, its place in the tab's stacking order (`z`, 0 at the back) and whether this
    *  screen hides it (always false until floats can be hidden). null for a tiled pane. */
   floating: { rect: [number, number, number, number]; z: number; hidden: boolean } | null;
-  /** An agent pane's `pane_header_info`, resolved when what it shows changes (and on the
+  /** An agent pane's `mods.pane.header_info`, resolved when what it shows changes (and on the
    *  minute for `{elapsed}`); null when unset, for shells, and when every segment is empty.
    *  Draw what `fitHeaderInfo` keeps for your width; `text` is the whole line, for a tooltip. */
   header_info?: HeaderInfo | null;
@@ -599,15 +599,17 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  frames padded to one length (see `working_spinner` in AGENTS.md). `working_spinner_presets`
  *  lists `{ name, frames, interval_ms }` for each preset besides the ring. `space_avatar` is
  *  how to draw space avatars: `"letter" | "glyph" | "emoji" | "repo"`, `"glyph"` when unset or
- *  unknown (null only from builds before that default: draw letters). `pane_header_info` is the agent pane header's template, or `null`
+ *  unknown (null only from builds before that default: draw letters). `pane_header_info` is the agent pane header's template in effect
+ *  (the pane mod's `header_info` setting, `mods.pane.header_info`, else the older top-level key), or `null`
  *  (unset or blank); panes carry it resolved as `header_info`. `agents_subagents` is how an
  *  agents list shows sub-agents: `"tree" | "folded" | "off"`, `"tree"` when unset (undefined on
  *  builds without it: draw a tree). `agents_subagent_click` is what a click on a sub-agent row
  *  should open: `"claude" | "transcript"` (Claude Code's own view, or a transcript popup),
  *  `"claude"` when unset (undefined on builds without it); the shipped agents mod doesn't read it.
- *  `agents_card_info` is the agents cards' template as written (`""` for none), or `null` while
- *  unset (the default); agents carry it resolved as `card_info`. The shipped agents mod draws
- *  `card_info` only once it is set, so its rows stay as they were by default.
+ *  `agents_card_info` is the agents cards' template as written (`""` for none): the agents mod's
+ *  `card_info` setting (`mods.agents.card_info`, else the older top-level key), or `null` while
+ *  unset (the default, which `modSettings()` gives the agents mod); agents carry it resolved as `card_info`. The shipped agents mod always draws
+ *  `card_info`, the default too (another machine's agents read its bare name, `vps`).
  *  `toast_duration`, `toast_style`, `toast_corners`, `toast_mark`, `toast_design` and `toast_progress` are the person's toast choices
  *  (see AGENTS.md). `cursor_style` is the terminals' default cursor shape, `"block" | "beam" | "underline" | "block_hollow"`
  *  (undefined on builds without it); a program's DECSCUSR still wins. `cursor_trail` is `"off" | "panes" | "all"`, `cursor_trail_style`
@@ -795,15 +797,53 @@ export function gitStatus(folder: string, options?: { on?: string | null; files?
  *  as `sep.trim()` with 4 px either side: draw it that way (the shipped `pane` header does). */
 export function fitHeaderInfo(segments: HeaderSegment[], width: number, fontPx: number): HeaderSegment[];
 
-/** A `pane_header_info` template resolved with sample values (an agent blocked on
+/** A header info template (`mods.pane.header_info`) resolved with sample values (an agent blocked on
  *  "approve Bash: make" for 3m, on main, 2 ahead, with changes), as `header_info`; null
  *  when nothing would show. For a settings preview. */
 export function headerInfoPreview(template: string): HeaderInfo | null;
 
-/** An `agents_card_info` template (null: the default) resolved as `card_info` for a sample
+/** A card info template (`mods.agents.card_info`; null: the default) resolved as `card_info` for a sample
  *  agent on another machine, `vps`, in the space `herdr-app`, with `headerInfoPreview`'s other
  *  values; null when nothing would show. For a settings preview. */
 export function cardInfoPreview(template: string | null): CardInfo | null;
+
+/** One setting a mod declares in its `mod.schema.json`, under `properties.settings.properties`:
+ *  JSON Schema keys plus Better Config's `x-labels` (one label per `enum` value), `x-step` and
+ *  `x-unit` (for numbers), and `format: "duration" | "size"`. Settings > Mods draws a choice for
+ *  `enum`, a switch for `boolean`, a stepper for `number`/`integer`, else a text field (with
+ *  `examples[0]` offered as "Use suggested"). */
+export interface ModSettingSchema {
+  title?: string;
+  description?: string;
+  type?: string | string[];
+  default?: unknown;
+  enum?: unknown[];
+  minimum?: number;
+  maximum?: number;
+  examples?: unknown[];
+  format?: "duration" | "size" | string;
+  "x-labels"?: string[];
+  "x-step"?: number;
+  "x-unit"?: string;
+}
+
+/** This mod's settings: each default its `mod.schema.json` declares, with the person's values
+ *  over them. The schema is read when the mod loads; values are the latest: a change to them
+ *  redraws the mod (no reload), so read them at each render. `{}` for a mod without a schema or
+ *  values. `mod` (another mod's) is for the Settings window only. */
+export function modSettings(mod?: string): Record<string, unknown>;
+
+/** Sets one of this mod's settings for the person (`null`, or the schema's default, puts it back
+ *  to the default). Where Herdr keeps the values is its own: read them back with `modSettings()`.
+ *  Throws when they can't be written (settings.json has errors). `mod` (another mod's settings)
+ *  is for the Settings window only. Returns that mod's values as `modSettings()` will give them, at
+ *  once, before Herdr has read settings.json again. */
+export function setModSetting(key: string, value: unknown, mod?: string): Record<string, unknown>;
+
+/** Every mod folder whose `mod.schema.json` declares settings: its folder name, title (mod.json's,
+ *  else the folder's) and declared settings in schema order. Read from disk on each call: for
+ *  the Settings window, not a render. */
+export function modSchemas(): { mod: string; title: string; settings: Record<string, ModSettingSchema> }[];
 
 /** For the Settings window's Cursor page: a small stand-in terminal (a grid of cells, faint
  *  placeholder lines and the cursor in `cursor_style`'s shape) as an element, made with `CursorPreview.new(id, {})` and kept across renders by `id`. A click

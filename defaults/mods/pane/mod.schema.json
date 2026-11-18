@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Pane header mod.json",
+  "description": "What Herdr reads from the pane header's mod.json, and the settings it takes. Your values live in settings.json under mods.pane.",
+  "type": "object",
+  "properties": {
+    "$schema": { "type": "string", "description": "This file's schema, for editors." },
+    "title": { "type": "string", "description": "The mod's name, as Herdr shows it." },
+    "place": { "enum": ["left", "right", "top", "bottom", "none"], "description": "Where Herdr first docks the mod." },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "header_info": {
+          "title": "Header info",
+          "description": "Extra words in an agent pane's header, as fit: {ask} what it needs from you, {state} {elapsed}, {branch}{ahead}{behind}{dirty}, {subagents} its live sub-agents, {machine} {remote} {space}. · or | separates segments; empty ones and those that don't fit are left out. Empty: off.",
+          "type": "string",
+          "default": "",
+          "examples": ["{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed} · {subagents}"]
+        }
+      }
+    }
+  }
+}

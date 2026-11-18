@@ -242,6 +242,9 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
     module = module.function("cardInfoPreview", |a| Ok(to_host(&crate::header_info::card_preview_for_mods(a.get(0).and_then(HostValue::as_str)))));
     module = module.function("headerTextWidth", |a| Ok(HostValue::Number(crate::header_info::width(a.string(0)?, a.number(1)? as f32) as f64)));
     module = module.function("refreshGitStatus", |_| Ok(HostValue::Null));
+    module = module.function("modSettings", |_| Ok(to_host(&serde_json::json!({}))));
+    module = module.function("modSchemas", |_| Ok(to_host(&serde_json::json!([]))));
+    module = module.function("setModSetting", |_| Ok(HostValue::Null));
     for name in ["nextCommand", "nextGitStatus", "nextSystemNotificationClick"] {
         module = module.async_function(name, |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
     }
@@ -2644,38 +2647,40 @@ fn agents_sub_agents_follow_the_setting_remembered_folds_and_fold_all(cx: &mut T
     assert_eq!(shows(&draw(Some("folded"), Some("this.command(\"unfold_all\");"), cx)), (true, true, true), "unfold all");
 }
 
-/// `agents_card_info`: unset, the shipped agents rows draw as before whatever
-/// card info the agents carry; set, a row draws its info without the space
-/// (named by its header or its name), and none when there is nothing.
+/// The agents mod's `card_info` always has a template (its schema default
+/// names another machine), so the shipped rows draw whatever card info the
+/// agents carry, without the space (named by the header or the name), with no
+/// "is it set" check; nothing when there is nothing, and the machine's bare
+/// name only on builds without card info.
 #[gpui::test]
-fn agents_rows_draw_card_info_once_set(cx: &mut TestAppContext) {
+fn agents_rows_draw_card_info_the_default_too(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
-    let info = json!({"text":"main · Local","segments":[{"sep":"","text":"main","ask":false},{"sep":" · ","text":"Local","ask":false}],"no_space":{"text":"main","segments":[{"sep":"","text":"main","ask":false}]}});
-    let draw = |set: Option<&str>, card: Value, cx: &mut TestAppContext| {
+    let draw = |remote: bool, card: Option<Value>, cx: &mut TestAppContext| {
         let mut values = fixture(true, props(), updates("current", "current"));
-        if let Some(set) = set {
-            values.get_mut("settings").unwrap()["agents_card_info"] = json!(set);
-        }
-        values.get_mut("agents").unwrap().as_array_mut().unwrap().iter_mut().for_each(|a| a["card_info"] = card.clone());
+        values.get_mut("agents").unwrap().as_array_mut().unwrap().iter_mut().for_each(|a| {
+            if remote {
+                a["address"] = json!(format!("vps/{}", a["address"].as_str().unwrap()));
+            }
+            match &card {
+                Some(card) => a["card_info"] = card.clone(),
+                None => drop(a.as_object_mut().unwrap().remove("card_info")),
+            }
+        });
         describe_with_values(cx, &staged, "mods/agents", values, None).unwrap()
     };
-    let unset = draw(None, info.clone(), cx);
-    let before = describe(cx, &staged, "mods/agents", true, props(), updates("current", "current"), None).unwrap();
-    assert_eq!(unset, before, "unset: drawn as before");
-    // Another machine's agent, unset: its machine's bare name, as the shipped rows always drew it.
-    let mut values = fixture(true, props(), updates("current", "current"));
-    values.get_mut("agents").unwrap().as_array_mut().unwrap().iter_mut().for_each(|a| {
-        a["address"] = json!(format!("vps/{}", a["address"].as_str().unwrap()));
-        a["card_info"] = json!({"text":"@vps · Local","segments":[{"sep":"","text":"@vps","ask":false},{"sep":" · ","text":"Local","ask":false}],"no_space":{"text":"@vps","segments":[]}});
-    });
-    let remote = describe_with_values(cx, &staged, "mods/agents", values, None).unwrap();
-    assert!(remote.contains("text \"vps\"") && !remote.contains("@vps"), "{remote}");
-    let set = draw(Some("{branch} · {space}"), info, cx);
-    assert!(set.contains("text \"main\"") && !set.contains("main · Local"), "the info without its space: {set}");
-    let none = draw(Some(""), Value::Null, cx);
-    assert!(!none.contains("text \"main\""), "{none}");
+    let default = json!({"text":"vps · Local","segments":[{"sep":"","text":"vps","ask":false},{"sep":" · ","text":"Local","ask":false}],"no_space":{"text":"vps","segments":[]}});
+    let shown = draw(true, Some(default), cx);
+    assert!(shown.contains("text \"vps\"") && !shown.contains("@vps") && !shown.contains("vps · Local"), "the default, without its space: the bare machine: {shown}");
+    let own = json!({"text":"main · Local","segments":[],"no_space":{"text":"main","segments":[]}});
+    let set = draw(false, Some(own), cx);
+    assert!(set.contains("text \"main\"") && !set.contains("main · Local"), "{set}");
+    let none = draw(true, Some(Value::Null), cx);
+    assert!(!none.contains("text \"vps\"") && !none.contains("@vps"), "nothing to show: no machine either: {none}");
+    let older = draw(true, None, cx);
+    assert!(older.contains("text \"vps\""), "a build without card info: the machine: {older}");
 }
+
 
 /// The pane menu names the pane first among the pane's own items, as the tab
 /// menu does its tab; a pane header's right-click opens that menu for its pane

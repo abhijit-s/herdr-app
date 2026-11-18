@@ -26,6 +26,7 @@ mod links;
 mod model;
 mod mirror;
 mod mirror_sync;
+mod mod_settings;
 mod place;
 mod persist;
 #[cfg(any(target_os = "macos", test))]

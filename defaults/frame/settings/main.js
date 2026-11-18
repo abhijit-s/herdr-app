@@ -2,7 +2,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input, Popup, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { hc, run, theme, themes, fonts, updates, telemetry, settings, layoutSpacing, layouts, shared, setShared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window, headerInfoPreview, cardInfoPreview, toastLooks, CursorPreview } from "herdr";
+import { hc, run, theme, themes, fonts, updates, telemetry, settings, layoutSpacing, layouts, shared, setShared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window, headerInfoPreview, cardInfoPreview, modSchemas, modSettings, setModSetting, toastLooks, CursorPreview } from "herdr";
 
 const I = (name) => `frame/settings/${name}.svg`;
 
@@ -101,6 +101,47 @@ function stepSpacing(v, d) {
   return Math.max(lo, Math.min(hi, Math.round(v + d)));
 }
 
+// Mods' own settings, each mod's declared in its mod.schema.json (`modSchemas()`),
+// the person's values in settings.json's `mods.<name>`: a page each, `mod:<name>`.
+const MOD_SCHEMAS = modSchemas() ?? [];
+// Where mods' values are stored is Herdr's to know: they are read through
+// modSettings(mod) and written through setModSetting(key, value, mod) only.
+
+// How long what setModSetting handed back outranks modSettings(), which catches up once
+// Herdr reads settings.json again; after that an edit made elsewhere shows.
+const MOD_WRITTEN_MS = 3000;
+
+/** A mod setting's value: the person's, else the schema's default. `written`: what the
+ *  window's last setModSetting for each mod handed back, `{ values, at }`, drawn until
+ *  modSettings(mod) catches up so a click shows at once. */
+function modValue(mod, key, spec, written = {}) {
+  let values = modSettings(mod) ?? {};
+  const w = written[mod];
+  if (w) {
+    if (JSON.stringify(w.values) === JSON.stringify(values) || Date.now() - w.at > MOD_WRITTEN_MS) delete written[mod];
+    else values = w.values;
+  }
+  return Object.hasOwn(values, key) ? values[key] : spec.default;
+}
+
+// The value to write: null for the default (a blank text setting whose default is blank too).
+function toWrite(spec, value) {
+  return typeof value === "string" && typeof spec.default === "string" && value.trim() === spec.default.trim() ? null : value;
+}
+
+// How a mod setting is drawn, from its schema: a choice, a switch, a stepper, else a text field.
+function modControlKind(spec) {
+  if (Array.isArray(spec.enum)) return "choice";
+  if (spec.type === "boolean") return "switch";
+  if (spec.type === "number" || spec.type === "integer") return "number";
+  return "text";
+}
+
+// Every mod setting drawn as a text field.
+function modTextSettings() {
+  return MOD_SCHEMAS.flatMap((m) => Object.entries(m.settings).filter(([, spec]) => modControlKind(spec) === "text").map(([key, spec]) => ({ mod: m.mod, key, spec })));
+}
+
 // The sidebar: groups that open and close, each with its pages. A page's id is
 // what app.settings' section names.
 const GROUPS = [
@@ -108,6 +149,7 @@ const GROUPS = [
   { id: "text", title: "Text", icon: "type", pages: [["zoom", "Zoom"], ["fonts", "Fonts"], ["grid", "Terminal grid"], ["rendering", "Rendering"]] },
   { id: "input", title: "Input", icon: "keyboard", pages: [...(window()?.platform === "macos" ? [["keyboard", "Keyboard"]] : []), ["mouse", "Mouse"]] },
   { id: "agents", title: "Agents", icon: "bell", pages: [["activity", "Activity"], ["alerts", "Alerts"]] },
+  ...(MOD_SCHEMAS.length ? [{ id: "mods", title: "Mods", icon: "puzzle", pages: MOD_SCHEMAS.map((m) => [`mod:${m.mod}`, m.title]) }] : []),
   { id: "system", title: "System", icon: "server", pages: [["machines", "Machines"], ["updates", "Updates"], ["privacy", "Privacy"]] },
 ];
 const PAGES = GROUPS.flatMap((g) => g.pages.map(([id, title]) => ({ id, title, group: g.id })));
@@ -351,16 +393,52 @@ const TRAIL_MS = [50, 1000];
 const TRAIL_MS_DEFAULT = 120;
 // Theme colors offered for the active pane's border (colors.focus).
 const FOCUS_SWATCHES = ["ansi1", "ansi2", "ansi3", "ansi4", "ansi5", "ansi6", "terminal_foreground"];
-// pane_header_info's suggestion: what the agent asks, the branch, the state and for how long, its live sub-agents.
 // A header info separator as the pane header mods draw it (their separator()): the mark
 // alone with SEP_PAD (4) px either side, which is how fitHeaderInfo measures it.
 function headerSeparator(t, sep) {
   return div().flex_none().px(4).text_color(t.dim).child(sep.trim() || sep);
 }
 
-const SUGGESTED_HEADER_INFO = "{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed} · {subagents}";
-// agents_card_info while settings.json leaves it out (the app's DEFAULT_CARD_INFO): another machine's name, the space.
-const DEFAULT_CARD_INFO = "@{remote} · {space}";
+// Previews under a shipped mod's text setting, by `<mod>.<key>`: the pane
+// header's info as a blocked agent's header shows it, and the chips an agents
+// card for an agent on another machine shows.
+const MOD_PREVIEWS = {
+  "pane.header_info": (t, typed) => {
+    const preview = typed.trim() ? headerInfoPreview(typed) : null;
+    return h_flex()
+      .id("st-hi-preview")
+      .h(18)
+      .min_w(0)
+      .items_center()
+      .text_size(12)
+      .when(!preview, (el) => el.text_color(t.dim).child(typed.trim() ? "Nothing to show" : "Off: headers show no extra info"))
+      .when(Boolean(preview), (el) =>
+        el.tooltip(preview.text).overflow_hidden().children(
+          preview.segments.flatMap((s, i) => [
+            ...(s.sep ? [headerSeparator(t, s.sep)] : []),
+            div().when(i === preview.segments.length - 1, (d) => d.min_w(0).truncate()).when(i < preview.segments.length - 1, (d) => d.flex_none().whitespace_nowrap()).text_color(s.ask ? t.blocked : t.dim).child(s.text),
+          ]),
+        ),
+      );
+  },
+  "agents.card_info": (t, typed) => {
+    const preview = typed.trim() ? cardInfoPreview(typed) : null;
+    return h_flex()
+      .id("st-ci-preview")
+      .h(18)
+      .min_w(0)
+      .gap(4)
+      .items_center()
+      .overflow_hidden()
+      .text_size(11)
+      .when(!preview, (el) => el.text_size(12).text_color(t.dim).child(typed.trim() ? "Nothing to show" : "Off: cards show only the name"))
+      .when(Boolean(preview), (el) =>
+        el.tooltip(preview.text).children(
+          preview.segments.map((s, i) => div().when(i === preview.segments.length - 1, (d) => d.min_w(0).truncate()).when(i < preview.segments.length - 1, (d) => d.flex_none().whitespace_nowrap()).px(5).py(1).rounded(4).bg(t.chrome).text_color(s.ask ? t.blocked : t.muted).child(s.text)),
+        ),
+      );
+  },
+};
 
 // How the agents list shows sub-agents (agents_subagents); Tree is the default, left out of settings.json.
 const AGENTS_SUBAGENTS = [
@@ -614,8 +692,7 @@ export default class Settings extends View {
     this.place = { page: this.section, heading: "" };
     this.index = null;
     this.matched = null;
-    this.headerInputState();
-    this.cardInputState();
+    this.modInputStates();
     this.searchInput = InputState.new({ placeholder: "Search settings" });
     this.searchInput.on("change", (_e, cx) => { this.setQuery(this.searchInput.value(), false); cx.notify(); });
     this.searchInput.on("focus", (_e, cx) => { this.searchFocused = true; cx.notify(); });
@@ -673,9 +750,9 @@ export default class Settings extends View {
 
   // `broken`: settings.json doesn't parse (mid-edit), or isn't an object, so
   // nothing may be written over it.
-  // `syncHeader`: put settings.json's pane_header_info in its field (on opening;
-  // not on a save's re-read, which would undo what the field is writing).
-  async load(syncHeader = false) {
+  // `syncFields`: put settings.json's mod text settings in their fields (on opening;
+  // not on a save's re-read, which would undo what a field is writing).
+  async load(syncFields = false) {
     this.raw = await readTextFile(this.file());
     try {
       const person = this.raw ? JSON.parse(this.raw) : {};
@@ -685,53 +762,39 @@ export default class Settings extends View {
       this.person = {};
       this.broken = true;
     }
-    const typed = this.person.pane_header_info ?? "";
-    if (syncHeader && !this.headerFocused && this.headerInput && this.headerInput.value() !== typed) this.headerInput.set_value(typed);
-    const card = this.person.agents_card_info ?? DEFAULT_CARD_INFO;
-    if (syncHeader && !this.cardFocused && this.cardInput && this.cardInput.value() !== card) this.cardInput.set_value(card);
+    if (!syncFields) return;
+    for (const { mod, key, spec } of modTextSettings()) {
+      const id = `${mod}.${key}`;
+      const now = String(modValue(mod, key, spec, this.modWritten) ?? "");
+      const input = this.modInputs[id];
+      if (input && this.modFocused !== id && input.value() !== now) input.set_value(now);
+    }
   }
 
-  // pane_header_info as typed: previewed live, written on Enter or leaving the field.
-  // Made in init (input state can't be made while rendering).
-  headerInputState() {
-    if (this.headerInput) return this.headerInput;
-    const input = (this.headerInput = InputState.new({ placeholder: "Off" }));
-    input.set_value(this.person.pane_header_info ?? "");
-    input.on("change", (_e, cx) => cx.notify());
-    input.on("focus", (_e, cx) => { this.headerFocused = true; cx.notify(); });
-    input.on("blur", (_e, cx) => { this.headerFocused = false; this.setHeaderInfo(input.value(), cx); });
-    input.on("submit", (_e, cx) => this.setHeaderInfo(input.value(), cx));
-    return input;
+  // A field for each mod text setting, by `<mod>.<key>`: previewed live, written
+  // on Enter or leaving it. Made in init (input state can't be made while rendering).
+  modInputStates() {
+    if (this.modInputs) return;
+    this.modInputs = {};
+    for (const { mod, key, spec } of modTextSettings()) {
+      const id = `${mod}.${key}`;
+      const input = (this.modInputs[id] = InputState.new({ placeholder: spec.default ? String(spec.default) : "Off" }));
+      input.set_value(String(modValue(mod, key, spec, this.modWritten) ?? ""));
+      input.on("change", (_e, cx) => cx.notify());
+      input.on("focus", (_e, cx) => { this.modFocused = id; cx.notify(); });
+      input.on("blur", (_e, cx) => { if (this.modFocused === id) this.modFocused = null; this.setModValue(mod, key, spec, input.value(), cx); });
+      input.on("submit", (_e, cx) => this.setModValue(mod, key, spec, input.value(), cx));
+    }
   }
 
-  // agents_card_info as typed, the default when unset: previewed live, written on Enter or leaving the field.
-  cardInputState() {
-    if (this.cardInput) return this.cardInput;
-    const input = (this.cardInput = InputState.new({ placeholder: "Off" }));
-    input.set_value(this.person.agents_card_info ?? DEFAULT_CARD_INFO);
-    input.on("change", (_e, cx) => cx.notify());
-    input.on("focus", (_e, cx) => { this.cardFocused = true; cx.notify(); });
-    input.on("blur", (_e, cx) => { this.cardFocused = false; this.setCardInfo(input.value(), cx); });
-    input.on("submit", (_e, cx) => this.setCardInfo(input.value(), cx));
-    return input;
-  }
-
-  // agents_card_info: the default leaves it out of settings.json; blank is kept, as no card info.
-  setCardInfo(text, cx) {
-    if (text === (this.person.agents_card_info ?? DEFAULT_CARD_INFO)) return cx.notify();
-    this.change((p) => {
-      if (text === DEFAULT_CARD_INFO) delete p.agents_card_info;
-      else p.agents_card_info = text;
-    }, cx);
-  }
-
-  // pane_header_info: blank leaves it out of settings.json (headers as without it).
-  setHeaderInfo(text, cx) {
-    if (text === (this.person.pane_header_info ?? "")) return cx.notify();
-    this.change((p) => {
-      if (text.trim()) p.pane_header_info = text;
-      else delete p.pane_header_info;
-    }, cx);
+  // Writes one mod setting, unless it already holds `value`.
+  setModValue(mod, key, spec, value, cx) {
+    if (JSON.stringify(value) === JSON.stringify(modValue(mod, key, spec, this.modWritten))) return cx.notify();
+    try {
+      const now = setModSetting(key, toWrite(spec, value), mod);
+      if (now && typeof now === "object") (this.modWritten ??= {})[mod] = { values: now, at: Date.now() };
+    } catch (e) { notify({ title: "Not saved to settings.json", body: String(e?.message ?? e), level: "error" }); }
+    cx.notify();
   }
 
   // Changes settings.json the way an agent would: read, change, write back
@@ -846,6 +909,7 @@ export default class Settings extends View {
   }
 
   page(id, t, cx) {
+    if (id.startsWith("mod:")) return this.modPage(t, id.slice("mod:".length));
     switch (id) {
       case "themes": return this.themesPage(t);
       case "layout": return this.layoutPage(t, cx);
@@ -1248,8 +1312,8 @@ export default class Settings extends View {
   }
 
   // One of a few values; picking the first (the default) leaves it out of settings.json.
-  // `now` and `write` read and write a value that isn't one of the choices as written.
-  choicePicker(t, id, key, choices, { now: shown, write } = {}) {
+  // `now` and `write` read and write a value that isn't one of the choices as written; `pick` takes the click instead of settings.json.
+  choicePicker(t, id, key, choices, { now: shown, write, pick } = {}) {
     const def = choices[0][0];
     const now = shown ?? this.person[key] ?? def;
     return h_flex()
@@ -1270,7 +1334,7 @@ export default class Settings extends View {
             .cursor_pointer()
             .when(now === value, (el) => el.bg(t.raised).text_color(t.foreground).border_1().border_color(t.border))
             .when(now !== value, (el) => el.text_color(t.muted).hover((s) => s.text_color(t.foreground)))
-            .on_click((_e, cx) =>
+            .on_click((_e, cx) => pick ? pick(value, cx) :
               this.change((p) => {
                 if (write) write(p, value);
                 else if (value === def) delete p[key];
@@ -1967,24 +2031,6 @@ export default class Settings extends View {
           "agents_subagent_click",
         ),
       )
-      .child(
-        this.row(
-          t,
-          "Header info",
-          "Extra words in an agent pane's header, as fit: {ask} what it needs from you, {state} {elapsed}, {branch}{ahead}{behind}{dirty}, {subagents} its live sub-agents, {machine} {remote} {space}. · or | separates segments; empty ones and those that don't fit are left out. Empty: off.",
-          this.headerInfoField(t),
-          "pane_header_info",
-        ),
-      )
-      .child(
-        this.row(
-          t,
-          "Card info",
-          "What an agent's card in the agents list shows beside its name, as Header info's template: the same keys, and {machine} (local for this computer), {remote} (another machine's name, else nothing), {space}. Each segment is a chip; {space} is left out where a space header or the name already says it. Empty: off. The shipped agents list keeps its own look (the machine's name) until you set one.",
-          this.cardInfoField(t),
-          "agents_card_info",
-        ),
-      )
       .child(this.plain(div().h(18)))
       .child(this.heading(t, "After a restart"))
       .child(
@@ -1998,65 +2044,55 @@ export default class Settings extends View {
       );
   }
 
-  // pane_header_info: the template, the suggestion, and the template as a
-  // blocked agent's header would show it.
-  headerInfoField(t) {
-    const input = this.headerInputState();
-    const typed = input.value();
-    const preview = typed.trim() ? headerInfoPreview(typed) : null;
+  // Mods ----------------------------------------------------------------
+
+  // A mod's page: a row per setting its schema declares, in schema order.
+  modPage(t, mod) {
+    const m = MOD_SCHEMAS.find((m) => m.mod === mod);
+    if (!m) return div();
     return v_flex()
-      .w(340)
-      .gap(6)
-      .child(
-        h_flex()
-          .gap(6)
-          .items_center()
-          .child(Input.new(input).flex_1().min_w(0).h(28).px(8).rounded(7).border_1().border_color(this.headerFocused ? t.accent : t.input).bg(t.background).text_size(12).font_family(DEFAULT_FONT).text_color(t.foreground))
-          .when(typed !== SUGGESTED_HEADER_INFO, (el) =>
-            el.child(
-              div()
-                .id("st-hi-suggested")
-                .flex_none()
-                .px(8)
-                .py(4)
-                .rounded(6)
-                .text_size(12)
-                .text_color(t.muted)
-                .cursor_pointer()
-                .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                .on_click((_e, cx) => {
-                  input.set_value(SUGGESTED_HEADER_INFO);
-                  this.setHeaderInfo(SUGGESTED_HEADER_INFO, cx);
-                })
-                .child("Use suggested"),
-            ),
-          ),
-      )
-      .child(
-        h_flex()
-          .id("st-hi-preview")
-          .h(18)
-          .min_w(0)
-          .items_center()
-          .text_size(12)
-          .when(!preview, (el) => el.text_color(t.dim).child(typed.trim() ? "Nothing to show" : "Off: headers show no extra info"))
-          .when(Boolean(preview), (el) =>
-            el.tooltip(preview.text).overflow_hidden().children(
-              preview.segments.flatMap((s, i) => [
-                ...(s.sep ? [headerSeparator(t, s.sep)] : []),
-                div().when(i === preview.segments.length - 1, (d) => d.min_w(0).truncate()).when(i < preview.segments.length - 1, (d) => d.flex_none().whitespace_nowrap()).text_color(s.ask ? t.blocked : t.dim).child(s.text),
-              ]),
-            ),
-          ),
+      .w_full()
+      .children(
+        Object.entries(m.settings).map(([key, spec]) =>
+          this.row(t, spec.title ?? key, spec.description ?? "", this.modControl(t, mod, key, spec), `${mod}.${key}`),
+        ),
       );
   }
 
-  // agents_card_info: the template, the default, and the chips a card for an
-  // agent on another machine would show.
-  cardInfoField(t) {
-    const input = this.cardInputState();
+  // The control a mod setting's schema asks for, using the window's own pieces.
+  modControl(t, mod, key, spec) {
+    const id = `st-mod-${mod}-${key}`;
+    const now = modValue(mod, key, spec, this.modWritten);
+    const set = (value, cx) => this.setModValue(mod, key, spec, value, cx);
+    switch (modControlKind(spec)) {
+      case "choice": {
+        const labels = spec["x-labels"] ?? [];
+        const choices = spec.enum.map((v, i) => [v, labels[i] ?? String(v)]);
+        return this.choicePicker(t, id, null, choices, { now, pick: (v, cx) => set(v, cx) });
+      }
+      case "switch":
+        return this.toggle(t, id, now === true, (_e, cx) => set(now !== true, cx));
+      case "number": {
+        const step = spec["x-step"] ?? 1;
+        const n = typeof now === "number" ? now : 0;
+        const to = (v) => Math.min(spec.maximum ?? Infinity, Math.max(spec.minimum ?? -Infinity, Math.round(v * 1e6) / 1e6));
+        const label = spec["x-unit"] ? `${n} ${spec["x-unit"]}` : String(n);
+        return this.stepper(t, id, label, (_e, cx) => set(to(n - step), cx), (_e, cx) => set(to(n + step), cx));
+      }
+      default:
+        return this.modTextField(t, mod, key, spec);
+    }
+  }
+
+  // A text setting: the field, the schema's first example to use, and the mod's preview if it has one.
+  modTextField(t, mod, key, spec) {
+    const id = `${mod}.${key}`;
+    this.modInputStates();
+    const input = this.modInputs[id];
+    if (!input) return div();
     const typed = input.value();
-    const preview = typed.trim() ? cardInfoPreview(typed) : null;
+    const example = spec.examples?.[0];
+    const preview = MOD_PREVIEWS[id];
     return v_flex()
       .w(340)
       .gap(6)
@@ -2064,11 +2100,11 @@ export default class Settings extends View {
         h_flex()
           .gap(6)
           .items_center()
-          .child(Input.new(input).flex_1().min_w(0).h(28).px(8).rounded(7).border_1().border_color(this.cardFocused ? t.accent : t.input).bg(t.background).text_size(12).font_family(DEFAULT_FONT).text_color(t.foreground))
-          .when(typed !== DEFAULT_CARD_INFO, (el) =>
+          .child(Input.new(input).flex_1().min_w(0).h(28).px(8).rounded(7).border_1().border_color(this.modFocused === id ? t.accent : t.input).bg(t.background).text_size(12).font_family(DEFAULT_FONT).text_color(t.foreground))
+          .when(typeof example === "string" && typed !== example, (el) =>
             el.child(
               div()
-                .id("st-ci-suggested")
+                .id(`st-mod-${mod}-${key}-example`)
                 .flex_none()
                 .px(8)
                 .py(4)
@@ -2078,29 +2114,14 @@ export default class Settings extends View {
                 .cursor_pointer()
                 .hover((s) => s.bg(t.hover).text_color(t.foreground))
                 .on_click((_e, cx) => {
-                  input.set_value(DEFAULT_CARD_INFO);
-                  this.setCardInfo(DEFAULT_CARD_INFO, cx);
+                  input.set_value(example);
+                  this.setModValue(mod, key, spec, example, cx);
                 })
                 .child("Use suggested"),
             ),
           ),
       )
-      .child(
-        h_flex()
-          .id("st-ci-preview")
-          .h(18)
-          .min_w(0)
-          .gap(4)
-          .items_center()
-          .overflow_hidden()
-          .text_size(11)
-          .when(!preview, (el) => el.text_size(12).text_color(t.dim).child(typed.trim() ? "Nothing to show" : "Off: cards show only the name"))
-          .when(Boolean(preview), (el) =>
-            el.tooltip(preview.text).children(
-              preview.segments.map((s, i) => div().when(i === preview.segments.length - 1, (d) => d.min_w(0).truncate()).when(i < preview.segments.length - 1, (d) => d.flex_none().whitespace_nowrap()).px(5).py(1).rounded(4).bg(t.chrome).text_color(s.ask ? t.blocked : t.muted).child(s.text)),
-            ),
-          ),
-      );
+      .when(Boolean(preview), (el) => el.child(preview(t, typed)));
   }
 
   // From theme (no colors.focus), or one of the shown theme's colors as it is

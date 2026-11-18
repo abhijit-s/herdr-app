@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agents mod.json",
+  "description": "What Herdr reads from the agents list's mod.json, and the settings it takes. Your values live in settings.json under mods.agents.",
+  "type": "object",
+  "properties": {
+    "$schema": { "type": "string", "description": "This file's schema, for editors." },
+    "title": { "type": "string", "description": "The mod's name, as Herdr shows it." },
+    "place": { "enum": ["left", "right", "top", "bottom", "none"], "description": "Where Herdr first docks the mod." },
+    "actions": { "type": "array", "description": "Its command palette entries." },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "card_info": {
+          "title": "Card info",
+          "description": "What an agent's card in the agents list shows beside its name, as Header info's template: the same keys, and {machine} (local for this computer), {remote} (another machine's name, else nothing), {space}. Each segment is a chip; {space} is left out where a space header or the name already says it. Empty: off. The shipped agents list draws it in place of the machine's name.",
+          "type": "string",
+          "default": "{remote} · {space}",
+          "examples": ["{remote} · {space}"]
+        }
+      }
+    }
+  }
+}

@@ -920,7 +920,30 @@ mod derivation_tests {
             assert_eq!(rewritten.agents_card_info.as_deref(), Some(value));
         }
         let settings_js = include_str!("../defaults/frame/settings/main.js");
-        assert!(settings_js.contains(&format!("const DEFAULT_CARD_INFO = \"{}\";", crate::header_info::DEFAULT_CARD_INFO)), "the Settings window's default is the app's");
+        assert!(!settings_js.contains(crate::header_info::default_card_info()), "the Settings window takes the default from the agents mod's schema");
+    }
+
+    /// Header and card info live in `mods.pane` and `mods.agents`; the
+    /// top-level keys they moved from are read while the new ones are unset,
+    /// and a value under `mods` wins. Non-text there falls back to the
+    /// default and is a settings problem.
+    #[test]
+    fn mod_settings_win_over_the_keys_they_moved_from() {
+        let compose = |v: serde_json::Value| Settings::compose(&serde_json::from_value(v).unwrap(), &crate::layout::Look::default(), true);
+        let legacy = compose(serde_json::json!({ "pane_header_info": "{state}", "agents_card_info": "" }));
+        assert_eq!((legacy.pane_header_info.as_deref(), legacy.agents_card_info.as_deref()), (Some("{state}"), Some("")), "older settings.json keep their values");
+        let both = compose(serde_json::json!({ "pane_header_info": "{state}", "agents_card_info": "", "mods": { "pane": { "header_info": "{branch}" }, "agents": { "card_info": "{space}" } } }));
+        assert_eq!((both.pane_header_info.as_deref(), both.agents_card_info.as_deref()), (Some("{branch}"), Some("{space}")));
+        let blank = compose(serde_json::json!({ "pane_header_info": "{state}", "mods": { "pane": { "header_info": " " } } }));
+        assert_eq!(blank.pane_header_info, None, "blank under mods is off, not the old key");
+        let wrong = compose(serde_json::json!({ "agents_card_info": "{space}", "mods": { "agents": { "card_info": 3 } } }));
+        assert_eq!(wrong.agents_card_info, None);
+        assert!(wrong.problems().iter().any(|p| p.starts_with("mods.agents.card_info 3")), "{:?}", wrong.problems());
+        let person: Person = serde_json::from_value(serde_json::json!({ "mods": { "pane": { "header_info": "{state}" } } })).unwrap();
+        let rewritten: serde_json::Value = serde_json::to_value(&person).unwrap();
+        assert_eq!(rewritten["mods"], serde_json::json!({ "pane": { "header_info": "{state}" } }), "the app keeps mods' values when it rewrites settings.json");
+        assert!(serde_json::to_value(Person::default()).unwrap().get("mods").is_none());
+        assert!(compose(serde_json::json!({ "mods": { "pane": {} } })).for_mods().get("mods").is_none(), "settings() keeps its shape: mods read modSettings()");
     }
 
     /// Classic is the derivation Herdr shipped before tinted panels, value for
@@ -1333,8 +1356,8 @@ pub struct Person {
     /// name or `{frames, interval_ms}` (read through `working_spinner`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub working_spinner: Option<serde_json::Value>,
-    /// The extra words an agent pane's header shows, as a template
-    /// (header_info.rs); unset or empty: none.
+    /// The pane mod's `header_info` from before mod settings: read when
+    /// `mods.pane.header_info` is unset, never written.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pane_header_info: Option<String>,
     /// How the agents list shows each agent's live sub-agents: `tree`,
@@ -1346,10 +1369,14 @@ pub struct Person {
     /// that honour it.
     #[serde(skip_serializing_if = "AgentsSubagentClick::is_claude")]
     pub agents_subagent_click: AgentsSubagentClick,
-    /// What an agents list's card shows beside the agent's name, as a
-    /// template (header_info.rs); unset: `DEFAULT_CARD_INFO`, empty: nothing.
+    /// The agents mod's `card_info` from before mod settings: read when
+    /// `mods.agents.card_info` is unset, never written.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agents_card_info: Option<String>,
+    /// Mods' own settings by mod folder name, as written (mod_settings.rs);
+    /// each mod's `mod.schema.json` declares them and their defaults.
+    #[serde(skip_serializing_if = "serde_json::Map::is_empty")]
+    pub mods: serde_json::Map<String, serde_json::Value>,
     /// What happens to recorded agents whose terminals are back to a shell
     /// after Herdr starts or the core comes back (resume.rs).
     #[serde(skip_serializing_if = "ResumeAgents::is_ask")]
@@ -2619,6 +2646,7 @@ impl Default for Person {
             agents_subagents: AgentsSubagents::Tree,
             agents_subagent_click: AgentsSubagentClick::Claude,
             agents_card_info: None,
+            mods: serde_json::Map::new(),
             resume_agents: ResumeAgents::Ask,
             focus_follows_mouse: false,
             focus_follows_mouse_delay_ms: FOLLOW_DELAY_DEFAULT_MS,
@@ -2839,6 +2867,10 @@ pub struct Settings {
     /// `agents_card_info` as written, empty too; None: the default, which
     /// agents mods that draw their own cards when it is unset may keep.
     pub agents_card_info: Option<String>,
+    /// settings.json's `mods`, as written: what `modSettings()` merges over
+    /// each mod's schema defaults. A change redraws the mods like any other.
+    #[serde(skip)]
+    pub mods: serde_json::Map<String, serde_json::Value>,
     /// Why settings.json's `working_spinner` fell back to the ring.
     #[serde(skip)]
     pub working_spinner_problem: Option<String>,
@@ -2957,6 +2989,7 @@ impl Default for Settings {
             agents_subagents: AgentsSubagents::Tree,
             agents_subagent_click: AgentsSubagentClick::Claude,
             agents_card_info: None,
+            mods: serde_json::Map::new(),
             working_spinner_problem: None,
             space_avatar_problem: None,
         }
@@ -2966,6 +2999,7 @@ impl Default for Settings {
 impl Settings {
     pub fn compose(person: &Person, look: &crate::layout::Look, system_dark: bool) -> Settings {
         let d = Settings::default();
+        let mods = crate::mod_settings::stored(person);
         let (working_spinner, working_spinner_problem) = match working_spinner(person.working_spinner.as_ref()) {
             Ok(spinner) => (spinner, None),
             Err(problem) => (None, Some(problem)),
@@ -3067,10 +3101,11 @@ impl Settings {
             pane_auto_names: person.pane_auto_names,
             space_avatar: Some(person.space_avatar.clone().filter(|v| SPACE_AVATARS.contains(&v.as_str())).unwrap_or_else(|| SPACE_AVATAR_DEFAULT.into())),
             working_spinner,
-            pane_header_info: person.pane_header_info.clone().filter(|t| !t.trim().is_empty()),
+            pane_header_info: crate::mod_settings::text(&mods, "pane", "header_info").filter(|t| !t.trim().is_empty()),
             agents_subagents: person.agents_subagents,
             agents_subagent_click: person.agents_subagent_click,
-            agents_card_info: person.agents_card_info.clone(),
+            agents_card_info: crate::mod_settings::text(&mods, "agents", "card_info"),
+            mods,
             working_spinner_problem,
             space_avatar_problem: person.space_avatar.as_ref().filter(|v| !SPACE_AVATARS.contains(&v.as_str())).map(|v| format!("space_avatar {v:?} is not one of letter, glyph, emoji, repo: using \"{SPACE_AVATAR_DEFAULT}\"")),
             clipboard_write: person.clipboard_write,
@@ -3153,6 +3188,7 @@ impl Settings {
         if !(1.0..=21.0).contains(&self.minimum_contrast) {
             out.push(format!("minimum_contrast {} is outside 1..21", self.minimum_contrast));
         }
+        out.extend(crate::mod_settings::problems(&self.mods));
         out.extend(self.font_thicken.problem("font_thicken"));
         out.extend(self.ui_font_thicken.problem("ui_font_thicken"));
         if self.font_thicken_strength > 255 {

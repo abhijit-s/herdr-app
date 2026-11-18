@@ -388,28 +388,28 @@ test("key commands reach the agents mod through nextCommand", async () => {
   expect(notified).toBe(1);
 });
 
-// agents_card_info: t1 on another machine, t3 its kept sub-agent shown as its own row (no tree).
-for (const sort of ["priority", "grouped"]) test(`${sort}: a row shows its card info in place of its machine once agents_card_info is set`, () => {
+// card_info (the agents mod's setting, always a template: its schema default names another
+// machine): t1 on another machine, drawn in place of its machine with no "is it set" check.
+for (const sort of ["priority", "grouped"]) test(`${sort}: a row shows its card info in place of its machine, the default too`, () => {
   const info = (text: string, noSpace?: string | null) => ({ text, segments: [{ sep: "", text, ask: false }], ...(noSpace === undefined ? {} : { no_space: noSpace === null ? null : { text: noSpace, segments: [] } }) });
-  const remote = (card: Record<string, unknown>, set: Record<string, unknown>) => {
-    const r = keptRender(sort, { kept: [], more: (a: string) => ({ address: `vps/${a}`, pane: `p-${a}`, ...card }), set });
+  const remote = (card: Record<string, unknown>) => {
+    const r = keptRender(sort, { kept: [], more: (a: string) => ({ address: `vps/${a}`, pane: `p-${a}`, ...card }), set: {} });
     return r.texts.get("ag-vps/t1");
   };
-  const card = { card_info: info("@vps · Project", "@vps") };
-  // Unset: the machine, as without it, whatever Herdr resolved.
-  expect(remote(card, {})).toContain("vps");
-  expect(remote(card, {})).not.toContain("@vps");
-  // Set: the info without its space, which the header or the name already says.
-  expect(remote(card, { agents_card_info: "@{remote} · {space}" })).toContain("@vps");
-  expect(remote(card, { agents_card_info: "@{remote} · {space}" })).not.toContain("@vps · Project");
+  // The default, as Herdr resolves it: the info without its space, which the header or the name already says.
+  // The default, `{remote} · {space}`: the machine's bare name, as the rows always drew it.
+  expect(remote({ card_info: info("vps · Project", "vps") })).toContain("vps");
+  expect(remote({ card_info: info("vps · Project", "vps") })).not.toContain("@vps");
+  expect(remote({ card_info: info("vps · Project", "vps") })).not.toContain("vps · Project");
   // A template without {space} has no no_space: its info as it is.
-  expect(remote({ card_info: info("main · idle") }, { agents_card_info: "{branch} · {state}" })).toContain("main · idle");
+  expect(remote({ card_info: info("main · idle") })).toContain("main · idle");
   // Nothing to show, or nothing once the space is left out: no machine either.
-  expect(remote({ card_info: null }, { agents_card_info: "" })).not.toContain("vps");
-  expect(remote({ card_info: info("Project", null) }, { agents_card_info: "{space}" })).not.toContain("Project Project");
+  expect(remote({ card_info: null })).not.toContain("vps");
+  expect(remote({ card_info: info("Project", null) })).not.toContain("Project Project");
   // A build without card_info: the machine.
-  expect(remote({}, { agents_card_info: "{branch}" })).toContain("vps");
+  expect(remote({})).toContain("vps");
 });
+
 
 for (const width of [268, 44]) test(`the focused agent's row is marked as selected ${width < 160 ? "in the rail" : "in the wide list"}`, () => {
   const program = { name: "Claude", key: "claude", agent: true };

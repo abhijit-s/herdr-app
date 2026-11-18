@@ -83,12 +83,12 @@ const SORTS = [
 // agents_subagents: a tree under each agent, the same folded until clicked
 // open, or "off" (no rows, no count). Builds without the setting give tree.
 const subagentMode = () => settings().agents_subagents ?? "tree";
-// agents_card_info once the person sets it (`set`): the words beside a row's name, in place
-// of its machine; null for none. Its space always goes without saying here (a space header
-// above it, or its name in priority), so the info without {space}. Undefined: the machine, as
-// on builds without it and while it is unset.
-function cardText(a, set) {
-  if (!set || a.card_info === undefined) return undefined;
+// The words beside a row's name, in place of its machine (the agents mod's card_info, which
+// Herdr resolves; its schema default names another machine), null for none. Its space always
+// goes without saying here (a space header above it, or its name in priority), so the info
+// without {space}. Undefined: the machine, as on builds without card info.
+function cardText(a) {
+  if (a.card_info === undefined) return undefined;
   const info = a.card_info && "no_space" in a.card_info ? a.card_info.no_space : a.card_info;
   return info?.text ?? null;
 }
@@ -325,7 +325,6 @@ export default class Agents extends View {
     // The fold chevron; folded, colored by the most urgent sub-agent, with
     // their count when the row has no room for it.
     const counted = roomForSubCount();
-    const cardSet = settings().agents_card_info != null;
     const fold = (a, subs) => {
       const top = topStatus(subs, this.listed);
       const open = !this.isFolded(a.address);
@@ -374,7 +373,7 @@ export default class Agents extends View {
       const more = detail.get(a.address);
       // An agent on another machine (`vps/t7`) says which.
       const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
-      const card = cardText(a, cardSet);
+      const card = cardText(a);
       if (collapsed) {
         return h_flex()
           .id(`ag-${a.address}`)

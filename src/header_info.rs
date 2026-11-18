@@ -347,14 +347,21 @@ impl Values {
 /// `{machine}` for this computer.
 pub const LOCAL: &str = "local";
 
-/// `agents_card_info` while settings.json leaves it out: the cards the agents
-/// lists drew before it, another machine's name and the space.
-pub const DEFAULT_CARD_INFO: &str = "@{remote} · {space}";
+/// The agents mod's `card_info` while settings.json leaves it out: the cards
+/// the agents lists drew before it, another machine's name and the space.
+/// Declared once, in the agents mod's schema.
+pub fn default_card_info() -> &'static str {
+    static DEFAULT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let default = crate::mod_settings::shipped_default(include_str!("../defaults/mods/agents/mod.schema.json"), "card_info");
+        default.as_str().expect("card_info's default is a template").to_owned()
+    });
+    &DEFAULT
+}
 
 /// The card template in effect: settings.json's, else the default; None
 /// when it shows nothing.
 pub fn card_template(set: Option<&str>) -> Option<Template> {
-    Some(Template::parse(set.unwrap_or(DEFAULT_CARD_INFO))).filter(|t| !t.is_empty())
+    Some(Template::parse(set.unwrap_or(default_card_info()))).filter(|t| !t.is_empty())
 }
 
 /// An agent's resolved card info, as `AgentInfo.card_info`. `no_space`, there
@@ -678,8 +685,8 @@ mod tests {
     fn the_default_card_is_the_remote_machine_then_the_space() {
         let default = card_template(None).unwrap();
         let c = card(&default, &card_on("vps/t7", "herdr-app")).unwrap();
-        assert_eq!(texts(Some(&c.info)), vec!["@vps", "herdr-app"], "the chips the agents lists drew, in their order");
-        assert_eq!(texts(c.no_space.as_ref().unwrap().as_ref()), vec!["@vps"], "without the space: the machine alone");
+        assert_eq!(texts(Some(&c.info)), vec!["vps", "herdr-app"], "the chips the agents lists drew, in their order");
+        assert_eq!(texts(c.no_space.as_ref().unwrap().as_ref()), vec!["vps"], "without the space: the machine alone");
         let local = card(&default, &card_on("t7", "herdr-app")).unwrap();
         assert_eq!(texts(Some(&local.info)), vec!["herdr-app"]);
         assert_eq!(local.no_space, Some(None), "nothing at all without the space: null, not the full info");
@@ -688,9 +695,9 @@ mod tests {
         assert_eq!(card_template(Some(" · ")), None);
         assert!(card_template(Some("{state}")).is_some());
         let json = serde_json::to_value(&c).unwrap();
-        assert_eq!(json["text"], "@vps · herdr-app", "flattened beside segments, as header_info is read");
+        assert_eq!(json["text"], "vps · herdr-app", "flattened beside segments, as header_info is read");
         assert_eq!(json["segments"][1]["text"], "herdr-app");
-        assert_eq!(json["no_space"]["text"], "@vps");
+        assert_eq!(json["no_space"]["text"], "vps");
         assert_eq!(serde_json::to_value(&local).unwrap()["no_space"], serde_json::Value::Null);
     }
 
@@ -708,7 +715,7 @@ mod tests {
 
     #[test]
     fn card_previews_resolve_the_sample_on_another_machine() {
-        assert_eq!(card_preview_for_mods(None)["text"], "@vps · herdr-app");
+        assert_eq!(card_preview_for_mods(None)["text"], "vps · herdr-app");
         assert_eq!(card_preview_for_mods(Some("{machine} · {branch}"))["text"], "vps · main");
         assert_eq!(card_preview_for_mods(Some("")), serde_json::Value::Null);
     }
