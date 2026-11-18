@@ -820,7 +820,12 @@ mod tests {
         drop(first);
         assert_eq!(folders().get(&root).unwrap().waiters.len(), 1);
         std::fs::write(root.join("changed"), "yes").unwrap();
-        assert!(invalidates(&block_on(second).unwrap(), &root.join("changed")));
+        // FSEvents can hand the new stream `git init`'s writes first: the
+        // surviving caller must be answered, but its batch may be those.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        if !invalidates(&block_on_until(second, deadline).unwrap(), &root.join("changed")) {
+            wait_for_change(&root, &root.join("changed"));
+        }
         folders().remove(&root);
         std::fs::remove_dir_all(root).unwrap();
         let root = test_repo("cancel-quiet");

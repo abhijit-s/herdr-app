@@ -693,8 +693,14 @@ mod tests {
         let mut both: Vec<String> = (0..2).map(|_| next_update(&rx, Duration::from_secs(10)).expect("both answered").place.folder).collect();
         both.sort();
         assert_eq!(both, [top.folder.clone(), place.folder.clone()], "one look answers every folder in the tree");
-        // Wait for the first look's spacing to pass: what follows is from the watcher alone.
+        // A new FSEvents stream can start delivering seconds late, and then replays the
+        // setup's own writes (the commit, `src/`). Events arrive in order, so once a
+        // marker file's look lands, that replay is behind us.
+        std::fs::write(root.join("src/marker"), "").unwrap();
+        while next_update(&rx, Duration::from_secs(10)).expect("the watcher sees the marker").value["untracked"] != 1 {}
+        // Wait for that look's spacing to pass and take its sibling: what follows is from the churn alone.
         std::thread::sleep(MIN_GAP);
+        while next_update(&rx, Duration::from_millis(500)).is_some() {}
         std::fs::create_dir_all(root.join("target/debug")).unwrap();
         std::fs::write(root.join("target/debug/out"), "build").unwrap();
         std::fs::create_dir_all(root.join("build")).unwrap();
