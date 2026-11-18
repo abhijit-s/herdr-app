@@ -97,16 +97,14 @@ fn shares(children: &[&Node], available: f32, zoom: f32) -> Vec<f32> {
     sizes
 }
 
-fn block_bounds(n: &Node, bounds: Bounds<Pixels>, target: &str, frame: Option<&PaneFrame>, focused: &HashSet<String>, zoom: f32) -> Option<Bounds<Pixels>> {
-    if n.hidden { return None; }
+/// Each shown block under `n` with the slot `render_node` lays it out in
+/// (outside its own border), in tree order, until `visit` returns true.
+fn each_block(n: &Node, bounds: Bounds<Pixels>, frame: Option<&PaneFrame>, focused: &HashSet<String>, zoom: f32, visit: &mut dyn FnMut(&Node, Bounds<Pixels>) -> bool) -> bool {
+    if n.hidden { return false; }
+    if n.content().is_some() { return visit(n, bounds); }
     let border = node_border(n, focused.contains(&n.id)).map_or(0.0, |line| line.width) * zoom;
-    let mut origin = bounds.origin + point(px(border), px(border));
-    let size = inset(bounds.size, 2.0 * border, 2.0 * border);
-    if n.content().is_some() {
-        return (n.id == target).then_some(Bounds::new(origin, size));
-    }
     let (y, x) = padding(n);
-    origin += point(px(x * zoom), px(y * zoom));
+    let mut origin = bounds.origin + point(px(border + x * zoom), px(border + y * zoom));
     let size = content_size(n, bounds.size, focused.contains(&n.id), zoom);
     match &n.kind {
         Kind::Row { children } | Kind::Column { children } => {
@@ -116,18 +114,39 @@ fn block_bounds(n: &Node, bounds: Bounds<Pixels>, target: &str, frame: Option<&P
             let available = f32::from(if row { size.width } else { size.height }) - separator * children.len().saturating_sub(1) as f32;
             for (child, span) in children.iter().zip(shares(&children, available, zoom)) {
                 let size = if row { gpui::size(px(span), size.height) } else { gpui::size(size.width, px(span)) };
-                if let Some(bounds) = block_bounds(child, Bounds::new(origin, size), target, frame, focused, zoom) { return Some(bounds); }
+                if each_block(child, Bounds::new(origin, size), frame, focused, zoom, visit) { return true; }
                 if row { origin.x += px(span + separator); } else { origin.y += px(span + separator); }
             }
-            None
+            false
         }
         Kind::Stack { header, .. } => {
             let height = header.as_ref().map_or(0.0, header_height) * zoom;
             if header.as_ref().is_some_and(|h| !h.bottom()) { origin.y += px(height); }
-            block_bounds(n.active_child()?, Bounds::new(origin, inset(size, 0.0, height)), target, frame, focused, zoom)
+            n.active_child().is_some_and(|child| each_block(child, Bounds::new(origin, inset(size, 0.0, height)), frame, focused, zoom, visit))
         }
-        _ => None,
+        _ => false,
     }
+}
+
+/// Every shown block's slot in `area`, as the tiled tree lays them out.
+pub(super) fn block_slots(n: &Node, area: Bounds<Pixels>, frame: Option<&PaneFrame>, focused: &HashSet<String>, zoom: f32) -> Vec<(String, Bounds<Pixels>)> {
+    let mut out = Vec::new();
+    each_block(n, area, frame, focused, zoom, &mut |block, slot| {
+        out.push((block.id.clone(), slot));
+        false
+    });
+    out
+}
+
+fn block_bounds(n: &Node, bounds: Bounds<Pixels>, target: &str, frame: Option<&PaneFrame>, focused: &HashSet<String>, zoom: f32) -> Option<Bounds<Pixels>> {
+    let mut found = None;
+    each_block(n, bounds, frame, focused, zoom, &mut |block, slot| {
+        if block.id != target { return false; }
+        let border = node_border(block, focused.contains(&block.id)).map_or(0.0, |line| line.width) * zoom;
+        found = Some(Bounds::new(slot.origin + point(px(border), px(border)), inset(slot.size, 2.0 * border, 2.0 * border)));
+        true
+    });
+    found
 }
 
 fn pane_size(n: &Node, size: Size<Pixels>, target: &str, frame: Option<&PaneFrame>, focused: &HashSet<String>, zoom: f32) -> Option<Size<Pixels>> {
@@ -202,6 +221,20 @@ impl AppWindow {
         let candidates = tab.root.visible_blocks().into_iter().filter(|n| n.is_pane() && n.id != from)
             .filter_map(|n| Some((n.id.clone(), geometry(&n.id)?)));
         nearest(geometry(from)?, dir, candidates, &self.pane_history)
+    }
+
+    /// Where the shown tab's tiled tree is drawn, in window coordinates, and
+    /// its pane frame for a tab of `panes` panes.
+    pub(super) fn tab_area(&self, panes: usize) -> Option<(Bounds<Pixels>, Option<PaneFrame>)> {
+        let (context, area) = self.context_area()?;
+        let frame = match context.content() {
+            Some(Content::Context { pane: Some(frame), .. }) if frame.lone || panes > 1 => Some(frame.clone()),
+            _ => None,
+        };
+        let zoom = settings::ui_scale();
+        let (y, x) = padding(context);
+        let origin = self.bounds.borrow().get(&context.id)?.origin + point(px(x * zoom), px(y * zoom));
+        Some((Bounds::new(origin, inset(area, 2.0 * x * zoom, 2.0 * y * zoom)), frame))
     }
 
     /// The block tabs show in, and the area it was last drawn with.

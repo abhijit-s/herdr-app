@@ -322,7 +322,7 @@ def frames_since(offset):
         lines = f.readlines()[offset:]
     rows = [json.loads(l) for l in lines if l.strip()]
     n = max(len(rows), 1)
-    totals = {k: sum(r.get(k, 0) for r in rows) for k in ("window", "body", "trail", "terminal", "grid", "rows", "window_ms", "frame_ms", "scripts", "script_ms", "materialize", "materialize_ms", "presents", "spin_steps", "spin_late_ms", "link_starts")}
+    totals = {k: sum(r.get(k, 0) for r in rows) for k in ("window", "body", "trail", "slide", "resizes", "terminal", "grid", "rows", "window_ms", "frame_ms", "scripts", "script_ms", "materialize", "materialize_ms", "presents", "spin_steps", "spin_late_ms", "link_starts")}
     result = {k: round(v / n, 1) for k, v in totals.items()}
     # How late spinner steps reached the screen: mean and worst (spin clock, ms).
     result["spin_late_mean_ms"] = round(totals["spin_late_ms"] / totals["spin_steps"], 2) if totals["spin_steps"] else None
@@ -479,6 +479,36 @@ def jumps(bin, app, a, agent, burst):
     rows.append(measure("jumps-burst", app, a.seconds, a.sample))
 
 
+def arrange(bin, app, a, agent):
+    """Pane slides (pane_motion): four agents streaming while pane.arrange
+    cycles its modes every 2 s, with pane_motion "none" and then "basic". The
+    difference is what the slides cost; resizes per arrange should be one per
+    pane whose size changed, slides or not."""
+    rows = ROWS_OUT
+    do(bin, "space.new", {"name": "bench", "folder": ROOT, "argv": agent})
+    for direction in ("right", "down", "down"):
+        do(bin, "pane.split", {"direction": direction, "argv": agent})
+    for motion in ("none", "basic"):
+        settings = json.load(open(f"{ROOT}/home/settings.json"))
+        settings["pane_motion"] = motion
+        with open(f"{ROOT}/home/settings.json", "w") as f:
+            json.dump(settings, f)
+        stop = threading.Event()
+        def cycle():
+            while not stop.is_set():
+                do(bin, "pane.arrange", {"mode": "next"})
+                stop.wait(2)
+        cycler = threading.Thread(target=cycle, daemon=True)
+        cycler.start()
+        try:
+            row = measure(f"arrange-{motion}", app, a.seconds, a.sample)
+        finally:
+            stop.set()
+            cycler.join()
+        print(f"arrange-{motion:10} slide draws/s {row.get('slide', 0):5.1f}  resizes per arrange {row.get('resizes', 0) * 2:4.1f}", flush=True)
+        rows.append(row)
+
+
 ROWS_OUT = []
 
 
@@ -488,10 +518,10 @@ def main():
     ap.add_argument("--seconds", type=int, default=20)
     ap.add_argument("--sample", action="store_true")
     ap.add_argument("--zoom", type=float, default=1.0)
-    ap.add_argument("--set", choices=["all", "spinners", "toasts", "subagents", "floats", "trail", "jumps", "leaps", "titles"], default="all",
+    ap.add_argument("--set", choices=["all", "spinners", "toasts", "subagents", "floats", "trail", "jumps", "leaps", "titles", "arrange"], default="all",
                     help="spinners: many spaces of idle agents, one agent working on screen; toasts: agents finishing in waves and in a storm, raising toasts; subagents: agents whose in-process sub-agents come and go (OSC 7501 child records); "
                          "floats: floating panes over streaming agents, still and moving; trail: the focus hopping between panes beside streaming agents; jumps: the focused pane's cursor streaming and bursting; leaps: the cursor leaping every 300 ms with cursor trails off, then on; "
-                         "titles: eight agents whose titles spin after a prefix")
+                         "titles: eight agents whose titles spin after a prefix; arrange: four agents streaming while pane.arrange cycles every 2 s, pane_motion none then basic")
     ap.add_argument("--hc", default="hc", help="the hc command to start and stop the bench's core with")
     ap.add_argument("--tmp", default=None, help="where the bench folder goes (default /var/tmp; the system's on Windows)")
     ap.add_argument("--only", help="measure only this scenario, e.g. spinners+stream")
@@ -576,6 +606,9 @@ def main():
             return
         if a.set == "trail":
             trail(bin, app.pid, a, agent)
+            return
+        if a.set == "arrange":
+            arrange(bin, app.pid, a, agent)
             return
         if a.set == "leaps":
             leaps(bin, app.pid, a, [sys.executable, "-u", f"{ROOT}/leaps.py"])

@@ -71,6 +71,11 @@ name = "subpixel_text"
 path = "tests/subpixel_text.rs"
 harness = false
 
+[[test]]
+name = "fill_colors"
+path = "tests/fill_colors.rs"
+harness = false
+
 [dev-dependencies]
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["test-support"] }
 gpui = { package = "gpui-pre", version = "=0.3.8", features = ["test-support"] }
