@@ -17,6 +17,7 @@ mod pane_floats;
 mod movable;
 mod pane_drag;
 mod pane_size;
+mod pane_slide;
 mod titlebar;
 
 use crate::layout::{Axis, Background as Paint, Content, Fit, HeaderContent, Kind, Line, Node, PaneFrame, Size as Span};
@@ -734,6 +735,8 @@ pub struct AppWindow {
     /// While focus follows the pointer: `pane.focus` leaves a floating pane where it is in z-order.
     hover_focus: bool,
     hidden_fit: pane_size::HiddenFit,
+    /// The shown tab's panes moving to a new layout (`pane_motion`).
+    slide: Option<pane_slide::Slide>,
     drag: Option<Drag>,
     written_layout: String,
     /// The shown layout as its file has it; `chrome` is this plus the clicks
@@ -919,6 +922,7 @@ impl AppWindow {
             float_cell: Default::default(),
             hover_focus: false,
             hidden_fit: Default::default(),
+            slide: None,
             drag: None,
             written_layout: String::new(),
             file_chrome: default_layout("main"),
@@ -4224,7 +4228,11 @@ impl AppWindow {
             && let Err(error) = self.require_document(space.machine.as_deref())
         { return json!({"error":error}); }
         self.reply = None;
+        let before = self.slide_before(name, window, cx);
         self.dispatch(name, &args, person, window, cx);
+        if let Some(before) = before {
+            self.slide_after(before, window, cx);
+        }
         self.flush_documents(false, window, cx);
         self.reply.take().unwrap_or_else(|| json!({ "ok": true }))
     }
@@ -6302,11 +6310,12 @@ impl AppWindow {
         let mut el = div().relative().overflow_hidden().size_full().flex();
         let bounds_map = self.bounds.clone();
         let id = n.id.clone();
+        let target = self.slide.as_ref().and_then(|s| s.target(&n.id));
         // Only the main layout's bars are the window's chrome, not an overlay's.
         let main = self.painting_main.get();
         let (chrome, root, drag) = (self.top_chrome.clone(), main && n.id == self.chrome.id, main && n.window_drag);
         el = el.child(canvas(move |b, window, _| {
-            bounds_map.borrow_mut().insert(id, b);
+            bounds_map.borrow_mut().insert(id, target.unwrap_or(b));
             if root || drag {
                 chrome.set(top_chrome(chrome.get(), b, root, drag, window.viewport_size()));
             }
@@ -7461,6 +7470,7 @@ impl AppWindow {
         if mods::publish_window(self.window_json(window)) {
             self.refresh_snapshot_mods(cx);
         }
+        self.slide_frame(window, cx);
         let focused = self.focused_path(window, cx);
         self.painting_main.set(true);
         let tree = self.render_node(&self.chrome, &focused, None, cx);
@@ -7526,6 +7536,8 @@ impl Render for AppWindow {
         div()
             .id("herdr")
             .track_focus(&self.focus)
+            // A press lands a slide: drags and clicks work on the settled layout.
+            .capture_any_mouse_down(cx.listener(|this, _, _, cx| this.land(cx)))
             // `layout:<name>` key sections apply while that layout shows.
             .key_context(format!("Herdr layout = {}", self.layout_name).as_str())
             .size_full()
@@ -11093,6 +11105,167 @@ export default class Recent extends View {
         );
         set(cx, "{}");
         assert_eq!(state(cx), plain, "back at 1, every grid is as it was");
+    }
+
+    #[test]
+    fn panes_slide_to_a_new_layout_and_resize_once_on_landing() {
+        in_own_process("pane_slide");
+    }
+
+    /// Tab t: a | b | c | d | e in a framed tab (8 px gaps, 1 px borders),
+    /// its root's 1 px divider; tab u: f. Every arrange mode lays the panes
+    /// out where `block_slots` says, so a slide lands without a jump. With
+    /// `pane_motion: "basic"` an arrange, swap or close slides: mid-slide the
+    /// window publishes only the target rects and no terminal is resized;
+    /// landing resizes each once. Reduce motion, `none`, chrome on the tab's
+    /// root and more panes than the cap start none; a tab switch, a press and
+    /// a new cell land one.
+    #[gpui::test]
+    fn pane_slide(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Line, Node};
+        use crate::model::{Tab, pane};
+        use super::AppWindow;
+        use crate::settings::PaneMotion;
+        use gpui::{Bounds, Modifiers, MouseButton, Pixels, point, px};
+        use serde_json::{Value, json};
+        use std::collections::HashMap;
+        if !running_alone("pane_slide") {
+            return;
+        }
+        let layout = json!({ "id": "main", "type": "block", "content": { "tab": "active", "pane": { "gap": 8, "border": { "width": 1, "color": "border" } } } });
+        let (view, cx) = open_window(cx, "unused", "", layout);
+        let motion = |m: PaneMotion, max: u32| {
+            let before = crate::settings::get();
+            crate::settings::set(crate::settings::Settings { pane_motion: m, pane_motion_ms: 1000, pane_motion_max_panes: max, ..(*before).clone() });
+        };
+        const IDS: [&str; 5] = ["a", "b", "c", "d", "e"];
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            let mut tab = Tab::new("t", "", "a", "ta");
+            let mut root = Node::container("t", Axis::Row, IDS.map(|p| pane(p, &format!("t{p}"))).into());
+            root.divider = Some(Line { width: 1.0, color: "border".into() });
+            tab.root = root;
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.add_tab("s", Tab::new("u", "", "f", "tf"));
+            this.model.select_tab("t");
+            this.model.focus_pane("a");
+            this.sync(window, cx);
+        });
+        cx.run_until_parked();
+        let run = |cx: &mut gpui::VisualTestContext, name: &str, args: Value| {
+            let reply = view.update_in(cx, |this, window, cx| this.run_as(name, args, false, window, cx));
+            assert!(reply.get("error").is_none(), "{name}: {reply}");
+            cx.run_until_parked();
+        };
+        let sliding = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.slide.is_some());
+        let drawn = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| IDS.map(|p| this.bounds.borrow().get(p).copied()));
+        let laid_out = |cx: &mut gpui::VisualTestContext| {
+            let scale = cx.update(|window, _| window.scale_factor());
+            view.update(cx, |this, _| {
+                let tab = this.model.active_tab().unwrap();
+                let (area, frame) = this.tab_area(tab.panes().len()).unwrap();
+                let slots: HashMap<String, Bounds<Pixels>> = AppWindow::laid_out(tab, area, frame.as_ref(), scale).into_iter().collect();
+                IDS.map(|p| slots.get(p).copied())
+            })
+        };
+        let resizes = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, cx| IDS.map(|p| this.terms.get(p).map(|t| t.view.read(cx).resizes())));
+        motion(PaneMotion::None, 16);
+        for mode in ["tiled", "bsp", "master", "columns", "rows"] {
+            run(cx, "pane.arrange", json!({ "mode": mode }));
+            assert!(!sliding(cx), "{mode}: none slides nothing");
+            let drawn = drawn(cx);
+            assert!(drawn.iter().all(Option::is_some), "{mode}: {drawn:?}");
+            // Within a device pixel: GPUI's layout breaks exact half-pixel ties its own way.
+            let device = 1.0 / cx.update(|window, _| window.scale_factor());
+            let edges = |b: Bounds<Pixels>| [b.left(), b.top(), b.right(), b.bottom()].map(f32::from);
+            for (p, (d, l)) in IDS.iter().zip(drawn.iter().zip(laid_out(cx))) {
+                let (d, l) = (edges(d.unwrap()), edges(l.unwrap()));
+                assert!(d.iter().zip(l).all(|(d, l)| (d - l).abs() <= device), "{mode} {p}: drawn {d:?}, block_slots {l:?}");
+            }
+        }
+        motion(PaneMotion::Basic, 16);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        run(cx, "pane.arrange", json!({ "mode": "columns" }));
+        assert!(!sliding(cx), "reduce motion slides nothing");
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+
+        let slides_before = crate::bench::SLIDE.load(std::sync::atomic::Ordering::Relaxed);
+        let was = resizes(cx);
+        run(cx, "pane.arrange", json!({ "mode": "rows" }));
+        assert!(sliding(cx), "arrange slides");
+        let target = laid_out(cx);
+        assert_eq!(drawn(cx), target, "mid-slide, the window publishes only where panes land");
+        assert_eq!(resizes(cx), was, "no terminal is resized mid-slide");
+        assert!(crate::bench::SLIDE.load(std::sync::atomic::Ordering::Relaxed) > slides_before, "the slide is drawn");
+        view.update(cx, |this, cx| this.land(cx));
+        cx.run_until_parked();
+        assert!(!sliding(cx));
+        assert_eq!(drawn(cx), target, "landed, the panes are drawn where they were published");
+        assert_eq!(resizes(cx), was.map(|n| n.map(|n| n + 1)), "each is resized once, on landing");
+
+        run(cx, "pane.swap", json!({ "pane": "a", "target": "b" }));
+        assert!(sliding(cx), "swap slides");
+        run(cx, "tab.select", json!({ "id": "u" }));
+        assert!(!sliding(cx), "a tab switch lands");
+        run(cx, "tab.select", json!({ "id": "t" }));
+
+        run(cx, "pane.arrange", json!({ "mode": "columns" }));
+        assert!(sliding(cx));
+        cx.simulate_mouse_down(point(px(40.0), px(40.0)), MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+        assert!(!sliding(cx), "a press lands");
+
+        let was = resizes(cx);
+        run(cx, "pane.arrange", json!({ "mode": "rows" }));
+        assert!(sliding(cx));
+        let before = crate::settings::get();
+        crate::settings::set(crate::settings::Settings { terminal_cell_width: 1.5, ..(*before).clone() });
+        view.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert!(!sliding(cx), "a new cell lands");
+        let window_cell = cx.update(|window, _| crate::terminal::cell_size(window));
+        let cells = view.update(cx, |this, cx| IDS.map(|p| this.terms.get(p).map(|t| t.view.read(cx).cell())));
+        assert!(cells.iter().all(|c| *c == Some(window_cell)), "fitted at the new cell: {cells:?}");
+        assert_eq!(resizes(cx), was.map(|n| n.map(|n| n + 1)), "once, at the new cell");
+        crate::settings::set((*before).clone());
+        view.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+
+        view.update(cx, |this, _| this.model.tab_mut("t").unwrap().root.padding = serde_json::from_value(json!(4)).ok());
+        run(cx, "pane.arrange", json!({ "mode": "columns" }));
+        assert!(!sliding(cx), "a root that insets its panes lands at once");
+        view.update(cx, |this, _| this.model.tab_mut("t").unwrap().root.padding = None);
+        motion(PaneMotion::Basic, 2);
+        run(cx, "pane.arrange", json!({ "mode": "rows" }));
+        assert!(!sliding(cx), "more panes moving than the cap land at once");
+        motion(PaneMotion::Basic, 16);
+        // A terminal that isn't there yet when its pane starts sliding (a split's
+        // starts with the core's answer) is frozen once it appears, sized once.
+        let held = view.update(cx, |this, _| this.terms.remove("d").unwrap());
+        let waiting = view.update_in(cx, |this, window, cx| {
+            // The seam alone: `run_as`'s sync would attach d at once.
+            let before = this.slide_before("pane.arrange", window, cx).unwrap();
+            this.model.arrange_tab("t", crate::arrange::Mode::Columns).unwrap();
+            this.slide_after(before, window, cx);
+            this.slide.as_ref().map(|s| s.waiting().to_vec())
+        });
+        assert_eq!(waiting, Some(vec!["d".to_owned()]));
+        view.update(cx, |this, cx| {
+            this.terms.insert("d".into(), held);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.slide.as_ref().map(|s| s.waiting().len())), Some(0), "d is frozen once it appears");
+        let appeared = resizes(cx)[3];
+        view.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert_eq!(resizes(cx)[3], appeared, "and isn't fitted again mid-slide");
+        view.update(cx, |this, cx| this.land(cx));
+        cx.run_until_parked();
+        assert_eq!(resizes(cx)[3], appeared, "it was already at its landing size");
+        run(cx, "pane.close", json!({ "pane": "e" }));
+        assert!(sliding(cx), "close slides the rest into the space");
+        view.update(cx, |this, cx| this.land(cx));
     }
 
     #[test]

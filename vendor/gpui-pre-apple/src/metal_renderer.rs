@@ -139,6 +139,28 @@ pub struct MetalRenderer {
     headless_render_target: Option<metal::Texture>,
 }
 
+/// A `CGColorSpaceRef` as an Objective-C argument, encoded as AppKit declares it.
+#[cfg(target_os = "macos")]
+#[repr(transparent)]
+struct ColorSpaceArg(*const c_void);
+
+#[cfg(target_os = "macos")]
+unsafe impl objc2::Encode for ColorSpaceArg {
+    const ENCODING: objc2::Encoding = objc2::Encoding::Pointer(&objc2::Encoding::Struct("CGColorSpace", &[]));
+}
+
+// HERDR: GPUI's colors are sRGB, but an untagged layer's bytes reach the
+// display without color matching, so saturated colors draw off on a
+// wide-gamut display. Tagged as sRGB, the compositor converts them, as
+// Ghostty's shader does by hand for its Display P3 layer.
+#[cfg(target_os = "macos")]
+fn tag_srgb(layer: &objc2_quartz_core::CAMetalLayer) {
+    let srgb = core_graphics::color_space::CGColorSpace::create_with_name(unsafe { core_graphics::color_space::kCGColorSpaceSRGB })
+        .expect("macOS and iOS always have sRGB");
+    let arg = ColorSpaceArg(srgb.as_ptr().cast());
+    let _: () = unsafe { objc2::msg_send![layer, setColorspace: arg] };
+}
+
 #[repr(C)]
 pub struct PathRasterizationVertex {
     pub xy_position: Point<ScaledPixels>,
@@ -192,6 +214,9 @@ impl MetalRenderer {
         let objc2_layer: &objc2_quartz_core::CAMetalLayer = unsafe { &*layer.as_ptr().cast() };
         objc2_layer.setAllowsNextDrawableTimeout(false);
         objc2_layer.setNeedsDisplayOnBoundsChange(true);
+        // iOS layers gained `colorspace` only in iOS 16.
+        #[cfg(target_os = "macos")]
+        tag_srgb(objc2_layer);
         // UIKit sizes a view's backing layer itself; only AppKit-hosted
         // layers need to track their superlayer's bounds.
         #[cfg(target_os = "macos")]
@@ -1775,5 +1800,26 @@ impl gpui::PlatformHeadlessRenderer for MetalHeadlessRenderer {
 
     fn sprite_atlas(&self) -> Arc<dyn gpui::PlatformAtlas> {
         self.renderer.sprite_atlas().clone()
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+    use core_foundation::string::{CFString, CFStringRef};
+
+    #[test]
+    fn window_layers_are_tagged_srgb() {
+        // Inside the test, so the shader header build (cbindgen) doesn't see it.
+        unsafe extern "C" {
+            fn CGColorSpaceCopyName(space: *const c_void) -> CFStringRef;
+        }
+        let renderer = MetalRenderer::new(Arc::new(Mutex::new(InstanceBufferPool::default())), false);
+        let layer: &objc2_quartz_core::CAMetalLayer = unsafe { &*renderer.layer_ptr().cast() };
+        let space: ColorSpaceArg = unsafe { objc2::msg_send![layer, colorspace] };
+        assert!(!space.0.is_null(), "the layer has a color space");
+        let name = unsafe { CFString::wrap_under_create_rule(CGColorSpaceCopyName(space.0)) };
+        let srgb = unsafe { CFString::wrap_under_get_rule(core_graphics::color_space::kCGColorSpaceSRGB) };
+        assert_eq!(name, srgb);
     }
 }

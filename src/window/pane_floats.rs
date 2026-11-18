@@ -35,7 +35,10 @@ impl AppWindow {
     /// A tab: its tiled panes, and its floating ones above them. A tab without
     /// floats draws exactly as before.
     pub(super) fn render_tab(&self, tab: &Tab, focused: &HashSet<String>, cx: &mut Context<Self>) -> AnyElement {
-        let tiled = self.render_node(tab.shown(), focused, self.pane_frame(), cx);
+        let tiled = match self.slide.as_ref().filter(|s| s.shows(&tab.id)) {
+            Some(slide) => self.render_slide(slide, focused, self.pane_frame(), cx),
+            None => self.render_node(tab.shown(), focused, self.pane_frame(), cx),
+        };
         if tab.floating.is_empty() {
             return tiled;
         }

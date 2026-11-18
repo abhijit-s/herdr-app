@@ -177,6 +177,11 @@ struct Grid {
     scale: f32,
     /// The cell in device pixels the local screen was sized with.
     vt_cell: (u32, u32),
+    /// While its pane slides (window/pane_slide.rs) the screen keeps its
+    /// size, so the program is resized once, where the pane lands.
+    frozen: bool,
+    #[cfg(test)]
+    resizes: u32,
     /// The colors and device-pixel cell size the core was last told.
     told_display: Option<DisplayFacts>,
     /// Top-left of the cell grid in window coordinates, from the last paint.
@@ -361,6 +366,11 @@ impl Grid {
         }
         self.vt.resize(cols, rows, dev.0, dev.1);
         self.vt_cell = dev;
+        crate::bench::count(&crate::bench::RESIZES);
+        #[cfg(test)]
+        {
+            self.resizes += 1;
+        }
         if let Some(chan) = self.channel {
             self.core.resize(chan, cols, rows);
             // Mode 2048 programs wait for this report, not SIGWINCH.
@@ -429,6 +439,9 @@ impl TerminalView {
                 font: 0.0,
                 scale: 1.0,
                 vt_cell: (9, 18),
+                frozen: false,
+                #[cfg(test)]
+                resizes: 0,
                 told_display: None,
                 origin: Point::default(),
                 buttons_down: Vec::new(),
@@ -873,6 +886,15 @@ impl TerminalView {
         let (cell, font) = text_metrics(window, self.text_zoom);
         let (cols, rows) = grid_size(area, cell);
         self.grid.borrow_mut().fit(cols, rows, cell, font, window.scale_factor());
+    }
+
+    pub fn set_frozen(&self, frozen: bool) {
+        self.grid.borrow_mut().frozen = frozen;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resizes(&self) -> u32 {
+        self.grid.borrow().resizes
     }
 
     /// The text size in px while the pane's own zoom sets it.
@@ -3209,8 +3231,13 @@ impl Render for TerminalView {
             .child(
                 canvas(
                     move |bounds, window, _cx| {
+                        let mut g = grid.borrow_mut();
+                        // A new cell always fits: the slide lands on it, and a frozen grid mustn't keep the old one.
+                        if g.frozen && g.attach_ready && device_cell(cell, window.scale_factor()) == g.vt_cell {
+                            return;
+                        }
                         let (cols, rows) = grid_size(bounds.size, cell);
-                        grid.borrow_mut().fit(cols, rows, cell, text_size, window.scale_factor());
+                        g.fit(cols, rows, cell, text_size, window.scale_factor());
                     },
                     move |bounds, _, window, cx| {
                         // The grid shapes at font_weight, whatever ui_font_weight shifts.

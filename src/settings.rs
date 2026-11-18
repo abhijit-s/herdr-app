@@ -1592,6 +1592,14 @@ pub struct Person {
     /// A motion blur on the tail (`cursor_trail_style: "tail"`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cursor_trail_motion_blur: bool,
+    /// Whether a tab's panes slide to a new layout (window/pane_slide.rs).
+    #[serde(skip_serializing_if = "PaneMotion::is_none")]
+    pub pane_motion: PaneMotion,
+    #[serde(skip_serializing_if = "is_pane_motion_ms_default")]
+    pub pane_motion_ms: u32,
+    /// A change moving more panes than this lands at once.
+    #[serde(skip_serializing_if = "is_pane_motion_max_default")]
+    pub pane_motion_max_panes: u32,
     /// Minimum terminal text contrast ratio; 1 leaves program colors unchanged.
     pub minimum_contrast: f32,
     /// Retired, never read: kept as written, so `problems()` names them
@@ -2045,6 +2053,35 @@ pub const TRAIL_MS: std::ops::RangeInclusive<u32> = 50..=1000;
 
 fn is_trail_ms_default(ms: &u32) -> bool {
     *ms == TRAIL_MS_DEFAULT
+}
+
+/// `pane_motion`: whether arrange, swap, split and close within the shown tab
+/// slide its panes into place, or the new layout simply shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PaneMotion {
+    #[default]
+    None,
+    Basic,
+}
+
+impl PaneMotion {
+    fn is_none(&self) -> bool {
+        *self == PaneMotion::None
+    }
+}
+
+pub const PANE_MOTION_MS_DEFAULT: u32 = 160;
+pub const PANE_MOTION_MS: std::ops::RangeInclusive<u32> = 50..=1000;
+pub const PANE_MOTION_MAX_DEFAULT: u32 = 16;
+pub const PANE_MOTION_MAX: std::ops::RangeInclusive<u32> = 1..=64;
+
+fn is_pane_motion_ms_default(ms: &u32) -> bool {
+    *ms == PANE_MOTION_MS_DEFAULT
+}
+
+fn is_pane_motion_max_default(n: &u32) -> bool {
+    *n == PANE_MOTION_MAX_DEFAULT
 }
 
 /// What `unfocused_dim` fades while the window isn't active: everything in
@@ -2728,6 +2765,9 @@ impl Default for Person {
             cursor_trail_duration_ms: TRAIL_MS_DEFAULT,
             cursor_trail_color: None,
             cursor_trail_motion_blur: false,
+            pane_motion: PaneMotion::None,
+            pane_motion_ms: PANE_MOTION_MS_DEFAULT,
+            pane_motion_max_panes: PANE_MOTION_MAX_DEFAULT,
             minimum_contrast: 1.0,
             letter_spacing: None,
             cell_width: None,
@@ -2850,6 +2890,9 @@ pub struct Settings {
     pub cursor_trail_duration_ms: u32,
     pub cursor_trail_color: Option<String>,
     pub cursor_trail_motion_blur: bool,
+    pub pane_motion: PaneMotion,
+    pub pane_motion_ms: u32,
+    pub pane_motion_max_panes: u32,
     /// Space between a terminal's edge and its text, in px: [x, y].
     pub terminal_padding: [f32; 2],
     /// 0..1: below 1, what's behind a terminal shows through.
@@ -2987,6 +3030,9 @@ impl Default for Settings {
             cursor_trail_duration_ms: TRAIL_MS_DEFAULT,
             cursor_trail_color: None,
             cursor_trail_motion_blur: false,
+            pane_motion: PaneMotion::None,
+            pane_motion_ms: PANE_MOTION_MS_DEFAULT,
+            pane_motion_max_panes: PANE_MOTION_MAX_DEFAULT,
             terminal_padding: [10.0, 6.0],
             terminal_opacity: 1.0,
             clipboard_write: true,
@@ -3110,6 +3156,9 @@ impl Settings {
             cursor_trail_duration_ms: person.cursor_trail_duration_ms,
             cursor_trail_color: person.cursor_trail_color.clone(),
             cursor_trail_motion_blur: person.cursor_trail_motion_blur,
+            pane_motion: person.pane_motion,
+            pane_motion_ms: person.pane_motion_ms,
+            pane_motion_max_panes: person.pane_motion_max_panes,
             terminal_padding: look.terminal_padding.unwrap_or(d.terminal_padding),
             terminal_opacity: look.terminal_opacity.unwrap_or(1.0).clamp(0.0, 1.0),
             sounds: person.sounds.clone(),
@@ -3203,6 +3252,12 @@ impl Settings {
         }
         if !TRAIL_MS.contains(&self.cursor_trail_duration_ms) {
             out.push(format!("cursor_trail_duration_ms {} is outside {}..{}", self.cursor_trail_duration_ms, TRAIL_MS.start(), TRAIL_MS.end()));
+        }
+        if !PANE_MOTION_MS.contains(&self.pane_motion_ms) {
+            out.push(format!("pane_motion_ms {} is outside {}..{}", self.pane_motion_ms, PANE_MOTION_MS.start(), PANE_MOTION_MS.end()));
+        }
+        if !PANE_MOTION_MAX.contains(&self.pane_motion_max_panes) {
+            out.push(format!("pane_motion_max_panes {} is outside {}..{}", self.pane_motion_max_panes, PANE_MOTION_MAX.start(), PANE_MOTION_MAX.end()));
         }
         if let Some(color) = &self.cursor_trail_color
             && self.trail_color().is_none()
@@ -3721,6 +3776,16 @@ impl Settings {
     /// `cursor_trail_duration_ms`, within `TRAIL_MS`.
     pub fn trail_duration(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.cursor_trail_duration_ms.clamp(*TRAIL_MS.start(), *TRAIL_MS.end()).into())
+    }
+
+    /// `pane_motion_ms`, within `PANE_MOTION_MS`.
+    pub fn pane_motion_duration(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.pane_motion_ms.clamp(*PANE_MOTION_MS.start(), *PANE_MOTION_MS.end()).into())
+    }
+
+    /// `pane_motion_max_panes`, within `PANE_MOTION_MAX`.
+    pub fn pane_motion_max(&self) -> usize {
+        self.pane_motion_max_panes.clamp(*PANE_MOTION_MAX.start(), *PANE_MOTION_MAX.end()) as usize
     }
 
     /// `cursor_trail_color` when it's a `"#rrggbb"` color, else None (the
@@ -4888,6 +4953,23 @@ mod tests {
     }
 
     #[test]
+    fn pane_motion_defaults_off_and_keeps_its_numbers_in_range() {
+        let s = |json: &str| Settings::compose(&serde_json::from_str(json).unwrap(), &crate::layout::Look::default(), true);
+        let unset = s("{}");
+        assert_eq!((unset.pane_motion, unset.pane_motion_duration(), unset.pane_motion_max()), (PaneMotion::None, std::time::Duration::from_millis(160), 16));
+        assert!(serde_json::to_value(Person::default()).unwrap().get("pane_motion").is_none(), "the default isn't written");
+        assert_eq!(s(r#"{"pane_motion": "basic"}"#).pane_motion, PaneMotion::Basic);
+        for (asked, ms, ok) in [(10, 50, false), (160, 160, true), (4000, 1000, false)] {
+            let s = s(&format!(r#"{{"pane_motion_ms": {asked}}}"#));
+            assert_eq!((s.pane_motion_duration(), s.problems().is_empty()), (std::time::Duration::from_millis(ms), ok), "asked {asked}");
+        }
+        for (asked, max, ok) in [(0, 1, false), (4, 4, true), (100, 64, false)] {
+            let s = s(&format!(r#"{{"pane_motion_max_panes": {asked}}}"#));
+            assert_eq!((s.pane_motion_max(), s.problems().is_empty()), (max, ok), "asked {asked}");
+        }
+    }
+
+    #[test]
     fn cursor_trail_duration_and_color_are_kept_in_range() {
         let s = |json: &str| Settings::compose(&serde_json::from_str(json).unwrap(), &crate::layout::Look::default(), true);
         for (asked, ms, ok) in [(0, 50, false), (49, 50, false), (50, 50, true), (200, 200, true), (1000, 1000, true), (5000, 1000, false)] {
@@ -5198,7 +5280,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, terminal_cell_width: 0.95, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, copy_on_select: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, pane_header_info: Some(String::new()), agents_card_info: Some(String::new()), cursor_style: CursorStyle::Beam, cursor_trail: CursorTrail::Panes, cursor_trail_style: TrailStyle::Warp, cursor_arrival: Arrival::Ripple, cursor_arrival_size: 1.5, cursor_arrival_intensity: 0.5, cursor_trail_settle_ms: 40, cursor_trail_min_cells: MinCells { x: 3, y: 1 }, cursor_trail_duration_ms: 300, cursor_trail_color: Some("#ff8800".into()), cursor_trail_motion_blur: true, cursor_trail_particles: Particles::Pixiedust, ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, terminal_cell_width: 0.95, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, copy_on_select: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, pane_header_info: Some(String::new()), agents_card_info: Some(String::new()), cursor_style: CursorStyle::Beam, cursor_trail: CursorTrail::Panes, cursor_trail_style: TrailStyle::Warp, cursor_arrival: Arrival::Ripple, cursor_arrival_size: 1.5, cursor_arrival_intensity: 0.5, cursor_trail_settle_ms: 40, cursor_trail_min_cells: MinCells { x: 3, y: 1 }, cursor_trail_duration_ms: 300, cursor_trail_color: Some("#ff8800".into()), cursor_trail_motion_blur: true, cursor_trail_particles: Particles::Pixiedust, pane_motion: PaneMotion::Basic, pane_motion_ms: 200, pane_motion_max_panes: 8, ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();
