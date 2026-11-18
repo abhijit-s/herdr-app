@@ -948,7 +948,7 @@ What's about the user, never a look:
   (`<1m`, `3m`, `1h2m`, changing on the minute), and `{branch}`, `{ahead}`
   (`↑2`), `{behind}` (`↓1`) and `{dirty}` (`*`) from the folder's cached
   git status, `{subagents}` the agent's live sub-agents (`3 sub-agents`, `3 sub-agents, 1 blocked`,
-  `2 sub-agents blocked`), and `{machine}` (`local` for this computer), `{remote}` (another machine's name, else empty) and `{space}` (its space's name); each is empty when unknown or zero, and other text is drawn
+  `2 sub-agents blocked`), `{subagent_count}` and `{subagents_blocked}` the same counts as bare numbers (`3`, `1`) for a label of your own (`{subagent_count} 🤖`, a Nerd Font glyph), a segment holding them drawn like `{subagents}` (blocked colour while `{subagents_blocked}` shows, first to go otherwise), and `{machine}` (`local` for this computer), `{remote}` (another machine's name, else empty) and `{space}` (its space's name); each is empty when unknown or zero, and other text is drawn
   as written. Keys side by side (`{branch}{dirty}`) are drawn a space
   apart ("main ↑2 *"). `fitHeaderInfo` measures each separator as
   `sep.trim()` with 4 px either side, so draw it that way, as the shipped
