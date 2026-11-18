@@ -2401,6 +2401,16 @@ fn cell_width(
     px(adjusted_cell_width(face as f32, multiplier) / scale)
 }
 
+/// How many cells the symbol at `x` may take (`nerd_icons::cells`): two
+/// before a blank, unless it's the row's last or follows another symbol that
+/// isn't a sprite (Ghostty's graphics elements).
+fn symbol_cells(row: &[vt::Cell], x: usize) -> u8 {
+    // Ghostty's `isSpace`: the other spaces keep their fixed width.
+    let next_blank = row.get(x + 1).is_some_and(|d| matches!(d.text.as_str(), "" | " " | "\u{2002}"));
+    let after_symbol = x > 0 && row[x - 1].text.chars().next().is_some_and(crate::nerd_icons::is_symbol) && !crate::sprites::is_sprite(&row[x - 1].text);
+    crate::nerd_icons::cells(next_blank, x + 1 == row.len(), after_symbol)
+}
+
 /// A fallback glyph fitted to its cell: drawn at `size`, with its ink at
 /// `ink`, from the cell's top left.
 struct Fit {
@@ -2408,14 +2418,16 @@ struct Fit {
     ink: Bounds<Pixels>,
 }
 
-/// Fits a fallback glyph (one the terminal font lacks) whose ink spills out of
-/// its cell, as Ghostty fits symbols (`.size = .fit`): measured by its ink,
-/// not its advance, which a symbol's ink often overflows.
-fn fallback_fit(c: &vt::Cell, font: &Font, cell: Size<Pixels>, text_size: f32, ts: &gpui::WindowTextSystem) -> Option<Fit> {
-    if c.wide || c.text.is_ascii() {
+/// Fits a fallback symbol (one the terminal font lacks) whose ink spills out
+/// of its `cells` cells, as Ghostty fits symbols (`.size = .fit`): measured
+/// by its ink, not its advance, which a symbol's ink often overflows. Other
+/// fallback glyphs draw as their font draws them, as in Ghostty.
+fn fallback_fit(c: &vt::Cell, font: &Font, cell: Size<Pixels>, cells: u8, text_size: f32, ts: &gpui::WindowTextSystem) -> Option<Fit> {
+    let first = c.text.chars().next()?;
+    if c.wide || !crate::nerd_icons::is_symbol(first) {
         return None;
     }
-    let first = c.text.chars().next()?;
+    let cell = size(cell.width * f32::from(cells), cell.height);
     let size = px(text_size);
     let primary = ts.resolve_font(font);
     if ts.advance(primary, size, first).is_ok() {
@@ -2538,9 +2550,7 @@ fn row_ops(row: &[vt::Cell], metrics: &CellMetrics, text_size: f32, cursor: Opti
         }
         let mut text_font = cell_font(c.bold, c.italic);
         if let Some(icon) = fallback_icon(&c.text, &text_font, window.text_system()) {
-            let next_blank = row.get(x).is_some_and(|d| d.text.is_empty() || d.text == " ");
-            let after_icon = start > 0 && is_icon(&row[start - 1].text) && !crate::sprites::is_sprite(&row[start - 1].text);
-            let cells = crate::nerd_icons::cells(next_blank, x == row.len(), after_icon);
+            let cells = symbol_cells(row, start);
             let em = text_size / icon.units_per_em;
             let ink = ((icon.x1 - icon.x0).max(1.0) * em, (icon.y1 - icon.y0).max(1.0) * em);
             let face = crate::nerd_icons::Face {
@@ -2559,7 +2569,7 @@ fn row_ops(row: &[vt::Cell], metrics: &CellMetrics, text_size: f32, cursor: Opti
             ops.push(RowOp::Icon { x: start, offset, font, glyph: GlyphId(icon.id), size: px(size), color });
             continue;
         }
-        let fit = fallback_fit(c, &text_font, cell, text_size, window.text_system());
+        let fit = fallback_fit(c, &text_font, cell, symbol_cells(row, start), text_size, window.text_system());
         let mut text = if c.text.is_empty() { " ".to_owned() } else { c.text.clone() };
         let mut positions = vec![(0, px(0.0))];
         // Shape the cursor cell separately, so its plain glyph doesn't cover a ligature.
@@ -2575,7 +2585,7 @@ fn row_ops(row: &[vt::Cell], metrics: &CellMetrics, text_size: f32, cursor: Opti
                     && d.underline == c.underline
                     && d.strike == c.strike;
                 // Bundled fallback icons are fitted separately from the text run.
-                if !same || cursor == Some(x) || (d.text.is_empty() && d.underline.is_none() && !d.strike) || crate::sprites::is_sprite(&d.text) || fallback_icon(&d.text, &text_font, window.text_system()).is_some() || fallback_fit(d, &text_font, cell, text_size, window.text_system()).is_some() {
+                if !same || cursor == Some(x) || (d.text.is_empty() && d.underline.is_none() && !d.strike) || crate::sprites::is_sprite(&d.text) || fallback_icon(&d.text, &text_font, window.text_system()).is_some() || fallback_fit(d, &text_font, cell, symbol_cells(row, x), text_size, window.text_system()).is_some() {
                     break;
                 }
                 positions.push((text.len(), cell.width * (x - start) as f32));
@@ -5582,12 +5592,22 @@ mod tests {
             let line = ts.shape_line(text.to_string().into(), px(12.), &[run], None);
             glyph_ink(&line, text.chars().next().unwrap(), px(15.), &ts).unwrap()
         };
+        // Not symbols to Ghostty (Miscellaneous Technical, Geometric Shapes):
+        // drawn as their font draws them, however far their ink spills.
         for text in ["\u{23fa}", "\u{25d0}"] {
+            let ink = natural(text);
+            let c = vt::Cell { text: text.into(), ..Default::default() };
+            assert!(fallback_fit(&c, &font, size(ink.size.width * 0.5, px(15.)), 1, crate::settings::font_size(), &ts).is_none(), "{text}");
+        }
+        let primary = ts.resolve_font(&font);
+        let symbols: Vec<_> = ["\u{2600}", "\u{2714}", "\u{273b}", "\u{276f}"].into_iter().filter(|t| ts.advance(primary, px(12.), t.chars().next().unwrap()).is_err()).collect();
+        assert!(!symbols.is_empty(), "some symbol falls back");
+        for text in symbols {
             let ink = natural(text);
             let c = vt::Cell { text: text.into(), ..Default::default() };
             // A cell narrower than the ink, though not than every advance.
             let cell = size(ink.size.width * 0.75, px(15.));
-            let fit = fallback_fit(&c, &font, cell, crate::settings::font_size(), &ts).unwrap_or_else(|| panic!("{text} must be fitted"));
+            let fit = fallback_fit(&c, &font, cell, 1, crate::settings::font_size(), &ts).unwrap_or_else(|| panic!("{text} must be fitted"));
             assert!((f32::from(fit.ink.size.width - cell.width)).abs() < 0.01, "{text}: as wide as its cell, {fit:?}", fit = fit.ink);
             assert!(fit.ink.origin.x >= px(0.) && fit.ink.right() <= cell.width + px(0.01), "{text}: inside its cell");
             // Where the drawn line puts the ink.
@@ -5596,14 +5616,30 @@ mod tests {
             let drawn = glyph_ink(&line, text.chars().next().unwrap(), cell.height, &ts).unwrap();
             assert!((f32::from(drawn.size.width - fit.ink.size.width)).abs() < 0.05, "{text}: drawn at the fitted size");
             // Wide characters keep their two cells' natural size.
-            assert!(fallback_fit(&vt::Cell { wide: true, ..c.clone() }, &font, cell, crate::settings::font_size(), &ts).is_none());
+            assert!(fallback_fit(&vt::Cell { wide: true, ..c.clone() }, &font, cell, 1, crate::settings::font_size(), &ts).is_none());
             // In a cell wider than its ink, it stays as the font draws it.
             let roomy = size(advance.max(ink.right()) + px(1.), px(15.));
             if ink.origin.x >= px(0.) {
-                assert!(fallback_fit(&c, &font, roomy, crate::settings::font_size(), &ts).is_none(), "{text}: unfitted in room, {ink:?} {roomy:?}");
+                assert!(fallback_fit(&c, &font, roomy, 1, crate::settings::font_size(), &ts).is_none(), "{text}: unfitted in room, {ink:?} {roomy:?}");
+                // Before a blank, two cells are room enough.
+                if ink.right() <= cell.width * 2. && ink.origin.y >= px(0.) && ink.bottom() <= px(15.) {
+                    assert!(fallback_fit(&c, &font, cell, 2, crate::settings::font_size(), &ts).is_none(), "{text}: unfitted in two cells");
+                }
             }
         }
         crate::settings::set((*original).clone());
+    }
+
+    #[test]
+    fn symbols_take_two_cells_before_a_blank_as_in_ghostty() {
+        use super::*;
+        let row = |text: &str| -> Vec<vt::Cell> { text.chars().map(|c| vt::Cell { text: if c == '_' { String::new() } else { c.to_string() }, ..Default::default() }).collect() };
+        assert_eq!(symbol_cells(&row("❯ ls"), 0), 2, "a blank after");
+        assert_eq!(symbol_cells(&row("❯_ls"), 0), 2, "an empty cell after");
+        assert_eq!(symbol_cells(&row("❯ls"), 0), 1, "text after");
+        assert_eq!(symbol_cells(&row(" ❯"), 1), 1, "the row's last cell, after a blank");
+        assert_eq!(symbol_cells(&row("★❯ "), 1), 1, "after another symbol");
+        assert_eq!(symbol_cells(&row("\u{e0b0}❯ "), 1), 2, "after a powerline sprite");
     }
 
     #[test]
