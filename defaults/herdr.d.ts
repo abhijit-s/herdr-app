@@ -828,10 +828,17 @@ export interface ModSettingSchema {
 }
 
 /** This mod's settings: each default its `mod.schema.json` declares, with the person's values
- *  over them. The schema is read when the mod loads; values are the latest: a change to them
- *  redraws the mod (no reload), so read them at each render. `{}` for a mod without a schema or
- *  values. `mod` (another mod's) is for the Settings window only. */
+ *  over them. The schema is read when the mod loads; values are the latest. A copy whose render
+ *  read them redraws when they change (no reload), and no other mod does. `{}` for a mod without
+ *  a schema or values. `mod` (another mod's) is for the Settings window only. */
 export function modSettings(mod?: string): Record<string, unknown>;
+
+/** Resolves with this mod's settings (as `modSettings()` gives them) the next time they change:
+ *  through `setModSetting`, a Settings click or an edit to settings.json. Only this mod is told,
+ *  and only when its own values changed. For work outside render, such as restarting a timer:
+ *  `for (;;) { const values = await nextModSettings(); ... }`. Each change resolves once per call
+ *  waiting, in order. */
+export function nextModSettings(): Promise<Record<string, unknown>>;
 
 /** Sets one of this mod's settings for the person (`null`, or the schema's default, puts it back
  *  to the default). Where Herdr keeps the values is its own: read them back with `modSettings()`.
