@@ -1002,7 +1002,7 @@ export default class Settings extends View {
   typesIntoSearch(e) {
     const m = e.modifiers ?? {};
     const c = e.key_char;
-    if (this.searchFocused || this.picking || this.renameFocused || this.machineEdit) return false;
+    if (this.searchFocused || this.picking || this.renameFocused || this.machineEdit || this.modFocused || this.themeInputFocused) return false;
     // Option types characters on macOS; elsewhere Alt is a shortcut.
     if (m.control || m.platform || m.function || (m.alt && window()?.platform !== "macos")) return false;
     if (typeof c !== "string" || c.length !== 1 || c < " " || c === "\u007f") return false;
@@ -3029,6 +3029,15 @@ export default class Settings extends View {
     if (k === "f" && (window()?.platform === "macos" ? m.platform : m.control) && !m.alt && !m.shift) {
       this.searchInput.focus();
       this.searchInput.set_selected_range({ start: 0, end: encodeURIComponent(this.query).replace(/%[0-9A-F]{2}/g, "_").length });
+      cx.stop_propagation();
+      cx.notify();
+      return;
+    }
+    // Keys typed into a mod's text setting are the field's, while a search shows it
+    // too; esc leaves it (blur writes what it holds, as leaving it any other way).
+    if (this.modFocused) {
+      if (k !== "escape") return;
+      this.handle.focus();
       cx.stop_propagation();
       cx.notify();
       return;
