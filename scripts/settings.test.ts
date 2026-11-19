@@ -403,6 +403,30 @@ test("focus border width writes 1 to 3 px and leaves the layout's width out", ()
   expect(pick({ focus_border_width: 3, zoom: 1.1 }, "st-fw-Layout")).toEqual({ zoom: 1.1 });
 });
 
+test("pane motion writes basic and leaves none out", () => {
+  const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "panes");
+  expect(pick({}, "st-pm-Basic")).toEqual({ pane_motion: "basic" });
+  expect(pick({ pane_motion: "basic", zoom: 1.1 }, "st-pm-None")).toEqual({ zoom: 1.1 });
+});
+
+test("slide time and most panes show only with pane motion on, step within their ranges and leave their defaults out", () => {
+  const step = (person: Record<string, any>, id: string) => click(person, {}, id, [], "panes");
+  expect(() => step({}, "st-pane_motion_ms-plus")).toThrow();
+  expect(() => step({}, "st-pane_motion_max_panes-plus")).toThrow();
+  const on = { pane_motion: "basic" };
+  expect(step(on, "st-pane_motion_ms-plus")).toEqual({ ...on, pane_motion_ms: 180 });
+  expect(step(on, "st-pane_motion_ms-minus")).toEqual({ ...on, pane_motion_ms: 140 });
+  expect(step({ ...on, pane_motion_ms: 180 }, "st-pane_motion_ms-minus")).toEqual(on);
+  expect(step({ ...on, pane_motion_ms: 60 }, "st-pane_motion_ms-minus")).toEqual({ ...on, pane_motion_ms: 50 });
+  expect(step({ ...on, pane_motion_ms: 1000 }, "st-pane_motion_ms-plus")).toEqual({ ...on, pane_motion_ms: 1000 });
+  expect(step(on, "st-pane_motion_max_panes-plus")).toEqual({ ...on, pane_motion_max_panes: 17 });
+  expect(step({ ...on, pane_motion_max_panes: 17 }, "st-pane_motion_max_panes-minus")).toEqual(on);
+  expect(step({ ...on, pane_motion_max_panes: 1 }, "st-pane_motion_max_panes-minus")).toEqual({ ...on, pane_motion_max_panes: 1 });
+  expect(step({ ...on, pane_motion_max_panes: 64 }, "st-pane_motion_max_panes-plus")).toEqual({ ...on, pane_motion_max_panes: 64 });
+  const shown = texts(search("slide").root).join("|");
+  expect(shown).toContain("Appearance › Panes|PANES|Pane");
+});
+
 test("cursor effects sit on their own Cursor page, each writing its choice and leaving the default out", () => {
   const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "cursor");
   expect(pick({}, "st-ct-Between panes")).toEqual({ cursor_trail: "panes" });
