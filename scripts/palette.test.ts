@@ -26,10 +26,17 @@ let actions: any[] = [];
 let bound: any[] = [];
 const ran: [string, any][] = [];
 const store = new Map<string, string>();
+let dark = true;
+const shipped = [["graphite", false], ["ink", false], ["moss", false], ["paper", true], ["atom-one-dark", false], ["mine-light", true], ["win98", true]];
 const values = {
   View: class {}, div: element, svg: (path: string) => { icons.push(path); return element(); }, v_flex: element, h_flex: element, Input: { new: element }, theme: () => ({}), keys: () => bound, win: () => ({ platform }),
-  commands: () => [{ name: "tab.new", args: [], about: "" }, { name: "mod.open", args: [{ name: "name", required: true }, { name: "props", required: false }], about: "" }],
-  layouts: () => [], modActions: () => actions, run: (name: string, args: any) => { ran.push([name, args]); }, props: () => ({ overlay: "palette" }), closeOverlay: () => {}, shared: () => null,
+  commands: () => [
+    { name: "tab.new", args: [], about: "" },
+    { name: "mod.open", args: [{ name: "name", required: true }, { name: "props", required: false }], about: "" },
+    { name: "app.theme", args: [{ name: "name", required: true }], about: "Use a theme." },
+  ],
+  layouts: () => ["main", "win98"], modActions: () => actions, run: (name: string, args: any) => { ran.push([name, args]); }, props: () => ({ overlay: "palette" }), closeOverlay: () => {}, shared: () => "main",
+  themes: () => shipped.map(([name, light]) => ({ name, light })), settings: () => ({ dark }),
   localStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); } },
 };
 const Palette = new Function(...Object.keys(values), source.replace(/^import .*;\n/gm, "").replace("export default class Palette", "return class Palette"))(...Object.values(values));
@@ -147,4 +154,18 @@ test("a mod action runs its own args, even for commands the palette special-case
     view.go(view.rows()[0].e);
     expect(ran).toEqual([[view.rows()[0].e.name, args]]);
   }
+});
+
+test("palette offers only the themes that can show in the current appearance", () => {
+  const offered = () => {
+    const view = new Palette();
+    view.query = ""; view.recent = [];
+    return view.rows().map((r: any) => r.e).filter((e: any) => e.name === "app.theme").map((e: any) => e.args.name);
+  };
+  dark = true;
+  expect(offered()).toEqual(["graphite", "ink", "moss", "atom-one-dark"]);
+  dark = false;
+  // win98 is the Herdr 98 layout's own theme, so it isn't offered here.
+  expect(offered()).toEqual(["paper", "mine-light"]);
+  dark = true;
 });

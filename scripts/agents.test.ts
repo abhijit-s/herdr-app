@@ -237,15 +237,16 @@ for (const sort of ["priority", "grouped"]) for (const named of [false, true]) t
 
 // A kept sub-agent: started by t1 (`hc run`), then given a pane (`terminal.keep`).
 type Kid = { address: string; parent: string };
-function keptRender(sort: string, { width = 268, kept = [{ address: "t3", parent: "t1" }] as Kid[], paneless = [] as Kid[], pinned = [] as string[], mode = undefined as string | undefined, records = {} as Record<string, unknown>, data = new Map<string, string>(), before = (_: any) => {}, more = (_: any) => ({}), set = {} as Record<string, unknown> } = {}) {
+function keptRender(sort: string, { width = 268, kept = [{ address: "t3", parent: "t1" }] as Kid[], paneless = [] as Kid[], pinned = [] as string[], statuses = {} as Record<string, string>, others = [] as string[], mode = undefined as string | undefined, records = {} as Record<string, unknown>, data = new Map<string, string>(), before = (_: any) => {}, more = (_: any) => ({}), set = {} as Record<string, unknown> } = {}) {
   const program = { name: "Claude", key: "claude", agent: true, icon: "claude.svg", tint: true };
-  const row = (address: string, seq: number) => ({ address, pane: `p-${address}`, tab: "tab1", space: "s1", space_name: "Project", program, title: `Task ${address}`, label: `Task ${address}`, status: "working", seq, pinned: pinned.includes(address), ...more(address) });
-  const list = [row("t1", 1), ...kept.map((k, i) => row(k.address, i + 2))];
-  const live = (address: string, parent: string | null) => ({ address, parent, state: "live", status: "working", program, labels: {} });
+  const status = (address: string) => statuses[address] ?? "working";
+  const row = (address: string, seq: number) => ({ address, pane: `p-${address}`, tab: "tab1", space: "s1", space_name: "Project", program, title: `Task ${address}`, label: `Task ${address}`, status: status(address), seq, pinned: pinned.includes(address), ...more(address) });
+  const list = [row("t1", 1), ...kept.map((k, i) => row(k.address, i + 2)), ...others.map((a, i) => row(a, i + 10))];
+  const live = (address: string, parent: string | null) => ({ address, parent, state: "live", status: status(address), program, labels: {} });
   const orders: string[][] = [];
   const { agents, writes } = harness([], {
     agents: () => list,
-    terminals: () => [{ ...live("t1", null), records }, ...paneless.map(k => live(k.address, k.parent)), ...kept.map(k => live(k.address, k.parent))],
+    terminals: () => [{ ...live("t1", null), records }, ...others.map(a => live(a, null)), ...paneless.map(k => live(k.address, k.parent)), ...kept.map(k => live(k.address, k.parent))],
     panes: () => list.map(a => ({ tab: a.tab, terminal: a.address, program, title: a.title, label: a.label })), focused: () => null,
     spaces: () => [{ tabs: [{ id: "tab1", name: "Project", named: true }] }],
     layout: () => ({ id: "sidebar", size: { px: width } }), shared: () => sort,
@@ -410,6 +411,20 @@ for (const sort of ["priority", "grouped"]) test(`${sort}: a row shows its card 
   expect(remote({})).toContain("vps");
 });
 
+test("a kept sub-agent's done doesn't pull its working parent above other working agents", () => {
+  const { order, texts } = keptRender("priority", { statuses: { t3: "done" }, others: ["t5"] });
+  expect(order).toEqual(["t5", "t1"]);
+  expect(texts.get("sub-t3")).toBeDefined();
+});
+
+test("a kept sub-agent keeps its own done status; a pane-less one stays idle", () => {
+  const kidStatus = new Function("View", `${source}; return kidStatus;`)(class {});
+  const listed = new Map([["t3", "done"]]);
+  expect(kidStatus({ address: "t3", status: "done" }, listed)).toBe("done");
+  expect(kidStatus({ address: "t4", status: "done" }, listed)).toBe("idle");
+  expect(kidStatus({ address: "t4", status: "error" }, listed)).toBe("blocked");
+  expect(kidStatus({ address: "t4", status: "working" }, listed)).toBe("working");
+});
 
 for (const width of [268, 44]) test(`the focused agent's row is marked as selected ${width < 160 ? "in the rail" : "in the wide list"}`, () => {
   const program = { name: "Claude", key: "claude", agent: true };

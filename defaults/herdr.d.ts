@@ -429,7 +429,8 @@ export function recentPlaces(): Place[];
  *  Root `terminal_menu?: string` chooses a terminal right-click menu mod (default: "menu").
  *  Unknown names warn and fall back to "menu". This replaces the menu, not its items.
  *  Opens a pointer popup with mod.json overlay width/height (default 220 wide, at most 420 tall: it fits
- *  its items). Its props().height is the room inside it, within the window, for scrolling a long list. */
+ *  its items). Its props().height is the room inside it, within the window, for scrolling a long list.
+ *  Root `link_handlers?: string[]` selects terminal link mods in order. */
 export function layout(): unknown;
 
 /** The shown layout's spacing, as layout.spacing sets it (with its clicks), or null when no
@@ -691,12 +692,32 @@ export function notify(n: {
    *  scaled by `toast_duration`, or until clicked. The `toast` mod gets the level mark to draw, the person's `toast_mark` as the design takes it
    *  (`"stripe"`, `"dot"` or `"none"`) and `toast_design` (`"card"`, `"pill"`, `"terminal"`,
    *  `"outline"`, `"icon-card"` or `"banner"`) in its props, beside these; the terminal design also
-   *  gets `toast_font` (the terminal's font) and the shown banner `toast_more` (how many others are open). */
+   *  gets `toast_font` (the terminal's font) and the shown banner `toast_more` (how many others are open).
+   *  `fitHeight` true: the toast grows to show its whole text (every design but the pill and banner,
+   *  with no `height` set), at least `toast_height` px tall. */
   timeout?: number;
   icon?: string;
   /** `label`: the icon card's and banner's button for it ("Show" when unset). */
   action?: { name: string; args?: Record<string, unknown>; label?: string };
 }): string;
+
+/** A Ctrl/Cmd-click on a terminal link, passed to the mod's link.js. */
+export interface LinkClick {
+  link:
+    | { kind: "url"; raw: string; url: string }
+    | { kind: "file"; raw: string; path: string | null };
+  source: {
+    terminal: string;
+    machine: string | null;
+    cwd: string | null;
+    pane: string | null;
+    tab: string | null;
+    space: string | null;
+  };
+}
+
+/** Signature of the named handleLink export from link.js. */
+export type HandleLink = (click: LinkClick) => "handled" | "pass" | Promise<"handled" | "pass">;
 
 /** The props this copy of the mod was given in the layout (or overlay).
  *  A layout's terminal_menu mod gets {tab: "pane", target: {pane: string, terminal: string}, overlay: string}.
