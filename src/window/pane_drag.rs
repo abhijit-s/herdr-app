@@ -138,9 +138,14 @@ impl AppWindow {
         }
         if self.pane_movable(&d.pane)
             && let Some((target, edge)) = target
-            && self.model.move_pane(&d.pane, &target, edge)
         {
-            self.sync(window, cx);
+            let before = self.slide_before(super::pane_slide::DRAG_MOVE, window, cx);
+            if self.model.move_pane(&d.pane, &target, edge) {
+                self.sync(window, cx);
+                if let Some(before) = before {
+                    self.slide_after(before, window, cx);
+                }
+            }
         }
         cx.defer_in(window, |this, window, cx| this.restore_focus(window, cx));
         cx.notify();

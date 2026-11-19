@@ -4,8 +4,10 @@ use super::*;
 use crate::terminal::TerminalView;
 use std::time::{Duration, Instant};
 
+/// A pane dropped on another by its grip: not a command, but it slides as one.
+pub(super) const DRAG_MOVE: &str = "pane.move";
 /// The commands whose layout change slides.
-const SLIDES: [&str; 5] = ["pane.split", "pane.close", "pane.swap", "pane.arrange", "terminal.open"];
+const SLIDES: [&str; 6] = ["pane.split", "pane.close", "pane.swap", "pane.arrange", "terminal.open", DRAG_MOVE];
 /// Commands starting with these land a running slide first.
 const LANDS: [&str; 5] = ["pane.", "tab.", "space.", "layout.", "terminal.open"];
 
