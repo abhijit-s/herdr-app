@@ -199,9 +199,9 @@ pub fn notify_changes(before: &Map<String, Value>, after: &Map<String, Value>) -
 /// What `modSchemas()` gives the Settings window: each mod folder whose schema
 /// declares settings, by name, with its title (mod.json's, else the folder's)
 /// and the declared settings in schema order.
-pub fn schemas(found: &[crate::mods::Found]) -> Value {
+pub fn schemas<'a>(found: impl IntoIterator<Item = &'a crate::mods::Found>) -> Value {
     found
-        .iter()
+        .into_iter()
         .filter(|f| !f.id.starts_with("frame-"))
         .filter_map(|f| {
             let declared = declared(&read_schema(&f.dir)?);

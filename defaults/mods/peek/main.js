@@ -1,12 +1,13 @@
 // The bar on top of a peeked agent (an overlay the agents list opens for a
 // sub-agent, or a terminal address link): who it is and how it's doing, ↗ to
-// go to its pane (or, without one, keep it as a tab of the shown space), ✕ to
-// close (a popup's program ends with it, as it does for any way the overlay
-// closes; a kept one is the person's tab and stays). Props: { terminal, overlay }.
+// go to its pane (or, without one, keep it as a tab in a space on its machine:
+// the shown one, else its nearest ancestor's, else the first), ✕ to close (a
+// popup's program ends with it, as it does for any way the overlay closes; a
+// kept one is the person's tab and stays). Props: { terminal, overlay }.
 
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { agents, terminals, panes, run, theme, props, closeOverlay, settings } from "herdr";
+import { agents, terminals, panes, spaces, run, theme, props, closeOverlay, settings } from "herdr";
 
 // The person's working_spinner: the ring, or frames in the terminal font,
 // centred in a fixed width so nothing beside it moves as they change.
@@ -36,6 +37,27 @@ export default class Peek extends View {
     return agents().find((a) => a.address === addr)?.status ?? this.term()?.status ?? null;
   }
 
+  // A pane stays on its terminal's machine (terminal.keep refuses another one's space).
+  keepSpace(terminal, parent) {
+    const machine = terminal?.includes("/") ? terminal.split("/")[0] : null;
+    const all = spaces();
+    const shown = all.find((s) => s.active) ?? all[0];
+    if ((shown?.machine ?? null) === machine) return shown;
+    const there = all.filter((s) => (s.machine ?? null) === machine);
+    if (there.length < 2) return there[0];
+    const allPanes = panes();
+    const allTerminals = terminals();
+    const seen = new Set();
+    while (parent && !seen.has(parent)) {
+      seen.add(parent);
+      const tab = allPanes.find((p) => p.terminal === parent)?.tab;
+      const space = there.find((s) => s.tabs.some((c) => c.id === tab));
+      if (space) return space;
+      parent = allTerminals.find((t) => t.address === parent)?.parent;
+    }
+    return there[0];
+  }
+
   button(t, id, label, onClick) {
     return div()
       .id(id)
@@ -57,6 +79,7 @@ export default class Peek extends View {
     const pic = icon(k?.program, 14, t.foreground);
     const parent = k?.parent ? terminals().find((p) => p.address === k.parent) : null;
     const home = panes().some((p) => p.terminal === terminal);
+    const space = home ? null : this.keepSpace(terminal, k?.parent);
     const glyph = st === "idle" ? "○" : st ? "●" : "·";
     return h_flex()
       .size_full()
@@ -73,13 +96,18 @@ export default class Peek extends View {
       .when(Boolean(st), (el) => el.child(div().flex_none().text_color(t[st] ?? t.dim).child(WORDS[st] ?? st)))
       .when(Boolean(parent), (el) => el.child(div().truncate().text_color(t.dim).child(`from ${parent.name || parent.address}`)))
       .child(div().flex_1())
-      .child(
-        this.button(t, "keep", home ? "↗ go to" : "↗ keep", () => {
-          // A keep closes the peek itself once it took; one that failed leaves it up.
-          if (!home) return run("terminal.keep", { terminal });
-          run("pane.focus", { terminal });
-          closeOverlay(overlay);
-        }),
+      .when(home || Boolean(space), (el) =>
+        el.child(
+          this.button(t, "keep", home ? "↗ go to" : "↗ keep", () => {
+            // A keep closes the peek itself once it took; one that failed leaves it up.
+            if (!home) {
+              if (space && !space.active) run("space.select", { id: space.id });
+              return run("terminal.keep", { terminal });
+            }
+            run("pane.focus", { terminal });
+            closeOverlay(overlay);
+          }),
+        ),
       )
       .child(
         this.button(t, "close", "✕", () => closeOverlay(overlay)),

@@ -5,6 +5,8 @@
 // (surface, border, corners: toast_style, toast_corners, toast_design) and
 // sizes and places it; this mod draws the inside, in the design Herdr puts
 // in the props (props().toast_design), with the level mark (props().toast_mark).
+// With props().fitHeight the toast grows to show its whole text, wrapped, from
+// props().toast_height up; without it each line is one line, cut short.
 // Every colour is one of the theme's toast colours (settings.rs, toast_colors).
 
 import { View, div, image, svg } from "gpui-kit";
@@ -43,7 +45,13 @@ export default class Toast extends View {
     const login = /^([a-z0-9][a-z0-9_.-]{0,31}) needs login; run hc machine login \1$/.exec(p.body ?? "");
     const command = login ? `hc machine login ${login[1]}` : null;
     const titleText = login ? `${login[1]} needs a login: run` : p.title ?? "";
-    const title = (color) => div().truncate().font_semibold().text_size(13).text_color(color).child(titleText);
+    // The whole text when the toast grows to fit it, else its first line, cut short.
+    const text = (value, style) => p.fitHeight
+      ? style(div()).child(value)
+      : style(div().truncate()).child(typeof value === "string" ? value.split("\n", 1)[0] : value);
+    // A root that fills a box of set height, or one at least the design's height that grows with its text.
+    const sized = (el) => p.fitHeight ? el.min_h(p.toast_height ?? 72).flex_none().py(8) : el.size_full();
+    const title = (color) => text(titleText, (el) => el.font_semibold().text_size(13).text_color(color));
     const copy = () =>
       div()
         .id("toast-login-copy")
@@ -66,15 +74,13 @@ export default class Toast extends View {
     const body = () =>
       login
         ? h_flex().gap(8).items_center().child(div().flex_1().min_w(0).truncate().tooltip(command).text_size(12).text_color(t.toast_muted).child(command)).child(copy())
-        : div().truncate().text_size(12).text_color(t.toast_muted).child(p.body ?? "");
+        : text(p.body ?? "", (el) => el.text_size(12).text_color(t.toast_muted));
     const lead = (el) =>
       el
         .when(Boolean(p.icon), (el) => el.child(image(p.icon).w(18).h(18).flex_none()))
         .when(!p.icon && mark !== "none", (el) => el.child(div().id("toast-dot").size(8).rounded(4).flex_none().bg(level)));
     // The other designs' root; the card's and outline's is below.
-    const root = h_flex()
-      .id("toast")
-      .size_full()
+    const root = sized(h_flex().id("toast"))
       .items_center()
       .cursor_pointer()
       .hover((s) => s.bg(t.hover))
@@ -155,7 +161,7 @@ export default class Toast extends View {
               .id("toast-text")
               .flex_1()
               .overflow_hidden()
-              .child(div().truncate().text_size(13).text_color(t.toast_foreground).child(titleText))
+              .child(text(titleText, (el) => el.text_size(13).text_color(t.toast_foreground)))
               .when(hasBody(p.body), (el) => el.child(body())),
           ),
       );
@@ -207,9 +213,7 @@ export default class Toast extends View {
     // through the backing settings.rs fits the text to (toast_colors, toast_ghost).
     const outline = design === "outline";
     return closable(lead(
-      h_flex()
-        .id("toast")
-        .size_full()
+      sized(h_flex().id("toast"))
         .pl(mark === "stripe" ? 15 : 18)
         .pr(18)
         .gap(12)

@@ -1,13 +1,13 @@
 //! Mods: folders of JavaScript under ~/.config/herdr-app/mods that agents write and
 //! Herdr runs live (gpui-shell), plus the `herdr` module they import.
 
-use crate::layout::Node;
+use crate::{layout::Node, links};
 use gpui::App;
 use gpui_shell::{Capabilities, ExecuteGrant, HostError, HostModule, HostObject, HostValue, NetworkGrant};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::rc::{Rc, Weak};
@@ -366,6 +366,25 @@ pub struct Hint {
     pub menu_items: Value,
 }
 
+fn parse_link_rules(source: &std::io::Result<String>, link_manifest: bool) -> Result<Vec<links::Rule>, String> {
+    let manifest: Value = match source {
+        Ok(source) => match serde_json::from_str(source) {
+            Ok(manifest) => manifest,
+            Err(e) if link_manifest => return Err(format!("mod.json: {e}")),
+            Err(_) => return Ok(Vec::new()),
+        },
+        Err(e) if link_manifest && e.kind() != std::io::ErrorKind::NotFound => return Err(format!("mod.json: {e}")),
+        Err(_) => return Ok(Vec::new()),
+    };
+    if link_manifest && !manifest.is_object() {
+        return Err("mod.json: expected a top-level object".into());
+    }
+    match manifest.get("link_handlers") {
+        Some(rules) => serde_json::from_value(rules.clone()).map_err(|e| format!("mod.json link_handlers: {e}")),
+        None => Ok(Vec::new()),
+    }
+}
+
 #[derive(Clone)]
 pub struct Found {
     pub id: String,
@@ -373,29 +392,48 @@ pub struct Found {
     pub hint: Hint,
     /// Why mod.json couldn't be read as one (`hint` is then the default).
     pub hint_error: Option<String>,
+    pub has_view: bool,
+    pub link_rules: std::sync::Arc<[links::Rule]>,
     pub stamp: SystemTime,
+    pub manifest_error: Option<String>,
 }
 
-/// Every mod folder that has a main.js.
-pub fn scan() -> Vec<Found> {
-    let mut found = scan_dir(&mods_dir(), "");
-    found.extend(scan_dir(&frame_dir(), "frame-"));
-    found.sort_by(|a, b| a.id.cmp(&b.id));
+pub fn scan(previous: &BTreeMap<String, Found>) -> BTreeMap<String, Found> {
+    let mut found = scan_dir(&mods_dir(), "", previous);
+    found.extend(scan_dir(&frame_dir(), "frame-", previous));
     found
 }
 
-fn scan_dir(root: &Path, prefix: &str) -> Vec<Found> {
-    let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
+fn scan_dir(root: &Path, prefix: &str, previous: &BTreeMap<String, Found>) -> BTreeMap<String, Found> {
+    let Ok(entries) = std::fs::read_dir(root) else { return BTreeMap::new() };
     entries
         .flatten()
-        .filter(|e| e.path().join("main.js").is_file())
         .filter_map(|e| {
             let id = format!("{prefix}{}", e.file_name().to_str()?);
             if id.starts_with('.') {
                 return None;
             }
             let dir = e.path();
-            let (hint, hint_error) = read_hint(&dir);
+            let has_view = dir.join("main.js").is_file();
+            let has_link = dir.join("link.js").is_file();
+            let manifest_path = dir.join("mod.json");
+            if !has_view && !has_link && !manifest_path.is_file() {
+                return None;
+            }
+            let source = std::fs::read_to_string(manifest_path);
+            let (hint, hint_error) = hint_of(&source);
+            let previous_rules = previous.get(&id).filter(|old| old.dir == dir).map(|old| &old.link_rules);
+            let link_manifest = has_link || previous_rules.is_some_and(|rules| !rules.is_empty());
+            let (link_rules, manifest_error) = match parse_link_rules(&source, link_manifest) {
+                Ok(rules) => {
+                    let error = (!rules.is_empty() && !has_link).then(|| "mod.json declares link_handlers but link.js is missing".to_owned());
+                    (rules.into(), error)
+                }
+                Err(error) => (previous_rules.cloned().unwrap_or_default(), Some(error)),
+            };
+            if !has_view && !has_link && link_rules.is_empty() && manifest_error.is_none() {
+                return None;
+            }
             let stamp = std::fs::read_dir(&dir)
                 .into_iter()
                 .flatten()
@@ -403,15 +441,19 @@ fn scan_dir(root: &Path, prefix: &str) -> Vec<Found> {
                 .filter_map(|f| f.metadata().ok()?.modified().ok())
                 .max()
                 .unwrap_or(SystemTime::UNIX_EPOCH);
-            Some(Found { id, dir, hint, hint_error, stamp })
+            Some((id.clone(), Found { id, dir, hint, hint_error, has_view, link_rules, stamp, manifest_error }))
         })
         .collect()
 }
 
 /// A mod.json that can't be read leaves the defaults, and why.
 fn read_hint(dir: &Path) -> (Hint, Option<String>) {
-    let Ok(text) = std::fs::read_to_string(dir.join("mod.json")) else { return (Hint::default(), None) };
-    match serde_json::from_str(&text) {
+    hint_of(&std::fs::read_to_string(dir.join("mod.json")))
+}
+
+fn hint_of(source: &std::io::Result<String>) -> (Hint, Option<String>) {
+    let Ok(text) = source else { return (Hint::default(), None) };
+    match serde_json::from_str(text) {
         Ok(hint) => (hint, None),
         Err(e) => (Hint::default(), Some(e.to_string())),
     }
@@ -423,7 +465,7 @@ pub fn mod_json_problems(dir: &Path) -> Vec<String> {
     let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_owned());
     let id = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
     let (hint, hint_error) = read_hint(&dir);
-    let found = Found { id, dir, hint, hint_error, stamp: SystemTime::UNIX_EPOCH };
+    let found = Found { id, dir, hint, hint_error, has_view: true, link_rules: Default::default(), stamp: SystemTime::UNIX_EPOCH, manifest_error: None };
     let mut problems = actions([&found]).1;
     problems.extend(menu_items([&found]).1);
     problems
@@ -434,7 +476,8 @@ pub fn mod_json_problems(dir: &Path) -> Vec<String> {
 /// action is `{ title, command, args?, keywords? }` naming an app command;
 /// `mod.open` without a `name` opens the mod itself.
 pub fn actions<'a>(folders: impl IntoIterator<Item = &'a Found> + Clone) -> (Vec<Value>, Vec<String>) {
-    let unreadable = folders.clone().into_iter().filter_map(|f| Some(format!("mod {}: mod.json: {}", f.id, f.hint_error.as_ref()?)));
+    // A link mod's unreadable mod.json is reported once, as its `manifest_error`.
+    let unreadable = folders.clone().into_iter().filter(|f| f.manifest_error.is_none()).filter_map(|f| Some(format!("mod {}: mod.json: {}", f.id, f.hint_error.as_ref()?)));
     let mut problems: Vec<String> = unreadable.collect();
     let (list, more) = entries(folders, "actions", |h| &h.actions, action);
     problems.extend(more);
@@ -1624,7 +1667,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
                 Ok(to_host(&crate::mod_settings::write(&of, &key, value).map_err(HostError::new)?))
             }
         })
-        .function("modSchemas", |_| Ok(to_host(&crate::mod_settings::schemas(&scan()))))
+        .function("modSchemas", |_| Ok(to_host(&crate::mod_settings::schemas(scan(&BTreeMap::new()).values()))))
         .function("toastLooks", |_| Ok(HostValue::Json(crate::settings::toast_looks())))
         .function("keys", |_| Ok(HostValue::Json(keys_part())))
         .function("openOverlay", |a| {
@@ -1778,10 +1821,16 @@ pub fn install_policy() -> async_channel::Receiver<Request> {
 
 /// Gives the next mod copy to load a policy of its own: its `herdr` module
 /// (its props, its identity) and its localStorage file. The shell hands every
-/// view a copy of the default that *shares* modules and storage, so each copy
-/// needs a fresh default rather than an edit of the old one.
+/// view a copy of the default, so each copy needs a fresh policy for its host
+/// module. Persistent storage is shared by path.
 /// Readies the next load of `inst`; returns the copy's number (for commands).
 pub fn prepare_load(inst: &Instance) -> u64 {
+    let (copy, policy) = mod_policy(inst);
+    gpui_shell::policy::set_default(policy);
+    copy
+}
+
+fn mod_policy(inst: &Instance) -> (u64, gpui_shell::policy::Policy) {
     let copy = COPY_SEQ.with(|s| {
         s.set(s.get() + 1);
         s.get()
@@ -1799,16 +1848,106 @@ pub fn prepare_load(inst: &Instance) -> u64 {
     let policy = gpui_shell::policy::Policy::new()
         .with_application(inst.key())
         .with_capabilities(capabilities())
-        .with_storage_path(dir.join(file))
+        .with_shared_storage_path(dir.join(file))
         .with_host_module(module(inst.clone(), copy))
         .expect("herdr module is valid");
-    gpui_shell::policy::set_default(policy);
-    copy
+    (copy, policy)
+}
+
+pub fn handle_link(
+    name: &str,
+    dir: &Path,
+    click: &Value,
+    window: &mut gpui::Window,
+    cx: &mut App,
+) -> impl std::future::Future<Output = anyhow::Result<String>> + use<> {
+    let (_, policy) = mod_policy(&Instance { name: name.to_owned(), props: Value::Null });
+    gpui_shell::ShellRuntime::call_module(dir, "link.js", "handleLink", click, Rc::new(policy), window, cx)
+}
+
+pub fn check_link_mod(dir: &Path) -> anyhow::Result<bool> {
+    let has_link = dir.join("link.js").is_file();
+    let source = std::fs::read_to_string(dir.join("mod.json"));
+    let rules = parse_link_rules(&source, has_link).map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(rules.is_empty() || has_link, "mod.json declares link_handlers but link.js is missing");
+    if has_link {
+        gpui_shell::ShellRuntime::check_module(dir, "link.js", "handleLink")?;
+    }
+    Ok(has_link)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn link_check_requires_the_named_export_without_running_the_module() {
+        let dir = crate::test_tmp().join(format!("herdr-link-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("link.js");
+        std::fs::write(&entry, "export default function handleLink() {}").unwrap();
+        let error = check_link_mod(&dir).unwrap_err().to_string();
+        assert!(error.contains("handleLink"), "{error}");
+
+        std::fs::write(dir.join("implementation.js"), r#"
+            throw new Error("dependency ran");
+            export function open() { throw new Error("handler ran"); }
+        "#).unwrap();
+        std::fs::write(&entry, r#"
+            throw new Error("module ran");
+            export { open as handleLink } from "./implementation.js";
+        "#).unwrap();
+        assert!(check_link_mod(&dir).unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scan_and_check_reject_a_broken_manifest_when_the_mod_handles_links() {
+        let root = std::env::temp_dir().join(format!("herdr-link-manifest-{}", std::process::id()));
+        let dir = root.join("example");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("main.js"), "export default class {}").unwrap();
+        std::fs::write(dir.join("mod.json"), r#"{"place":"none",}"#).unwrap();
+
+        let views = scan_dir(&root, "", &BTreeMap::new());
+        assert!(!check_link_mod(&dir).unwrap(), "a plain view still runs the normal view check");
+        assert!(views["example"].manifest_error.is_none());
+
+        std::fs::write(dir.join("link.js"), r#"export function handleLink() { return "handled"; }"#).unwrap();
+        let error = check_link_mod(&dir).unwrap_err().to_string();
+        assert!(error.starts_with("mod.json:"), "{error}");
+        let links = scan_dir(&root, "", &views);
+        assert_eq!(links["example"].manifest_error.as_deref(), Some(error.as_str()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_nonobject_link_manifest_is_rejected_and_keeps_working_rules() {
+        let root = std::env::temp_dir().join(format!("herdr-link-manifest-object-{}", std::process::id()));
+        let dir = root.join("example");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("link.js"), "export function handleLink() {}").unwrap();
+        let manifest = dir.join("mod.json");
+        std::fs::write(&manifest, r#"{"link_handlers":[{"kind":"url","pattern":"^http://localhost:"}]}"#).unwrap();
+        let original = scan_dir(&root, "", &BTreeMap::new());
+        assert_eq!(original["example"].link_rules.len(), 1);
+
+        for invalid in ["[]", "null", "\"rules\"", "7", "false"] {
+            std::fs::write(&manifest, invalid).unwrap();
+            let error = "mod.json: expected a top-level object";
+            assert_eq!(check_link_mod(&dir).unwrap_err().to_string(), error);
+            let found = scan_dir(&root, "", &original);
+            assert_eq!(found["example"].manifest_error.as_deref(), Some(error));
+            assert!(std::sync::Arc::ptr_eq(&found["example"].link_rules, &original["example"].link_rules));
+        }
+
+        std::fs::write(&manifest, "{}").unwrap();
+        assert!(check_link_mod(&dir).unwrap());
+        let found = scan_dir(&root, "", &original);
+        assert!(found["example"].link_rules.is_empty());
+        assert!(found["example"].manifest_error.is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn an_input_selection_uses_the_theme_selection_colour() {
@@ -2108,7 +2247,7 @@ mod tests {
     /// a prefix-only one is no command).
     #[test]
     fn palette_actions_take_the_mods_own_commands() {
-        let found = |id: &str, hint: Value| Found { id: id.into(), dir: PathBuf::new(), hint: serde_json::from_value(hint).unwrap(), hint_error: None, stamp: SystemTime::UNIX_EPOCH };
+        let found = |id: &str, hint: Value| Found { id: id.into(), dir: PathBuf::new(), hint: serde_json::from_value(hint).unwrap(), hint_error: None, has_view: true, link_rules: Default::default(), stamp: SystemTime::UNIX_EPOCH, manifest_error: None };
         let agents = found("agents", json!({ "actions": [
             { "title": "Fold all agents", "command": "agents.fold_all", "keywords": "collapse sub-agents" },
             { "title": "Null args", "command": "agents.unfold_all", "args": null },
@@ -2142,7 +2281,7 @@ mod tests {
 
     #[test]
     fn palette_actions_are_checked_and_malformed_ones_are_named_not_listed() {
-        let found = |id: &str, hint: Value| Found { id: id.into(), dir: PathBuf::new(), hint: serde_json::from_value(hint).unwrap(), hint_error: None, stamp: SystemTime::UNIX_EPOCH };
+        let found = |id: &str, hint: Value| Found { id: id.into(), dir: PathBuf::new(), hint: serde_json::from_value(hint).unwrap(), hint_error: None, has_view: true, link_rules: Default::default(), stamp: SystemTime::UNIX_EPOCH, manifest_error: None };
         let acts = found("acts", json!({ "place": "none", "focusable": true, "actions": [
             { "title": "Send to all", "command": "mod.open", "args": { "props": { "target": "shells" } }, "keywords": "smart" },
             { "title": "Split", "command": "pane.split", "args": { "direction": "right" } },
@@ -2203,7 +2342,7 @@ mod tests {
 
     #[test]
     fn terminal_menu_items_are_checked_and_say_what_the_click_fills() {
-        let found = |id: &str, hint: Value| Found { id: id.into(), dir: PathBuf::new(), hint: serde_json::from_value(hint).unwrap(), hint_error: None, stamp: SystemTime::UNIX_EPOCH };
+        let found = |id: &str, hint: Value| Found { id: id.into(), dir: PathBuf::new(), hint: serde_json::from_value(hint).unwrap(), hint_error: None, has_view: true, link_rules: Default::default(), stamp: SystemTime::UNIX_EPOCH, manifest_error: None };
         let mover = found("mover", json!({ "actions": [{ "title": "Palette", "command": "tab.new" }], "menu_items": [
             { "title": "Move to…", "command": "mod.open", "when": "pane", "icon": "move.svg" },
             { "title": "Split here", "command": "pane.split", "args": { "direction": "down" } },
@@ -2262,7 +2401,7 @@ mod tests {
         let hint: Hint = serde_json::from_value(json!({ "place": "left", "someday": [1],
             "actions": [{ "title": "Go", "command": "tab.new" }], "menu_items": [{ "title": "Go", "command": "tab.new" }] })).unwrap();
         assert_eq!(hint.place.as_deref(), Some("left"));
-        let found = Found { id: "later".into(), dir: PathBuf::new(), hint, hint_error: None, stamp: SystemTime::UNIX_EPOCH };
+        let found = Found { id: "later".into(), dir: PathBuf::new(), hint, hint_error: None, has_view: true, link_rules: Default::default(), stamp: SystemTime::UNIX_EPOCH, manifest_error: None };
         let ((acts, act_problems), (items, item_problems)) = (actions([&found]), menu_items([&found]));
         assert!(acts.len() == 1 && items.len() == 1 && act_problems.is_empty() && item_problems.is_empty());
     }

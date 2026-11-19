@@ -74,9 +74,13 @@ pub fn given(name: Option<&str>) -> Option<&str> {
 /// `[3/5]` stays in what is shown): not empty or only digits, not the
 /// program's name, not its command line (a first word that is its key or
 /// name: `claude attach 1f2e`, `CLAUDE`), not a path (`~`, `/`, `C:\`, `C:/`,
-/// `\\server`), no `@` (`user@host`), and not `THROWAWAY`.
+/// `\\server`), no `@` (`user@host`), and not `THROWAWAY`. An emoji before the
+/// first letter or digit is a name a person chose (upstream #1141): alone or
+/// beside the program's name it tells, unless what follows it is a path, a
+/// `user@host` or `THROWAWAY`.
 pub fn telling<'a>(title: &'a str, program: &Value) -> Option<&'a str> {
     static THROWAWAY_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(THROWAWAY).expect("THROWAWAY"));
+    static EMOJI_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[^\p{L}\p{N}~/\\\p{Emoji_Presentation}]*\p{Emoji_Presentation}").expect("emoji"));
     let t = title.trim_start_matches(|c: char| !c.is_alphanumeric() && !matches!(c, '~' | '/' | '\\')).trim_end();
     let name = program.get("name").and_then(Value::as_str).unwrap_or_default();
     let key = program.get("key").and_then(Value::as_str).unwrap_or_default();
@@ -85,7 +89,8 @@ pub fn telling<'a>(title: &'a str, program: &Value) -> Option<&'a str> {
     let b = t.as_bytes();
     let path = t.starts_with(['~', '/', '\\']) || (b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/'));
     let empty_or_digits = t.bytes().all(|c| c.is_ascii_digit());
-    let says_nothing = empty_or_digits || t.to_lowercase() == name.to_lowercase() || invokes || path || t.contains('@');
+    let named = EMOJI_RE.is_match(title);
+    let says_nothing = path || t.contains('@') || (!named && (empty_or_digits || t.to_lowercase() == name.to_lowercase() || invokes));
     (!says_nothing && !THROWAWAY_RE.is_match(t)).then(|| title.trim())
 }
 
@@ -270,6 +275,23 @@ mod tests {
         assert_eq!(telling("git changes", &lazygit), None, "its name in any case");
         assert_eq!(telling("lazygit", &lazygit), None);
         assert_eq!(telling("Git log", &lazygit), Some("Git log"));
+    }
+
+    /// Upstream #1141's cases, for the app's label (the agents mod reads it):
+    /// a leading emoji stays and is a name, alone or beside the program's.
+    #[test]
+    fn an_emoji_is_a_name_a_person_chose() {
+        let c = claude();
+        for e in ["🔴", "🟦", "✅", "❌", "⭐", "🚀", "🧠", "⚪", "🇰🇷", "👍🏽", "👨\u{200d}💻"] {
+            let t = format!("{e} login");
+            assert_eq!(telling(&t, &c), Some(t.as_str()), "{t}");
+        }
+        assert_eq!(telling("\u{2733} 🟢 login", &c), Some("\u{2733} 🟢 login"), "a status glyph before it stays, as every glyph does here");
+        assert_eq!(telling("🔴", &c), Some("🔴"));
+        assert_eq!(telling("🔴 claude", &c), Some("🔴 claude"));
+        assert_eq!(telling("🔴 ~/proj", &c), None, "a folder is still a folder behind its emoji");
+        assert_eq!(telling("🔴 me@host", &c), None);
+        assert_eq!(telling("\u{2713} claude", &c), None, "a text-style glyph is not a name");
     }
 
     #[test]

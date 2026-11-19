@@ -208,6 +208,26 @@ test("banner: title, place, how many more, Show for an action, Dismiss always", 
   expect(find(alone, "toast-dismiss")).toBeDefined();
 });
 
+// Upstream #782: a toast Herdr lets grow (fitHeight) shows its whole text, wrapped, from
+// the least height Herdr gives it up; one that doesn't keeps each text to its first line, cut short.
+test("a growing toast shows its whole text, at least its design's height", () => {
+  const text = (root: Element, value: string) => all(root).find((e) => e.nodes[0] === value);
+  const props = { title: "Build failed\nat step 3", body: "line one\nline two", level: "error" };
+  for (const toast_design of ["card", "outline", "terminal", "icon-card"]) {
+    const root = draw({ toast_design, fitHeight: true, toast_height: 72 }, props);
+    const shell = all(root).find((e) => e.calls.id?.[0] === "toast")!;
+    expect(shell.calls.min_h).toEqual([72]);
+    expect(shell.calls.size_full).toBeUndefined();
+    for (const value of [props.title, props.body]) {
+      expect(text(root, value)?.calls.truncate).toBeUndefined();
+    }
+    const fixed = draw({ toast_design }, props);
+    expect(all(fixed).find((e) => e.calls.id?.[0] === "toast")!.calls.size_full).toEqual([]);
+    for (const value of ["Build failed", "line one"]) expect(text(fixed, value)?.calls.truncate).toEqual([]);
+    expect(text(fixed, props.title)).toBeUndefined();
+  }
+});
+
 // Every colour each design draws is one of the theme's: under two themes far
 // apart, each drawn colour is one that theme holds, so a theme switch restyles them all.
 test("every design draws only its theme's colours, under a dark and a light theme", () => {
