@@ -6,8 +6,10 @@ use std::time::{Duration, Instant};
 
 /// A pane dropped on another by its grip: not a command, but it slides as one.
 pub(super) const DRAG_MOVE: &str = "pane.move";
-/// The commands whose layout change slides.
-const SLIDES: [&str; 6] = ["pane.split", "pane.close", "pane.swap", "pane.arrange", "terminal.open", DRAG_MOVE];
+/// The commands whose layout change slides. Floating a pane slides the rest
+/// into its space (the float itself shows at once); docking one slides it in
+/// from where it floated.
+const SLIDES: [&str; 9] = ["pane.split", "pane.close", "pane.swap", "pane.arrange", "terminal.open", DRAG_MOVE, "pane.float", "pane.dock", "pane.float_toggle"];
 /// Commands starting with these land a running slide first.
 const LANDS: [&str; 5] = ["pane.", "tab.", "space.", "layout.", "terminal.open"];
 
@@ -148,6 +150,12 @@ impl Slide {
     pub(super) fn waiting(&self) -> &[String] {
         &self.waiting
     }
+
+    /// Where block `id` slides from.
+    #[cfg(test)]
+    pub(super) fn from(&self, id: &str) -> Option<Bounds<Pixels>> {
+        self.blocks.iter().find(|(b, ..)| b == id).map(|(_, from, _)| *from)
+    }
 }
 
 impl AppWindow {
@@ -184,8 +192,11 @@ impl AppWindow {
         }
         let tab = self.model.active_tab().filter(|t| t.zoomed.is_none())?;
         let (area, frame) = self.tab_area(tab.panes().len())?;
-        let slots = Self::laid_out(tab, area, frame.as_ref(), window.scale_factor());
-        Some(Before { tab: tab.id.clone(), tree: tab.shown().clone(), slots: slots.into_iter().collect() })
+        let mut slots: HashMap<_, _> = Self::laid_out(tab, area, frame.as_ref(), window.scale_factor()).into_iter().collect();
+        // A floating pane's slot is where it was drawn, so one docked slides in from there.
+        let drawn = self.bounds.borrow();
+        slots.extend(tab.shown_floats().filter_map(|f| Some((f.pane.id.clone(), *drawn.get(&f.pane.id)?))));
+        Some(Before { tab: tab.id.clone(), tree: tab.shown().clone(), slots })
     }
 
     /// After the command: slides the shown tab from `before` to its new layout.
