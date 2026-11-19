@@ -343,6 +343,16 @@ const FOCUS_WIDTHS = [
   [2, "2 px"],
   [3, "3 px"],
 ];
+// Whether panes slide to a new layout (pane_motion); None is the default, left out of settings.json.
+const PANE_MOTIONS = [
+  ["none", "None"],
+  ["basic", "Basic"],
+];
+// pane_motion_ms and pane_motion_max_panes: the app's PANE_MOTION_MS and PANE_MOTION_MAX ranges and defaults (settings.rs).
+const PANE_MOTION_MS = [50, 1000];
+const PANE_MOTION_MS_DEFAULT = 160;
+const PANE_MOTION_MAX = [1, 64];
+const PANE_MOTION_MAX_DEFAULT = 16;
 // The terminals' cursor shape until a program sets its own (cursor_style); Block is the default, left out of settings.json.
 const CURSOR_STYLES = [
   ["block", "Block"],
@@ -1881,6 +1891,20 @@ export default class Settings extends View {
   }
 
   panes(t) {
+    const motion = (this.person.pane_motion ?? "none") !== "none";
+    const ranged = (key, [lo, hi], def, by) => {
+      const clamp = (n) => Math.max(lo, Math.min(hi, n));
+      const now = clamp(this.person[key] ?? def);
+      const step = (d) => (_e, cx) =>
+        this.change((q) => {
+          const next = clamp(Math.round((clamp(q[key] ?? def) + d) / by) * by);
+          if (next === def) delete q[key];
+          else q[key] = next;
+        }, cx);
+      return [now, step(-by), step(by)];
+    };
+    const [ms, msLess, msMore] = ranged("pane_motion_ms", PANE_MOTION_MS, PANE_MOTION_MS_DEFAULT, 20);
+    const [most, mostLess, mostMore] = ranged("pane_motion_max_panes", PANE_MOTION_MAX, PANE_MOTION_MAX_DEFAULT, 1);
     return v_flex()
       .w_full()
       .child(this.heading(t, "Panes"))
@@ -1900,7 +1924,13 @@ export default class Settings extends View {
         ),
       )
       .child(this.row(t, "Focus border", "The color around the pane you're typing in, where the layout draws it. From theme is the accent, or the theme's own focus color.", this.focusColorPicker(t), "colors.focus"))
-      .child(this.row(t, "Focus border width", "Layout keeps the layout's own width. Panes keep their size as the focus moves.", this.choicePicker(t, "st-fw", "focus_border_width", FOCUS_WIDTHS), "focus_border_width"));
+      .child(this.row(t, "Focus border width", "Layout keeps the layout's own width. Panes keep their size as the focus moves.", this.choicePicker(t, "st-fw", "focus_border_width", FOCUS_WIDTHS), "focus_border_width"))
+      .child(this.row(t, "Pane motion", "Basic slides the shown tab's panes to their new places as you arrange, swap, split or close them. Programs are resized once, as the panes land. Off while macOS Reduce motion is on.", this.choicePicker(t, "st-pm", "pane_motion", PANE_MOTIONS), "pane_motion"))
+      .when(motion, (el) =>
+        el
+          .child(this.row(t, "Slide time", "How long panes take to reach their new places.", this.stepper(t, "st-pane_motion_ms", `${ms} ms`, msLess, msMore), "pane_motion_ms"))
+          .child(this.row(t, "Most panes to slide", "With more panes than this moving, the new layout shows at once.", this.stepper(t, "st-pane_motion_max_panes", `${most}`, mostLess, mostMore), "pane_motion_max_panes")),
+      );
   }
 
   // Cursor effects: the trail (Off, Between panes, or that and the focused pane's cursor
