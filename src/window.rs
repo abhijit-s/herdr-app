@@ -11266,6 +11266,36 @@ export default class Recent extends View {
         run(cx, "pane.close", json!({ "pane": "e" }));
         assert!(sliding(cx), "close slides the rest into the space");
         view.update(cx, |this, cx| this.land(cx));
+        cx.run_until_parked();
+
+        // A pane dragged by its grip and dropped slides too: on another's middle
+        // it swaps with it, on another's edge it goes beside it.
+        let at = |cx: &mut gpui::VisualTestContext, p: &str| view.update(cx, |this, _| this.bounds.borrow()[p]);
+        let tree = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.model.active_tab().unwrap().shown().clone());
+        let drag = |cx: &mut gpui::VisualTestContext, from: &str, to: gpui::Point<Pixels>| {
+            let b = at(cx, from);
+            let grip = point(b.center().x, b.top() + px(6.0));
+            cx.simulate_mouse_move(grip, None, Modifiers::none());
+            cx.run_until_parked();
+            cx.simulate_mouse_down(grip, MouseButton::Left, Modifiers::none());
+            cx.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::none());
+            cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::none());
+            cx.run_until_parked();
+        };
+        let was = tree(cx);
+        let middle = at(cx, "b").center();
+        drag(cx, "a", middle);
+        assert_ne!(tree(cx), was, "the drop swapped a and b");
+        assert!(sliding(cx), "a drop on a pane's middle slides");
+        view.update(cx, |this, cx| this.land(cx));
+        cx.run_until_parked();
+        let was = tree(cx);
+        let d = at(cx, "d");
+        // d's bottom edge, which c (before d in columns or rows) never is beside already.
+        drag(cx, "c", point(d.center().x, d.bottom() - px(4.0)));
+        assert_ne!(tree(cx), was, "the drop put c under d");
+        assert!(sliding(cx), "a drop on a pane's edge slides");
+        view.update(cx, |this, cx| this.land(cx));
     }
 
     #[test]
