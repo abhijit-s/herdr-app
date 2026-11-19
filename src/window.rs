@@ -4956,6 +4956,13 @@ impl AppWindow {
                 }
                 return;
             }
+            "toast.dismiss_all" => {
+                let toasts: Vec<String> = self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).map(|o| o.id.clone()).collect();
+                for id in toasts {
+                    self.close_overlay(&id, window, cx);
+                }
+                return;
+            }
             // ---- the app
             "app.welcome" => {
                 self.open_welcome(window, cx);
@@ -9031,6 +9038,12 @@ mod tests {
         assert!(at("a", cx).is_some() && at("b", cx).is_some());
         assert_eq!(more(cx), [("a".to_owned(), None), ("b".to_owned(), None)]);
         assert_eq!(at("a", cx).unwrap().size.height, px(TOAST_HEIGHT));
+        // toast.dismiss_all closes every toast, b's action (agent.focus) not run.
+        let reply = view.update_in(cx, |this, window, cx| this.run_as("toast.dismiss_all", json!({}), false, window, cx));
+        assert_eq!(reply, json!({ "ok": true }));
+        cx.run_until_parked();
+        assert!(at("a", cx).is_none() && at("b", cx).is_none());
+        assert!(view.update(cx, |this, _| this.toast_props().is_empty()), "no toast is left");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 // How notifications look. Anything can post one with notify({ title, body,
 // level, icon, action }); replace this mod to restyle them all. Click to
-// run its action (e.g. go to the agent) and dismiss it. Herdr draws the box
+// run its action (e.g. go to the agent) and dismiss it; the × that shows on
+// hover (or the Dismiss button) only dismisses it. Herdr draws the box
 // (surface, border, corners: toast_style, toast_corners, toast_design) and
 // sizes and places it; this mod draws the inside, in the design Herdr puts
 // in the props (props().toast_design), with the level mark (props().toast_mark).
@@ -98,29 +99,66 @@ export default class Toast extends View {
         .child(label);
     const show = () => button("toast-show", p.action?.label ?? "Show", act, true);
     const dismiss = () => button("toast-dismiss", "Dismiss", () => closeOverlay(p.overlay), false);
+    // A × in the corner while the pointer is over the toast: it closes without
+    // running the action, which a click on the toast itself runs. Designs that
+    // draw a Dismiss button don't get one.
+    const closable = (el) =>
+      el
+        .relative()
+        .on_hover((hovered, cx) => {
+          this.hovered = hovered;
+          cx.notify();
+        })
+        .when(Boolean(this.hovered), (el) =>
+          el.child(
+            div()
+              .id("toast-close")
+              .absolute()
+              .top(design === "pill" ? 8 : 6)
+              .right(6)
+              .size(16)
+              .rounded(4)
+              .flex()
+              .items_center()
+              .justify_center()
+              .text_size(12)
+              .text_color(t.toast_muted)
+              .cursor_pointer()
+              .hover((s) => s.bg(t.hover).text_color(t.toast_foreground))
+              .on_click((_e, cx) => {
+                cx.stop_propagation();
+                closeOverlay(p.overlay);
+              })
+              .child("×"),
+          ),
+        );
 
     if (design === "pill") {
       // One line: the mark or icon and the title; the body is its tooltip.
-      return lead(root.px(14).gap(8).bg(t.toast))
-        .when(hasBody(p.body), (el) => el.tooltip(String(p.body)))
-        .child(title(t.toast_foreground).flex_1());
+      return closable(
+        lead(root.px(14).gap(8).bg(t.toast))
+          .when(hasBody(p.body), (el) => el.tooltip(String(p.body)))
+          .child(title(t.toast_foreground).flex_1()),
+      );
     }
     if (design === "terminal") {
       // The terminal's font (Herdr puts it in the props) and its colour for the level, in brackets.
-      return root
-        .px(12)
-        .gap(8)
-        .bg(t.toast)
-        .when(Boolean(p.toast_font), (el) => el.font_family(p.toast_font))
-        .child(div().id("toast-tag").flex_none().font_semibold().text_size(13).text_color(level).child(`[${TAG[levelName]}]`))
-        .child(
-          v_flex()
-            .id("toast-text")
-            .flex_1()
-            .overflow_hidden()
-            .child(div().truncate().text_size(13).text_color(t.toast_foreground).child(titleText))
-            .when(hasBody(p.body), (el) => el.child(body())),
-        );
+      return closable(
+        root
+          .px(12)
+          .gap(8)
+          .bg(t.toast)
+          .when(Boolean(p.toast_font), (el) => el.font_family(p.toast_font))
+          .child(div().id("toast-tag").flex_none().font_semibold().text_size(13).text_color(level).child(`[${TAG[levelName]}]`))
+          .child(
+            v_flex()
+              .id("toast-text")
+              .flex_1()
+              .overflow_hidden()
+              .child(div().truncate().text_size(13).text_color(t.toast_foreground).child(titleText))
+              .when(hasBody(p.body), (el) => el.child(body())),
+          ),
+      );
     }
     if (design === "icon-card") {
       // A big level icon (the toast's own icon if it has one), and Show and Dismiss for an action.
@@ -136,7 +174,7 @@ export default class Toast extends View {
             .justify_center()
             .bg(level)
             .child(svg(`mods/toast/${ICON[levelName]}.svg`).size(20).text_color(t.toast));
-      return root
+      const card = root
         .px(16)
         .gap(14)
         .bg(t.toast)
@@ -151,6 +189,7 @@ export default class Toast extends View {
             .when(hasBody(p.body), (el) => el.child(body()))
             .when(Boolean(p.action?.name), (el) => el.child(h_flex().id("toast-actions").pt(8).gap(8).child(show()).child(dismiss()))),
         );
+      return p.action?.name ? card : closable(card);
     }
     if (design === "banner") {
       // Across the window: the title, then the place or body, how many more wait behind it, and its buttons.
@@ -167,7 +206,7 @@ export default class Toast extends View {
     // the level's colour, with no hover fill, which would lighten what shows
     // through the backing settings.rs fits the text to (toast_colors, toast_ghost).
     const outline = design === "outline";
-    return lead(
+    return closable(lead(
       h_flex()
         .id("toast")
         .size_full()
@@ -186,6 +225,6 @@ export default class Toast extends View {
         .overflow_hidden()
         .child(title(outline ? level : t.toast_foreground))
         .when(hasBody(p.body), (el) => el.child(body())),
-    );
+    ));
   }
 }

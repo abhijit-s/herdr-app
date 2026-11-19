@@ -68,6 +68,7 @@ const NAMED = [
   ["app.zoom_in", {}, "App", "Zoom in", "bigger font size"],
   ["app.zoom_out", {}, "App", "Zoom out", "smaller font size"],
   ["app.zoom_reset", {}, "App", "Reset zoom", "font size"],
+  ["toast.dismiss_all", {}, "App", "Dismiss notifications", "toasts close clear hide"],
   ["app.quit", {}, "App", "Quit Herdr", "exit"],
   ...["graphite", "ink", "moss", "atom-one-dark"].map((n) => ["app.theme", { name: n }, "App", `Theme: ${n.replace(/-/g, " ")}`, "colors look"]),
 ];

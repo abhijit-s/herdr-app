@@ -119,7 +119,7 @@ export function playSound(sound: string): null;
  *   layout.spacing {pane_gap?, area_padding?, area_gap?, terminal_padding?, reset?: string[]} sets space around
  *   the shown tab's panes (px 0 to 40) as clicks, on any layout: the tab block's pane.gap, the padding and gap of
  *   the row or column holding it, the root's terminal_padding [x, y]; reset puts those named back as the file has them.
- * App: mod.open {name, props?}, overlay.close {id?}, app.help, app.reset, app.theme {name}, app.zoom_in|zoom_out|zoom_reset,
+ * App: mod.open {name, props?}, overlay.close {id?}, toast.dismiss_all (every toast, no action run), app.help, app.reset, app.theme {name}, app.zoom_in|zoom_out|zoom_reset,
  *   system.notify {title, body?, subtitle?, sound?, agent?, id?, urgent?, icon?} (a system notification as Herdr).
  * Mods: "<mod>.<command>" delivers <command> to that mod's nextCommand().
  */

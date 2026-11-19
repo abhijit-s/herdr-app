@@ -118,6 +118,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("layout.reset", &[opt("name")], "Reset a shipped layout and its clicks (the old file is kept aside)."),
     cmd("mod.open", &[req("name"), opt("props")], "Toggle a mod as the overlay its mod.json describes (props: what its props() holds); calling again closes it, or reopens it with other props."),
     cmd("overlay.close", &[opt("id")], "Close an overlay (default: the top dialog or popup)."),
+    cmd("toast.dismiss_all", &[], "Close every toast without running its action."),
     // The app.
     cmd("app.help", &[], "Toggle the keys dialog."),
     cmd("system.notify", &[req("title"), opt("body"), opt("subtitle"), opt("sound"), opt("agent"), opt("id"), opt("urgent"), opt("icon")],
