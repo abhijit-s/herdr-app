@@ -11296,6 +11296,22 @@ export default class Recent extends View {
         assert_ne!(tree(cx), was, "the drop put c under d");
         assert!(sliding(cx), "a drop on a pane's edge slides");
         view.update(cx, |this, cx| this.land(cx));
+        cx.run_until_parked();
+
+        // Floating b slides the rest into its space; docking it slides it in from where it floated.
+        run(cx, "pane.float", json!({ "pane": "b" }));
+        assert!(sliding(cx), "the rest slide into a floated pane's space");
+        view.update(cx, |this, cx| this.land(cx));
+        cx.run_until_parked();
+        let floated = at(cx, "b");
+        run(cx, "pane.dock", json!({ "pane": "b" }));
+        assert!(sliding(cx), "docking slides");
+        assert_eq!(view.update(cx, |this, _| this.slide.as_ref().and_then(|s| s.from("b"))), Some(floated), "b starts where it floated");
+        view.update(cx, |this, cx| this.land(cx));
+        cx.run_until_parked();
+        run(cx, "pane.float_toggle", json!({ "pane": "b" }));
+        assert!(sliding(cx), "the toggle slides too");
+        view.update(cx, |this, cx| this.land(cx));
     }
 
     #[test]
