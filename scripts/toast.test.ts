@@ -34,12 +34,15 @@ const tree = (e: any): any => {
 };
 const element = () => new Element();
 let propsNow: Record<string, any> = {};
+// What the toast's clicks did: the overlays it closed and the commands it ran.
+const closed: string[] = [];
+const ran: string[] = [];
 // Each colour named after its theme key, unless a test sets a real theme.
 const named = new Proxy({}, { get: (_t, key: string) => `#${key}` });
 let themeNow: Record<string, any> = named;
 const values: Record<string, any> = {
   View: class {}, div: element, image: element, svg: element, v_flex: element, h_flex: element,
-  props: () => propsNow, closeOverlay() {}, run() {},
+  props: () => propsNow, closeOverlay(id: string) { closed.push(id); }, run(name: string) { ran.push(name); },
   theme: () => themeNow,
 
 };
@@ -95,15 +98,54 @@ const designs = ["card", "pill", "terminal", "outline", "icon-card", "banner"];
 const all = (root: Element): Element[] => [root, ...(root?.nodes ?? []).flatMap((n) => (n instanceof Object && "calls" in n ? all(n) : []))];
 
 // master's card, as its toast mod drew it before designs (tests/fixtures/master-toast-card.json,
-// rendered through these same stand-ins): every mark, level, body and icon.
+// rendered through these same stand-ins): every mark, level, body and icon. The fork adds
+// only the hover × (`relative` and `on_hover`, last, drawing nothing until hovered).
 test("a toast without a design draws master's card, call for call", async () => {
   const master = JSON.parse(await readFile(new URL("../tests/fixtures/master-toast-card.json", import.meta.url), "utf8"));
   expect(master.length).toBe(80);
   for (const { props, tree: want } of master) {
     for (const design of [{}, { toast_design: "card" }]) {
       propsNow = { ...props, ...design };
-      expect(tree(new Toast().render({}))).toEqual(want);
+      const got = tree(new Toast().render({}));
+      expect(got.slice(-2)).toEqual([["relative"], ["on_hover", "closure"]]);
+      expect(got.slice(0, -2)).toEqual(want);
     }
+  }
+});
+
+test("a × shows on hover in every design without a Dismiss button, and closes without running the action", () => {
+  const action = { name: "agent.focus", args: { terminal: "t1" } };
+  const hover = (design: string, props: Record<string, any>) => {
+    const toast = new Toast();
+    propsNow = { ...props, toast_design: design, overlay: "o1" };
+    const before = toast.render({});
+    if (!before.calls.on_hover) return { before, after: before };
+    before.calls.on_hover[0](true, { notify() {} });
+    return { before, after: toast.render({}) };
+  };
+  for (const design of ["card", "pill", "terminal", "outline", "icon-card"]) {
+    const { before, after } = hover(design, { title: "Saved", level: "info" });
+    expect(find(before, "toast-close")).toBeUndefined();
+    const x = find(after, "toast-close");
+    expect(x?.nodes).toEqual(["×"]);
+    closed.length = 0;
+    ran.length = 0;
+    let stopped = false;
+    x!.calls.on_click[0]({}, { stop_propagation() { stopped = true; } });
+    expect([closed, ran, stopped]).toEqual([["o1"], [], true]);
+  }
+  // With an action: the card's × still only closes; a click on the toast runs it and closes.
+  const { after } = hover("card", { title: "claude finished", level: "info", action });
+  closed.length = 0;
+  ran.length = 0;
+  find(after, "toast-close")!.calls.on_click[0]({}, { stop_propagation() {} });
+  expect([closed, ran]).toEqual([["o1"], []]);
+  after.calls.on_click[0]({}, {});
+  expect([closed, ran]).toEqual([["o1", "o1"], ["agent.focus"]]);
+  // Designs that draw Dismiss keep it, with no ×.
+  for (const [design, props] of [["banner", { title: "Saved" }], ["icon-card", { title: "claude finished", action }]] as const) {
+    expect(find(hover(design, props).after, "toast-close")).toBeUndefined();
+    expect(find(hover(design, props).after, "toast-dismiss")).toBeDefined();
   }
 });
 
