@@ -10981,6 +10981,9 @@ export default class Recent extends View {
         // warp's back end (as from a sweep's old end), still at b: a tail with
         // nowhere to go, so nothing runs.
         let back = view.update(cx, |this, _| this.trail.as_ref().and_then(|t| t.drawn));
+        // Its first frames on the real clock last a few ms, less than a busy
+        // machine can take between two draws: hold it there.
+        view.update(cx, |this, _| this.trail.as_mut().expect("the warp runs").hold(std::time::Duration::from_secs(10)));
         set(CursorTrail::Panes, TrailStyle::Tail, Arrival::Off);
         draw(cx);
         focus(cx, "b");
