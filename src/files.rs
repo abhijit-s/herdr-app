@@ -198,7 +198,8 @@ pub async fn next_change(path: String) -> Result<Vec<String>, String> {
                 return Err(format!("already watching {MAX_FOLDERS} folders"));
             }
             let generation = Arc::new(());
-            all.insert(root.clone(), Folder { _watcher: start_folder(&root, generation.clone())?, generation, waiters: Vec::new(), pending: HashSet::new() });
+            let (stop, _feed) = start_folder(&root, generation.clone(), FOLDER_SWEEP)?;
+            all.insert(root.clone(), Folder { _watcher: stop, generation, waiters: Vec::new(), pending: HashSet::new() });
         }
         let f = all.get_mut(&root).unwrap();
         if !f.pending.is_empty() {
@@ -321,12 +322,15 @@ fn folder_watch_mode() -> RecursiveMode {
 }
 
 fn add_pending(pending: &mut HashSet<String>, root: &Path, paths: impl IntoIterator<Item = PathBuf>) {
+    let root_path = root;
     let root = root.to_string_lossy().into_owned();
     for path in paths {
         if pending.contains(&root) {
             break;
         }
-        if pending.len() >= MAX_PENDING {
+        // The root itself (an event on the folder, a sweep or rescan reaching
+        // a kept list) is a root invalidation too.
+        if path == root_path || pending.len() >= MAX_PENDING {
             // A root invalidation means refresh everything, not a partial path list.
             pending.clear();
             pending.insert(root.clone());
@@ -355,9 +359,14 @@ fn collect_event(event: notify::Event, root: &Path, directories: &HashSet<PathBu
     refresh
 }
 
-fn start_folder(root: &Path, generation: Arc<()>) -> Result<std::sync::mpsc::Sender<()>, String> {
+/// What the native watcher hands the folder's worker; tests feed it too.
+type Feed = std::sync::mpsc::SyncSender<notify::Result<notify::Event>>;
+
+/// The folder's worker, and the feed its watcher sends into.
+fn start_folder(root: &Path, generation: Arc<()>, sweep: std::time::Duration) -> Result<(std::sync::mpsc::Sender<()>, Feed), String> {
     let mut directories = watch_directories(root).inspect_err(|e| tracing::warn!("{e}"))?;
     let (tx, events) = std::sync::mpsc::sync_channel(1024);
+    let feed = tx.clone();
     let overflow = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let lost = overflow.clone();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
@@ -375,7 +384,7 @@ fn start_folder(root: &Path, generation: Arc<()>) -> Result<std::sync::mpsc::Sen
     let root = root.to_path_buf();
     let (stop, stopped) = std::sync::mpsc::channel::<()>();
     std::thread::spawn(move || {
-        let mut next_sweep = std::time::Instant::now() + FOLDER_SWEEP;
+        let mut next_sweep = std::time::Instant::now() + sweep;
         'watching: loop {
             if matches!(stopped.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)) {
                 break;
@@ -406,7 +415,7 @@ fn start_folder(root: &Path, generation: Arc<()>) -> Result<std::sync::mpsc::Sen
             // and dropped events arrive together.
             let now = std::time::Instant::now();
             if now >= next_sweep {
-                next_sweep = now + FOLDER_SWEEP;
+                next_sweep = now + sweep;
                 if is_waited(&root, &generation) {
                     all_changed(&mut pending, &root);
                 }
@@ -451,7 +460,7 @@ fn start_folder(root: &Path, generation: Arc<()>) -> Result<std::sync::mpsc::Sen
             }
         }
     });
-    Ok(stop)
+    Ok((stop, feed))
 }
 
 fn all_changed(pending: &mut HashSet<String>, root: &Path) {
@@ -735,6 +744,10 @@ mod tests {
         assert_eq!(pending.len(), 1);
         add_pending(&mut pending, root, (0..MAX_PENDING * 10).map(|i| root.join(i.to_string())));
         assert_eq!(pending, HashSet::from(["/project".to_owned()]));
+        // The root arriving beside kept paths, from an event or a sweep, replaces them.
+        let mut pending = HashSet::from(["/project/kept".to_owned()]);
+        add_pending(&mut pending, root, [root.join("before"), root.to_path_buf(), root.join("after")]);
+        assert_eq!(pending, HashSet::from(["/project".to_owned()]));
     }
 
     fn test_repo(name: &str) -> PathBuf {
@@ -750,13 +763,28 @@ mod tests {
         changes.iter().any(|changed| path.starts_with(changed))
     }
 
-    fn install_watch(root: &Path) {
-        // These event tests need an idle watch that buffers between calls.
+    /// An idle watch that buffers between calls, swept every `sweep`; its feed
+    /// takes events as the native watcher sends them.
+    fn install_watch(root: &Path, sweep: std::time::Duration) -> Feed {
         let generation = Arc::new(());
-        folders().insert(root.to_owned(), Folder {
-            _watcher: start_folder(root, generation.clone()).unwrap(),
-            generation, waiters: Vec::new(), pending: HashSet::new(),
-        });
+        let (stop, feed) = start_folder(root, generation.clone(), sweep).unwrap();
+        folders().insert(root.to_owned(), Folder { _watcher: stop, generation, waiters: Vec::new(), pending: HashSet::new() });
+        feed
+    }
+
+    /// What a native watcher reports for a write to `path`. Tests of the
+    /// worker's own rules feed this instead of waiting on the OS: under load
+    /// macOS FSEvents (shared system-wide through fseventsd) delivers seconds
+    /// late or not at all, which only the sweep makes up for.
+    fn written(feed: &Feed, path: &Path) {
+        feed.send(Ok(notify::Event::new(notify::EventKind::Create(notify::event::CreateKind::File)).add_path(path.to_owned()))).unwrap();
+    }
+
+    /// The sweep for tests that watch real OS delivery: the app's own
+    /// guarantee where the backend can drop events (macOS), shortened to fit a
+    /// test's wait; never on Linux, whose inotify watches the tests check.
+    fn backstop() -> std::time::Duration {
+        if cfg!(target_os = "linux") { FOLDER_SWEEP } else { std::time::Duration::from_secs(2) }
     }
 
     fn wait_for_change(root: &Path, path: &Path) {
@@ -799,7 +827,7 @@ mod tests {
         std::fs::create_dir_all(root.join("target/deep")).unwrap();
         std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
         // Poll once to install the watch, then abandon the waiter like a closed mod.
-        install_watch(&root);
+        install_watch(&root, FOLDER_SWEEP);
         std::fs::create_dir_all(root.join("fresh/nested")).unwrap();
         // Delivery follows watch registration, not an assumed backend delay.
         wait_for_change(&root, &root.join("fresh/nested"));
@@ -836,6 +864,7 @@ mod tests {
         use std::task::{Context, Waker};
         let root = test_repo("cancel");
         let path = root.to_string_lossy().into_owned();
+        let feed = install_watch(&root, FOLDER_SWEEP);
         let mut first = Box::pin(next_change(path.clone()));
         let mut second = Box::pin(next_change(path.clone()));
         let mut context = Context::from_waker(Waker::noop());
@@ -844,7 +873,8 @@ mod tests {
         drop(first);
         assert_eq!(folders().get(&root).unwrap().waiters.len(), 1);
         std::fs::write(root.join("changed"), "yes").unwrap();
-        // FSEvents can hand the new stream `git init`'s writes first: the
+        written(&feed, &root.join("changed"));
+        // FSEvents can hand the stream `git init`'s writes first: the
         // surviving caller must be answered, but its batch may be those.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         if !invalidates(&block_on_until(second, deadline).unwrap(), &root.join("changed")) {
@@ -948,7 +978,7 @@ mod tests {
     #[test]
     fn abandoned_waiters_do_not_leave_an_unbounded_queue() {
         let root = test_repo("overflow");
-        install_watch(&root);
+        install_watch(&root, FOLDER_SWEEP);
         // Inject worker batches: native backends may coalesce real writes, so a
         // filesystem flood cannot deterministically exercise queue overflow.
         let generation = folders().get(&root).unwrap().generation.clone();
@@ -1042,7 +1072,10 @@ mod tests {
     fn check_replaced_directory(rename: bool) {
         let root = test_repo(if rename { "renamed" } else { "replaced" });
         std::fs::create_dir_all(root.join("sub/deep")).unwrap();
-        install_watch(&root);
+        // Real OS delivery: on Linux the rewatch rules (inotify loses a
+        // replaced folder's watches); on macOS the change reaches the waiter
+        // within the app's guarantee, the event or else the sweep.
+        install_watch(&root, backstop());
         // The old paths survive in the selected set, but now name new inodes.
         if rename {
             std::fs::rename(root.join("sub"), root.join("moved")).unwrap();
@@ -1090,17 +1123,29 @@ mod tests {
     #[test]
     fn a_watched_folder_reports_changes_and_misses_none_between_waits() {
         let dir = test_repo("between-waits");
+        let feed = install_watch(&dir, FOLDER_SWEEP);
         let mut first = Box::pin(next_change(dir.to_string_lossy().into_owned()));
         assert!(first.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending());
         std::fs::write(dir.join("a.md"), "one").unwrap();
+        written(&feed, &dir.join("a.md"));
         let changes = block_on(first).unwrap();
         if !invalidates(&changes, &dir.join("a.md")) {
             wait_for_change(&dir, &dir.join("a.md"));
         }
-        // No waiter exists during this write. Wait for its actual delivery,
-        // not a fixed sleep or an unrelated leftover batch from the first save.
+        // No waiter exists during this write: the worker keeps it, and the
+        // next call answers with it at once.
         std::fs::write(dir.join("b.md"), "two").unwrap();
-        wait_for_change(&dir, &dir.join("b.md"));
+        written(&feed, &dir.join("b.md"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !invalidates(&folders().get(&dir).unwrap().pending.iter().cloned().collect::<Vec<_>>(), &dir.join("b.md")) {
+            assert!(std::time::Instant::now() < deadline, "the worker kept no change between waits");
+            std::thread::sleep(BATCH);
+        }
+        let mut next = Box::pin(next_change(dir.to_string_lossy().into_owned()));
+        match next.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())) {
+            std::task::Poll::Ready(changes) => assert!(invalidates(&changes.unwrap(), &dir.join("b.md"))),
+            std::task::Poll::Pending => panic!("a change kept between waits must answer the next call at once"),
+        }
         folders().remove(&dir);
         std::fs::remove_dir_all(&dir).unwrap();
     }

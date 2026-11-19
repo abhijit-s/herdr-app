@@ -689,13 +689,23 @@ mod tests {
     #[test]
     fn a_watched_repo_is_looked_at_again_when_it_changes_and_not_for_ignored_churn() {
         let root = repo("watch");
-        let (tx, rx) = mpsc::channel();
-        let worker = Worker::spawn(None, Box::new(move |u| {
-            let _ = tx.send(u);
-        }));
         let place = Place { on: None, folder: root.join("src").to_string_lossy().into_owned() };
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::create_dir_all(root.join("target")).unwrap();
+        // The worker's own rules, fed the events a native watcher sends: under
+        // load macOS FSEvents (one fseventsd for the whole system) delivers
+        // seconds late or drops them (`LASTING_STALE` covers that), and a late
+        // event that counts would look like churn running git. The repo is
+        // registered as `watch` registers it, with no native watcher.
+        let (tx, rx) = mpsc::channel();
+        let (worker, inbox) = mpsc::channel();
+        let watched = Repo { places: HashSet::new(), root: root.clone(), git_dirs: vec![root.join(".git")], ignored: ignored(&root), ignored_at: None };
+        let w = Worker { on: None, sink: Box::new(move |u| {
+            let _ = tx.send(u);
+        }), tx: worker.clone(), due: HashMap::new(), last: HashMap::new(), resolved: HashMap::new(), watcher: None, repos: HashMap::from([(root.clone(), watched)]) };
+        std::thread::spawn(move || w.run(inbox));
+        let event = |kind: notify::EventKind, path: PathBuf| worker.send(Msg::Fs(Ok(notify::Event::new(kind).add_path(path)))).unwrap();
+        let (folder, file) = (notify::EventKind::Create(notify::event::CreateKind::Folder), notify::EventKind::Create(notify::event::CreateKind::File));
         worker.send(Msg::Look(place.clone())).unwrap();
         let first = next_update(&rx, Duration::from_secs(10)).expect("first look");
         assert_eq!(first.value["branch"], "main");
@@ -707,19 +717,20 @@ mod tests {
         let mut both: Vec<String> = (0..2).map(|_| next_update(&rx, Duration::from_secs(10)).expect("both answered").place.folder).collect();
         both.sort();
         assert_eq!(both, [top.folder.clone(), place.folder.clone()], "one look answers every folder in the tree");
-        // A new FSEvents stream can start delivering seconds late, and then replays the
-        // setup's own writes (the commit, `src/`). Events arrive in order, so once a
-        // marker file's look lands, that replay is behind us.
-        std::fs::write(root.join("src/marker"), "").unwrap();
-        while next_update(&rx, Duration::from_secs(10)).expect("the watcher sees the marker").value["untracked"] != 1 {}
-        // Wait for that look's spacing to pass and take its sibling: what follows is from the churn alone.
+        // Past that look's spacing, a churn event that counted would be looked at within the wait below.
         std::thread::sleep(MIN_GAP);
-        while next_update(&rx, Duration::from_millis(500)).is_some() {}
         std::fs::create_dir_all(root.join("target/debug")).unwrap();
+        event(folder, root.join("target/debug"));
         std::fs::write(root.join("target/debug/out"), "build").unwrap();
+        event(file, root.join("target/debug/out"));
+        // A new ignored folder: its first event finds it missing from the rules.
         std::fs::create_dir_all(root.join("build")).unwrap();
+        event(folder, root.join("build"));
+        event(notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Content)), root.join(".git/objects/ab"));
+        event(file, root.join(".git/index.lock"));
         assert!(next_update(&rx, Duration::from_millis(1500)).is_none(), "ignored churn must not run git");
         std::fs::write(root.join("a.txt"), "two").unwrap();
+        event(notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Content)), root.join("a.txt"));
         let after = next_update(&rx, Duration::from_secs(10)).expect("a change on disk is looked at");
         assert_eq!(after.value["unstaged"], 1);
         assert_eq!(after.value["files"][0]["path"], "a.txt");

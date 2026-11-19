@@ -84,6 +84,13 @@ impl Trail {
         (self.start, self.pulse) = (self.start - by, self.pulse - by);
     }
 
+    /// The same effect, held at its first frame for `by`: a test's draws take
+    /// real time, and its effects run on the real clock.
+    #[cfg(test)]
+    pub(super) fn hold(&mut self, by: Duration) {
+        (self.start, self.pulse) = (Instant::now() + by, Instant::now() + by);
+    }
+
     /// A trail from `from` (None: the pulse alone); a tail steered from a
     /// tail (`live`) keeps its fade, as kitty's one opacity does.
     pub(super) fn new(
