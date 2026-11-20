@@ -1583,6 +1583,10 @@ pub struct Person {
     /// ignored; 0 draws every move.
     #[serde(skip_serializing_if = "is_min_cells_default")]
     pub cursor_trail_min_cells: MinCells,
+    /// With `cursor_trail: "all"`, what a program's startup output draws
+    /// (cursor_jumps.rs): `prompt`, `quiet` or `every`.
+    #[serde(skip_serializing_if = "TrailStartup::is_prompt")]
+    pub cursor_trail_startup: TrailStartup,
     /// How long the trail and the arrival pulse take, in ms (read through `trail_duration`).
     #[serde(skip_serializing_if = "is_trail_ms_default")]
     pub cursor_trail_duration_ms: u32,
@@ -1982,6 +1986,27 @@ pub enum Particles {
 impl Particles {
     fn is_off(&self) -> bool {
         *self == Particles::Off
+    }
+}
+
+/// What a program's output before it is ready for input draws with
+/// `cursor_trail: "all"` (cursor_jumps.rs).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrailStartup {
+    /// Nothing while it starts, then one trail from where the startup began
+    /// to where the program is ready, if the cursor went far enough.
+    #[default]
+    Prompt,
+    /// Nothing at all until it is ready.
+    Quiet,
+    /// No startup rule: every settle draws, as any jump.
+    Every,
+}
+
+impl TrailStartup {
+    fn is_prompt(&self) -> bool {
+        *self == TrailStartup::Prompt
     }
 }
 
@@ -2762,6 +2787,7 @@ impl Default for Person {
             cursor_trail_particles: Particles::Off,
             cursor_trail_settle_ms: SETTLE_MS_DEFAULT,
             cursor_trail_min_cells: MIN_CELLS_DEFAULT,
+            cursor_trail_startup: TrailStartup::Prompt,
             cursor_trail_duration_ms: TRAIL_MS_DEFAULT,
             cursor_trail_color: None,
             cursor_trail_motion_blur: false,
@@ -2887,6 +2913,7 @@ pub struct Settings {
     pub cursor_trail_particles: Particles,
     pub cursor_trail_settle_ms: u32,
     pub cursor_trail_min_cells: MinCells,
+    pub cursor_trail_startup: TrailStartup,
     pub cursor_trail_duration_ms: u32,
     pub cursor_trail_color: Option<String>,
     pub cursor_trail_motion_blur: bool,
@@ -3027,6 +3054,7 @@ impl Default for Settings {
             cursor_trail_particles: Particles::Off,
             cursor_trail_settle_ms: SETTLE_MS_DEFAULT,
             cursor_trail_min_cells: MIN_CELLS_DEFAULT,
+            cursor_trail_startup: TrailStartup::Prompt,
             cursor_trail_duration_ms: TRAIL_MS_DEFAULT,
             cursor_trail_color: None,
             cursor_trail_motion_blur: false,
@@ -3153,6 +3181,7 @@ impl Settings {
             cursor_trail_particles: person.cursor_trail_particles,
             cursor_trail_settle_ms: person.cursor_trail_settle_ms,
             cursor_trail_min_cells: person.cursor_trail_min_cells,
+            cursor_trail_startup: person.cursor_trail_startup,
             cursor_trail_duration_ms: person.cursor_trail_duration_ms,
             cursor_trail_color: person.cursor_trail_color.clone(),
             cursor_trail_motion_blur: person.cursor_trail_motion_blur,
@@ -5220,6 +5249,17 @@ mod tests {
     }
 
     #[test]
+    fn cursor_trail_startup_defaults_to_prompt_and_stays_out_of_settings_json() {
+        assert_eq!((Person::default().cursor_trail_startup, Settings::default().cursor_trail_startup), (TrailStartup::Prompt, TrailStartup::Prompt));
+        assert!(serde_json::to_value(Person::default()).unwrap().get("cursor_trail_startup").is_none());
+        for (name, mode) in [("quiet", TrailStartup::Quiet), ("every", TrailStartup::Every), ("prompt", TrailStartup::Prompt)] {
+            let p: Person = serde_json::from_value(serde_json::json!({ "cursor_trail_startup": name })).unwrap();
+            assert_eq!(Settings::compose(&p, &crate::layout::Look::default(), true).cursor_trail_startup, mode);
+            assert_eq!(serde_json::to_value(&p).unwrap().get("cursor_trail_startup").is_some(), mode != TrailStartup::Prompt, "{name}");
+        }
+    }
+
+    #[test]
     fn the_arrival_size_and_intensity_default_to_one_out_of_settings_json_and_reach_mods() {
         let person = Person::default();
         assert_eq!((person.cursor_arrival_size, person.cursor_arrival_intensity), (1.0, 1.0));
@@ -5280,7 +5320,7 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, terminal_cell_width: 0.95, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, copy_on_select: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, pane_header_info: Some(String::new()), agents_card_info: Some(String::new()), cursor_style: CursorStyle::Beam, cursor_trail: CursorTrail::Panes, cursor_trail_style: TrailStyle::Warp, cursor_arrival: Arrival::Ripple, cursor_arrival_size: 1.5, cursor_arrival_intensity: 0.5, cursor_trail_settle_ms: 40, cursor_trail_min_cells: MinCells { x: 3, y: 1 }, cursor_trail_duration_ms: 300, cursor_trail_color: Some("#ff8800".into()), cursor_trail_motion_blur: true, cursor_trail_particles: Particles::Pixiedust, pane_motion: PaneMotion::Basic, pane_motion_ms: 200, pane_motion_max_panes: 8, ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), line_height: Some(1.0), font_weight: Some(400), font_weight_bold: Some(550), font_thicken: Thicken::Off, font_thicken_strength: 30, ui_font_thicken: Thicken::On, ui_font_thicken_strength: 30, text_rendering: TextRendering::Subpixel, ui_text_rendering: TextRendering::Subpixel, subpixel_order: SubpixelOrder::Bgr, terminal_cell_width: 0.95, ui_font: Some(String::new()), ui_font_weight: 600, ui_zoom: 1.2, ui_text_scale: 1.1, telemetry: false, clipboard_write: false, copy_on_select: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), system_notifications: SystemNotifications::Off, dock_bounce: true, dock_badge: false, dock_bounce_on_wait: true, resume_agents: ResumeAgents::Off, focus_follows_mouse: true, focus_follows_mouse_delay_ms: 300, default_arrange: Some("bsp".into()), unfocused_dim: 0.3, unfocused_dim_scope: DimScope::Text, unfocused_dim_color: Some("#4d4d4d".into()), sidebar_shade: SidebarShade::Active, panel_colors: PanelColors::Classic, toast_position: ToastPosition::TopLeft, toast_offset: Some(ToastOffset { x: 1.0, y: 2.0 }), toast_duration: ToastDuration::Long, toast_style: ToastStyle::Subtle, toast_corners: ToastCorners::Square, toast_mark: ToastMark::Dot, toast_design: ToastDesign::Pill, toast_progress: true, pane_zoom_keys: false, pane_auto_names: true, space_avatar: Some("glyph".into()), focus_border_width: Some(2.0), working_spinner: Some("braille".into()), agents_subagents: AgentsSubagents::Off, agents_subagent_click: AgentsSubagentClick::Transcript, pane_header_info: Some(String::new()), agents_card_info: Some(String::new()), cursor_style: CursorStyle::Beam, cursor_trail: CursorTrail::Panes, cursor_trail_style: TrailStyle::Warp, cursor_arrival: Arrival::Ripple, cursor_arrival_size: 1.5, cursor_arrival_intensity: 0.5, cursor_trail_settle_ms: 40, cursor_trail_min_cells: MinCells { x: 3, y: 1 }, cursor_trail_startup: TrailStartup::Every, cursor_trail_duration_ms: 300, cursor_trail_color: Some("#ff8800".into()), cursor_trail_motion_blur: true, cursor_trail_particles: Particles::Pixiedust, pane_motion: PaneMotion::Basic, pane_motion_ms: 200, pane_motion_max_panes: 8, ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();

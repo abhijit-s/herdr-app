@@ -11,8 +11,12 @@
 //! Each end is the terminal's `trail_end`: its cursor as drawn (a block's
 //! cell, a beam's or an underline's strip), else its cursor cell when hidden,
 //! else its middle cell. A pane that isn't a painted terminal (never drawn)
-//! gets no effect. The new end follows the pane's cursor live while the effect
-//! runs. A trail that starts while another is drawn starts from what that one
+//! gets no effect. Both ends are where the layout puts the cursor, never where
+//! a pane slide (pane_slide.rs) draws it mid-slide, so a sliding pane doesn't
+//! drag the trail along. The new end follows the pane's cursor live while the
+//! effect runs; when the layout moves its pane again (another split, a resize,
+//! a zoom) the trail re-aims from what it drew. A trail that starts while
+//! another is drawn starts from what that one
 //! drew (its tail's corners, a comet's tail point, a block's old end), as
 //! kitty's corners keep chasing a cursor that moves on.
 //!
@@ -57,6 +61,9 @@ pub(super) struct Trail {
     /// Pixie dust still to shed along it (`cursor_trail_particles`), at its
     /// first frame, once the new cursor is known.
     dust: bool,
+    /// Where the layout put its pane at its last frame: a new place (another
+    /// split, a resize, a zoom) re-aims it.
+    slot: Option<Bounds<Pixels>>,
 }
 
 impl Trail {
@@ -123,7 +130,29 @@ impl Trail {
             drawn: None,
             blur: s.cursor_trail_motion_blur,
             dust: from.is_some() && s.cursor_trail_particles == settings::Particles::Pixiedust,
+            slot: None,
         }
+    }
+
+    /// Its pane laid out at `slot` this frame: moved since its last frame by
+    /// more than a pixel (landing may settle one device pixel), the trail
+    /// starts again from what it drew toward the pane's new place, its pulse
+    /// running on and its dust already shed. A slide never moves it: the
+    /// layout has its pane where it lands from the slide's first frame. A
+    /// tail needs none: its corners chase the cursor wherever it goes.
+    fn follow_layout(&mut self, slot: Option<Bounds<Pixels>>, s: &settings::Settings) {
+        let moved = |a: Bounds<Pixels>, b: Bounds<Pixels>| {
+            [a.left() - b.left(), a.top() - b.top(), a.right() - b.right(), a.bottom() - b.bottom()]
+                .iter()
+                .any(|d| d.abs() > px(1.0))
+        };
+        if let (Some(was), Some(now), Some(drawn), None) = (self.slot, slot, self.drawn, &self.chase)
+            && moved(was, now)
+        {
+            let (arrival, pulse) = (self.arrival, self.pulse);
+            *self = Trail { dust: false, arrival, pulse, ..Trail::new(Some(drawn), Some(self), &self.pane, s) };
+        }
+        self.slot = slot;
     }
 
     /// The trail's shapes and the pulse's at `elapsed`, toward `end`, noting
@@ -166,8 +195,7 @@ impl Trail {
             self.chase = None;
         }
         self.drawn = drawn;
-        let since = self.pulse.saturating_duration_since(self.start);
-        let pulse_t = elapsed.saturating_sub(since).as_secs_f32() / self.duration.as_secs_f32();
+        let pulse_t = (self.start + elapsed).saturating_duration_since(self.pulse).as_secs_f32() / self.duration.as_secs_f32();
         let pulse = cursor_shapes::arrival(self.arrival, end.cell, pulse_t, self.arrival_scale.0, self.arrival_scale.1);
         if layers.is_empty() && pulse.is_empty() && !chasing {
             return None;
@@ -316,16 +344,20 @@ impl AppWindow {
     /// The trail's own shapes now (`trail_frame`), shedding its pixie dust at
     /// its first frame.
     fn trail_alone(&mut self, cx: &App) -> Option<(Vec<cursor_shapes::Layer>, trail_paint::Tint)> {
-        let to = self
-            .pane_term(&self.trail.as_ref()?.pane)
-            .map(|term| term.view.clone());
-        let trail = self.trail.as_mut()?;
-        let elapsed = trail.start.elapsed();
+        let pane = &self.trail.as_ref()?.pane;
+        let to = self.pane_term(pane).map(|term| term.view.clone());
+        let slot = self.bounds.borrow().get(pane).copied();
         let Some(to) = to else {
             self.trail = None;
             return None;
         };
-        let Some(end) = to.read(cx).trail_end() else {
+        let end = to.read(cx).trail_end();
+        let trail = self.trail.as_mut()?;
+        if end.is_some() {
+            trail.follow_layout(slot, &settings::get());
+        }
+        let elapsed = trail.start.elapsed();
+        let Some(end) = end else {
             // Not drawn yet: wait out its time, painting nothing.
             if progress(elapsed, trail.duration).is_none() {
                 self.trail = None;

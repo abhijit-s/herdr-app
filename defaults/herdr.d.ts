@@ -615,7 +615,7 @@ export function sendFeedback(body: import("gpui-kit").HostValue, images?: string
  *  (see AGENTS.md). `cursor_style` is the terminals' default cursor shape, `"block" | "beam" | "underline" | "block_hollow"`
  *  (undefined on builds without it); a program's DECSCUSR still wins. `cursor_trail` is `"off" | "panes" | "all"`, `cursor_trail_style`
  *  `"comet" | "tail" | "sweep" | "warp" | "blaze" | "blaze_tapered"`, `cursor_arrival` `"off" | "ripple" | "boom" | "ripple_rect" | "boom_rect"`, `cursor_arrival_size` (0 to 2) and `cursor_arrival_intensity` (0 to 2), held to their ranges (0 on either: no pulse, as `cursor_arrival` `"off"`),
- *  with `cursor_trail_duration_ms`, `cursor_trail_settle_ms`, `cursor_trail_min_cells` (a number
+ *  with `cursor_trail_duration_ms`, `cursor_trail_settle_ms`, `cursor_trail_startup` (`"prompt" | "quiet" | "every"`), `cursor_trail_min_cells` (a number
  *  for both axes, or `[columns, rows]`), `cursor_trail_color` (`null` for the theme's `cursor`),
  *  `cursor_trail_motion_blur` and `cursor_trail_particles` (`"off" | "pixiedust"`) as written; the app draws the effects.
  *  `pane_motion` (`"none" | "basic"`), `pane_motion_ms` and `pane_motion_max_panes` as written; the app slides the panes.

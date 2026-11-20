@@ -375,6 +375,13 @@ const TRAIL_STYLES = [
   ["blaze", "Blaze"],
   ["blaze_tapered", "Blaze tapered"],
 ];
+// What a program's startup output draws with Panes and jumps (cursor_trail_startup);
+// At the prompt is the default, left out of settings.json.
+const TRAIL_STARTUPS = [
+  ["prompt", "At the prompt"],
+  ["quiet", "Quiet"],
+  ["every", "Every jump"],
+];
 // Particles along a trail's path (cursor_trail_particles); Off is the default, left out of settings.json.
 const PARTICLES = [
   ["off", "Off"],
@@ -2012,7 +2019,8 @@ export default class Settings extends View {
         el
           .child(this.row(t, "Settle time", "How long the program leaves the cursor still before a jump counts, so streaming output draws nothing until it pauses.", this.stepper(t, "st-cursor_trail_settle_ms", `${settle} ms`, settleLess, settleMore), "cursor_trail_settle_ms"))
           .child(this.row(t, "Ignore moves across up to", "Moves of this many columns or fewer, and no more rows than below, from where the cursor last settled draw nothing, so typing never does, as in kitty. 0 draws every move.", this.stepper(t, "st-cursor_trail_min_cells_x", cellsLabel(cells[0]), cellStep(0, -1), cellStep(0, 1)), cellsKey))
-          .child(this.row(t, "Ignore moves down up to", "The same for rows: a move of more rows than this draws, however few columns it crosses.", this.stepper(t, "st-cursor_trail_min_cells_y", cellsLabel(cells[1]), cellStep(1, -1), cellStep(1, 1)), cellsKey)),
+          .child(this.row(t, "Ignore moves down up to", "The same for rows: a move of more rows than this draws, however few columns it crosses.", this.stepper(t, "st-cursor_trail_min_cells_y", cellsLabel(cells[1]), cellStep(1, -1), cellStep(1, 1)), cellsKey))
+          .child(this.row(t, "While a program starts", "What a shell's or a command's output draws before its prompt. At the prompt: one trail from where it started to the prompt. Quiet: none. Every jump: a trail each time the output pauses.", this.choicePicker(t, "st-ctsu", "cursor_trail_startup", TRAIL_STARTUPS), "cursor_trail_startup")),
       )
       .child(this.row(t, "Arrival effect", "A pulse at the cursor as the focus lands in another pane, with the trail or without it; with Panes and jumps, also after a jump or a cursor shape change.", this.choicePicker(t, "st-ca", "cursor_arrival", ARRIVALS), "cursor_arrival"))
       .when(pulse, (el) =>

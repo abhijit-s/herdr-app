@@ -30,8 +30,18 @@
 //! command it is an ordinary one, so `ls` or `clear` draws as it lands. A
 //! shell that marks only prompt starts (no `133;B`/`133;C`) leaves every line
 //! marked, so a command from it never counts as a start.
+//!
+//! That is `cursor_trail_startup: "quiet"`. With `"prompt"` (the default) the
+//! settle that makes the program ready at a prompt also draws one trail, from where the
+//! cursor was as it started (the prompt it left, or on a new screen the first
+//! spot seen, where the focus trail landed; a focus loss or a new view moves
+//! that to the next spot seen) to the prompt, if it went down more
+//! rows than `cursor_trail_min_cells` allows: however many pauses the startup
+//! output has, one trail, and a bare prompt drawn on the line the cursor was
+//! on draws none; ready without a prompt it draws as "quiet". With `"every"` there is no startup rule: every settle is an
+//! ordinary jump.
 
-use crate::settings::MinCells;
+use crate::settings::{MinCells, TrailStartup};
 use crate::vt::CursorShape;
 use std::time::{Duration, Instant};
 
@@ -89,10 +99,12 @@ pub enum Rest {
 #[derive(Clone, Copy)]
 enum Phase {
     /// Started (on a `new_screen`, or from a prompt) and not yet ready; since
-    /// its first output, once there is some.
+    /// its first output, once there is some; `from` where the cursor was as
+    /// it started (the prompt it left, or the first spot seen since).
     Starting {
         since: Option<Instant>,
         new_screen: bool,
+        from: Option<Spot>,
     },
     /// Ready, last seen resting on a marked prompt or not.
     Ready { at_prompt: bool },
@@ -125,6 +137,8 @@ pub struct Jumps {
     /// last move.
     catching: Option<Instant>,
     timer: bool,
+    /// What a starting program's settles draw (`cursor_trail_startup`).
+    pub startup: TrailStartup,
 }
 
 /// How long the settle timer waits, once the cursor is still, for a frame to
@@ -162,6 +176,7 @@ impl Jumps {
         self.phase = Phase::Starting {
             since: None,
             new_screen: true,
+            from: None,
         };
     }
 
@@ -173,7 +188,7 @@ impl Jumps {
     pub fn observe(&mut self, spot: Option<Spot>, view: View, now: Instant) -> bool {
         self.seen = Some(now);
         if self.view != Some(view) {
-            self.forget();
+            self.lose_place();
             self.view = Some(view);
         }
         let Some(spot) = spot else {
@@ -182,6 +197,9 @@ impl Jumps {
         };
         let Some(settled) = self.settled else {
             self.settled = Some(spot);
+            if let Phase::Starting { from: from @ None, .. } = &mut self.phase {
+                *from = Some(spot);
+            }
             return false;
         };
         let latest = self.moved.map_or(settled, |(s, _)| s);
@@ -211,9 +229,19 @@ impl Jumps {
         (self.settled, self.moved, self.catching) = (None, None, None);
     }
 
+    /// The terminal lost the focus (or its cells changed meaning): forgets
+    /// where the cursor was, and where a starting program started, so the
+    /// next spot seen (where the focus trail lands) takes that place.
+    pub fn lose_place(&mut self) {
+        self.forget();
+        if let Phase::Starting { from, .. } = &mut self.phase {
+            *from = None;
+        }
+    }
+
     /// Whether there is anything to forget.
     pub fn knows(&self) -> bool {
-        self.settled.is_some() || self.moved.is_some()
+        self.settled.is_some() || self.moved.is_some() || matches!(self.phase, Phase::Starting { from: Some(_), .. })
     }
 
     /// The settle timer fired at `now`: wait on while the cursor moved within
@@ -257,11 +285,12 @@ impl Jumps {
         self.timer = false;
         (self.moved, self.catching) = (None, None);
         let before = self.settled.replace(spot);
-        if self.quiet(rest(), now) {
+        let Some((b, hop)) = self.drawn_from(rest(), now, before) else {
             return Due::Fire(None);
-        }
-        Due::Fire(before.and_then(|b| {
-            if b.cell.0.abs_diff(spot.cell.0) > min.x || b.cell.1.abs_diff(spot.cell.1) > min.y {
+        };
+        let down = b.cell.1.abs_diff(spot.cell.1) > min.y;
+        Due::Fire(
+            if down || (!hop && b.cell.0.abs_diff(spot.cell.0) > min.x) {
                 Some(Jump::Moved {
                     from: b.cell,
                     to: spot.cell,
@@ -269,15 +298,40 @@ impl Jumps {
                     wide: b.wide,
                 })
             } else {
-                (b.shape != spot.shape).then_some(Jump::Reshaped)
-            }
-        }))
+                (!hop && b.shape != spot.shape).then_some(Jump::Reshaped)
+            },
+        )
     }
 
-    /// Whether the cursor settling at `now` on `rest` is no jump because the
-    /// program wasn't ready: it is still starting, or this is a new screen's
-    /// first prompt, reached from wherever its startup left the cursor.
-    fn quiet(&mut self, rest: Rest, now: Instant) -> bool {
+    /// Where the cursor settling at `now` on `rest`, last settled at
+    /// `before`, draws from, as `startup` asks; and whether that is the one
+    /// hop of a startup (`TrailStartup::Prompt`): a move across rows of
+    /// output, never one along the line it started on (a bare prompt drawn
+    /// where the cursor was) nor a pulse alone.
+    /// None while the program isn't ready ("quiet" and "prompt"), and for a
+    /// new screen's first prompt with "quiet", reached from wherever its
+    /// startup left the cursor.
+    fn drawn_from(&mut self, rest: Rest, now: Instant, before: Option<Spot>) -> Option<(Spot, bool)> {
+        let started = match self.phase {
+            Phase::Starting { from, .. } => Some(from),
+            Phase::Ready { .. } => None,
+        };
+        let quiet = self.gate(rest, now, before);
+        let ready = matches!(self.phase, Phase::Ready { .. }).then_some(started).flatten();
+        match (self.startup, ready) {
+            (TrailStartup::Every, _) => before.map(|b| (b, false)),
+            // Ready at a prompt. Ready otherwise (full screen, or the startup
+            // time up) it draws as "quiet" does, never less.
+            (TrailStartup::Prompt, Some(from)) if rest == Rest::Prompt => from.or(before).map(|f| (f, true)),
+            _ if quiet => None,
+            _ => before.map(|b| (b, false)),
+        }
+    }
+
+    /// Moves the program on as the cursor settles at `now` on `rest`, from
+    /// `before`; true when that settle is no jump because the program wasn't
+    /// ready: it is still starting, or this is a new screen's first prompt.
+    fn gate(&mut self, rest: Rest, now: Instant, before: Option<Spot>) -> bool {
         let in_startup = |since: Option<Instant>| {
             since.is_none_or(|s| now.saturating_duration_since(s) < STARTUP)
         };
@@ -288,6 +342,7 @@ impl Jumps {
                 Phase::Starting {
                     since,
                     new_screen: true,
+                    ..
                 },
             ) => (at_prompt, in_startup(since)),
             (Rest::Prompt, _) => (at_prompt, false),
@@ -297,6 +352,7 @@ impl Jumps {
                 Phase::Starting {
                     since: None,
                     new_screen: false,
+                    from: before,
                 },
                 true,
             ),
@@ -859,10 +915,128 @@ mod tests {
         }
     }
 
+    /// `cursor_trail_startup: "quiet"`, what the startup tests below pin.
+    fn quiet() -> Jumps {
+        in_mode(TrailStartup::Quiet)
+    }
+
+    fn in_mode(startup: TrailStartup) -> Jumps {
+        Jumps { startup, ..Jumps::default() }
+    }
+
     fn started() -> Jumps {
-        let mut j = Jumps::default();
+        let mut j = quiet();
         j.started();
         j
+    }
+
+    fn started_in(startup: TrailStartup) -> Jumps {
+        let mut j = in_mode(startup);
+        j.started();
+        j
+    }
+
+    /// A new screen's startup with banners and pauses past the settle time,
+    /// then its marked prompt (each after the cursor stood at the top left).
+    const BANNERS: [(u64, u16, u16, Rest); 5] = [
+        (0, 0, 0, Output),
+        (1000, 0, 10, Output),
+        (1300, 0, 18, Output),
+        (1380, 0, 19, Output),
+        (1540, 2, 20, Prompt),
+    ];
+
+    #[test]
+    fn each_startup_mode_draws_a_banner_and_prompt_startup_its_own_way() {
+        let drawn = |mode| trails(&mut started_in(mode), &BANNERS).into_iter().map(|f| f.1).collect::<Vec<_>>();
+        assert_eq!(drawn(TrailStartup::Quiet), vec![], "quiet: nothing");
+        assert_eq!(drawn(TrailStartup::Prompt), vec![moved((0, 0), (2, 20))], "prompt: one, from where it started to the prompt");
+        assert_eq!(
+            drawn(TrailStartup::Every),
+            vec![moved((0, 0), (0, 10)), moved((0, 10), (0, 18))],
+            "every: each settle that went far enough (not the last row's, nor the prompt one row on)"
+        );
+        // However the output pauses, the prompt mode draws once: all at once too.
+        let burst = [(0, 0, 0, Output), (1000, 2, 20, Prompt)];
+        assert_eq!(trails(&mut started_in(TrailStartup::Prompt), &burst).iter().map(|f| f.1).collect::<Vec<_>>(), vec![moved((0, 0), (2, 20))]);
+        // And jumps after it draw as ever.
+        let mut moves = BANNERS.to_vec();
+        moves.push((3000, 2, 1, Prompt));
+        let after = trails(&mut started_in(TrailStartup::Prompt), &moves);
+        assert_eq!(after.iter().map(|f| f.1).collect::<Vec<_>>(), vec![moved((0, 0), (2, 20)), moved((2, 20), (2, 1))]);
+    }
+
+    #[test]
+    fn ready_without_a_prompt_the_prompt_mode_draws_as_quiet_does() {
+        // `vim` from a new screen (far across, a shape change), and a program
+        // that marks no prompts past the startup time.
+        let vim = [(0, 0, 0, Output), (100, 40, 1, FullScreen), (400, 5, 3, FullScreen)];
+        let unmarked = [(0, 0, 0, Output), (100, 2, 0, Output), (1500, 2, 10, Output), (3200, 30, 10, Output)];
+        for moves in [&vim[..], &unmarked[..]] {
+            let fired = trails(&mut started_in(TrailStartup::Prompt), moves);
+            assert!(!fired.is_empty());
+            assert_eq!(fired, trails(&mut started(), moves));
+        }
+        let (mut j, t0) = (started_in(TrailStartup::Prompt), Instant::now());
+        j.observe(at(0, 0), V, t0);
+        j.program_moved(ms(t0, 10));
+        j.observe(Some(Spot { cell: (1, 1), shape: CursorShape::Bar, wide: false }), V, ms(t0, 10));
+        assert_eq!(j.due(ms(t0, 100), SETTLE, 6, || FullScreen), Due::Fire(Some(Jump::Reshaped)), "a full-screen program's shape change pulses");
+    }
+
+    #[test]
+    fn the_prompt_mode_draws_nothing_extra_for_a_bare_first_prompt() {
+        // A prompt drawn where the cursor was, a long one included, and a
+        // shape change at it: nothing, as quiet; the next jump draws.
+        for prompt in [(2, 0), (40, 0), (2, 1)] {
+            let moves = [(0, 0, 0, Output), (50, prompt.0, prompt.1, Prompt), (600, 2, 12, Prompt)];
+            let fired = trails(&mut started_in(TrailStartup::Prompt), &moves);
+            assert_eq!(fired, trails(&mut started(), &moves), "{prompt:?}");
+            assert_eq!(fired.iter().map(|f| f.1).collect::<Vec<_>>(), vec![moved(prompt, (2, 12))]);
+        }
+        let (mut j, t0) = (started_in(TrailStartup::Prompt), Instant::now());
+        j.observe(at(0, 0), V, t0);
+        j.program_moved(ms(t0, 10));
+        let beam = Spot { cell: (2, 0), shape: CursorShape::Bar, wide: false };
+        j.observe(Some(beam), V, ms(t0, 10));
+        assert_eq!(j.due(ms(t0, 100), SETTLE, 6, || Prompt), Due::Fire(None), "no pulse for the prompt's cursor shape");
+    }
+
+    #[test]
+    fn the_prompt_mode_hops_once_from_the_prompt_a_command_left() {
+        // `exec zsh` from the prompt at row 5: its output, then its prompt.
+        let mut moves = AT_THE_PROMPT.to_vec();
+        moves.extend([(2000, 0, 16, Output), (2300, 2, 18, Prompt), (3000, 2, 1, Prompt)]);
+        let drawn = |j: &mut Jumps| trails(j, &moves).into_iter().map(|f| f.1).collect::<Vec<_>>();
+        assert_eq!(drawn(&mut in_mode(TrailStartup::Prompt)), vec![moved((4, 5), (2, 18)), moved((2, 18), (2, 1))]);
+        assert_eq!(drawn(&mut quiet()), vec![moved((2, 18), (2, 1))]);
+        // Hiding the cursor while it runs keeps where it started.
+        let (mut j, t0) = (in_mode(TrailStartup::Prompt), Instant::now());
+        for (t, x, y, rest) in AT_THE_PROMPT {
+            j.program_moved(ms(t0, t));
+            j.observe(at(x, y), V, ms(t0, t));
+            j.due(ms(t0, t + 100), SETTLE, 6, || rest);
+        }
+        j.observe(None, V, ms(t0, 1150));
+        j.observe(at(0, 15), V, ms(t0, 1200));
+        j.program_moved(ms(t0, 1300));
+        j.observe(at(2, 20), V, ms(t0, 1300));
+        assert_eq!(j.due(ms(t0, 1400), SETTLE, 6, || Prompt), Due::Fire(Some(moved((4, 5), (2, 20)))));
+    }
+
+    #[test]
+    fn a_focus_loss_moves_where_the_prompt_mode_hops_from() {
+        let (mut j, t0) = (started_in(TrailStartup::Prompt), Instant::now());
+        j.observe(at(0, 0), V, t0);
+        j.program_moved(ms(t0, 10));
+        j.observe(at(0, 10), V, ms(t0, 10));
+        assert_eq!(j.due(ms(t0, 100), SETTLE, 6, out), Due::Fire(None));
+        // Away and back (the focus trail lands at row 10): from there.
+        j.lose_place();
+        j.observe(at(0, 10), V, ms(t0, 200));
+        j.program_moved(ms(t0, 300));
+        j.observe(at(2, 20), V, ms(t0, 300));
+        assert_eq!(j.due(ms(t0, 400), SETTLE, 6, || Prompt), Due::Fire(Some(moved((0, 10), (2, 20)))));
     }
 
     /// A trail's settings: 16 ms frames, a 20 ms settle, six cells ignored.
@@ -906,7 +1080,7 @@ mod tests {
         // No output before the prompt: the next jump draws, just as soon.
         let moves = [(0, 0, 0, Output), (50, 2, 0, Prompt), (600, 2, 12, Prompt)];
         let fired = trails(&mut started(), &moves);
-        assert_eq!(fired, trails(&mut Jumps::default(), &moves));
+        assert_eq!(fired, trails(&mut quiet(), &moves));
         assert_eq!(
             fired.iter().map(|f| f.1).collect::<Vec<_>>(),
             vec![moved((2, 0), (2, 12))]
@@ -940,7 +1114,7 @@ mod tests {
             (400, 5, 3, FullScreen),
         ];
         let fired = trails(&mut started(), &moves);
-        assert_eq!(fired, trails(&mut Jumps::default(), &moves));
+        assert_eq!(fired, trails(&mut quiet(), &moves));
         assert_eq!(fired.len(), 2);
     }
 
@@ -962,7 +1136,7 @@ mod tests {
             (3000, 2, 1, Prompt),
         ]);
         assert_eq!(
-            trails(&mut Jumps::default(), &moves)
+            trails(&mut quiet(), &moves)
                 .iter()
                 .map(|f| f.1)
                 .collect::<Vec<_>>(),
@@ -979,7 +1153,7 @@ mod tests {
             (8500, 2, 5, Output),
         ]);
         assert_eq!(
-            trails(&mut Jumps::default(), &moves)
+            trails(&mut quiet(), &moves)
                 .iter()
                 .map(|f| f.1)
                 .collect::<Vec<_>>(),
@@ -998,7 +1172,7 @@ mod tests {
                 moves.push((1000, 2, 22, Prompt));
             }
             assert_eq!(
-                trails(&mut Jumps::default(), &moves).len(),
+                trails(&mut quiet(), &moves).len(),
                 1,
                 "pause: {pause}"
             );
@@ -1008,7 +1182,7 @@ mod tests {
     #[test]
     fn a_new_screen_starts_again() {
         // A respawned shell or a reattach in the same terminal.
-        let mut j = Jumps::default();
+        let mut j = quiet();
         assert_eq!(
             trails(&mut j, &[(0, 0, 0, Prompt), (100, 0, 10, Prompt)]).len(),
             1
