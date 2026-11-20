@@ -659,6 +659,18 @@ fn is_wide(r: &GhosttyGridRef) -> bool {
     read && wide == GHOSTTY_CELL_WIDE_WIDE
 }
 
+/// What the shell marked a row as (OSC 133): a prompt's first line, a later
+/// line of it, or neither.
+fn row_prompt(r: &GhosttyGridRef) -> GhosttyRowSemanticPrompt {
+    let mut row: GhosttyRow = Default::default();
+    let mut prompt: GhosttyRowSemanticPrompt = GHOSTTY_ROW_SEMANTIC_NONE;
+    let read = unsafe {
+        ghostty_grid_ref_row(r, &mut row) == GHOSTTY_SUCCESS
+            && ghostty_row_get(row, GHOSTTY_ROW_DATA_SEMANTIC_PROMPT, &mut prompt as *mut _ as *mut c_void) == GHOSTTY_SUCCESS
+    };
+    if read { prompt } else { GHOSTTY_ROW_SEMANTIC_NONE }
+}
+
 /// What the shell marked a cell with text as (OSC 133): prompt, input or
 /// output. `None` for a blank cell, which reads as output when unmarked.
 fn cell_content(r: &GhosttyGridRef) -> Option<GhosttyCellSemanticContent> {
@@ -1345,14 +1357,15 @@ impl Vt {
     /// Whether screen row `y` starts a prompt (OSC 133 A), not a prompt's
     /// continuation line.
     fn row_is_prompt(&self, y: u32) -> bool {
-        let Some(r) = self.grid_ref(GHOSTTY_POINT_TAG_SCREEN, 0, y) else { return false };
-        let mut row: GhosttyRow = Default::default();
-        let mut prompt: GhosttyRowSemanticPrompt = GHOSTTY_ROW_SEMANTIC_NONE;
-        unsafe {
-            ghostty_grid_ref_row(&r, &mut row) == GHOSTTY_SUCCESS
-                && ghostty_row_get(row, GHOSTTY_ROW_DATA_SEMANTIC_PROMPT, &mut prompt as *mut _ as *mut c_void) == GHOSTTY_SUCCESS
-                && prompt == GHOSTTY_ROW_SEMANTIC_PROMPT
-        }
+        self.grid_ref(GHOSTTY_POINT_TAG_SCREEN, 0, y).is_some_and(|r| row_prompt(&r) == GHOSTTY_ROW_SEMANTIC_PROMPT)
+    }
+
+    /// Whether the cursor is on a line the shell marked as its prompt (OSC 133
+    /// A, or a later line of that prompt or of what is typed at it): the shell
+    /// waits for input there.
+    pub fn cursor_on_prompt(&self) -> bool {
+        let (x, y) = self.cursor_xy();
+        self.grid_ref(GHOSTTY_POINT_TAG_ACTIVE, x, u32::from(y)).is_some_and(|r| row_prompt(&r) != GHOSTTY_ROW_SEMANTIC_NONE)
     }
 
     fn grid_ref(&self, tag: GhosttyPointTag, x: u16, y: u32) -> Option<GhosttyGridRef> {
@@ -2583,6 +2596,24 @@ pub(crate) mod tests {
         vt.write(bytes.as_bytes());
         assert_eq!(vt.has_last_output(), vt.last_output().is_some(), "has_last_output disagrees for {bytes:?}");
         vt.last_output()
+    }
+
+    #[test]
+    fn the_cursor_is_on_the_prompt_from_its_first_line_to_what_is_typed_at_it() {
+        let on_prompt = |bytes: &str| {
+            let mut vt = Vt::new(40, 5);
+            vt.write(bytes.as_bytes());
+            vt.cursor_on_prompt()
+        };
+        assert!(!on_prompt("banner\r\n"), "unmarked output");
+        assert!(on_prompt(prompt()), "a one-line prompt");
+        assert!(on_prompt(&format!("{}ls -la", prompt())), "typing at it");
+        let two_lines = "\x1b]133;D;0\x07\x1b]133;A\x07~/src main\r\n$ \x1b]133;B\x07";
+        assert!(on_prompt(two_lines), "a two-line prompt's second line");
+        assert!(!on_prompt(&command("ls", "a\r\nb\r\n")), "the command's output");
+        // Far down the history: the cursor's row in the screen, not the history.
+        assert!(on_prompt(&("line\r\n".repeat(50) + prompt())), "under scrollback");
+        assert!(!on_prompt(&(command("ls", "") + &"line\r\n".repeat(50))), "output under scrollback");
     }
 
     #[test]

@@ -14,6 +14,22 @@
 //! it pauses for the settle time.
 //!
 //! A hidden cursor forgets where it was, so it reappearing isn't a jump.
+//!
+//! Only a program ready for input jumps. Until then the cursor rests wherever
+//! the program's output pauses (a shell's startup output, an `ssh` banner),
+//! which says nothing about where the user is going, so a rest there moves
+//! the settled place without an effect. A program starts when the terminal's
+//! screen begins (`started`: a new terminal, a respawned shell, a reattach)
+//! and when the cursor leaves a prompt the shell marked (a command, `exec
+//! zsh`, `ssh`); it is ready once the cursor rests on a marked prompt line
+//! (OSC 133 A and its continuation lines), the terminal shows the alternate
+//! screen (a full-screen program draws its UI at once), or `STARTUP` has
+//! passed since its first output (a program that marks no prompts gives no
+//! other sign). On a new screen the settle that lands on the first prompt within
+//! `STARTUP` is quiet too: it comes from wherever the startup left the cursor. After a
+//! command it is an ordinary one, so `ls` or `clear` draws as it lands. A
+//! shell that marks only prompt starts (no `133;B`/`133;C`) leaves every line
+//! marked, so a command from it never counts as a start.
 
 use crate::settings::MinCells;
 use crate::vt::CursorShape;
@@ -58,12 +74,49 @@ pub enum Due {
 /// size, and anything else whose change makes old cells meaningless.
 pub type View = (u64, u16, u16, usize);
 
+/// What the cursor rests on when it settles, as the terminal reads it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Rest {
+    /// A line the shell marked as its prompt: it waits for input.
+    Prompt,
+    /// The alternate screen: a full-screen program.
+    FullScreen,
+    /// Anything else: output, or a program that marks no prompts.
+    Output,
+}
+
+/// Whether the terminal's program is ready for input.
+#[derive(Clone, Copy)]
+enum Phase {
+    /// Started (on a `new_screen`, or from a prompt) and not yet ready; since
+    /// its first output, once there is some.
+    Starting {
+        since: Option<Instant>,
+        new_screen: bool,
+    },
+    /// Ready, last seen resting on a marked prompt or not.
+    Ready { at_prompt: bool },
+}
+
+impl Default for Phase {
+    fn default() -> Self {
+        Phase::Ready { at_prompt: false }
+    }
+}
+
+/// How long a program that never shows a marked prompt is taken to be
+/// starting, from its first output: longer than a shell with plugins or an
+/// `ssh` login takes to reach its first prompt (about 2 s), and short enough
+/// that a program without prompt marks (`sh`, a REPL) trails again soon.
+pub const STARTUP: Duration = Duration::from_secs(3);
+
 /// The focused terminal's cursor as paint saw it.
 #[derive(Default)]
 pub struct Jumps {
     view: Option<View>,
     settled: Option<Spot>,
     moved: Option<(Spot, Instant)>,
+    phase: Phase,
     /// When the program last moved the cursor, as the output path saw it.
     program: Option<Instant>,
     /// When paint last drew this terminal.
@@ -89,6 +142,27 @@ impl Jumps {
     /// chunk that moved it).
     pub fn program_moved(&mut self, at: Instant) {
         self.program = Some(at);
+        self.program_wrote(|| at);
+    }
+
+    /// Program output arrived at `now` (the output path without `"all"`, which
+    /// doesn't follow the cursor): a starting program's startup counts from
+    /// its first, so turning `"all"` on later finds it long started.
+    pub fn program_wrote(&mut self, now: impl FnOnce() -> Instant) {
+        if let Phase::Starting { since, .. } = &mut self.phase {
+            since.get_or_insert_with(now);
+        }
+    }
+
+    /// A program started on a new screen (a new terminal, a respawned shell, a
+    /// reattach): forgets the old screen's cursor and takes the program as
+    /// starting until it is ready; a pending timer stays pending.
+    pub fn started(&mut self) {
+        self.forget();
+        self.phase = Phase::Starting {
+            since: None,
+            new_screen: true,
+        };
     }
 
     /// Paint drew the cursor at `spot` (None: hidden) in `view` at `now`; a
@@ -145,8 +219,15 @@ impl Jumps {
     /// The settle timer fired at `now`: wait on while the cursor moved within
     /// `settle` (by paint's last sight or the program's last move, whichever is
     /// later, so a move not yet drawn still counts), else settle it and say
-    /// whether it jumped.
-    pub fn due(&mut self, now: Instant, settle: Duration, min_cells: impl Into<MinCells>) -> Due {
+    /// whether it jumped: never while the program is starting, as told by
+    /// `rest`, what the cursor rests on (read only when it settles).
+    pub fn due(
+        &mut self,
+        now: Instant,
+        settle: Duration,
+        min_cells: impl Into<MinCells>,
+        rest: impl FnOnce() -> Rest,
+    ) -> Due {
         let min = min_cells.into();
         let Some((spot, at)) = self.moved else {
             self.timer = false;
@@ -176,6 +257,9 @@ impl Jumps {
         self.timer = false;
         (self.moved, self.catching) = (None, None);
         let before = self.settled.replace(spot);
+        if self.quiet(rest(), now) {
+            return Due::Fire(None);
+        }
         Due::Fire(before.and_then(|b| {
             if b.cell.0.abs_diff(spot.cell.0) > min.x || b.cell.1.abs_diff(spot.cell.1) > min.y {
                 Some(Jump::Moved {
@@ -189,11 +273,48 @@ impl Jumps {
             }
         }))
     }
+
+    /// Whether the cursor settling at `now` on `rest` is no jump because the
+    /// program wasn't ready: it is still starting, or this is a new screen's
+    /// first prompt, reached from wherever its startup left the cursor.
+    fn quiet(&mut self, rest: Rest, now: Instant) -> bool {
+        let in_startup = |since: Option<Instant>| {
+            since.is_none_or(|s| now.saturating_duration_since(s) < STARTUP)
+        };
+        let at_prompt = Phase::Ready { at_prompt: true };
+        let (phase, quiet) = match (rest, self.phase) {
+            (
+                Rest::Prompt,
+                Phase::Starting {
+                    since,
+                    new_screen: true,
+                },
+            ) => (at_prompt, in_startup(since)),
+            (Rest::Prompt, _) => (at_prompt, false),
+            (Rest::FullScreen, _) => (Phase::Ready { at_prompt: false }, false),
+            // Off the prompt it waited at: a command started.
+            (Rest::Output, Phase::Ready { at_prompt: true }) => (
+                Phase::Starting {
+                    since: None,
+                    new_screen: false,
+                },
+                true,
+            ),
+            (Rest::Output, Phase::Starting { since, .. }) if !in_startup(since) => {
+                (Phase::Ready { at_prompt: false }, false)
+            }
+            (Rest::Output, starting @ Phase::Starting { .. }) => (starting, true),
+            (Rest::Output, ready) => (ready, false),
+        };
+        self.phase = phase;
+        quiet
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use Rest::{FullScreen, Output, Prompt};
 
     const SETTLE: Duration = Duration::from_millis(80);
     const V: View = (0, 80, 24, 1);
@@ -219,12 +340,12 @@ mod tests {
             "a move starts the one timer"
         );
         assert_eq!(
-            j.due(ms(t0, 50), SETTLE, 2),
+            j.due(ms(t0, 50), SETTLE, 2, out),
             Due::Wait(Duration::from_millis(35)),
             "not yet still long enough"
         );
         assert_eq!(
-            j.due(ms(t0, 85), SETTLE, 2),
+            j.due(ms(t0, 85), SETTLE, 2, out),
             Due::Fire(Some(Jump::Moved {
                 from: (0, 0),
                 to: (10, 3),
@@ -233,7 +354,7 @@ mod tests {
             }))
         );
         assert_eq!(
-            j.due(ms(t0, 200), SETTLE, 2),
+            j.due(ms(t0, 200), SETTLE, 2, out),
             Due::Fire(None),
             "settled: nothing more"
         );
@@ -250,14 +371,14 @@ mod tests {
             // The timer, whenever it wakes during the burst, waits on.
             if i % 5 == 0 {
                 assert!(
-                    matches!(j.due(ms(t0, i * 16 + 1), SETTLE, 2), Due::Wait(_)),
+                    matches!(j.due(ms(t0, i * 16 + 1), SETTLE, 2, out), Due::Wait(_)),
                     "{i}"
                 );
             }
         }
         assert_eq!(timers, 1, "one timer for the whole burst");
         assert_eq!(
-            j.due(ms(t0, 960 + 80), SETTLE, 2),
+            j.due(ms(t0, 960 + 80), SETTLE, 2, out),
             Due::Fire(Some(Jump::Moved {
                 from: (0, 0),
                 to: (20, 1),
@@ -273,19 +394,19 @@ mod tests {
         j.observe(at(5, 5), V, t0);
         j.observe(at(6, 6), V, ms(t0, 1));
         assert_eq!(
-            j.due(ms(t0, 100), SETTLE, 2),
+            j.due(ms(t0, 100), SETTLE, 2, out),
             Due::Fire(None),
             "a diagonal step is one cell, under two"
         );
         j.observe(at(8, 6), V, ms(t0, 200));
         assert_eq!(
-            j.due(ms(t0, 300), SETTLE, 2),
+            j.due(ms(t0, 300), SETTLE, 2, out),
             Due::Fire(None),
             "two cells is the threshold itself: ignored, as kitty does"
         );
         j.observe(at(11, 6), V, ms(t0, 350));
         assert_eq!(
-            j.due(ms(t0, 450), SETTLE, 2),
+            j.due(ms(t0, 450), SETTLE, 2, out),
             Due::Fire(Some(Jump::Moved {
                 from: (8, 6),
                 to: (11, 6),
@@ -297,7 +418,7 @@ mod tests {
         // Back to (8, 6), three cells, to try a shape change there.
         j.observe(at(8, 6), V, ms(t0, 460));
         assert_eq!(
-            j.due(ms(t0, 560), SETTLE, 2),
+            j.due(ms(t0, 560), SETTLE, 2, out),
             Due::Fire(Some(Jump::Moved {
                 from: (11, 6),
                 to: (8, 6),
@@ -315,7 +436,7 @@ mod tests {
             ms(t0, 400),
         );
         assert_eq!(
-            j.due(ms(t0, 500), SETTLE, 2),
+            j.due(ms(t0, 500), SETTLE, 2, out),
             Due::Fire(Some(Jump::Reshaped))
         );
     }
@@ -327,7 +448,7 @@ mod tests {
         j.observe(None, V, ms(t0, 10));
         assert!(!j.knows());
         assert!(!j.observe(at(30, 10), V, ms(t0, 20)), "back: only settles");
-        assert_eq!(j.due(ms(t0, 200), SETTLE, 2), Due::Fire(None));
+        assert_eq!(j.due(ms(t0, 200), SETTLE, 2, out), Due::Fire(None));
     }
 
     #[test]
@@ -336,7 +457,7 @@ mod tests {
         j.observe(at(0, 0), V, t0);
         j.observe(at(1, 0), V, t0);
         assert_eq!(
-            j.due(t0, Duration::ZERO, 0),
+            j.due(t0, Duration::ZERO, 0, out),
             Due::Fire(Some(Jump::Moved {
                 from: (0, 0),
                 to: (1, 0),
@@ -355,7 +476,7 @@ mod tests {
             t0,
         );
         assert_eq!(
-            j.due(t0, Duration::ZERO, 0),
+            j.due(t0, Duration::ZERO, 0, out),
             Due::Fire(None),
             "staying put is never a jump"
         );
@@ -373,7 +494,7 @@ mod tests {
             "the first timer still runs"
         );
         assert_eq!(
-            j.due(ms(t0, 100), SETTLE, 2),
+            j.due(ms(t0, 100), SETTLE, 2, out),
             Due::Fire(Some(Jump::Moved {
                 from: (0, 0),
                 to: (9, 9),
@@ -392,7 +513,7 @@ mod tests {
             !j.observe(at(0, 25), (5, 80, 24, 1), ms(t0, 10)),
             "a new view only settles"
         );
-        assert_eq!(j.due(ms(t0, 200), SETTLE, 2), Due::Fire(None));
+        assert_eq!(j.due(ms(t0, 200), SETTLE, 2, out), Due::Fire(None));
         // Resized, or the settings changed (all off and on again): the same.
         assert!(!j.observe(at(9, 9), (5, 100, 30, 1), ms(t0, 300)));
         assert!(!j.observe(at(30, 2), (5, 100, 30, 2), ms(t0, 310)));
@@ -412,13 +533,26 @@ mod tests {
         settle_ms: u64,
         min_cells: u16,
     ) -> Vec<(u64, Jump)> {
-        let (mut j, t0, settle) = (
-            Jumps::default(),
-            Instant::now(),
-            Duration::from_millis(settle_ms),
-        );
+        let moves: Vec<_> = moves.iter().map(|&(t, x, y)| (t, x, y, Output)).collect();
+        simulate(&mut Jumps::default(), &moves, frame, settle_ms, min_cells)
+    }
+
+    /// What the terminal reads under a cursor in output.
+    fn out() -> Rest {
+        Output
+    }
+
+    /// `run` through `j`, each move also saying what the cursor rests on there.
+    fn simulate(
+        j: &mut Jumps,
+        moves: &[(u64, u16, u16, Rest)],
+        frame: u64,
+        settle_ms: u64,
+        min_cells: u16,
+    ) -> Vec<(u64, Jump)> {
+        let (t0, settle) = (Instant::now(), Duration::from_millis(settle_ms));
         let end = moves.last().map_or(0, |m| m.0) + 1000;
-        let (mut at_cell, mut moved) = ((moves[0].1, moves[0].2), 0usize);
+        let (mut at_cell, mut rest, mut moved) = ((moves[0].1, moves[0].2), moves[0].3, 0usize);
         let (mut wake, mut fired) = (None::<u64>, Vec::new());
         // Millisecond by millisecond: the program's moves first, then a frame, then the timer.
         for t in 0..=end {
@@ -428,7 +562,7 @@ mod tests {
                 if moved > 0 && cell != at_cell {
                     j.program_moved(ms(t0, t));
                 }
-                at_cell = cell;
+                (at_cell, rest) = (cell, moves[moved].3);
                 moved += 1;
             }
             if t % frame == 0 && j.observe(at(at_cell.0, at_cell.1), V, ms(t0, t)) {
@@ -436,7 +570,7 @@ mod tests {
             }
             if wake == Some(t) {
                 wake = None;
-                match j.due(ms(t0, t), settle, min_cells) {
+                match j.due(ms(t0, t), settle, min_cells, || rest) {
                     Due::Wait(more) => wake = Some(t + more.as_millis() as u64),
                     Due::Fire(Some(jump)) => fired.push((t, jump)),
                     Due::Fire(None) => {}
@@ -539,7 +673,7 @@ mod tests {
         let (mut t, mut wakes) = (2u64, 0);
         let fired = loop {
             wakes += 1;
-            match j.due(ms(t0, t), Duration::ZERO, 2) {
+            match j.due(ms(t0, t), Duration::ZERO, 2, out) {
                 Due::Wait(more) => {
                     assert!(more > Duration::ZERO, "a zero wait would spin at {t}");
                     t += more.as_millis() as u64;
@@ -573,7 +707,7 @@ mod tests {
         let fired = loop {
             t += 5;
             j.program_moved(ms(t0, t));
-            if let Due::Fire(jump) = j.due(ms(t0, t + 1), Duration::from_millis(10), 2) {
+            if let Due::Fire(jump) = j.due(ms(t0, t + 1), Duration::from_millis(10), 2, out) {
                 break jump;
             }
         };
@@ -638,14 +772,14 @@ mod tests {
         // The program moved on at 5 and stopped; no frame has drawn it yet.
         j.program_moved(ms(t0, 5));
         assert_eq!(
-            j.due(ms(t0, 15), settle, 2),
+            j.due(ms(t0, 15), settle, 2, out),
             Due::Wait(CATCH_UP_STEP),
             "still long enough, but drawn stale"
         );
         // The frame comes: drawn at (20, 0).
         assert!(!j.observe(at(20, 0), V, ms(t0, 16)));
         assert_eq!(
-            j.due(ms(t0, 25), settle, 2),
+            j.due(ms(t0, 25), settle, 2, out),
             Due::Fire(Some(Jump::Moved {
                 from: (0, 0),
                 to: (20, 0),
@@ -659,7 +793,7 @@ mod tests {
         j.program_moved(ms(t0, 35));
         let mut t = 45;
         let fired = loop {
-            match j.due(ms(t0, t), settle, 2) {
+            match j.due(ms(t0, t), settle, 2, out) {
                 Due::Wait(more) => t += more.as_millis() as u64,
                 Due::Fire(jump) => break jump,
             }
@@ -686,7 +820,7 @@ mod tests {
         assert!(j.observe(at(9, 0), V, t0));
         j.program_moved(ms(t0, 8));
         assert_eq!(
-            j.due(ms(t0, 10), Duration::from_millis(10), 2),
+            j.due(ms(t0, 10), Duration::from_millis(10), 2, out),
             Due::Wait(Duration::from_millis(8))
         );
     }
@@ -698,7 +832,7 @@ mod tests {
             j.observe(at(10, 10), V, t0);
             j.observe(at(to.0, to.1), V, ms(t0, 1));
             matches!(
-                j.due(ms(t0, 100), SETTLE, min),
+                j.due(ms(t0, 100), SETTLE, min, out),
                 Due::Fire(Some(Jump::Moved { .. }))
             )
         };
@@ -713,6 +847,235 @@ mod tests {
         assert!(
             !jump((11, 11), MinCells::from(2)) && jump((13, 11), MinCells::from(2)),
             "one number for both, a diagonal step is one cell"
+        );
+    }
+
+    fn moved(from: Cell, to: Cell) -> Jump {
+        Jump::Moved {
+            from,
+            to,
+            shape: CursorShape::Block,
+            wide: false,
+        }
+    }
+
+    fn started() -> Jumps {
+        let mut j = Jumps::default();
+        j.started();
+        j
+    }
+
+    /// A trail's settings: 16 ms frames, a 20 ms settle, six cells ignored.
+    fn trails(j: &mut Jumps, moves: &[(u64, u16, u16, Rest)]) -> Vec<(u64, Jump)> {
+        simulate(j, moves, 16, 20, 6)
+    }
+
+    #[test]
+    fn a_new_shells_output_before_its_first_prompt_draws_nothing_and_jumps_after_it_do() {
+        // A new terminal (a split, a tab, the first at start), the cursor at
+        // its top left: a block of output 10 rows down and a pause, 8 more rows
+        // and a pause, a line, then the shell's prompt (marked), then `clear`.
+        // However long the screen takes to show any output (a remote machine
+        // still dialing), the startup counts from it.
+        for first in [1000, 6000] {
+            let fired = trails(
+                &mut started(),
+                &[
+                    (0, 0, 0, Output),
+                    (first, 0, 10, Output),
+                    (first + 300, 0, 18, Output),
+                    (first + 380, 0, 19, Output),
+                    (first + 540, 2, 20, Prompt),
+                    (first + 1500, 2, 1, Prompt),
+                ],
+            );
+            assert_eq!(
+                fired.iter().map(|f| f.1).collect::<Vec<_>>(),
+                vec![moved((2, 20), (2, 1))],
+                "only the jump at the prompt, from it ({first})"
+            );
+            assert!(
+                fired[0].0 <= first + 1500 + 16 + 20,
+                "and on time: {fired:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bare_first_prompt_and_a_jump_after_it_draw_as_without_a_startup() {
+        // No output before the prompt: the next jump draws, just as soon.
+        let moves = [(0, 0, 0, Output), (50, 2, 0, Prompt), (600, 2, 12, Prompt)];
+        let fired = trails(&mut started(), &moves);
+        assert_eq!(fired, trails(&mut Jumps::default(), &moves));
+        assert_eq!(
+            fired.iter().map(|f| f.1).collect::<Vec<_>>(),
+            vec![moved((2, 0), (2, 12))]
+        );
+    }
+
+    #[test]
+    fn without_prompt_marks_jumps_draw_from_the_startup_time_after_the_first_output() {
+        // `sh`, a REPL: nothing marks a prompt.
+        let fired = trails(
+            &mut started(),
+            &[
+                (0, 0, 0, Output),
+                (100, 2, 0, Output),
+                (1500, 2, 10, Output),
+                (100 + 3100, 30, 10, Output),
+            ],
+        );
+        assert_eq!(
+            fired.iter().map(|f| f.1).collect::<Vec<_>>(),
+            vec![moved((2, 10), (30, 10))]
+        );
+    }
+
+    #[test]
+    fn a_full_screen_program_draws_its_jumps_from_the_start() {
+        // `htop` or `vim` as the pane's program: the alternate screen.
+        let moves = [
+            (0, 0, 0, Output),
+            (100, 40, 20, FullScreen),
+            (400, 5, 3, FullScreen),
+        ];
+        let fired = trails(&mut started(), &moves);
+        assert_eq!(fired, trails(&mut Jumps::default(), &moves));
+        assert_eq!(fired.len(), 2);
+    }
+
+    /// At a marked prompt, two keys typed and Enter at 1000.
+    const AT_THE_PROMPT: [(u64, u16, u16, Rest); 4] = [
+        (0, 2, 5, Prompt),
+        (100, 3, 5, Prompt),
+        (200, 4, 5, Prompt),
+        (1000, 0, 6, Output),
+    ];
+
+    #[test]
+    fn a_program_run_from_the_prompt_starts_too() {
+        // `exec zsh`: the new shell's output, then its marked prompt, then `clear`.
+        let mut moves = AT_THE_PROMPT.to_vec();
+        moves.extend([
+            (2000, 0, 16, Output),
+            (2300, 2, 18, Prompt),
+            (3000, 2, 1, Prompt),
+        ]);
+        assert_eq!(
+            trails(&mut Jumps::default(), &moves)
+                .iter()
+                .map(|f| f.1)
+                .collect::<Vec<_>>(),
+            vec![moved((2, 18), (2, 1))]
+        );
+        // `ssh` to a host that marks no prompts, its banner 4 s after Enter (a
+        // slow login): the banner and the remote prompt draw nothing; output
+        // from the startup time after the banner does.
+        let mut moves = AT_THE_PROMPT.to_vec();
+        moves.extend([
+            (5000, 0, 14, Output),
+            (5500, 2, 15, Output),
+            (7500, 2, 23, Output),
+            (8500, 2, 5, Output),
+        ]);
+        assert_eq!(
+            trails(&mut Jumps::default(), &moves)
+                .iter()
+                .map(|f| f.1)
+                .collect::<Vec<_>>(),
+            vec![moved((2, 23), (2, 5))]
+        );
+    }
+
+    #[test]
+    fn a_command_lands_on_its_prompt_with_a_trail() {
+        // `ls`: its output and the next prompt at once, or after a pause.
+        for pause in [false, true] {
+            let mut moves = AT_THE_PROMPT[..3].to_vec();
+            if pause {
+                moves.extend([(1000, 0, 15, Output), (1200, 2, 22, Prompt)]);
+            } else {
+                moves.push((1000, 2, 22, Prompt));
+            }
+            assert_eq!(
+                trails(&mut Jumps::default(), &moves).len(),
+                1,
+                "pause: {pause}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_screen_starts_again() {
+        // A respawned shell or a reattach in the same terminal.
+        let mut j = Jumps::default();
+        assert_eq!(
+            trails(&mut j, &[(0, 0, 0, Prompt), (100, 0, 10, Prompt)]).len(),
+            1
+        );
+        j.started();
+        assert!(!j.knows(), "the old screen's cursor is forgotten");
+        let fired = trails(
+            &mut j,
+            &[
+                (0, 0, 0, Output),
+                (500, 0, 12, Output),
+                (1000, 2, 14, Prompt),
+                (1500, 2, 1, Prompt),
+            ],
+        );
+        assert_eq!(
+            fired.iter().map(|f| f.1).collect::<Vec<_>>(),
+            vec![moved((2, 14), (2, 1))]
+        );
+    }
+
+    #[test]
+    fn a_new_screens_first_prompt_comes_quietly_from_where_its_startup_left_the_cursor() {
+        // Output and the prompt in one burst, never pausing: from the top
+        // left to the prompt is no jump. `clear` after it is.
+        let fired = trails(
+            &mut started(),
+            &[
+                (0, 0, 0, Output),
+                (1000, 0, 18, Output),
+                (1005, 2, 20, Prompt),
+                (2000, 2, 1, Prompt),
+            ],
+        );
+        assert_eq!(
+            fired.iter().map(|f| f.1).collect::<Vec<_>>(),
+            vec![moved((2, 20), (2, 1))]
+        );
+        // A prompt that changes the cursor's shape: no pulse as it lands.
+        let (mut j, t0) = (started(), Instant::now());
+        j.observe(at(0, 0), V, t0);
+        j.program_moved(ms(t0, 10));
+        j.observe(at(0, 10), V, ms(t0, 10));
+        assert_eq!(
+            j.due(ms(t0, 100), SETTLE, 6, out),
+            Due::Fire(None),
+            "output: no jump"
+        );
+        let beam = Spot {
+            cell: (2, 12),
+            shape: CursorShape::Bar,
+            wide: false,
+        };
+        j.program_moved(ms(t0, 200));
+        j.observe(Some(beam), V, ms(t0, 200));
+        assert_eq!(j.due(ms(t0, 300), SETTLE, 6, || Prompt), Due::Fire(None));
+    }
+
+    #[test]
+    fn a_program_that_wrote_while_all_was_off_is_long_started_when_it_comes_on() {
+        // Its startup counted from its first output, four seconds ago.
+        let mut j = started();
+        j.program_wrote(|| Instant::now() - Duration::from_secs(4));
+        let fired = trails(&mut j, &[(0, 0, 0, Output), (100, 0, 10, Output)]);
+        assert_eq!(
+            fired.iter().map(|f| f.1).collect::<Vec<_>>(),
+            vec![moved((0, 0), (0, 10))]
         );
     }
 }
