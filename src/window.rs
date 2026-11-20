@@ -10840,6 +10840,9 @@ export default class Recent extends View {
         let clear = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail = None);
         assert!(view.update_in(cx, |this, window, cx| this.terms["a"].view.read(cx).owns_keyboard_focus(window, cx)), "a has the keyboard");
         set(cx, CursorTrail::All);
+        // Its program, which marks no prompts, has written nothing yet: past its startup first.
+        feed(cx, "a", "\x1b[2;2H");
+        wait(cx, crate::cursor_jumps::STARTUP.as_millis() as u64);
 
         feed(cx, "a", "\x1b[1;1H");
         wait(cx, 200);
@@ -10988,6 +10991,89 @@ export default class Recent extends View {
         feed(cx, "a", "\x1b[15;40H");
         wait(cx, 200);
         assert_eq!(effect(cx), None, "panes mode ignores jumps");
+    }
+
+    #[test]
+    fn cursor_jumps_wait_for_a_new_terminals_prompt() {
+        in_own_process("cursor_jumps_after_startup");
+    }
+
+    /// A new tab of one pane, `cursor_trail: "all"`: its shell's output
+    /// before the first marked prompt (pauses past the settle time, the
+    /// cursor many rows down) draws nothing; `clear` at the prompt draws. A
+    /// reattach (a new screen in the same terminal, as a respawn) waits for
+    /// the prompt again.
+    #[gpui::test]
+    fn cursor_jumps_after_startup(cx: &mut gpui::TestAppContext) {
+        use crate::model::Tab;
+        use crate::settings::{Arrival, CursorTrail};
+        use serde_json::json;
+        use std::time::Duration;
+        if !running_alone("cursor_jumps_after_startup") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                this.close_overlay(&id, window, cx);
+            }
+            (this.person.cursor_trail, this.person.cursor_arrival, this.person.cursor_trail_duration_ms, this.person.cursor_trail_settle_ms, this.person.cursor_trail_min_cells) = (CursorTrail::All, Arrival::Ripple, 1000, 20, 6.into());
+            this.apply_look(window, cx);
+            this.model.add_space("s", "", "/tmp", Tab::new("t", "", "a", "ta"));
+            this.model.select_tab("t");
+            this.model.focus_pane("a");
+            this.sync(window, cx);
+        });
+        cx.run_until_parked();
+        let feed = |cx: &mut gpui::VisualTestContext, bytes: &str| {
+            view.update(cx, |this, cx| {
+                this.terms["a"].view.clone().update(cx, |t, cx| {
+                    t.feed(bytes.as_bytes(), cx);
+                    cx.notify();
+                });
+            });
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+        let wait = |cx: &mut gpui::VisualTestContext, ms: u64| {
+            cx.executor().advance_clock(Duration::from_millis(ms));
+            cx.run_until_parked();
+        };
+        let effect = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail.take().map(|t| t.from.is_some()));
+        let prompt = "\x1b]133;D;0\x07\x1b]133;A\x07~/src\r\n$ \x1b]133;B\x07";
+        // With pauses past the settle time, or all at once.
+        let startup = |cx: &mut gpui::VisualTestContext, paused: bool| {
+            wait(cx, 300);
+            effect(cx);
+            if paused {
+                feed(cx, &"| info |\r\n".repeat(10));
+                wait(cx, 300);
+                feed(cx, &"< fortune >\r\n".repeat(8));
+                wait(cx, 200);
+                feed(cx, "%  \r");
+                wait(cx, 160);
+                feed(cx, prompt);
+            } else {
+                feed(cx, &format!("{}{prompt}", "| info |\r\n".repeat(18)));
+            }
+            wait(cx, 200);
+            assert_eq!(effect(cx), None, "nothing before the prompt or at it (paused: {paused})");
+            feed(cx, &format!("\x1b[H\x1b[2J{prompt}"));
+            wait(cx, 100);
+            assert_eq!(effect(cx), Some(true), "clear at the prompt: a trail (paused: {paused})");
+        };
+        assert!(view.update_in(cx, |this, window, cx| this.terms["a"].view.read(cx).owns_keyboard_focus(window, cx)), "a has the keyboard");
+        startup(cx, true);
+        let reattach = |cx: &mut gpui::VisualTestContext| {
+            view.update(cx, |this, cx| this.terms["a"].view.update(cx, |t, cx| t.reattach(crate::hc::offline(), cx)));
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+        reattach(cx);
+        startup(cx, false);
+        reattach(cx);
+        startup(cx, true);
     }
 
     #[test]

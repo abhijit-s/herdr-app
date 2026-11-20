@@ -327,12 +327,15 @@ pub fn initial_display(window: &Window) -> serde_json::Value {
 
 impl Grid {
     /// Writes program output to the screen; with `track` (`cursor_trail:
-    /// "all"`), notes when it moved the cursor (cursor_jumps.rs), once a chunk.
+    /// "all"`), notes when it moved the cursor (cursor_jumps.rs), once a chunk;
+    /// without, only when a starting program first writes.
     fn write_output(&mut self, bytes: &[u8], track: bool, now: impl FnOnce() -> Instant) {
         let before = track.then(|| self.vt.cursor_xy());
         self.vt.write(bytes);
         if before.is_some_and(|b| b != self.vt.cursor_xy()) {
             self.jumps.program_moved(now());
+        } else if !track {
+            self.jumps.program_wrote(now);
         }
     }
 
@@ -512,6 +515,7 @@ impl TerminalView {
             if self.search_open {
                 g.vt.start_search(&self.search_query);
             }
+            g.jumps.started();
             g.vt_cell = cell;
             g.told_display = None;
             g.core = core.clone();
@@ -2710,14 +2714,26 @@ fn glyph_thicken() -> gpui::GlyphThicken {
 /// "all"`): waits until the cursor has been still for `settle`, then tells the
 /// window if it jumped (`TerminalEvent::CursorJump`).
 fn settle_jumps(grid: Rc<RefCell<Grid>>, view: WeakEntity<TerminalView>, settle: Duration, min_cells: crate::settings::MinCells, window: &mut Window, cx: &mut App) {
-    use crate::cursor_jumps::{Due, Jump};
+    use crate::cursor_jumps::{Due, Jump, Rest};
     window
         .spawn(cx, async move |cx| {
             let mut wait = settle;
             loop {
                 cx.background_executor().timer(wait).await;
                 // The executor's clock, so tests can move it.
-                let due = grid.borrow_mut().jumps.due(cx.background_executor().now(), settle, min_cells);
+                let due = {
+                    let g = &mut *grid.borrow_mut();
+                    let vt = &g.vt;
+                    g.jumps.due(cx.background_executor().now(), settle, min_cells, || {
+                        if vt.alt_screen() {
+                            Rest::FullScreen
+                        } else if vt.cursor_on_prompt() {
+                            Rest::Prompt
+                        } else {
+                            Rest::Output
+                        }
+                    })
+                };
                 match due {
                     Due::Wait(more) => wait = more,
                     Due::Fire(jump) => {
