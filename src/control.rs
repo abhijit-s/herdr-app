@@ -167,7 +167,7 @@ pub fn client(args: &[String]) -> i32 {
         },
         _ => return fail("usage: herdr-app ls | herdr-app commands | herdr-app status | herdr-app shot [file.png] | herdr-app do <command> [--arg value ... | json]"),
     };
-    let mut stream = match UnixStream::connect(socket()) {
+    let stream = match UnixStream::connect(socket()) {
         Ok(s) => s,
         Err(_) if args.first().is_some_and(|v| v == "feedback") => {
             let body = crate::feedback::draft(&args[1], "", 0, "agent", "other");
@@ -177,12 +177,10 @@ pub fn client(args: &[String]) -> i32 {
         }
         Err(e) => return fail(&format!("no Herdr window at {}: {e}", socket().display())),
     };
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(35)));
-    let mut line = String::new();
-    if stream.write_all(format!("{cmd}\n").as_bytes()).is_err() || BufReader::new(&stream).read_line(&mut line).is_err() {
-        return fail("the window hung up");
-    }
-    let reply: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+    let reply = match exchange(stream, &cmd, Some(Duration::from_secs(35))) {
+        Ok(reply) => reply,
+        Err(e) => return fail(&e),
+    };
     if args.first().is_some_and(|v| v == "shot") {
         if let Some(error) = reply.get("error") {
             return fail(error.as_str().unwrap_or("screenshot failed"));
@@ -307,7 +305,14 @@ fn popup_failed(message: &str) -> i32 {
 
 /// One request to the window and its reply; `None` waits as long as it takes.
 fn ask(cmd: &Value, timeout: Option<Duration>) -> Result<Value, String> {
-    let mut stream = UnixStream::connect(socket()).map_err(|e| format!("no Herdr window at {}: {e}", socket().display()))?;
+    let stream = UnixStream::connect(socket()).map_err(|e| format!("no Herdr window at {}: {e}", socket().display()))?;
+    exchange(stream, cmd, timeout)
+}
+
+/// Sends one request line and reads the reply line. A window that closes the
+/// socket without a line, or answers with something that isn't JSON, is an error,
+/// never a `null` reply.
+fn exchange(mut stream: UnixStream, cmd: &Value, timeout: Option<Duration>) -> Result<Value, String> {
     let _ = stream.set_read_timeout(timeout);
     let mut line = String::new();
     if stream.write_all(format!("{cmd}\n").as_bytes()).is_err() || BufReader::new(&stream).read_line(&mut line).map_or(true, |n| n == 0) {
@@ -442,6 +447,25 @@ mod tests {
         assert!(!hung_up(&open));
         drop(other);
         assert!(hung_up(&open), "closed");
+    }
+
+    /// `herdr-app ls` once printed `null` for a window that closed the socket
+    /// without answering: an empty or non-JSON reply is an error instead.
+    #[test]
+    fn a_reply_that_is_not_json_is_an_error_not_null() {
+        let answer = |reply: &'static [u8]| {
+            let (client, server) = UnixStream::pair().unwrap();
+            let window = std::thread::spawn(move || {
+                BufReader::new(&server).read_line(&mut String::new()).unwrap();
+                (&server).write_all(reply).unwrap();
+            });
+            let got = exchange(client, &json!({ "ls": true }), Some(Duration::from_secs(5)));
+            window.join().unwrap();
+            got
+        };
+        assert_eq!(answer(b""), Err("the window hung up".into()));
+        assert!(answer(b"spaces\n").unwrap_err().starts_with("bad reply from the window"));
+        assert_eq!(answer(b"{\"spaces\":[]}\n"), Ok(json!({ "spaces": [] })));
     }
 
     #[test]
