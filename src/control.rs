@@ -70,7 +70,16 @@ fn serve(stream: UnixStream, tx: async_channel::Sender<Request>) {
         }
         Err(e) => json!({ "error": format!("bad request: {e}") }),
     };
-    let _ = (&stream).write_all(format!("{reply}\n").as_bytes());
+    send_reply(&stream, &reply);
+}
+
+/// A non-blocking socket takes one send buffer's worth (8 KiB on macOS) and
+/// refuses the rest, which cut a large `ls` reply short mid-JSON.
+fn send_reply(stream: &UnixStream, reply: &Value) {
+    let _ = stream.set_nonblocking(false);
+    if let Err(e) = (&*stream).write_all(format!("{reply}\n").as_bytes()) {
+        tracing::warn!("control reply not sent whole: {e}");
+    }
 }
 
 enum Awaited {
@@ -466,6 +475,26 @@ mod tests {
         assert_eq!(answer(b""), Err("the window hung up".into()));
         assert!(answer(b"spaces\n").unwrap_err().starts_with("bad reply from the window"));
         assert_eq!(answer(b"{\"spaces\":[]}\n"), Ok(json!({ "spaces": [] })));
+    }
+
+    /// An `ls` reply larger than the socket's send buffer once stopped at
+    /// exactly 8 KiB: the server writes it whole even to a non-blocking socket.
+    #[test]
+    fn a_reply_larger_than_the_send_buffer_arrives_whole() {
+        let (client, server) = UnixStream::pair().unwrap();
+        (&client).write_all(b"{\"ls\":true}\n").unwrap();
+        server.set_nonblocking(true).unwrap();
+        let (tx, rx) = async_channel::unbounded();
+        let served = std::thread::spawn(move || serve(server, tx));
+        let Ok(Request::Control { reply, .. }) = rx.recv_blocking() else { panic!("no control request") };
+        let big = json!({ "spaces": "x".repeat(4 << 20) });
+        reply.send(big.clone()).unwrap();
+        // Let the server fill the buffer before anything drains it.
+        std::thread::sleep(Duration::from_millis(200));
+        let mut line = String::new();
+        BufReader::new(&client).read_line(&mut line).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&line).unwrap(), big);
+        served.join().unwrap();
     }
 
     #[test]
