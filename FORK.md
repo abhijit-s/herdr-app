@@ -1672,10 +1672,12 @@ Each batch the item renderer describes records its handlers into a callback gene
 
 `fix/client-empty-reply` (branched from `master`, fork and upstream candidate, [#1286](https://github.com/herdrdev/herdr-app/issues/1286)): `herdr-app ls`, `status`, `do` and `shot` parsed the window's reply with `unwrap_or(Value::Null)` and took `read_line`'s `Ok(0)` on a closed socket as a reply, so a window that hung up without answering printed `null` and exited 0. They now share `exchange` with `herdr-app popup` (one request line, one reply line): no line is "the window hung up", a line that isn't JSON is "bad reply from the window: …", both exit 1.
 
-- Tests: `control::tests::a_reply_that_is_not_json_is_an_error_not_null` (a window that reads the request and closes, one that answers `spaces`, one that answers an object).
-- Upstream's three questions: (1) Does the app act on it? Yes: it is the app's own control client. (2) Can only the app see it? Yes: the socket's replies. (3) Can a mod not do it? A mod has no part in the client. Verdict: upstream as is; offered on #1286.
+`fix/control-reply-whole-fork` (branched from `master`): the server side of #1286. A non-blocking control socket takes one send buffer's worth of a reply (8 KiB on macOS) and refuses the rest, and `serve` dropped the write error, so a large `ls` reply arrived cut at 8,192 bytes. `send_reply` clears non-blocking before writing and logs a write that still fails.
+
+- Tests: `control::tests::a_reply_that_is_not_json_is_an_error_not_null` (a window that reads the request and closes, one that answers `spaces`, one that answers an object); `control::tests::a_reply_larger_than_the_send_buffer_arrives_whole` (a 4 MiB reply through a non-blocking server socket, cut at 8,192 bytes without the fix).
+- Upstream's three questions: (1) Does the app act on it? Yes: it is the app's own control socket. (2) Can only the app see it? Yes: the socket's replies. (3) Can a mod not do it? A mod has no part in the socket. Verdict: upstream as is.
 - Files: `src/control.rs`, `FORK.md`
-- Upstream: offered on #1286, not yet sent
+- Upstream: [#1303](https://github.com/herdrdev/herdr-app/pull/1303) (client and server together)
 
 ### Rejected text experiments
 
