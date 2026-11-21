@@ -600,6 +600,15 @@ test("settle time and ignored moves show only for Panes and jumps, within their 
   expect(step({ ...all, cursor_trail_min_cells: "abc" }, "st-cursor_trail_min_cells_x-plus")).toEqual({ ...all, cursor_trail_min_cells: [3, 2] });
 });
 
+test("the startup choice shows only for Panes and jumps and leaves At the prompt out", () => {
+  const step = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "cursor");
+  expect(() => step({ cursor_trail: "panes" }, "st-ctsu-Quiet")).toThrow();
+  const all = { cursor_trail: "all" };
+  expect(step(all, "st-ctsu-Quiet")).toEqual({ ...all, cursor_trail_startup: "quiet" });
+  expect(step(all, "st-ctsu-Every jump")).toEqual({ ...all, cursor_trail_startup: "every" });
+  expect(step({ ...all, cursor_trail_startup: "every" }, "st-ctsu-At the prompt")).toEqual(all);
+});
+
 test("ignored moves show both axes of a pair or a single number", () => {
   const drawn = (person: Record<string, any>) => {
     composed = {};

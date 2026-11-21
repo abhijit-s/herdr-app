@@ -10778,6 +10778,143 @@ export default class Recent extends View {
     }
 
     #[test]
+    fn cursor_trails_end_where_the_layout_puts_a_sliding_pane() {
+        in_own_process("trail_layout_space");
+    }
+
+    /// Tab t: a | (b / d), `pane_motion: "basic"` over a second, trails
+    /// between panes. A split (through the slide seam, as `run_as` does it),
+    /// closing the focused pane and a swap each slide panes; mid-slide the
+    /// trail's end for the pane it goes to (its terminal's `trail_end`) is
+    /// already where that pane's cursor is once landed, across and down. Slide
+    /// frames never re-aim a trail; another layout change mid-trail does, from
+    /// what it drew last.
+    #[gpui::test]
+    fn trail_layout_space(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use crate::settings::{CursorTrail, PaneMotion};
+        use serde_json::json;
+        if !running_alone("trail_layout_space") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        let before = crate::settings::get();
+        crate::settings::set(crate::settings::Settings { cursor_trail: CursorTrail::Panes, cursor_trail_duration_ms: 1000, pane_motion: PaneMotion::Basic, pane_motion_ms: 1000, ..(*before).clone() });
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                this.close_overlay(&id, window, cx);
+            }
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), Node::container("c", Axis::Column, vec![pane("b", "tb"), pane("d", "td")])]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.select_tab("t");
+            this.model.focus_pane("a");
+            this.sync(window, cx);
+        });
+        cx.run_until_parked();
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+        let run = |cx: &mut gpui::VisualTestContext, name: &str, args: serde_json::Value| {
+            let reply = view.update_in(cx, |this, window, cx| this.run_as(name, args, false, window, cx));
+            assert!(reply.get("error").is_none(), "{name}: {reply}");
+            draw(cx);
+        };
+        let sliding = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.slide.is_some());
+        let focused = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.model.focused_pane().unwrap());
+        let end = |cx: &mut gpui::VisualTestContext, p: &str| view.update(cx, |this, cx| this.terms[p].view.read(cx).trail_end()).expect("drawn");
+        let trail = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail.as_ref().map(|t| (t.pane.clone(), t.from, t.start, t.drawn)));
+        let land = |cx: &mut gpui::VisualTestContext| {
+            view.update(cx, |this, cx| this.land(cx));
+            draw(cx);
+        };
+        // Mid-slide, `p`'s trail end where it is once landed, and not where it
+        // was before: the pane moved.
+        let lands_there = |cx: &mut gpui::VisualTestContext, p: &str, was: crate::terminal::TrailEnd, what: &str| {
+            assert!(sliding(cx), "{what} slides");
+            let mid = end(cx, p);
+            land(cx);
+            let landed = end(cx, p);
+            let near = |a: gpui::Bounds<gpui::Pixels>, b: gpui::Bounds<gpui::Pixels>| (f32::from(a.left() - b.left())).abs() <= 1.0 && (f32::from(a.top() - b.top())).abs() <= 1.0 && a.size == b.size;
+            assert!(near(mid.cursor, landed.cursor) && near(mid.cell, landed.cell), "{what}: mid-slide {mid:?}, landed {landed:?}");
+            assert_ne!(landed.cursor.origin, was.cursor.origin, "{what}: {p} moved");
+        };
+
+        // A split: a's new right half, n, grows out of a's right edge.
+        let a = end(cx, "a");
+        view.update_in(cx, |this, window, cx| {
+            let before = this.slide_before("pane.split", window, cx).unwrap();
+            assert!(this.model.split("a", Axis::Row, "n", "tn"));
+            this.model.focus_pane("n");
+            this.sync(window, cx);
+            this.slide_after(before, window, cx);
+        });
+        draw(cx);
+        assert_eq!(trail(cx).map(|t| (t.0, t.1)), Some(("n".into(), Some(super::cursor_shapes::quad(a.cursor)))), "a to n, from a's cursor");
+        let first = trail(cx).unwrap();
+        draw(cx);
+        let again = trail(cx).unwrap();
+        assert_eq!((again.1, again.2), (first.1, first.2), "a slide frame never re-aims");
+        lands_there(cx, "n", a, "split");
+
+        // Back to a, then another layout change mid-trail: a's place changes,
+        // and the trail goes on from what it drew toward it.
+        view.update_in(cx, |this, window, cx| {
+            this.model.focus_pane("a");
+            this.sync(window, cx);
+        });
+        draw(cx);
+        let first = trail(cx).unwrap();
+        assert_eq!(first.0, "a");
+        let drawn = first.3.expect("the trail drew");
+        let a = end(cx, "a");
+        run(cx, "pane.swap", json!({ "pane": "a", "target": "n" }));
+        let aimed = trail(cx).unwrap();
+        assert_eq!(aimed.1, Some(drawn), "re-aimed from what it drew");
+        assert!(aimed.2 > first.2, "and started anew");
+        draw(cx);
+        let again = trail(cx).unwrap();
+        assert_eq!((again.1, again.2), (aimed.1, aimed.2), "the swap's slide frames never re-aim");
+        lands_there(cx, "a", a, "swap mid-trail");
+        run(cx, "pane.arrange", json!({ "mode": "tiled" }));
+        land(cx);
+
+        // Closing the focused pane: the one focused after slides into its space.
+        view.update_in(cx, |this, window, cx| {
+            this.model.tab_mut("t").unwrap().root = Node::container("t", Axis::Row, vec![pane("a", "ta"), Node::container("c", Axis::Column, vec![pane("b", "tb"), pane("d", "td")])]);
+            this.model.focus_pane("d");
+            this.sync(window, cx);
+        });
+        draw(cx);
+        // From d, so closing b goes back to it.
+        view.update_in(cx, |this, window, cx| {
+            this.model.focus_pane("b");
+            this.sync(window, cx);
+        });
+        draw(cx);
+        let d = end(cx, "d");
+        run(cx, "pane.close", json!({ "pane": "b" }));
+        let to = focused(cx);
+        assert_eq!(trail(cx).map(|t| t.0), Some(to.clone()), "a trail to the pane focused after");
+        assert_eq!(to, "d", "b's neighbour below takes the focus");
+        lands_there(cx, "d", d, "close");
+
+        // A swap slides the focused pane to the other's place.
+        view.update_in(cx, |this, window, cx| {
+            this.model.focus_pane("d");
+            this.sync(window, cx);
+        });
+        draw(cx);
+        let d = end(cx, "d");
+        run(cx, "pane.swap", json!({ "pane": "d", "target": "a" }));
+        lands_there(cx, "d", d, "swap");
+        crate::settings::set((*before).clone());
+    }
+
+    #[test]
     fn cursor_jumps_in_all_mode_draw_once_settled_and_never_mid_burst() {
         in_own_process("cursor_jumps");
     }
@@ -11000,13 +11137,14 @@ export default class Recent extends View {
 
     /// A new tab of one pane, `cursor_trail: "all"`: its shell's output
     /// before the first marked prompt (pauses past the settle time, the
-    /// cursor many rows down) draws nothing; `clear` at the prompt draws. A
-    /// reattach (a new screen in the same terminal, as a respawn) waits for
-    /// the prompt again.
+    /// cursor many rows down) draws nothing with `cursor_trail_startup:
+    /// "quiet"`, one trail at the prompt with `"prompt"`, and one per far
+    /// settle with `"every"`; `clear` at the prompt draws in each. A reattach
+    /// (a new screen in the same terminal, as a respawn) starts again.
     #[gpui::test]
     fn cursor_jumps_after_startup(cx: &mut gpui::TestAppContext) {
         use crate::model::Tab;
-        use crate::settings::{Arrival, CursorTrail};
+        use crate::settings::{Arrival, CursorTrail, TrailStartup};
         use serde_json::json;
         use std::time::Duration;
         if !running_alone("cursor_jumps_after_startup") {
@@ -11042,38 +11180,48 @@ export default class Recent extends View {
         };
         let effect = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail.take().map(|t| t.from.is_some()));
         let prompt = "\x1b]133;D;0\x07\x1b]133;A\x07~/src\r\n$ \x1b]133;B\x07";
-        // With pauses past the settle time, or all at once.
-        let startup = |cx: &mut gpui::VisualTestContext, paused: bool| {
+        // With pauses past the settle time, or all at once: how many trails
+        // `mode` draws before and at the prompt.
+        let startup = |cx: &mut gpui::VisualTestContext, mode: TrailStartup, paused: bool, expect: usize| {
+            view.update_in(cx, |this, window, cx| {
+                this.person.cursor_trail_startup = mode;
+                this.apply_look(window, cx);
+            });
             wait(cx, 300);
             effect(cx);
+            let mut trails = 0;
+            let mut step = |cx: &mut gpui::VisualTestContext, bytes: &str, ms: u64| {
+                feed(cx, bytes);
+                wait(cx, ms);
+                trails += usize::from(effect(cx) == Some(true));
+            };
             if paused {
-                feed(cx, &"| info |\r\n".repeat(10));
-                wait(cx, 300);
-                feed(cx, &"< fortune >\r\n".repeat(8));
-                wait(cx, 200);
-                feed(cx, "%  \r");
-                wait(cx, 160);
-                feed(cx, prompt);
+                step(cx, &"| info |\r\n".repeat(10), 300);
+                step(cx, &"< fortune >\r\n".repeat(8), 200);
+                step(cx, "%  \r", 160);
+                step(cx, prompt, 200);
             } else {
-                feed(cx, &format!("{}{prompt}", "| info |\r\n".repeat(18)));
+                step(cx, &format!("{}{prompt}", "| info |\r\n".repeat(18)), 200);
             }
-            wait(cx, 200);
-            assert_eq!(effect(cx), None, "nothing before the prompt or at it (paused: {paused})");
+            assert_eq!(trails, expect, "{mode:?}: trails before the prompt and at it (paused: {paused})");
             feed(cx, &format!("\x1b[H\x1b[2J{prompt}"));
             wait(cx, 100);
-            assert_eq!(effect(cx), Some(true), "clear at the prompt: a trail (paused: {paused})");
+            assert_eq!(effect(cx), Some(true), "{mode:?}: clear at the prompt: a trail (paused: {paused})");
         };
         assert!(view.update_in(cx, |this, window, cx| this.terms["a"].view.read(cx).owns_keyboard_focus(window, cx)), "a has the keyboard");
-        startup(cx, true);
         let reattach = |cx: &mut gpui::VisualTestContext| {
             view.update(cx, |this, cx| this.terms["a"].view.update(cx, |t, cx| t.reattach(crate::hc::offline(), cx)));
             cx.update(|window, _| window.refresh());
             cx.run_until_parked();
         };
-        reattach(cx);
-        startup(cx, false);
-        reattach(cx);
-        startup(cx, true);
+        // Quiet draws none; the prompt mode one, from where the startup began;
+        // every jump each settle that went far: the info block and the fortune.
+        for (mode, paused, burst) in [(TrailStartup::Quiet, 0, 0), (TrailStartup::Prompt, 1, 1), (TrailStartup::Every, 2, 1)] {
+            startup(cx, mode, true, paused);
+            reattach(cx);
+            startup(cx, mode, false, burst);
+            reattach(cx);
+        }
     }
 
     #[test]

@@ -174,7 +174,15 @@ impl AppWindow {
     /// terminal once.
     pub(super) fn land(&mut self, cx: &mut Context<Self>) {
         let Some(slide) = self.slide.take() else { return };
+        // Each block's terminal now, and each it froze: one `terminal.show`
+        // swapped out mid-slide is no longer its block's.
+        for (id, ..) in &slide.blocks {
+            if let Some(term) = self.pane_term(id) {
+                term.view.read(cx).set_slide(None);
+            }
+        }
         for view in slide.frozen {
+            view.read(cx).set_slide(None);
             view.read(cx).set_frozen(false);
             view.update(cx, |_, cx| cx.notify());
         }
@@ -309,8 +317,11 @@ impl AppWindow {
             let at = b.origin - slide.area.origin;
             div().absolute().left(at.x).top(at.y).w(b.size.width).h(b.size.height)
         };
-        for (id, ..) in &slide.blocks {
+        for (id, _, to) in &slide.blocks {
             let (Some(node), Some(b)) = (slide.tree.find(id), at.get(id.as_str())) else { continue };
+            if let Some(term) = self.pane_term(id) {
+                term.view.read(cx).set_slide(Some((*b, *to)));
+            }
             el = el.child(place(*b).flex().child(self.render_node(node, focused, frame, cx)));
         }
         for d in &slide.dividers {

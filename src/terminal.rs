@@ -202,6 +202,13 @@ struct Grid {
     cursor_at: Option<Bounds<Pixels>>,
     /// What the last paint drew of the cursor (`cursor_rect`), None while hidden.
     cursor_drawn: Option<Bounds<Pixels>>,
+    /// While its pane slides (window/pane_slide.rs): the pane's block as this
+    /// frame draws it, and where it lands.
+    slide: Option<(Bounds<Pixels>, Bounds<Pixels>)>,
+    /// How far the last paint drew the grid from where its layout puts it:
+    /// the slide's offset, nothing at rest. Cursor trails end where the
+    /// layout puts a cursor (`trail_end`), so they never ride a slide.
+    slid: Point<Pixels>,
     /// Where the focused terminal's cursor settled, for `cursor_trail: "all"`.
     jumps: crate::cursor_jumps::Jumps,
     /// The scroll thumb's grabbable lane from the last paint, in window
@@ -326,6 +333,11 @@ pub fn initial_display(window: &Window) -> serde_json::Value {
 }
 
 impl Grid {
+    /// `drawn`, something the last paint drew, where the layout puts it.
+    fn laid_out(&self, drawn: Bounds<Pixels>) -> Bounds<Pixels> {
+        Bounds::new(drawn.origin - self.slid, drawn.size)
+    }
+
     /// Writes program output to the screen; with `track` (`cursor_trail:
     /// "all"`), notes when it moved the cursor (cursor_jumps.rs), once a chunk;
     /// without, only when a starting program first writes.
@@ -457,6 +469,8 @@ impl TerminalView {
                 marked: None,
                 cursor_at: None,
                 cursor_drawn: None,
+                slide: None,
+                slid: Point::default(),
                 jumps: Default::default(),
                 thumb: None,
                 track: None,
@@ -1441,7 +1455,8 @@ impl TerminalView {
     /// block's cell), else `trail_anchor`.
     pub fn trail_end(&self) -> Option<TrailEnd> {
         let cell = self.trail_anchor()?;
-        let drawn = self.grid.borrow().cursor_drawn;
+        let g = self.grid.borrow();
+        let drawn = g.cursor_drawn.map(|b| g.laid_out(b));
         Some(TrailEnd {
             cell,
             cursor: drawn.unwrap_or(cell),
@@ -1450,18 +1465,26 @@ impl TerminalView {
     }
 
     /// Where a cursor trail meets this terminal, in window coordinates from
-    /// the last paint: the cursor's cell, shown or hidden (agents hide it at
-    /// their input), else the middle cell when the cursor is scrolled out of
-    /// view. None before the first paint.
+    /// the last paint, where the layout puts the pane (not where a slide
+    /// draws it): the cursor's cell, shown or hidden (agents hide it at their
+    /// input), else the middle cell when the cursor is scrolled out of view.
+    /// None before the first paint.
     pub fn trail_anchor(&self) -> Option<Bounds<Pixels>> {
         let g = self.grid.borrow();
-        g.cursor_at.or_else(|| {
+        let cell = g.cursor_at.or_else(|| {
             // The origin is set by the first paint.
             (g.origin != Point::default()).then(|| {
                 let middle = point(g.cell.width * f32::from(g.vt.cols / 2), g.cell.height * f32::from(g.vt.rows / 2));
                 Bounds::new(g.origin + middle, g.cell)
             })
-        })
+        })?;
+        Some(g.laid_out(cell))
+    }
+
+    /// While its pane slides, the pane's block as this frame draws it and
+    /// where it lands (None once it has landed): trail ends are where it lands.
+    pub fn set_slide(&self, slide: Option<(Bounds<Pixels>, Bounds<Pixels>)>) {
+        self.grid.borrow_mut().slide = slide;
     }
 
     /// The link at a window position, and where it shows.
@@ -2713,7 +2736,7 @@ fn glyph_thicken() -> gpui::GlyphThicken {
 /// The one settle timer of a terminal whose cursor moved (`cursor_trail:
 /// "all"`): waits until the cursor has been still for `settle`, then tells the
 /// window if it jumped (`TerminalEvent::CursorJump`).
-fn settle_jumps(grid: Rc<RefCell<Grid>>, view: WeakEntity<TerminalView>, settle: Duration, min_cells: crate::settings::MinCells, window: &mut Window, cx: &mut App) {
+fn settle_jumps(grid: Rc<RefCell<Grid>>, view: WeakEntity<TerminalView>, settle: Duration, min_cells: crate::settings::MinCells, startup: crate::settings::TrailStartup, window: &mut Window, cx: &mut App) {
     use crate::cursor_jumps::{Due, Jump, Rest};
     window
         .spawn(cx, async move |cx| {
@@ -2724,6 +2747,7 @@ fn settle_jumps(grid: Rc<RefCell<Grid>>, view: WeakEntity<TerminalView>, settle:
                 let due = {
                     let g = &mut *grid.borrow_mut();
                     let vt = &g.vt;
+                    g.jumps.startup = startup;
                     g.jumps.due(cx.background_executor().now(), settle, min_cells, || {
                         if vt.alt_screen() {
                             Rest::FullScreen
@@ -2751,7 +2775,7 @@ fn settle_jumps(grid: Rc<RefCell<Grid>>, view: WeakEntity<TerminalView>, settle:
                                         g.cell.height * f32::from(y),
                                     );
                                 let width = g.cell.width * if wide { 2.0 } else { 1.0 };
-                                Some(Some(cursor_rect(at, width, g.cell, shape, true)))
+                                Some(Some(g.laid_out(cursor_rect(at, width, g.cell, shape, true))))
                             }
                             Some(Jump::Reshaped) => Some(None),
                             None => None,
@@ -2772,13 +2796,23 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, view: &WeakEntit
     let mut g = grid.borrow_mut();
     let (cell, text_size) = (g.cell, g.font);
     let (pad_x, pad_y) = pad();
-    // Rows rarely fill the height exactly: split what's left above and below.
-    let spare = (f32::from(bounds.size.height) - 2.0 * pad_y - f32::from(cell.height) * g.vt.rows as f32).max(0.0);
     let scale = window.scale_factor();
     let snap = |v: Pixels| px((f32::from(v) * scale).round() / scale);
-    let origin = bounds.origin + point(px(pad_x), px(pad_y + (spare / 2.0).floor()));
-    let origin = point(snap(origin.x), snap(origin.y));
+    let origin_in = |bounds: Bounds<Pixels>, rows: u16| {
+        // Rows rarely fill the height exactly: split what's left above and below.
+        let spare = (f32::from(bounds.size.height) - 2.0 * pad_y - f32::from(cell.height) * f32::from(rows)).max(0.0);
+        let origin = bounds.origin + point(px(pad_x), px(pad_y + (spare / 2.0).floor()));
+        point(snap(origin.x), snap(origin.y))
+    };
+    let origin = origin_in(bounds, g.vt.rows);
     g.origin = origin;
+    // Sliding, the grid is drawn inside its block as inside its landing
+    // rect, so each edge of the area it lands in moves by its block's; there
+    // it has the rows landing fits it to.
+    g.slid = g.slide.map_or(Point::default(), |(at, to)| {
+        let landing = Bounds::from_corners(bounds.origin + (to.origin - at.origin), bounds.bottom_right() + (to.bottom_right() - at.bottom_right()));
+        origin - origin_in(landing, grid_size(landing.size, cell).1)
+    });
     let frame = g.vt.frame();
     let placements = g.vt.placements();
     let mut images: Vec<(bool, Bounds<Pixels>, Arc<RenderImage>)> = Vec::new();
@@ -3016,9 +3050,9 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, view: &WeakEntit
             let back = (sb.total as u64).saturating_sub(sb.offset as u64 + sb.len as u64);
             let view_of = (back, g.vt.cols, g.vt.rows, std::rc::Rc::as_ptr(&settings) as usize);
             if focused && g.jumps.observe(spot, view_of, cx.background_executor().now()) {
-                settle_jumps(grid.clone(), view.clone(), settings.trail_settle(), settings.trail_min_cells(), window, cx);
+                settle_jumps(grid.clone(), view.clone(), settings.trail_settle(), settings.trail_min_cells(), settings.cursor_trail_startup, window, cx);
             } else if !focused && g.jumps.knows() {
-                g.jumps.forget();
+                g.jumps.lose_place();
             }
         }
         if settings.pane_scrollbars
