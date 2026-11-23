@@ -77,10 +77,16 @@ pub fn given(name: Option<&str>) -> Option<&str> {
 /// `\\server`), no `@` (`user@host`), and not `THROWAWAY`. An emoji before the
 /// first letter or digit is a name a person chose (upstream #1141): alone or
 /// beside the program's name it tells, unless what follows it is a path, a
-/// `user@host` or `THROWAWAY`.
+/// `user@host` or `THROWAWAY`. An emoji drawn as one through U+FE0F (`❤️`,
+/// `⚙️`) or a keycap (`#️⃣`) counts too, while `✋` or `⏳` before a space is an
+/// agent's status mark (`✋  Action Required`), not a name (upstream 0.1.17).
 pub fn telling<'a>(title: &'a str, program: &Value) -> Option<&'a str> {
     static THROWAWAY_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(THROWAWAY).expect("THROWAWAY"));
-    static EMOJI_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[^\p{L}\p{N}~/\\\p{Emoji_Presentation}]*\p{Emoji_Presentation}").expect("emoji"));
+    static EMOJI_RE: LazyLock<Regex> = LazyLock::new(|| {
+        let mark = r"[✋⏳]\x{FE0F}?";
+        let emoji = format!(r"[\p{{Emoji_Presentation}}--[✋⏳]]|[\p{{Emoji}}--[✋⏳]]\x{{FE0F}}|[#*0-9]\x{{20E3}}|{mark}(?:[^\s\x{{FE0F}}]|$)");
+        Regex::new(&format!(r"^(?:{mark}\s|[^\p{{L}}\p{{N}}~/\\\p{{Emoji_Presentation}}])*?(?:{emoji})")).expect("emoji")
+    });
     let t = title.trim_start_matches(|c: char| !c.is_alphanumeric() && !matches!(c, '~' | '/' | '\\')).trim_end();
     let name = program.get("name").and_then(Value::as_str).unwrap_or_default();
     let key = program.get("key").and_then(Value::as_str).unwrap_or_default();
@@ -282,8 +288,11 @@ mod tests {
     #[test]
     fn an_emoji_is_a_name_a_person_chose() {
         let c = claude();
-        for e in ["🔴", "🟦", "✅", "❌", "⭐", "🚀", "🧠", "⚪", "🇰🇷", "👍🏽", "👨\u{200d}💻"] {
+        for e in ["🔴", "🟦", "✅", "❌", "⭐", "🚀", "🧠", "⚪", "🇰🇷", "👍🏽", "👨\u{200d}💻", "❤️", "⚙️", "#️⃣", "✋🏽"] {
             let t = format!("{e} login");
+            assert_eq!(telling(&t, &c), Some(t.as_str()), "{t}");
+            // Beside the program's name only a name tells.
+            let t = format!("{e} claude");
             assert_eq!(telling(&t, &c), Some(t.as_str()), "{t}");
         }
         assert_eq!(telling("\u{2733} 🟢 login", &c), Some("\u{2733} 🟢 login"), "a status glyph before it stays, as every glyph does here");
@@ -292,6 +301,21 @@ mod tests {
         assert_eq!(telling("🔴 ~/proj", &c), None, "a folder is still a folder behind its emoji");
         assert_eq!(telling("🔴 me@host", &c), None);
         assert_eq!(telling("\u{2713} claude", &c), None, "a text-style glyph is not a name");
+    }
+
+    /// Upstream 0.1.17's status marks: `✋` and `⏳` before a space are an
+    /// agent's state, not a name, and stay in what is shown like `✓` does.
+    #[test]
+    fn hand_and_hourglass_before_a_space_are_status_marks() {
+        let c = claude();
+        assert_eq!(telling("✋  Action Required (proj)", &c), Some("✋  Action Required (proj)"));
+        assert_eq!(telling("⏳  ❤️ deploy", &c), Some("⏳  ❤️ deploy"), "an emoji after the mark is still a name");
+        for t in ["✋ claude", "⏳ claude", "✋\u{fe0f} claude", "⏳  ~/proj", "✋ 1234"] {
+            assert_eq!(telling(t, &c), None, "{t}");
+        }
+        assert_eq!(telling("⏳  ❤️ claude", &c), Some("⏳  ❤️ claude"));
+        assert_eq!(telling("⏳", &c), Some("⏳"), "alone, it is what someone wrote");
+        assert_eq!(label(&Parts { title: "✋ claude", session: Some("vendor-insights"), ..parts(&c) }), "vendor-insights");
     }
 
     #[test]
