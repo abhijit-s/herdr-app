@@ -226,7 +226,7 @@ Pin an agent to the top of the agent lists (pinned true) or unpin it (false). Pi
 
 ## `terminal.kill`
 
-End a terminal and its sub-agents.
+End a terminal and its sub-agents. Spare branches whose first sub-agent has a pane or a herdr.space label. Core still applies parent-lifetime rules.
 
 | Argument | Required |
 |---|---|
@@ -622,6 +622,14 @@ Show the previous agent.
 
 No arguments.
 
+## `agent.select`
+
+Show an agent by position (1 = first), in the same navigation order as `agent.next`.
+
+| Argument | Required |
+|---|---|
+| `index` | yes |
+
 ## `layout.switch`
 
 Show a layout (layouts/<name>.json), or the next one.
@@ -735,6 +743,12 @@ Close an overlay (default: the top dialog or popup).
 | Argument | Required |
 |---|---|
 | `id` | no |
+
+## `toast.dismiss_all`
+
+Close every toast without running its action.
+
+No arguments.
 
 ## `app.help`
 

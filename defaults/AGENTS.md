@@ -2,6 +2,10 @@
 
 <!-- Written by the Herdr app on every start. Edits here are overwritten. -->
 
+If `AGENTS.local.md` is in this folder, read it too: the person's own notes
+on their setup (what they changed and how they like it). Herdr never writes
+or replaces it; put lasting notes about this machine's setup there.
+
 This folder is **the Herdr app's whole interface, as files**. The Herdr app
 is a desktop app for terminals and coding agents, and it redraws itself from
 these files while it runs: change a layout, a key or a panel here and the
@@ -81,6 +85,7 @@ first frame or during GPU recovery it reports an error instead of a PNG.
 | `keys.json` | what every key does | live |
 | `settings.json` | the person: zoom, sounds, fonts for every layout, worktree directory | live |
 | `mods/<name>/` | panels: small JavaScript programs | live (hot reload) |
+| `AGENTS.local.md` | the person's notes on their setup, for agents | never written by Herdr |
 | `programs.json` | how programs show (name, icon, tile), on top of the built-in table | live |
 | `icons/` | the shipped program icons | written by Herdr (put your own elsewhere) |
 | `frame/` | the app's own screens (welcome, ...) | rewritten by Herdr on every start: don't edit, it won't stick |
@@ -210,8 +215,10 @@ In the tab bar, drag a tab to reorder it: it follows the pointer and a line show
   peek at it. Bare addresses refer to the machine of the terminal showing them;
   use `machine/address` for another machine. Names and non-live addresses aren't links.
 - **Agent navigation order** belongs to the mods. A mod displaying agents calls
-  `setAgentOrder(list.map(a => a.address))` on render so `agent.next` /
-  `agent.prev` follow its list.
+  `setAgentOrder(list.map(a => a.address))` on render so `agent.next`,
+  `agent.prev` and `agent.select {index}` (1 = first) use that order. Herdr
+  keeps the last published order until the next call or app restart,
+  skips agents that are gone, and appends unlisted agents in model order.
 
 ## Layouts: `layouts/<name>.json`
 
@@ -279,9 +286,10 @@ A layout is a tree of nodes. Four types:
 
 - `block`: shows content. `"content"` is `{ "mod": "<folder>", "props": {...} }`,
   `{ "terminal": "t7" }`, `{ "tab": "active" }` (the shown tab's
-  terminals as it arranges them), or `{ "agent": "focused" }` (one agent's
-  terminal, full size: the one chosen with `agent.focus` / `agent.next`, else
-  the focused pane's agent, else the first agent).
+  terminals as it arranges them), or `{ "agent": "focused" }`. An agent block
+  shows one terminal at full size. It shows the agent chosen by `agent.focus`,
+  `agent.select`, `agent.next` or `agent.prev`. Otherwise it shows the focused
+  pane's agent or the first agent in navigation order.
 - `row` / `column`: children side by side / stacked.
 - `stack`: shows one child (`"active": "<child id>"`), with an optional
   `"header"` (a mod that draws tabs, or `"tabs"` for a plain built-in strip).
@@ -471,6 +479,13 @@ The tab block says how each pane of the shown tab is wrapped:
 - The look applies to every pane; `focus` replaces the border while the
   pane has the keyboard; `gap` is the space between panes.
 - Each pane's content sits in by the wider of `border` and `focus`, so moving the focus never resizes a terminal; with the narrower line drawn, the rest shows the frame's `background` if it sets one. settings.json's `focus_border_width` replaces the `focus` width.
+- `veil`: 0 to 1 (`"veil": 0.4`). Panes other than the tab's selected one
+  fade by that much: the terminal's background colour (the theme's
+  `background`, ignoring its alpha) is drawn over them at that opacity, so
+  their text fades and the look follows the theme. With `terminal_opacity`
+  below 1 it also covers what shows through the terminal. A dialog or input
+  taking the keyboard doesn't veil the selected pane, and a zoomed tab isn't
+  veiled. Clicks go through it.
 - `header`: a mod drawn on each pane, one copy per pane, with
   `props().pane` and `props().terminal`. It reads its live facts from
   `panes()` (name, auto_name, label, session, title, folder, branch, agent status, focused, zoomed, text_size, scroll)
@@ -626,7 +641,8 @@ shortcuts must then be added by hand.
   `command` names an app command; `args` is an object (optional, defaults to `{}`).
   It can pass several arguments, numbers, booleans, arrays or nested objects.
   String actions keep their literal first-argument shorthand, including numeric
-  indexes: `space.new:{work}` names a space `{work}`, and `space.new:{}` names it `{}`.
+  indexes. `agent.select:2` selects the second agent in navigation order.
+  `space.new:{work}` names a space `{work}`, and `space.new:{}` names it `{}`.
   Invalid binding objects or rejected arguments show an error toast when pressed;
   the key does not go to the terminal program.
 - Plain ctrl+letters go to the program unless bound. Programs rely on
@@ -693,9 +709,7 @@ The main ones:
   space shown, the new space is shown), for work the person looks at later;
   such tabs go last in their space, in the order made. `focus` is a boolean.
 - Panes: `pane.split {direction: "right" | "down", pane?, argv? | mod?, props?}` (a new
-  terminal, or a mod pane; `argv` starts in your interactive shell, for its PATH, and the
-  pane ends with it, keeping its exit code; that shell PATH needs sh, bash, zsh, dash, ksh or
-  fish: with other shells (nushell) and on Windows `argv` runs directly), `pane.close {pane?}`, `pane.rename {pane?, name}` ("": unnamed again; `panes()[i].name`, kept with its tab),
+  terminal, or a mod pane), `pane.close {pane?}`, `pane.rename {pane?, name}` ("": unnamed again; `panes()[i].name`, kept with its tab),
   `pane.set_icon {pane?, icon}` and `tab.set_icon {id?, icon}` (`icon`: `{kind: "glyph" | "emoji", value}` or `{kind: "letter"}`; null or absent: the automatic icon again, so a misspelt key clears it; kept by id in the machine's layout and gone with the pane or tab; the shipped `menu` offers them as Change icon… and Clear icon, through the shipped `icon-picker`: Suggested, every Symbols Nerd Font glyph and every emoji, searchable by name and keyword. A mod keeping icons of its own opens the same picker with `openOverlay({mod: "icon-picker", kind: "dialog", width: 452, height: 392, props: {shared: "<key>", id, name, letter?, now?, extra?}})`: the pick is written to `shared(key)[id]` as `{kind, value?}` and Clear icon deletes it; `now` (`{kind, text}`) is the icon shown today, `extra` (`[{kind, text, word}]`) adds the mod's own kinds beside the letter),
   `pane.zoom {pane?}`, `pane.menu {pane?}` (the pane's menu at the pointer, the layout's `terminal_menu` as a terminal right-click opens it, with no selection: what a pane header's right-click runs; the shipped `menu` lists Copy with a selection, Copy all, Paste, Copy path when the folder is known, then Rename, Split right and down, Zoom, Change icon… and Clear icon, Float pane (or Dock pane and Bring to front), then where right-clicks go, Send back for a kept sub-agent, and Close pane), `pane.focus {pane | terminal}`, `pane.refocus` (the keyboard back to what has the focus after a mod took it for a moment, as a tab drag does: a focused mod pane gets its `focus` command again, else the focused pane or the agent shown), `pane.go {direction}`, `pane.swap {pane?, direction | target}`, `pane.resize {direction, pane?, px?}` (moves the nearest border along that axis by px, default 40, as a drag would; a keyboard resize mode is a mod that runs it on h/j/k/l).
   `pane.zoom` also makes the pane its tab's focused one (the tab isn't
@@ -753,11 +767,12 @@ The main ones:
   `terminal.show` fail, as do `terminal.open`/`terminal.keep` with place right/down.
   They never act on the terminal's source pane. An explicit `pane` still targets that
   model pane; composition edits belong to the mod (edit its layout instead).
+  Closing panes, tabs or spaces ends the terminals in them. Core ends dependent
+  children and keeps children started with `--outlive-parent` running.
 - Terminals: `terminal.open {argv?, folder?, place?, name?}` (`folder` sets the
-  starting directory for tabs and right/down splits, with or without `argv`; `argv` starts in
-  your interactive shell wherever it goes: a tab's shell stays after it, a split ends with it;
-  only with sh, bash, zsh, dash, ksh or fish: other shells (nushell) and Windows don't give
-  `argv` that shell's PATH, and a split there runs `argv` directly), `terminal.kill {terminal}`,
+  starting directory for tabs and right/down splits, with or without `argv`),
+  `terminal.kill {terminal}` (ends the sub-agent tree, stopping at children with a
+  pane or `herdr.space` label; core still applies parent-lifetime rules),
   `terminal.keep {terminal, place?}`, `terminal.park {terminal}`,
   `terminal.peek {terminal}` (peek over the tab, with keep-as-tab and close),
   `terminal.popup {argv, cwd?, hold?, wait?, width?, height?}` (start a program on
@@ -837,7 +852,7 @@ The main ones:
   The guard reads the current body, so sourcing `.zshrc` again (which re-runs `oh-my-posh init` and redefines `_omp_get_prompt`) wraps the fresh one, and a second wrap can never make the wrapper call itself.
 
   Starship's transient prompt (a zsh plugin or your own `zle-line-init` widget) needs the same: wrap the `PS1` it sets in `%{\e]133;A\a%}`…`%{\e]133;B\a%}` before it redraws.
-- Agents: `agent.next`, `agent.prev`, `agent.focus {terminal}`.
+- Agents: `agent.next`, `agent.prev`, `agent.select {index}`, `agent.focus {terminal}`.
 - Notifications: `system.notify {title, body?, subtitle?, sound?, agent?, id?, urgent?, icon?}` posts a notification as Herdr for any program: `herdr-app do system.notify '{"title": "Build", "body": "passed", "sound": "Glass", "id": "build"}'`. `sound` as one `notification_sounds` value (default `"default"`); `agent` (a terminal address, or an agent's name when only one has it) makes a click show that terminal and attaches its program's icon (unless `icon` is given or `notification_icons` is `false`); a newer one with the same `id` (1 to 64 of `A-Z a-z 0-9 . _ : -`) replaces the older; `icon` is an absolute path to an image up to 10 MB (megabytes): PNG (Portable Network Graphics), JPEG (Joint Photographic Experts Group), GIF (Graphics Interchange Format) or HEIC (High Efficiency Image Container); Herdr attaches a copy. It follows `system_notifications`: `off` fails; `background` while Herdr is the app in front shows the window's toast instead (answer `{"shown": "toast"}`) unless `urgent: true`; otherwise it posts (answer `{"shown": "notification", "tag": ...}`). Title and subtitle are cut at 200 characters and the body at 2000; control characters (the body keeps its line breaks) and direction overrides are left out. It fails, exiting 1, where macOS won't show it: notifications for Herdr turned off in System Settings, or a build not run from Herdr.app.
 - Sessions: `session.saved` lists the recorded agents (programs with a `resume` rule in `programs.json`) with `terminal`, `where`, `program`, `name`, `cwd`, the resuming `argv`, `session`, `saved_ms`, and `ready` (its terminal is live and back to a bare shell) or `why` not. `session.resume {terminal?, confirmed?}` types `cd <cwd> && <argv>` (each word shell-quoted; PowerShell: `Set-Location`) into every ready one (or just `terminal`) and answers `{resumed, skipped: [{terminal, why}]}`; it asks the person first unless `confirmed`, and scripts must pass `confirmed: true` (`herdr-app do session.resume --confirmed true`). It never types into a terminal whose foreground isn't a shell, and skips a session two terminals share.
 - Layout: `layout.switch {name?}`, `layout.toggle {id}`, `layout.show {id}`, `layout.hide {id}`,
@@ -858,7 +873,8 @@ The main ones:
   Add machine lists all named ssh-config hosts in a scrollable list. Machines
   that need a password, a new host key or herdr-core installed show what to run
   in your own terminal; the picker updates once it is added. Other machines are
-  added quietly. If a Linux server reports that programs stop at logout, its
+  added quietly. Update remote cores older than 0.1.13 from Settings → Machines so children started there end with their parent by default.
+  If a Linux server reports that programs stop at logout, its
   added card warns that agents stop when you disconnect and offers the administrator's
   `sudo loginctl enable-linger -- <user>` command with Copy. A warning mark in
   Settings > Machines and the sidebar opens that card; it clears automatically
@@ -1139,10 +1155,11 @@ What's about the user, never a look:
   Clipboard reads (`?`) are never allowed.
 - `copy_on_select`: copy a mouse selection to the clipboard on release (default
   `true`). Set `false` to leave the clipboard untouched while keeping the selection
-  visible; `terminal.copy` (Cmd+C/Ctrl+Shift+C) still copies it. On Linux, terminal
-  selections always set PRIMARY, independently of this setting. Middle-click
-  pastes PRIMARY on Linux, does nothing on macOS, and pastes the clipboard on
-  Windows. Programs that capture the mouse still receive middle-clicks.
+  visible; `terminal.copy` (Cmd+C/Ctrl+Shift+C) still copies it. Where Linux
+  supports PRIMARY, terminal selections set it independently of this setting
+  and middle-click pastes it. On Wayland without PRIMARY support, middle-click
+  pastes clipboard text. Middle-click pastes the clipboard on Windows and does
+  nothing on macOS. Programs that capture the mouse still receive middle-clicks.
   Hold Shift while dragging in programs that capture the mouse.
   Settings > Input > Mouse has it as "Copy on select".
 - `pane_scrollbars`: `false` hides the scroll position thumb at a terminal
@@ -1268,6 +1285,15 @@ has 124 programs (agents, editors, runtimes, tools, databases, infra);
   again after a popup over it closes. Leave with `run("pane.go", {direction})`.
   Without this opt-in, navigation and clicks stay unchanged.
 
+- `"palette"` in `mod.json` adds entries each time the command palette opens.
+  For example, `"palette": [{ "title": "TUI sessions", "command": "mod.open", "args": { "name": "tui-sessions" }, "words": "agents" }]`.
+  Use an app command with its required arguments in `args`, or this mod's own
+  `<mod>.<command>` with no arguments. A mod command needs a shown copy listening
+  with `nextCommand()`. Use `mod.open {name}` to open a mod as an overlay, or
+  `tab.new {mod, props}` to open one with props. `group` defaults to "Mod"
+  ("Recent" is reserved). `words` is an optional string of search terms.
+  Malformed entries and duplicate command and argument pairs are skipped.
+
 - The first time Herdr sees a folder, it docks one copy per `mod.json` into
   the shown layout (`"none"`: only where a layout or another mod puts it).
   After that, the layouts decide. Saving any file reloads every copy in place
@@ -1322,13 +1348,18 @@ Export `handleLink(click)` from `link.js` (it can be async). It receives
 `{link, source}` and can import the usual functions from `"herdr"`. The source
 names the clicked terminal and its machine, cwd, pane, tab and space.
 `link.raw` keeps the original text or the OSC 8 destination. `link.path` is
-null for remote, unresolved or non-UTF-8 paths. For a file URI, Herdr can verify
-a local path when the host is empty or `localhost`. A link handler starts without opening
-a view and shares `localStorage` with views of the same mod with null props.
+null for remote, unresolved or non-UTF-8 paths. Plain paths can carry a
+`:line` or `:line:column` suffix, exposed as optional 1-based `link.line` and
+`link.column`. A column needs a valid line. Herdr keeps a verified literal
+filename intact and can report coordinates even when `link.path` is null.
+File URIs have no coordinates. Herdr can verify their local paths when the
+host is empty or `localhost`. A link handler starts without opening a view
+and shares `localStorage` with views of the same mod with null props.
 Return `"handled"` when done or `"pass"` to try the next matching mod.
 If all pass, a local terminal uses the usual opener target. A matched file
-from a remote terminal has no opener target. A load or handler error stops
-the click, shows a toast and appears in `herdr-app status`.
+from a remote terminal has no opener target. A handler has 30 seconds to
+answer. A load or handler error stops the click, shows a toast and appears in
+`herdr-app status`.
 
 ### Check before you finish
 
@@ -1336,9 +1367,10 @@ the click, shows a toast and appears in `herdr-app status`.
 herdr-app check ~/.config/herdr-app/mods/<name>
 ```
 
-Loads and renders the mod's view if it has one. It checks link rules and
-verifies that `link.js` exports `handleLink` without running the module or
-its imports. It exits nonzero with the exact error. Run it after every change.
+Loads and renders the mod's view if it has one. It validates link rules.
+For mods with link rules and standalone link mods, it verifies that `link.js`
+exports `handleLink` without running the module or its imports. It exits
+nonzero with the exact error. Run it after every change.
 
 `init()` runs for real during a check. Import `checking` from `"herdr"` and
 use `if (checking()) return;` before starting helpers or writing files.
@@ -1421,7 +1453,11 @@ Rules:
   0.4, to: 1, period: 1200 })` (also width, height, left, top), and
   `.transition(...)` for changes: they run without your script and stop
   when not shown. Timers are for data (a clock, a fetch), and only as often
-  as what they show changes.
+  as what they show changes. Mod timers keep running while the window is
+  hidden. To pause a stream or poll, check `window()?.visible` in the timer
+  and stop when it turns false. Read it in `render` and restart when true.
+  `window()` is null when there is no window (`herdr-app check`), so use `?.`.
+  See `herdr.d.ts` for what each platform reports.
 - **An agent at work shows the person's spinner.** Read `settings().working_spinner` (see `working_spinner` under The person) rather than picking your own, so every mod spins the same way.
 
 ### UI
@@ -1440,6 +1476,15 @@ Tab and Shift-Tab never reach `on_key_down` (they move focus): bind them in the 
 in `init`, attach `.track_scroll(this.scroll)`, then call
 `this.scroll.scroll_to_item(index)` to reveal a zero-based direct child with
 only the movement needed. Requests run once after layout; visible children stay put.
+It also says where the area is, as does a virtual list's `VirtualListScrollHandle`:
+`offset()` (`{x, y}`, counted up from 0 at the start), `content_size()` and
+`viewport_size()` (`{width, height}`). They are in the px you write, whatever the
+zoom, and are the last layout's: all zero before the first frame, kept while the
+area is hidden, and a `scroll_to_*` request shows in them once it has run, not
+right away. `content_size()` includes padding and is never smaller than the viewport.
+The area is at the end when `offset().y + viewport_size().height >= content_size().height - 1`.
+Event positions and `on_size_change` sizes are window px: divide them by
+`settings().zoom` before mixing them with these. `list` and `uniform_list` take no handle.
 Lazy lists: `list` and `uniform_list` come from `gpui-kit`, where `div` is;
 `v_virtual_list` and `h_virtual_list` come from `gpui-base`. They need a
 definite height from their container: a `flex_1()` chain with no explicit
@@ -1461,7 +1506,16 @@ Paths containing control characters are rejected, including clipboard files.
 and other interactive controls too.
 `.when(cond, (el) => …)`, `.children([...])`. Controls from `gpui-base`
 (`Button`, `Checkbox`, `Switch`, `InputState` + `Input`) are unstyled: style
-them. Text: `TextView.markdown(id, text)` renders markdown; `EditorState.new({
+them. Text: `TextView.markdown(id, text)` renders markdown; with
+`.selectable(true)`, `.on_selection_change((s, cx) => …)` gets a settled
+selection or `null` when it clears. `s.text` matches what copying the selected
+text in that view gives you. When `s.range` is present, use
+`markdown.slice(s.range.start, s.range.end)` to get the original Markdown.
+`.highlight_range(start, end, color)` paints behind the text rendered from any
+Markdown source range, including offsets found with `markdown.indexOf(query)`.
+When `s.position` is present, place a popup with
+`openOverlay({ mod: "selection-actions", kind: "popup", at: s.position })`.
+`EditorState.new({
 language, value, readonly, font_family: settings().terminal_font.family,
 font_size: settings().terminal_font.size, syntax: {
 keyword: theme().ansi5, ... } })` + `Editor.new(state)` is a code view (readonly)
@@ -1567,6 +1621,9 @@ All of it is in `herdr.d.ts`. In short:
   rejects if the check fails (failed checks are not cached); start one with `argv: agent.run`.
   `pickFolder({ prompt })`: the system's folder picker (here only),
   resolves with the folder or null.
+  `pickFiles({ prompt, multiple })`: the system's file picker (here only),
+  resolves with the files' paths or null on cancel, and rejects if the picker fails
+  or a path cannot be represented as a string.
 - Files: `readTextFile(path, { on })` (here, or on that machine),
   `writeTextFile(path, text, expected)` (here only), and
   `watchFolder(dir)` (here only; poll a remote space's folder): resolves with the changed paths the next time anything
@@ -1580,8 +1637,9 @@ All of it is in `herdr.d.ts`. In short:
   showing the folder. Cancellation resolves with `[]` and releases this call
   without stopping other callers: `const watch = watchFolder(dir); watch.cancel();`.
   Closing a mod copy cancels its pending calls.
-  Files also refreshes on its 10-second timer:
   `cx.spawn(async (cx) => { for (;;) { await watchFolder(dir); this.reload(); cx.notify(); } })`.
+  Files and Changes coalesce watch events and poll while the window is focused.
+  Polling starts at 10 seconds, and both kinds of refresh wait longer after slow Git scans.
 - Window title: `setWindowTitle(title)` sets the OS window's title, which window switchers,
   taskbars and time trackers read. The last call wins; `null` restores `Herdr`. Call it when the
   title changes, not on every render.

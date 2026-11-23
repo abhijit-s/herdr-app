@@ -95,6 +95,7 @@ impl AppWindow {
             "fullscreen": window.is_fullscreen(),
             "active": self.window_active,
             "scale_factor": window.scale_factor(),
+            "visible": window.is_visible(),
         })
     }
 

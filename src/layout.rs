@@ -282,6 +282,10 @@ pub struct PaneFrame {
     /// The border while the pane has focus.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<Line>,
+    /// How much a pane fades while another pane of its tab is selected, 0 to
+    /// 1: the terminal's background colour painted over it at that opacity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub veil: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub radius: Option<f32>,
     /// Space between panes.
@@ -808,7 +812,7 @@ mod tests {
 
     #[test]
     fn nodes_carry_looks_backgrounds_padding_and_shadows() {
-        let json = r##"{ "id": "root", "type": "column", "theme": "ink", "font": "Berkeley Mono", "font_size": 13, "line_height": 1.0, "font_weight": 300,
+        let json = r##"{ "id": "root", "type": "column", "theme": "ink", "font": "Berkeley Mono", "font_size": 13, "line_height": 1.0, "font_weight": 300, "font_weight_bold": 600,
           "terminal_opacity": 0.85, "padding": [16, 12], "shadow": "lg",
           "background": { "gradient": ["#123a6e", "#2a6db3"], "angle": 160 },
           "children": [ { "id": "a", "type": "block", "content": { "mod": "x" }, "background": "surface", "padding": 8 },
@@ -816,7 +820,7 @@ mod tests {
         let n: Node = serde_json::from_str(json).unwrap();
         assert_eq!((n.look.theme.as_ref().map(|t| t.pick(true)), n.look.font_size, n.look.terminal_opacity), (Some("ink"), Some(13.0), Some(0.85)));
         assert_eq!(n.look.line_height, Some(1.0));
-        assert_eq!(n.look.font_weight, Some(300));
+        assert_eq!((n.look.font_weight, n.look.font_weight_bold), (Some(300), Some(600)));
         assert_eq!(n.padding.map(Padding::axes), Some((16.0, 12.0)));
         assert!(matches!(n.background, Some(Background::Gradient { angle, .. }) if angle == 160.0));
         assert_eq!(n.find("a").unwrap().background, Some(Background::Color("surface".into())));
@@ -829,12 +833,13 @@ mod tests {
     fn tab_blocks_say_how_their_panes_are_framed() {
         let json = r#"{ "id": "main", "type": "block", "content": { "tab": "active",
           "pane": { "header": { "content": { "mod": "pane" }, "height": 28, "reveal": "hover", "position": "bottom" },
-                    "radius": 10, "gap": 8, "lone": true, "border": { "width": 1, "color": "border" } } } }"#;
+                    "radius": 10, "gap": 8, "lone": true, "border": { "width": 1, "color": "border" }, "veil": 0.4 } } }"#;
         let n: Node = serde_json::from_str(json).unwrap();
         let Some(Content::Context { pane: Some(f), .. }) = n.content() else { panic!("no frame") };
         let h = f.header.as_ref().unwrap();
         assert!(h.hover() && h.bottom() && f.lone);
         assert_eq!((f.radius, f.gap, h.height), (Some(10.0), Some(8.0), Some(28.0)));
+        assert_eq!(f.veil, Some(0.4));
         let back: Node = serde_json::from_str(&serde_json::to_string(&n).unwrap()).unwrap();
         assert_eq!(back, n);
     }

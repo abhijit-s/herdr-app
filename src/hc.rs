@@ -513,10 +513,6 @@ impl Core {
     /// `start`, with the new terminal's whole record (`address`, `created_ms`, …).
     pub fn start_record(&self, mut params: Value) -> Result<Value> {
         params["env"] = json!({"TERM": "xterm-256color", "COLORTERM": "truecolor", "TERM_PROGRAM": "herdr"});
-        // A split's launch token, for its wrapper (`remote_shell::cannot_start`).
-        if let Some(token) = params["labels"].get("herdr.launch").cloned() {
-            params["env"]["HERDR_LAUNCH"] = token;
-        }
         let r = self.call("terminal.run", params)?;
         match r.get("address") {
             Some(Value::String(_)) => Ok(r),
@@ -654,36 +650,6 @@ pub fn answering(answer: impl Fn(&str, &Value) -> Result<Value, Value> + Send + 
     });
     let core = Arc::new(Core { hello: Value::Null, writer, routes, next_id: AtomicU64::new(1), child: Mutex::new(child), lost });
     (core, calls)
-}
-
-/// A core that answers every call at once: `terminal.run` with a new address,
-/// whose argv it passes on to `runs`; anything else with `{}`.
-#[cfg(test)]
-pub fn answering_runs() -> (Arc<Core>, mpsc::Receiver<Value>) {
-    let (writer, frames) = mpsc::channel::<Vec<u8>>();
-    let (runs_tx, runs) = mpsc::channel();
-    let (lost_tx, lost) = async_channel::bounded(1);
-    std::mem::forget(lost_tx);
-    let routes = Arc::new(Mutex::new(Routes::default()));
-    let replies = routes.clone();
-    std::thread::spawn(move || {
-        for (n, frame) in frames.into_iter().enumerate() {
-            let Some(Ok(req)) = frame.get(HEADER..).map(serde_json::from_slice::<Value>) else { continue };
-            let result = if req["method"] == "terminal.run" {
-                let _ = runs_tx.send(req["params"]["argv"].clone());
-                json!({ "address": format!("t{}", 100 + n) })
-            } else {
-                json!({})
-            };
-            let id = req["id"].as_u64().unwrap_or_default();
-            if let Some(tx) = replies.lock().unwrap().replies.remove(&id) {
-                let _ = tx.send(Ok(result));
-            }
-        }
-    });
-    let child = std::process::Command::new(std::env::current_exe().unwrap()).arg("--help").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-    let core = Arc::new(Core { hello: Value::Null, writer, routes, next_id: AtomicU64::new(1), child: Mutex::new(child), lost });
-    (core, runs)
 }
 
 #[cfg(test)]
@@ -1017,5 +983,13 @@ mod tests {
         assert_eq!(check(&hello(1, "9.9.9", &["terminal.run"])), Err(Mismatch::Missing(USES[1..].iter().map(|m| m.to_string()).collect())));
         // 0.10 is newer than 0.9 (numbers, not text).
         assert!(semver("0.10.0") > semver("0.9.3"));
+    }
+
+    #[test]
+    fn cores_without_the_new_child_lifetime_default_require_an_update() {
+        for have in ["0.1.11", "0.1.12"] {
+            assert!(matches!(check(&hello(GENERATION, have, USES)), Err(Mismatch::TooOld { .. })));
+        }
+        assert_eq!(check(&hello(GENERATION, core_min(), USES)), Ok(()));
     }
 }

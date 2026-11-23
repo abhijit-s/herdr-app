@@ -53,7 +53,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("terminal.park", &[req("terminal")], "Take a terminal's pane away and disable core keep; it keeps running (a sub-agent shows under its parent again)."),
     cmd("terminal.right_click", &[req("to"), opt("terminal")], "Where right-clicks in a terminal (default: the focused one) go when its program takes the mouse: \"program\" or \"menu\" (Herdr's, the default). Shift+right-click is always the menu."),
     cmd("terminal.pin", &[req("terminal"), req("pinned")], "Pin an agent to the top of the agent lists (pinned true) or unpin it (false). Pins are kept with the terminal, so every Herdr client shows them, and end with it."),
-    cmd("terminal.kill", &[req("terminal")], "End a terminal and its sub-agents."),
+    cmd("terminal.kill", &[req("terminal")], "End a terminal and its sub-agents. Spare branches whose first sub-agent has a pane or a herdr.space label. Core still applies parent-lifetime rules."),
     cmd("session.resume", &[opt("terminal"), opt("confirmed")],
         "Resume the recorded agents (programs with a `resume` rule in programs.json, such as Claude Code) whose terminals are back to a bare shell, typically after a restart: types `cd <folder> && <command>` into each (default: every one; terminal: just that one). Asks first unless confirmed; scripts pass confirmed: true. Skips, and says why, a terminal not running, running something else, or sharing its session with another."),
     cmd("session.saved", &[], "List the recorded agents session.resume would bring back, each with its terminal, where, folder, command line and session, and whether it can be resumed now (ready, else why not)."),
@@ -105,6 +105,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("agent.focus", &[req("terminal")], "Show an agent (sub-agents too)."),
     cmd("agent.next", &[], "Show the next agent, in the order the agents list shows them."),
     cmd("agent.prev", &[], "Show the previous agent."),
+    cmd("agent.select", &[req("index")], "Show an agent by position (1 = first), in the same navigation order as `agent.next`."),
     cmd("layout.switch", &[opt("name")], "Show a layout (layouts/<name>.json), or the next one."),
     cmd("layout.clone", &[req("name"), opt("as")], "Duplicate a layout as <name>-copy (or as), then show it."),
     cmd("mod.clone", &[req("name"), opt("as")], "Duplicate a mod as <name>-copy (or as)."),
@@ -258,6 +259,7 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), COMMANDS.len());
         assert_eq!(shorthand(find("tab.select").unwrap(), "3"), json!({ "index": 3 }));
+        assert_eq!(shorthand(find("agent.select").unwrap(), "3"), json!({ "index": 3 }));
         assert_eq!(shorthand(find("pane.split").unwrap(), "right"), json!({ "direction": "right" }));
         let move_ = find("space.move").unwrap();
         assert_eq!(missing(move_, &json!({ "id": " ", "index": 1 })), Some("id"));
