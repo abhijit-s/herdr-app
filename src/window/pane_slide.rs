@@ -301,7 +301,7 @@ impl AppWindow {
 
     /// The shown tab's tiled tree mid-slide: each block at its eased rect,
     /// each line between them, in the root's look.
-    pub(super) fn render_slide(&self, slide: &Slide, focused: &HashSet<String>, frame: Option<&PaneFrame>, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_slide(&self, slide: &Slide, focused: &HashSet<String>, frame: Option<&PaneFrame>, rendered_dividers: &mut HashSet<(String, usize)>, cx: &mut Context<Self>) -> AnyElement {
         crate::bench::count(&crate::bench::SLIDE);
         let t = ease(slide.progress(Instant::now()));
         let at: HashMap<&str, Bounds<Pixels>> = slide.blocks.iter().map(|(id, from, to)| (id.as_str(), lerp(*from, *to, t, slide.scale))).collect();
@@ -322,7 +322,7 @@ impl AppWindow {
             if let Some(term) = self.pane_term(id) {
                 term.view.read(cx).set_slide(Some((*b, *to)));
             }
-            el = el.child(place(*b).flex().child(self.render_node(node, focused, frame, cx)));
+            el = el.child(place(*b).flex().child(self.render_node(node, focused, frame, rendered_dividers, cx)));
         }
         for d in &slide.dividers {
             if let Some(b) = d.rect(&at, slide.scale) {

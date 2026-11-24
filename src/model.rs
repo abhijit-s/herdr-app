@@ -200,6 +200,17 @@ impl Tab {
         self.floating.iter().find(|f| f.pane.id == pane)
     }
 
+    /// Whether a zoom on `id` still has something to show: a tiled pane needs
+    /// another tiled one (floats draw over a tiled zoom either way), a float
+    /// any other pane.
+    pub fn keeps_zoom(&self, id: &str) -> bool {
+        if self.float(id).is_some() {
+            self.panes().len() >= 2
+        } else {
+            self.root.panes().len() >= 2 && self.root.find(id).is_some()
+        }
+    }
+
     /// The floating panes drawn, back to front: only a zoomed one, when one is.
     pub fn shown_floats(&self) -> impl DoubleEndedIterator<Item = &FloatPane> {
         let zoomed = self.zoomed.as_deref().filter(|z| self.float(z).is_some());
@@ -702,7 +713,8 @@ impl Model {
         let c = self.tab_mut(&id).unwrap();
         c.root = root;
         c.floating.retain(|f| f.pane.id != pane_id);
-        if c.zoomed.as_deref() == Some(pane_id) {
+        // One pane left is all there is to show: the zoom ends with the split.
+        if c.zoomed.as_deref().is_some_and(|z| z == pane_id || !c.keeps_zoom(z)) {
             c.zoomed = None;
         }
         if !c.panes().is_empty() {
@@ -1771,6 +1783,35 @@ mod tests {
         assert!(!m.toggle_zoom("x1"));
         assert_eq!(m.tab("c1").unwrap().zoomed, None);
         assert_eq!(m.focused_pane().as_deref(), Some("x1"));
+    }
+
+    #[test]
+    fn a_tab_left_with_one_pane_is_not_zoomed() {
+        let mut m = model_with_one();
+        m.split("x1", Axis::Row, "x2", "t2");
+        m.split("x2", Axis::Row, "x3", "t3");
+        // A hidden pane closes (its program exits): two are left, x1 stays zoomed.
+        assert!(m.toggle_zoom("x1"));
+        m.remove_pane("x3");
+        assert_eq!(m.tab("c1").unwrap().zoomed.as_deref(), Some("x1"));
+        // The last hidden pane closes: x1 is the tab's only pane, with nothing to unzoom to.
+        m.remove_pane("x2");
+        assert_eq!(m.tab("c1").unwrap().zoomed, None);
+    }
+
+    #[test]
+    fn a_zoomed_float_stays_zoomed_while_its_tab_has_another_pane() {
+        let mut m = model_with_one();
+        m.split("x1", Axis::Row, "x2", "t2");
+        m.split("x2", Axis::Row, "x3", "t3");
+        m.float_pane("x3", [0.2, 0.2, 0.6, 0.6]).unwrap();
+        assert!(m.toggle_zoom("x3"));
+        // One tiled pane under it is still another pane: the float stays zoomed.
+        m.remove_pane("x2");
+        assert_eq!(m.tab("c1").unwrap().zoomed.as_deref(), Some("x3"));
+        // The last tiled pane closes: the float is the tab's only pane.
+        m.remove_pane("x1");
+        assert_eq!(m.tab("c1").unwrap().zoomed, None);
     }
 
     #[test]

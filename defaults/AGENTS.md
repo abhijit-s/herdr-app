@@ -129,6 +129,8 @@ In the tab bar, drag a tab to reorder it: it follows the pointer and a line show
   ...), as in Herdr; `tab.rename` names it ("fix login"). A space
   has one or more; closing the last one closes the space (it stays in
   `recent`).
+  The + menu opens agents in unnamed tabs. The tab bar follows the
+  agent and shows the shell again after exit. Double-click a tab to set its name.
 - A tab can be **settled** (`tab.settle`): put away on this screen, still running;
   `settled` on each tab. The shipped layouts don't use it (they list every
   tab); a mod that does can hide or fold settled tabs. Showing one, or an
@@ -305,6 +307,9 @@ Properties any node can have:
 - `padding`: space inside the node's edge, px: `16` or `[vertical, horizontal]`.
 - row/column: `gap` (px between children), `divider` (`{ "width": 1, "color": "border" }`),
   `resizable` (default true: drag the boundary). This applies to that row/column only.
+  On a resizable boundary, the divider's optional `hover` color shows while the pointer
+  is over it and `active` while dragging (default: `hover`), e.g.
+  `{ "width": 1, "color": "#00000000", "hover": "accent" }` shows a line only then.
 - `movable` (default true): panes can be dragged by the app's top-center grip within a split tab.
   Unlike `resizable`, it inherits: the nearest explicit ancestor wins, through the
   tab tree and then the layout's tab block and its ancestors. Root `"movable": false`
@@ -713,7 +718,9 @@ The main ones:
   `pane.set_icon {pane?, icon}` and `tab.set_icon {id?, icon}` (`icon`: `{kind: "glyph" | "emoji", value}` or `{kind: "letter"}`; null or absent: the automatic icon again, so a misspelt key clears it; kept by id in the machine's layout and gone with the pane or tab; the shipped `menu` offers them as Change icon… and Clear icon, through the shipped `icon-picker`: Suggested, every Symbols Nerd Font glyph and every emoji, searchable by name and keyword. A mod keeping icons of its own opens the same picker with `openOverlay({mod: "icon-picker", kind: "dialog", width: 452, height: 392, props: {shared: "<key>", id, name, letter?, now?, extra?}})`: the pick is written to `shared(key)[id]` as `{kind, value?}` and Clear icon deletes it; `now` (`{kind, text}`) is the icon shown today, `extra` (`[{kind, text, word}]`) adds the mod's own kinds beside the letter),
   `pane.zoom {pane?}`, `pane.menu {pane?}` (the pane's menu at the pointer, the layout's `terminal_menu` as a terminal right-click opens it, with no selection: what a pane header's right-click runs; the shipped `menu` lists Copy with a selection, Copy all, Paste, Copy path when the folder is known, then Rename, Split right and down, Zoom, Change icon… and Clear icon, Float pane (or Dock pane and Bring to front), then where right-clicks go, Send back for a kept sub-agent, and Close pane), `pane.focus {pane | terminal}`, `pane.refocus` (the keyboard back to what has the focus after a mod took it for a moment, as a tab drag does: a focused mod pane gets its `focus` command again, else the focused pane or the agent shown), `pane.go {direction}`, `pane.swap {pane?, direction | target}`, `pane.resize {direction, pane?, px?}` (moves the nearest border along that axis by px, default 40, as a drag would; a keyboard resize mode is a mod that runs it on h/j/k/l).
   `pane.zoom` also makes the pane its tab's focused one (the tab isn't
-  selected); on the zoomed pane it unzooms and focus stays.
+  selected); on the zoomed pane it unzooms and focus stays. A tab with one
+  pane doesn't zoom, and a zoom ends when its tab is back to one pane
+  (a zoomed float: while the tab has another pane, tiled or floating).
   Floating panes: `pane.float {pane?, rect?}` lifts a tiled pane above its tab's tiled panes, in front and focused (`rect`: `[x, y, w, h]`, fractions of the tab area; default centred at 60% × 60%); `pane.dock {pane?, target?, edge?}` puts it back: beside `target` (a tiled pane) on `edge` (`left`, `right`, `top`, `bottom`), else beside the pane it floated from on the same side at the same share, else beside the tiled pane focused last (an arranged tab places it there in reading order and arranges again, so a master pane comes back as master); `pane.float_toggle {pane?}` does either. `pane.float_move {pane?, direction? | rect? | to?, cells?}` moves one (by `cells`, default 2 columns or 1 row; or to `center`, `full`, a half `left`/`right`/`top`/`bottom` or a quarter `top-left`…; the shorthand `pane.float_move:center` works), `pane.float_resize {direction, cells?, pane?}` grows it right or down and shrinks it left or up, its top-left corner staying. `pane.raise {to?, pane?}` and `pane.lower {to?, pane?}` step it forward or back (`to: "front"` / `"back"`); focusing a float brings it to the front. `pane.float_cycle {reverse?}` focuses the shown tab's floats in turn. A float keeps its id, terminal, name and icon; it is one pane (no splits inside: `pane.split` on a float splits the tiled pane it would dock beside). Floats are part of the tab's structure: kept in the machine's document with their rects and order, so every screen of the machine shows them; focus and zoom stay this screen's. Floats always draw above the tiled panes, also over a zoomed tiled pane; `pane.zoom` on a float fills the tab with it on this screen. `pane.go` reaches floats (the front one wins a tie) when one lies in that direction nearer than a tiled pane; `pane.swap {target}` between a float and a tiled pane trades their places, `pane.swap {direction}` moves tiled panes only, and `pane.arrange` leaves floats where they are. Float commands on a tiled pane fail ("doesn't float"). `panes()[i].floating` is `{rect, z, hidden}` for a float (`z` 0 at the back), else null; `herdr-app ls` gives a float's terminal its `floating` rect. The shipped `menu` offers Float pane, or Dock pane and Bring to front, and the shipped `pane` header has a float button among its hover buttons (Float, or Dock on a floating pane: `pane.float_toggle`). Default keys: Cmd+Alt+Enter float or dock, Cmd+Ctrl+arrows move, Cmd+Ctrl+Shift+arrows resize (macOS); unbound elsewhere.
   `pane.zoom_text_in {pane?}`, `pane.zoom_text_out {pane?}`,
   `pane.zoom_text_reset {pane?}` zoom one terminal pane's text (default:
@@ -769,6 +776,8 @@ The main ones:
   model pane; composition edits belong to the mod (edit its layout instead).
   Closing panes, tabs or spaces ends the terminals in them. Core ends dependent
   children and keeps children started with `--outlive-parent` running.
+  On cores older than 0.1.13, Herdr ends hidden children too, stopping at
+  children with a pane or `herdr.space` label.
 - Terminals: `terminal.open {argv?, folder?, place?, name?}` (`folder` sets the
   starting directory for tabs and right/down splits, with or without `argv`),
   `terminal.kill {terminal}` (ends the sub-agent tree, stopping at children with a
@@ -818,6 +827,7 @@ The main ones:
   releasing stops it. Programs that track the mouse still get their mouse events
   (hold Shift to select text instead). A drag stays with the terminal where it
   started, including its release outside the pane; other panes don't receive it.
+  Shift+click with a selection moves its end to the clicked cell, keeping its start.
   Terminals display Kitty graphics, including Unicode placeholder images used by
   programs such as yazi; partial images and scrolling follow the placeholder cells.
 - Copy last output: `terminal.copy_last_output` and the pane menu's "Copy last output" copy what the last finished command printed, read from the marks a shell writes around its prompts (OSC 133: `A` prompt start, `B` input start, `C` output start, `D` command end). The menu shows the item only when there is such output. It covers output in the scrollback (as far as Herdr's view of the terminal keeps), joins lines the terminal wrapped, and drops trailing blank lines. A command still running doesn't count: the one before it does. Enter on an empty prompt is skipped; a command that printed nothing, or a half-typed line left with Ctrl+C, leaves nothing to copy. There's nothing on a full-screen program (the alternate screen), in a terminal whose shell writes no marks (most agents and TUIs), or for a command typed at a prompt drawn before Herdr attached to the terminal (the core's first paint carries no marks: after Herdr restarts, the first command in a terminal doesn't count, the ones after it do). Shells write the marks through shell integration: fish does by itself, oh-my-posh does with `shell_integration = true` in its config. A terminal app's integration (Ghostty's, kitty's) reaches only shells that app starts, not Herdr's. Plain zsh needs two hooks in `~/.zshrc`:
@@ -1350,8 +1360,10 @@ names the clicked terminal and its machine, cwd, pane, tab and space.
 `link.raw` keeps the original text or the OSC 8 destination. `link.path` is
 null for remote, unresolved or non-UTF-8 paths. Plain paths can carry a
 `:line` or `:line:column` suffix, exposed as optional 1-based `link.line` and
-`link.column`. A column needs a valid line. Herdr keeps a verified literal
-filename intact and can report coordinates even when `link.path` is null.
+`link.column`. Line ranges (`:5-12`, `#L5-L12`, `#L5-12`) and anchors (`#L5`)
+set `link.line` to the first line. A column needs a valid line. Herdr keeps a
+verified literal filename intact and can report coordinates even when
+`link.path` is null.
 File URIs have no coordinates. Herdr can verify their local paths when the
 host is empty or `localhost`. A link handler starts without opening a view
 and shares `localStorage` with views of the same mod with null props.
@@ -1468,7 +1480,8 @@ Chained builders with GPUI's snake_case names: `div()`, `h_flex()`,
 `.overflow_y_scrollbar()`; `.child("text")`, `.text_size(n)`, `.font_semibold()`,
 `.truncate()`, `.text_color(c)`; `.bg(c)`, `.border(1)`, `.border_color(c)`,
 `.rounded(n)`; `.id("unique")` then `.on_click(...)`, `.on_mouse_down("right", ...)`,
-`.hover((s) => s.bg(c))`, `.on_scroll_wheel(...)`, `.on_pinch(...)`; keyboard: `this.h = cx.focus_handle()`
+`.hover((s) => s.bg(c))`, `.on_scroll_wheel(...)`, `.on_pinch(...)`. Mouse buttons are `left`,
+`right`, `middle`, `back` and `forward`; the last two are the mouse's side buttons. Keyboard: `this.h = cx.focus_handle()`
 in init, `.track_focus(this.h).on_key_down((e, cx) => …)`, `this.h.focus()`.
 Tab and Shift-Tab never reach `on_key_down` (they move focus): bind them in the mod's keys.json section (Keys).
 `ScrollHandle` from `gpui-base` scrolls a plain `overflow_*_scroll()` or
@@ -1504,9 +1517,23 @@ drop; local folders and remote paths dropped onto another machine are refused.
 Paths containing control characters are rejected, including clipboard files.
 `.on_hover((hovered, cx) => …)` reports pointer entry and exit on buttons
 and other interactive controls too.
+`.on_mouse_move` and `.on_mouse_up` fire only over the element. For a drag that
+should keep following the pointer once it leaves (dragging a tab off the bar),
+use `.on_window_mouse_move((e, cx) => …)` and `.on_window_mouse_up("left", (e, cx) => …)`
+on a plain layout element. They observe moves and matching releases in the
+window, including over terminals, without affecting normal event handling.
+Positions are in window pixels, with `local_position` relative to the
+element's box. Track a left drag while `pressed_button === "left"`. If it
+ends outside the window without a release event, cancel on the next move
+that reports no left button.
 `.when(cond, (el) => …)`, `.children([...])`. Controls from `gpui-base`
 (`Button`, `Checkbox`, `Switch`, `InputState` + `Input`) are unstyled: style
-them. Text: `TextView.markdown(id, text)` renders markdown; with
+them. Text states (`InputState`, `TextareaState`, `EditorState`) take the
+keyboard with `focus()` and give it back with `blur()`. Herdr then hands the
+keyboard to the dialog or pane, and the field stays usable. `release()` frees
+the state. Text: `TextView.markdown(id, text)` renders Markdown.
+`.raw_html(false)` shows embedded HTML tags and blocks as literal text.
+Markdown autolinks stay clickable. With
 `.selectable(true)`, `.on_selection_change((s, cx) => …)` gets a settled
 selection or `null` when it clears. `s.text` matches what copying the selected
 text in that view gives you. When `s.range` is present, use
@@ -1519,12 +1546,22 @@ When `s.position` is present, place a popup with
 language, value, readonly, font_family: settings().terminal_font.family,
 font_size: settings().terminal_font.size, syntax: {
 keyword: theme().ansi5, ... } })` + `Editor.new(state)` is a code view (readonly)
-or editor with syntax highlighting, line numbers and folding. An editor keeps
-the `font_size` it was made with while the panels' scales change under it, so
-it matches the terminals only until `zoom`, `ui_zoom` or `ui_text_scale`
-changes: make it again from a fresh `settings().terminal_font` to follow
-them (or pass a size of your own). A viewer opens
-beside the shell as a pane: `pane.split {direction, mod, props: { file }}`.
+or editor with syntax highlighting, line numbers and folding. For Markdown
+source, set `language: "markdown"` or `"md"`. The `syntax` keys are `heading`,
+`strong`, `emphasis`, `code`, `quote`, `list`, and `link` (the URL). Use
+`theme()` colors for light and dark layouts. Built-in syntax colors use a
+dark-editor palette. Call
+`state.set_soft_wrap(wrap)` from a view callback to switch between wrapping
+long lines and scrolling sideways while keeping the editor's text and selection.
+Tab indents by 2 spaces. Set `tab_size` (1 to 16) for the number of spaces per
+indent and the spacing of the indent guides. Set `hard_tabs: true` to insert
+literal tabs. The text renderer chooses the displayed width of tab characters.
+Once a file's style is known, call `state.set_tab_size(4, false)`.
+An editor keeps the `font_size` it was made with while the panels' scales
+change under it, so it matches the terminals only until `zoom`, `ui_zoom` or
+`ui_text_scale` changes: make it again from a fresh `settings().terminal_font`
+to follow them (or pass a size of your own).
+A viewer opens beside the shell as a pane: `pane.split {direction, mod, props: { file }}`.
 The full surface is in `gpui-kit.d.ts` next to this file.
 
 ### The `herdr` module

@@ -6,7 +6,7 @@ const tabsSource = strip(await readFile(new URL("../defaults/mods/tabs/main.js",
 const menuSource = strip(await readFile(new URL("../defaults/mods/menu/main.js", import.meta.url), "utf8"), "Menu");
 
 type Tab = { id: string; name: string; active: boolean };
-type Ev = { position: { x: number; y: number }; pressed_button?: string | null; local_position?: { x: number; y: number }; bounds?: { x: number; y: number; width: number; height: number }; click_count?: number; key?: string };
+type Ev = { position: { x: number; y: number }; pressed_button?: string; local_position?: { x: number; y: number }; bounds?: { x: number; y: number; width: number; height: number }; click_count?: number; key?: string };
 
 // Every element a render builds, with its id and handlers, so a test can find
 // a tab by id and press, move and release on it as GPUI would.
@@ -54,25 +54,27 @@ function harness(names = ["a", "b", "c", "d"]) {
   const box = (id: string) => ({ x: 20 + tabs.findIndex(t => t.id === id) * 104, y: 5, width: 100, height: 29 });
   const at = (id: string, dx: number): Ev => {
     const b = box(id);
-    return { position: { x: b.x + dx, y: 20 }, local_position: { x: dx, y: 15 }, bounds: b, pressed_button: held };
+    return { position: { x: b.x + dx, y: 20 }, local_position: { x: dx, y: 15 }, bounds: b, ...button() };
   };
-  const stripEv = (x: number): Ev => ({ position: { x, y: 20 }, local_position: { x, y: 20 }, bounds: { x: 0, y: 0, width: 800, height: 40 }, pressed_button: held });
+  const stripEv = (x: number): Ev => ({ position: { x, y: 20 }, local_position: { x, y: 20 }, bounds: { x: 0, y: 0, width: 800, height: 40 }, ...button() });
   // GPUI bubbles a pointer event from the innermost element out.
-  // The button a move reports held: left from a press to its release.
-  let held: string | null = null;
+  // The button a move reports held: left from a press to its release; absent
+  // when none is, as the shell leaves it out.
+  let held: string | undefined;
+  const button = () => held ? { pressed_button: held } : {};
   const press = (id: string, dx = 50, click_count = 1) => { held = "left"; find(`tab-${id}`).$handlers["on_mouse_down:left"]({ ...at(id, dx), click_count }, cx); render(); };
   // The row of tabs (and the tail after them) spans x = 20 to 640.
-  const rowEv = (x: number): Ev => ({ position: { x, y: 20 }, local_position: { x: x - 20, y: 20 }, bounds: { x: 20, y: 0, width: 620, height: 40 }, pressed_button: held });
+  const rowEv = (x: number): Ev => ({ position: { x, y: 20 }, local_position: { x: x - 20, y: 20 }, bounds: { x: 20, y: 0, width: 620, height: 40 }, ...button() });
   const inRow = (x: number) => find("tab-scroll").$handlers.on_mouse_move(rowEv(x), cx);
   const moveOver = (id: string, dx: number) => { const x = at(id, dx).position.x; find(`tab-${id}`).$handlers.on_mouse_move(at(id, dx), cx); inRow(x); strip().$handlers.on_mouse_move(stripEv(x), cx); render(); };
   const moveStrip = (x: number) => { if (x >= 20 && x <= 640) inRow(x); strip().$handlers.on_mouse_move(stripEv(x), cx); render(); };
   const moveTail = (x: number) => { find("tab-tail").$handlers.on_mouse_move(stripEv(x), cx); inRow(x); strip().$handlers.on_mouse_move(stripEv(x), cx); render(); };
-  const release = (id?: string) => { held = null; if (id) find(`tab-${id}`).$handlers["on_mouse_up:left"](at(id, 50), cx); strip().$handlers["on_mouse_up:left"](stripEv(0), cx); render(); };
+  const release = (id?: string) => { held = undefined; if (id) find(`tab-${id}`).$handlers["on_mouse_up:left"](at(id, 50), cx); strip().$handlers["on_mouse_up:left"](stripEv(0), cx); render(); };
   const leave = () => { strip().$handlers.on_hover(false, cx); render(); };
   const key = (k: string) => { strip().$handlers.on_key_down({ key: k }, cx); render(); };
   const setTabs = (next: Tab[]) => { tabs = next; render(); };
   const setPanes = (next: unknown[]) => { paneList = next; render(); };
-  const lose = () => { held = null; };
+  const lose = () => { held = undefined; };
   return { view, runs, handle, find, all: () => elements, press, moveOver, moveStrip, moveTail, release, leave, key, render, setTabs, setPanes, lose, ...Tabs };
 }
 
@@ -262,6 +264,13 @@ type Handler = (event: unknown) => void;
 class Element {
   nodes: Element[] = [];
   calls: Record<string, unknown[]> = {};
+  findById(id: string): Element | undefined {
+    if (this.calls.id?.[0] === id) return this;
+    for (const child of this.nodes) {
+      const found = child?.findById?.(id);
+      if (found) return found;
+    }
+  }
   constructor() {
     const proxy: Element = new Proxy(this, {
       get: (target, key: string) => key in target ? Reflect.get(target, key) : (...args: unknown[]) => {
@@ -373,6 +382,34 @@ test("the wheel switches no tab while one is being dragged", () => {
 const label = new Function("View", `${tabsSource}; return label;`)(class {});
 
 const claude = { terminal: "t1", program: { name: "Claude Code", key: "claude", agent: true }, title: "my-task", label: "my-task" };
+
+test("opening an agent from the + menu leaves the tab label free to follow the shell and the next agent", async () => {
+  const menuSource = await readFile(new URL("../defaults/mods/new-menu/main.js", import.meta.url), "utf8");
+  const launches: { name?: string; space: string; argv: string[] }[] = [];
+  const globals = {
+    ...values, v_flex: element, keys: () => [], props: () => ({}), closeOverlay() {},
+    run(command: string, args: typeof launches[number]) {
+      expect(command).toBe("tab.new");
+      launches.push(args);
+    },
+  };
+  const Menu = new Function(...Object.keys(globals), menuSource.replace(/^import .*;\n/gm, "").replace("export default class NewMenu", "return class NewMenu"))(...Object.values(globals));
+  const menu = new Menu();
+  menu.agents = [{ ...claude.program, run: ["claude"], installed: true }];
+  const root: Element = menu.render();
+  (root.findById("claude")!.calls.on_click[0] as () => void)();
+  (root.calls.on_key_down[0] as Handler)({ key: "1", modifiers: {} });
+
+  expect(launches).toHaveLength(2);
+  for (const launch of launches) {
+    expect(launch.space).toBe("s1");
+    expect(launch.argv).toEqual(["claude"]);
+    const tab = { name: launch.name || "2", named: Boolean(launch.name) };
+    expect(label(tab, { program: claude.program })).toBe("Claude Code");
+    expect(label(tab, { program: { name: "bash" } })).toBe("bash");
+    expect(label(tab, { program: { key: "codex", name: "Codex", agent: true } })).toBe("Codex");
+  }
+});
 
 test("a tab Herdr named after its agent follows the agent's label", () => {
   expect(label({ name: "Claude Code", named: true }, claude)).toBe("my-task");

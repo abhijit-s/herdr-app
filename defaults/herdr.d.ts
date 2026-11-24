@@ -498,7 +498,7 @@ export function window(): {
   active: boolean;
   scale_factor: number;
   visible: boolean;
-};
+} | null;
 
 /** Sets the OS window's title, which window switchers, taskbars and time trackers read. The last
  *  call wins, whichever mod made it; null restores "Herdr". It doesn't outlive the app, so set it
