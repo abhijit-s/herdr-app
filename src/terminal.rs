@@ -2885,7 +2885,7 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, view: &WeakEntit
     let cursor = frame.cursor_cell.filter(|_| ligatures);
     // A window-wide dim is the window's veil (`AppWindow::render`), not the text's.
     let settings = crate::settings::get();
-    let dim = if window.is_window_active() || settings.unfocused_dim_scope != crate::settings::DimScope::Text { 0.0 } else { settings.unfocused_dim };
+    let dim = if window.is_window_active() || !crate::settings::dim_due() || settings.unfocused_dim_scope != crate::settings::DimScope::Text { 0.0 } else { settings.unfocused_dim };
     let fade = Fade { toward: frame.bg, dim };
     let with = painted_with(cell, text_size, fade);
     let metrics = grid.borrow_mut().metrics_for((with.0, with.1, with.2.clone(), scale.to_bits()), window.text_system());

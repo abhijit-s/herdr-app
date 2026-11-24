@@ -3360,6 +3360,8 @@ thread_local! {
     static CURRENT: RefCell<(Rc<Settings>, Rc<Theme>)> =
         RefCell::new((Rc::new(Settings::default()), Rc::new(resolve(&GRAPHITE, &BTreeMap::new(), PanelColors::Tinted, false, ToastStyle::Standard))));
     static WINDOW_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether the window has been inactive long enough for `unfocused_dim`.
+    static DIM_DUE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The theme's palette and own colors as `set` last read them, so a
     /// focus change resolves again without reading the theme file.
     static PALETTE: RefCell<(Palette, BTreeMap<String, String>)> = RefCell::new((GRAPHITE.clone(), BTreeMap::new()));
@@ -3467,6 +3469,16 @@ fn person_text(person: &Person, previous: &str) -> std::io::Result<String> {
 /// `set` applies it.
 pub fn set_window_active(active: bool) {
     WINDOW_ACTIVE.with(|w| w.set(active));
+}
+
+/// Notes, each frame, whether the window's `unfocused_dim` is due (inactive
+/// long enough), for terminal text's dim to follow the window's veil.
+pub fn set_dim_due(due: bool) {
+    DIM_DUE.with(|d| d.set(due));
+}
+
+pub fn dim_due() -> bool {
+    DIM_DUE.with(|d| d.get())
 }
 
 fn resolve_for(s: &Settings, p: &Palette, own: &BTreeMap<String, String>) -> Theme {
