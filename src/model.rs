@@ -885,11 +885,11 @@ impl Model {
     /// the keyboard. Returns whether the pane is now zoomed.
     pub fn toggle_zoom(&mut self, pane_id: &str) -> bool {
         let Some(c) = self.tab_of_mut(pane_id) else { return false };
-        if c.panes().len() < 2 {
-            return false;
-        }
         if c.zoomed.as_deref() == Some(pane_id) {
             c.zoomed = None;
+            return false;
+        }
+        if !c.keeps_zoom(pane_id) {
             return false;
         }
         c.zoomed = Some(pane_id.to_owned());
@@ -1812,6 +1812,19 @@ mod tests {
         // The last tiled pane closes: the float is the tab's only pane.
         m.remove_pane("x1");
         assert_eq!(m.tab("c1").unwrap().zoomed, None);
+    }
+
+    #[test]
+    fn zoom_starts_only_where_it_would_be_kept() {
+        let mut m = model_with_one();
+        m.split("x1", Axis::Row, "x2", "t2");
+        m.float_pane("x2", [0.2, 0.2, 0.6, 0.6]).unwrap();
+        // The only tiled pane, under a float: zooming it would show nothing new.
+        assert!(!m.toggle_zoom("x1"));
+        assert_eq!(m.tab("c1").unwrap().zoomed, None);
+        // The float over another pane zooms.
+        assert!(m.toggle_zoom("x2"));
+        assert_eq!(m.tab("c1").unwrap().zoomed.as_deref(), Some("x2"));
     }
 
     #[test]
