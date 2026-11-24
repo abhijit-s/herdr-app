@@ -34,10 +34,10 @@ impl AppWindow {
 
     /// A tab: its tiled panes, and its floating ones above them. A tab without
     /// floats draws exactly as before.
-    pub(super) fn render_tab(&self, tab: &Tab, focused: &HashSet<String>, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_tab(&self, tab: &Tab, focused: &HashSet<String>, rendered_dividers: &mut HashSet<(String, usize)>, cx: &mut Context<Self>) -> AnyElement {
         let tiled = match self.slide.as_ref().filter(|s| s.shows(&tab.id)) {
-            Some(slide) => self.render_slide(slide, focused, self.pane_frame(), cx),
-            None => self.render_node(tab.shown(), focused, self.pane_frame(), cx),
+            Some(slide) => self.render_slide(slide, focused, self.pane_frame(), rendered_dividers, cx),
+            None => self.render_node(tab.shown(), focused, self.pane_frame(), rendered_dividers, cx),
         };
         if tab.floating.is_empty() {
             return tiled;
@@ -64,13 +64,13 @@ impl AppWindow {
             .shown_floats()
             .map(|f| {
                 let rect = if zoomed == Some(f.pane.id.as_str()) { [0.0, 0.0, 1.0, 1.0] } else { f.rect };
-                self.render_float_pane(f, rect, area, focused, cx)
+                self.render_float_pane(f, rect, area, focused, rendered_dividers, cx)
             })
             .collect();
         div().relative().size_full().flex().child(tiled).child(measure).children(floats).into_any_element()
     }
 
-    fn render_float_pane(&self, f: &FloatPane, rect: Rect, area: Option<Size<Pixels>>, focused: &HashSet<String>, cx: &mut Context<Self>) -> AnyElement {
+    fn render_float_pane(&self, f: &FloatPane, rect: Rect, area: Option<Size<Pixels>>, focused: &HashSet<String>, rendered_dividers: &mut HashSet<(String, usize)>, cx: &mut Context<Self>) -> AnyElement {
         let frame = self.float_frame();
         let mut el = div().absolute().flex().occlude();
         el = match area {
@@ -87,7 +87,7 @@ impl AppWindow {
             let on = focused.contains(&f.pane.id);
             el = el.overflow_hidden().border_1().border_color(c(if on { "accent" } else { "border" }));
         }
-        el.child(self.render_node(&f.pane, focused, frame, cx)).into_any_element()
+        el.child(self.render_node(&f.pane, focused, frame, rendered_dividers, cx)).into_any_element()
     }
 
     /// A float's rect in px inside the tab area: at least `MIN_COLS` × `MIN_ROWS`
