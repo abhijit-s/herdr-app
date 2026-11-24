@@ -31,6 +31,7 @@ pub fn frame_start() {
 /// Put last in the window: painted last, it ends the frame's clock.
 pub fn frame_end() -> impl gpui::IntoElement {
     gpui::canvas(|_, _, _| {}, |_, _, _, _| {
+        crate::startup_timing::mark("-", "first-frame");
         if let Some(t) = FRAME_START.lock().unwrap().take() {
             FRAME_US.fetch_add(t.elapsed().as_micros() as u64, Relaxed);
         }

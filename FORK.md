@@ -252,6 +252,18 @@ Each merge of `upstream/master` into `master`, with the conflict choices worth r
 - Files: `build.rs`, `fork_build.rs`, `src/fork_build.rs`, `src/main.rs`, `src/update.rs`, `src/core_bin.rs`, `src/window.rs`, `defaults/frame/settings/main.js`, `scripts/settings.test.ts`, `tests/fixtures/core-bin/herdr-core-fork`
 - Upstream: none (fork only)
 
+### Startup time
+
+`perf/startup-wins` (fork only for now): the window's fonts are listed once per start instead of up to three times, and startup can be timed on any build.
+
+- Font listing: `TextSystem::all_font_names` walks every installed face (CoreText descriptors), 0.4 to 0.9 s on a Mac with many fonts. Startup asked three times: `main` after the bundled fonts, `settings::load_home_fonts` after the home's, and `mods::note_fonts` in `AppWindow::new`. `settings::font_names` keeps one listing per (text system, `fonts_added()`), so a later `load_home_fonts` that adds fonts lists again and nothing else does; `main` loads the home's fonts before listing. Tests skip the cache (they make text systems by the hundred and a freed one's address comes back). Measured on 44 terminals in 11 tabs, five interleaved launches each under the same load: first frame 2055 → 675 ms, visible panes painted 2175 → 865 ms (medians).
+- Timing: `HERDR_APP_STARTUP_LOG=1` prints each step's first occurrence to stderr as `[startup] <ms since main> <step> <terminal or ->` (`src/startup_timing.rs`): `main` … `open-window`, `first-frame`, and per terminal `view-created`, `layout-fitted` or `layout-timeout`, `attach-sent`, `attach-reply`, `attach-handled`, `ingested`, `painted-empty`, `painted`. Unset, each mark is one `OnceLock` read.
+- Not changed: hidden tabs' terminals still wait up to 100 ms for a layout (`attach_deadline`). They attach after the visible panes have painted, so the wait is off the visible path; attaching them at once put 40 attach replies ahead of the visible ones and painted the visible panes about 140 ms later (first frame to panes painted, 348 vs 209 ms, means of three).
+- Left: the one listing (0.4 to 0.6 s) still runs on the main thread before the window opens. Listing on a thread while the window builds would need `terminal_font` and the mods' `fonts()` to wait for it.
+- Tests: `settings::tests::fonts_are_listed_once_until_more_are_added`.
+- Files: `src/startup_timing.rs`, `src/main.rs`, `src/settings.rs`, `src/mods.rs`, `src/bench.rs`, `src/terminal.rs`
+- Upstream: possible (the font listing is upstream code; the timing log is fork only)
+
 ### Pane and agent labels
 
 `feat/agent-label` (branched from `master`, fork only): what a pane or agent is called is one app-level value, `label`, with `session` beside it, on `panes()`, `agents()` and `herdr-app ls`, so mods stop carrying their own copies of the "telling title" rule. `src/pane_label.rs` holds the resolver and the rule.

@@ -3875,8 +3875,41 @@ impl Settings {
 /// Font families on this machine (the bundled ones and the home's included).
 static FONTS: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
 
-pub fn note_fonts(names: Vec<String>) {
-    *FONTS.lock().unwrap() = Some(names.into_iter().map(|n| n.to_lowercase()).collect());
+pub fn note_fonts(names: &[String]) {
+    *FONTS.lock().unwrap() = Some(names.iter().map(|n| n.to_lowercase()).collect());
+}
+
+/// The text system's font families, listed once per set of added fonts: a
+/// listing walks every installed face (0.4 to 0.9 s on a Mac with many fonts),
+/// and startup needs it in three places.
+pub fn font_names(cx: &gpui::App) -> std::sync::Arc<Vec<String>> {
+    static NAMES: FontNames<(usize, u64)> = Mutex::new(None);
+    let system = std::sync::Arc::as_ptr(cx.text_system()) as usize;
+    // Tests make text systems by the hundred, and a freed one's address comes back.
+    if cfg!(test) {
+        return std::sync::Arc::new(cx.text_system().all_font_names());
+    }
+    font_names_with(&NAMES, (system, fonts_added()), || cx.text_system().all_font_names())
+}
+
+/// The last listing and what it was made for.
+type FontNames<K> = Mutex<Option<(K, std::sync::Arc<Vec<String>>)>>;
+
+/// Lists again when `generation` (which text system, how many font loads) moved.
+fn font_names_with<K: PartialEq>(
+    cache: &FontNames<K>,
+    generation: K,
+    list: impl FnOnce() -> Vec<String>,
+) -> std::sync::Arc<Vec<String>> {
+    let mut cache = cache.lock().unwrap();
+    match &*cache {
+        Some((at, names)) if *at == generation => names.clone(),
+        _ => {
+            let names = std::sync::Arc::new(list());
+            *cache = Some((generation, names.clone()));
+            names
+        }
+    }
 }
 
 /// Font files the home brings: `fonts/` and each mod's `fonts/` (a layout's
@@ -3905,7 +3938,7 @@ pub fn load_home_fonts(cx: &mut gpui::App) -> bool {
         tracing::warn!("fonts in {} not loaded: {e:#}", home.display());
     }
     FONTS_ADDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    note_fonts(cx.text_system().all_font_names());
+    note_fonts(&font_names(cx));
     true
 }
 
@@ -3959,6 +3992,22 @@ pub const DEFAULT_FONT: &str = "JetBrains Mono";
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fonts_are_listed_once_until_more_are_added() {
+        let cache = std::sync::Mutex::new(None);
+        let listings = std::cell::Cell::new(0);
+        let list = |names: &[&str]| {
+            listings.set(listings.get() + 1);
+            names.iter().map(|n| n.to_string()).collect::<Vec<_>>()
+        };
+        assert_eq!(*super::font_names_with(&cache, (1, 0), || list(&["Menlo"])), ["Menlo"]);
+        assert_eq!(*super::font_names_with(&cache, (1, 0), || list(&["unused"])), ["Menlo"], "same fonts: the first listing");
+        assert_eq!(listings.get(), 1);
+        assert_eq!(*super::font_names_with(&cache, (1, 1), || list(&["Menlo", "Herdr 98"])), ["Menlo", "Herdr 98"], "fonts added: listed again");
+        assert_eq!(*super::font_names_with(&cache, (2, 1), || list(&["Inter"])), ["Inter"], "another text system: its own listing");
+        assert_eq!(listings.get(), 3);
+    }
+
     #[test]
     fn terminal_ligatures_default_off_and_can_be_enabled() {
         use super::*;

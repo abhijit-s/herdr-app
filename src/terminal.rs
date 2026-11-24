@@ -549,12 +549,17 @@ impl TerminalView {
         let address = self.address.clone();
         let deadline = cx.background_executor().timer(self.attach_deadline.saturating_duration_since(cx.background_executor().now()));
         // Replacing the task drops an attach still in flight for an older connection.
+        crate::startup_timing::mark(&address, "view-created");
         self._reader = Some(cx.spawn(async move |this, cx| {
             if let Some(ready) = fit_ready {
                 let mut ready = std::pin::pin!(ready.recv());
                 let mut deadline = std::pin::pin!(deadline);
                 std::future::poll_fn(|cx| {
-                    if ready.as_mut().poll(cx).is_ready() || deadline.as_mut().poll(cx).is_ready() {
+                    if ready.as_mut().poll(cx).is_ready() {
+                        crate::startup_timing::mark(&address, "layout-fitted");
+                        Poll::Ready(())
+                    } else if deadline.as_mut().poll(cx).is_ready() {
+                        crate::startup_timing::mark(&address, "layout-timeout");
                         Poll::Ready(())
                     } else {
                         Poll::Pending
@@ -568,10 +573,17 @@ impl TerminalView {
                 let facts = display_update(&mut g.told_display, &vt::theme(), cell).unwrap();
                 (g.vt.cols, g.vt.rows, facts)
             }) else { return };
-            let attached = cx.background_executor().spawn(async move { core.attach(&address, cols, rows, facts) }).await;
+            crate::startup_timing::mark(&address, "attach-sent");
+            let sent = address.clone();
+            let attached = cx.background_executor().spawn(async move {
+                let attached = core.attach(&sent, cols, rows, facts);
+                crate::startup_timing::mark(&sent, "attach-reply");
+                attached
+            }).await;
             let Ok(Some(rx)) = this.update(cx, |this, cx| this.attached(attached, (cols, rows), cx)) else {
                 return;
             };
+            crate::startup_timing::mark(&address, "attach-handled");
             // Keep the first history paint together; live output gets the shorter budget.
             let mut budget = Duration::from_millis(250);
             while let Ok(first) = rx.recv().await {
@@ -734,6 +746,7 @@ impl TerminalView {
 
     /// Feeds relayed bytes in; returns false once the stream is over.
     pub(crate) fn ingest(&mut self, batch: impl IntoIterator<Item = Stream>, cx: &mut Context<Self>) -> bool {
+        crate::startup_timing::mark(&self.address, "ingested");
         let mut open = true;
         let title = {
             let mut g = self.grid.borrow_mut();
@@ -2793,6 +2806,10 @@ fn settle_jumps(grid: Rc<RefCell<Grid>>, view: WeakEntity<TerminalView>, settle:
 
 fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, view: &WeakEntity<TerminalView>, focused: bool, window: &mut Window, cx: &mut App) {
     crate::bench::count(&crate::bench::GRID);
+    if crate::startup_timing::enabled() && let Some(view) = view.upgrade() {
+        let attached = grid.borrow().channel.is_some();
+        crate::startup_timing::mark(&view.read(cx).address, if attached { "painted" } else { "painted-empty" });
+    }
     let mut g = grid.borrow_mut();
     let (cell, text_size) = (g.cell, g.font);
     let (pad_x, pad_y) = pad();
