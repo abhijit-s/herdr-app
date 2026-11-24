@@ -51,6 +51,7 @@ mod setup;
 mod sound;
 mod spawn;
 mod sprites;
+mod startup_timing;
 mod telemetry;
 mod feedback;
 mod terminal;
@@ -112,6 +113,7 @@ fn link_check_path(args: &[String]) -> Option<&std::path::Path> {
 }
 
 fn main() {
+    startup_timing::begin();
     let args: Vec<String> = std::env::args().collect();
     #[cfg(target_os = "macos")]
     macos_check::startup(&args);
@@ -167,8 +169,10 @@ fn main() {
         }
     }
 
+    startup_timing::mark("-", "args");
     #[cfg(target_os = "macos")]
     core_bin::fill_path();
+    startup_timing::mark("-", "fill-path");
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("HERDR_APP_LOG")
@@ -182,6 +186,7 @@ fn main() {
     }
 
     telemetry::clock();
+    startup_timing::mark("-", "update-checked");
     // A first start sizes the app to the screen and the system's text size.
     let fresh = !settings::path().exists();
     // The core people installed; without one, the setup screen installs it.
@@ -201,6 +206,7 @@ fn main() {
             }
         }
     };
+    startup_timing::mark("-", "core-connected");
     #[cfg(target_os = "macos")]
     core_bin::install_cli_link();
     if let Ok(core) = &core {
@@ -209,21 +215,29 @@ fn main() {
     update::start();
     telemetry::start(settings::telemetry_setting(&person));
     bench::start();
+    startup_timing::mark("-", "services");
     if let Err(e) = mods::write_workspace() {
         eprintln!("herdr-app: cannot write {}: {e}", mods::app_dir().display());
     }
+    startup_timing::mark("-", "workspace");
 
     gpui_platform::application()
         // Mods run programs already; the user's own links (dotfiles, Nix) may point out.
         .with_assets(gpui_shell::AppAssets::new(mods::app_dir()).following_links())
         .run(move |cx| {
+            startup_timing::mark("-", "app-running");
             let fonts = settings::BUNDLED_FONTS.iter().map(|f| std::borrow::Cow::Borrowed(*f)).collect();
             if let Err(e) = cx.text_system().add_fonts(fonts) {
                 tracing::warn!("bundled fonts not loaded: {e:#}");
             }
-            settings::note_fonts(cx.text_system().all_font_names());
+            startup_timing::mark("-", "bundled-fonts");
+            // The home's fonts first, so one listing covers them (the listing is the slow part).
             settings::load_home_fonts(cx);
+            startup_timing::mark("-", "home-fonts");
+            settings::note_fonts(&settings::font_names(cx));
+            startup_timing::mark("-", "font-names");
             mods::init(cx);
+            startup_timing::mark("-", "mods-init");
             // Not restarted for it: the update goes in when the app quits.
             cx.on_app_quit(|cx| {
                 let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
@@ -254,10 +268,12 @@ fn main() {
                     let _ = settings::write_person(&settings::Person { zoom, ..Default::default() });
                 }
             }
+            startup_timing::mark("-", "macos-init");
             let requests = mods::install_policy();
             if let Some(tx) = mods::request_sender() {
                 control::listen(tx);
             }
+            startup_timing::mark("-", "policy");
             match core {
                 Ok(core) => open_main(core, requests, cx),
                 Err(need) => setup::open(need, requests, cx),
@@ -291,8 +307,10 @@ pub fn open_main(core: std::sync::Arc<hc::Core>, requests: async_channel::Receiv
                 app_id: Some(std::env::var("HERDR_APP_ID").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "herdr-app".into())),
                 ..Default::default()
             };
+            startup_timing::mark("-", "open-window");
             cx.open_window(options, |window, cx| cx.new(|cx| window::AppWindow::new(core, requests, window, cx)))
                 .expect("cannot open the Herdr window");
+            startup_timing::mark("-", "window-opened");
             if !background {
                 cx.activate(true);
             }

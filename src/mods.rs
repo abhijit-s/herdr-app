@@ -51,7 +51,7 @@ static FONTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 pub fn note_fonts(cx: &gpui::App) {
     // Names starting with "." are the system's private UI fonts (macOS).
-    let mut names: Vec<String> = cx.text_system().all_font_names().into_iter().filter(|n| !n.starts_with('.')).collect();
+    let mut names: Vec<String> = crate::settings::font_names(cx).iter().filter(|n| !n.starts_with('.')).cloned().collect();
     names.sort_by_key(|n| n.to_lowercase());
     names.dedup();
     *FONTS.lock().unwrap() = names;
