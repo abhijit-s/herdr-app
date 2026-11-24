@@ -903,6 +903,10 @@ pub struct AppWindow {
     _focus_lost: Option<Subscription>,
     /// Shades the sidebars as the window gains or loses focus (`sidebar_shade`).
     _activation: Option<Subscription>,
+    /// When the window went inactive, for `unfocused_dim` (`follow_dim`).
+    dim_clock: DimClock,
+    /// Redraws once the inactive window is due to dim.
+    _dim_wait: Option<Task<()>>,
     /// Remembers where the window is (`place.rs`); the write waiting to settle.
     _place: Option<Subscription>,
     place_write: Option<Task<()>>,
@@ -1053,6 +1057,8 @@ impl AppWindow {
             _tasks: Vec::new(),
             _focus_lost: None,
             _activation: None,
+            dim_clock: DimClock::default(),
+            _dim_wait: None,
             _place: None,
             place_write: None,
             _visibility: None,
@@ -1454,11 +1460,35 @@ impl AppWindow {
     /// `theme()` redraw, and the window.
     fn shade_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         settings::set_window_active(window.is_window_active());
+        self.follow_dim(window, cx);
         if settings::follows_focus() && settings::reshade() {
             mods::bump_revision("theme");
             self.refresh_snapshot_mods(cx);
             window.refresh();
         }
+    }
+
+    /// `unfocused_dim`'s own view of the window's activity: it dims once the
+    /// window has been inactive for `DIM_DELAY`, and undims at once. Returns
+    /// whether it's dimmed now. With `unfocused_dim` 0 no timer runs.
+    fn follow_dim(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let now = cx.background_executor().now();
+        match self.dim_clock.follow(window.is_window_active(), now) {
+            Some(wait) if settings::get().unfocused_dim > 0.0 => {
+                if self._dim_wait.is_none() {
+                    let timer = cx.background_executor().timer(wait);
+                    self._dim_wait = Some(cx.spawn_in(window, async move |this, cx| {
+                        timer.await;
+                        let _ = this.update_in(cx, |this, window, _| {
+                            this._dim_wait = None;
+                            window.refresh();
+                        });
+                    }));
+                }
+            }
+            _ => self._dim_wait = None,
+        }
+        self.dim_clock.dimmed(now)
     }
 
     fn reload_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -7859,7 +7889,9 @@ impl Render for AppWindow {
         crate::bench::frame_start();
         window.set_rem_size(settings::ui_rem());
         set_text_look(window);
-        window.set_veil(inactive_veil(window.is_window_active()));
+        let dimmed = self.follow_dim(window, cx);
+        settings::set_dim_due(dimmed);
+        window.set_veil(inactive_veil(!dimmed));
         let (lower, upper) = (self.lower.entity_id(), self.upper.entity_id());
         let trail_only = window.only_view_notified(self.trail_layer.entity_id())
             && !window.view_dirty(lower)
@@ -7983,6 +8015,34 @@ impl Render for AppWindow {
             .child(trail)
             .child(above)
             .child(crate::bench::frame_end())
+    }
+}
+
+/// How long the window must be inactive before `unfocused_dim` fades it: a
+/// moment's focus grab (a notification, an app raising itself and giving the
+/// focus back) would otherwise flash the whole window.
+const DIM_DELAY: Duration = Duration::from_millis(150);
+
+/// When the window stopped being active, for the inactive dim.
+#[derive(Default)]
+struct DimClock {
+    inactive_since: Option<Instant>,
+}
+
+impl DimClock {
+    /// The window's activity at `now`. Returns how long until it's due to dim,
+    /// while it's inactive and not yet due.
+    fn follow(&mut self, active: bool, now: Instant) -> Option<Duration> {
+        if active {
+            self.inactive_since = None;
+            return None;
+        }
+        let since = *self.inactive_since.get_or_insert(now);
+        DIM_DELAY.checked_sub(now.saturating_duration_since(since)).filter(|wait| !wait.is_zero())
+    }
+
+    fn dimmed(&self, now: Instant) -> bool {
+        self.inactive_since.is_some_and(|since| now.saturating_duration_since(since) >= DIM_DELAY)
     }
 }
 
@@ -14719,6 +14779,31 @@ export default class Probe extends View {
         assert_eq!(drawing(cx), bright, "focused again, the text is not at full brightness");
     }
 
+    /// The inactive dim waits `DIM_DELAY` of inactivity; coming back sooner
+    /// never dims, and coming back cancels a wait under way.
+    #[test]
+    fn the_dim_waits_for_the_window_to_stay_inactive() {
+        use super::{DIM_DELAY, DimClock};
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let ms = |n| t0 + Duration::from_millis(n);
+        let mut clock = DimClock::default();
+        assert_eq!(clock.follow(true, t0), None, "active: nothing to wait for");
+        assert!(!clock.dimmed(t0));
+
+        assert_eq!(clock.follow(false, t0), Some(DIM_DELAY), "inactive: the whole delay to wait");
+        assert_eq!(clock.follow(false, ms(100)), Some(Duration::from_millis(50)), "the wait counts from going inactive");
+        assert!(!clock.dimmed(ms(149)), "not dimmed before the delay");
+        assert_eq!(clock.follow(true, ms(120)), None, "back within the delay");
+        assert!(!clock.dimmed(ms(400)), "a moment away never dims");
+
+        assert_eq!(clock.follow(false, ms(400)), Some(DIM_DELAY), "a new blur waits afresh");
+        assert_eq!(clock.follow(false, ms(550)), None, "due: nothing more to wait for");
+        assert!(clock.dimmed(ms(550)), "dimmed once the delay passes");
+        assert_eq!(clock.follow(true, ms(600)), None);
+        assert!(!clock.dimmed(ms(600)), "back in Herdr: undimmed at once");
+    }
+
     #[test]
     fn the_whole_window_dims_while_inactive() {
         in_own_process("unfocused_dim_window");
@@ -14868,6 +14953,15 @@ export default class Probe extends View {
         let background = super::Hsla { a: 0.4, ..super::c("background") };
         let grey = super::Hsla { a: 0.4, ..crate::settings::parse_hex("#4d4d4d").unwrap() };
         assert_eq!(veils(background, cx), Vec::<bool>::new(), "active, nothing is veiled");
+
+        // A moment away (another app taking the focus and giving it back) doesn't dim.
+        cx.deactivate_window();
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+        assert_eq!(veils(background, cx), Vec::<bool>::new(), "100 ms inactive, nothing is veiled yet");
+        cx.update(|window, _| window.activate_window());
+        settle(cx);
+        assert_eq!(veils(background, cx), Vec::<bool>::new(), "back within the delay, never veiled");
 
         cx.deactivate_window();
         settle(cx);
