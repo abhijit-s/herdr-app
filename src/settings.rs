@@ -3566,8 +3566,8 @@ pub fn set(s: Settings) -> bool {
             return false;
         }
         let (pixels, text) = s.mod_scales();
-        gpui_shell::set_pixel_scale(pixels);
-        gpui_shell::set_text_scale(text);
+        herdr_shell::set_pixel_scale(pixels);
+        herdr_shell::set_text_scale(text);
         *c.borrow_mut() = (Rc::new(s), Rc::new(theme));
         true
     })

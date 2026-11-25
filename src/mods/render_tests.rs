@@ -1,7 +1,7 @@
 //! Shipped JS descriptions and native rendering regressions.
 use super::*;
 use gpui::TestAppContext;
-use gpui_shell::{ShellRuntime, plugin::DescriptionSession, policy::Policy};
+use herdr_shell::{ShellRuntime, plugin::DescriptionSession, policy::Policy};
 use std::{
     cell::Cell,
     collections::{BTreeMap, BTreeSet},
@@ -15,7 +15,7 @@ use std::{
 fn mod_text_selection_stays_in_its_shell_root(cx: &mut TestAppContext) {
     use gpui::*;
     use gpui_base::{SelectableText, TextSelection, TextView, TextViewState};
-    use gpui_shell::ShellRoot;
+    use herdr_shell::ShellRoot;
 
     struct Column {
         texts: Vec<Entity<TextViewState>>,
@@ -38,7 +38,7 @@ fn mod_text_selection_stays_in_its_shell_root(cx: &mut TestAppContext) {
             }))
         }
     }
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let mut texts = Vec::new();
     let (_, cx) = cx.add_window_view(|window, cx| {
         let roots = ["LEFT", "CENTER", "RIGHT"].into_iter().map(|label| {
@@ -247,9 +247,9 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
     module = module.function("modSchemas", |_| Ok(to_host(&serde_json::json!([]))));
     module = module.function("setModSetting", |_| Ok(HostValue::Null));
     for name in ["nextCommand", "nextGitStatus", "nextSystemNotificationClick", "nextModSettings"] {
-        module = module.async_function(name, |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
+        module = module.async_function(name, |_| Ok(std::future::pending::<herdr_shell::HostResult>()));
     }
-    module = module.cancellable_async_function("watchFolder", HostValue::Array(vec![]), |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
+    module = module.cancellable_async_function("watchFolder", HostValue::Array(vec![]), |_| Ok(std::future::pending::<herdr_shell::HostResult>()));
     for name in ["exec", "hc", "readTextFile", "writeTextFile", "sendFeedback"] {
         let calls = calls.clone();
         module = module.async_function(name, move |a| {
@@ -307,7 +307,7 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
 
 #[gpui::test]
 fn mod_copies_share_code_without_sharing_props_state_or_lifetime(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let root = staged.0.join("cache");
     std::fs::create_dir_all(&root).unwrap();
@@ -368,7 +368,7 @@ export default class Panel extends View {
 fn changes_retries_when_the_files_copy_owning_its_git_scan_closes_or_reloads(cx: &mut TestAppContext) {
     use std::time::Duration;
 
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     for started in [false, true] {
         for reload in [false, true] {
             let staged = Staged::new();
@@ -423,7 +423,7 @@ fn changes_retries_when_the_files_copy_owning_its_git_scan_closes_or_reloads(cx:
             let policy = Policy::new()
                 .with_host_module(herdr).unwrap()
                 .with_host_module(clock).unwrap();
-            gpui_shell::policy::set_default(policy);
+            herdr_shell::policy::set_default(policy);
 
             let window = cx.add_window(|_, _| Empty);
             let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
@@ -433,7 +433,7 @@ fn changes_retries_when_the_files_copy_owning_its_git_scan_closes_or_reloads(cx:
             visual.run_until_parked();
             let changes = visual.update(|window, cx| {
                 let root = runtime.try_load(staged.0.join("mods/changes"), window, cx).unwrap();
-                let view: gpui::Entity<gpui_shell::ScriptView> = root.read(cx).content().clone().downcast().unwrap();
+                let view: gpui::Entity<herdr_shell::ScriptView> = root.read(cx).content().clone().downcast().unwrap();
                 window.replace_root(cx, |_, _| RootedView(root));
                 view
             });
@@ -476,7 +476,7 @@ fn changes_retries_when_the_files_copy_owning_its_git_scan_closes_or_reloads(cx:
 
 #[gpui::test]
 fn mod_code_revisions_share_successes_and_failures_without_poisoning_old_copies(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let root = staged.0.join("cache");
     std::fs::create_dir_all(&root).unwrap();
@@ -524,7 +524,7 @@ export default class Panel extends View { render() { return div().child('version
 
 #[gpui::test]
 fn mod_host_imports_keep_sync_async_and_missing_export_surfaces_distinct(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let root = staged.0.join("cache");
     std::fs::create_dir_all(&root).unwrap();
@@ -609,7 +609,7 @@ fn props() -> Value {
 
 #[gpui::test]
 fn shipped_initial_descriptions(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let start = Instant::now();
     let staged = Staged::new();
     let entries = staged.entries();
@@ -632,7 +632,7 @@ fn shipped_initial_descriptions(cx: &mut TestAppContext) {
 /// staged folder's drop recreates it, and the folder outlives the test.
 #[gpui::test]
 fn a_described_mod_leaves_no_folder_behind(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let path = staged.0.clone();
     describe(cx, &staged, "mods/agents", true, props(), updates("current", "current"), None).unwrap();
@@ -643,7 +643,7 @@ fn a_described_mod_leaves_no_folder_behind(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn brand_leaves_room_for_macos_traffic_lights_only_outside_full_screen(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     for (fullscreen, inset) in [(false, true), (true, false)] {
         let mut values = fixture(true, props(), updates("current", "current"));
@@ -656,7 +656,7 @@ fn brand_leaves_room_for_macos_traffic_lights_only_outside_full_screen(cx: &mut 
 
 #[gpui::test]
 fn tabs_leave_room_for_macos_traffic_lights(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     // The traffic lights are window px: the mod divides by the zoom its px are drawn at (zoom × ui_zoom).
     for (platform, titlebar, fullscreen, width, lights, (zoom, ui_zoom), expected) in [
@@ -695,7 +695,7 @@ fn tabs_leave_room_for_macos_traffic_lights(cx: &mut TestAppContext) {
 /// and a ghost under the pointer; the native tree takes all three.
 #[gpui::test]
 fn tabs_draw_a_drag_in_progress(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut values = fixture(true, props(), updates("current", "current"));
     let tabs = values.get_mut("spaces").unwrap()[0]["tabs"].as_array_mut().unwrap();
@@ -717,7 +717,7 @@ fn tabs_draw_a_drag_in_progress(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn windows_tab_buttons_use_matching_vector_icons(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     for platform in ["windows", "linux"] {
         for maximized in [false, true] {
@@ -738,7 +738,7 @@ fn windows_tab_buttons_use_matching_vector_icons(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn font_pickers_contain_scroll_on_the_wrapper(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     for which in ["font", "ui_font"] {
         let mut p = props();
@@ -754,7 +754,7 @@ fn font_pickers_contain_scroll_on_the_wrapper(cx: &mut TestAppContext) {
     }
 }
 
-struct RootedView(gpui::Entity<gpui_shell::ShellRoot>);
+struct RootedView(gpui::Entity<herdr_shell::ShellRoot>);
 impl gpui::Render for RootedView {
     fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
         self.0.clone()
@@ -765,7 +765,7 @@ impl gpui::Render for RootedView {
 fn a_mod_hears_a_pinch_only_over_its_element(cx: &mut TestAppContext) {
     use gpui::{Modifiers, PinchEvent, TouchPhase, VisualTestContext, point, px};
 
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     std::fs::write(staged.0.join("main.js"), r#"
 import { View, div } from "gpui-kit";
@@ -788,7 +788,7 @@ export default class Demo extends View {
     });
     let mut context = VisualTestContext::from_window(window.into(), cx);
     context.update(|window, cx| window.draw(cx).clear(cx));
-    let view: gpui::Entity<gpui_shell::ScriptView> = window
+    let view: gpui::Entity<herdr_shell::ScriptView> = window
         .root(&mut context)
         .unwrap()
         .read_with(&context, |root, cx| root.0.read(cx).content().clone().downcast().unwrap());
@@ -809,7 +809,7 @@ export default class Demo extends View {
     context.update(|window, cx| window.draw(cx).clear(cx));
 
     let tree = context.update(|_, cx| {
-        view.read(cx).snapshot().map(gpui_shell::RenderSnapshot::debug_tree).unwrap_or_default()
+        view.read(cx).snapshot().map(herdr_shell::RenderSnapshot::debug_tree).unwrap_or_default()
     });
     assert!(tree.contains("log=0.5:moved:20:true -0.25:ended:30:false"), "{tree}");
 }
@@ -818,7 +818,7 @@ export default class Demo extends View {
 fn a_mod_hears_mouse_back_and_forward_buttons(cx: &mut TestAppContext) {
     use gpui::{Modifiers, MouseButton, NavigationDirection, VisualTestContext, point, px};
 
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     std::fs::write(staged.0.join("main.js"), r#"
 import { View, div } from "gpui-kit";
@@ -873,7 +873,7 @@ export default class Demo extends View {
     });
     let mut context = VisualTestContext::from_window(window.into(), cx);
     context.update(|window, cx| window.draw(cx).clear(cx));
-    let view: gpui::Entity<gpui_shell::ScriptView> = window
+    let view: gpui::Entity<herdr_shell::ScriptView> = window
         .root(&mut context)
         .unwrap()
         .read_with(&context, |root, cx| root.0.read(cx).content().clone().downcast().unwrap());
@@ -904,7 +904,7 @@ export default class Demo extends View {
     context.update(|window, cx| window.draw(cx).clear(cx));
 
     let tree = context.update(|_, cx| {
-        view.read(cx).snapshot().map(gpui_shell::RenderSnapshot::debug_tree).unwrap_or_default()
+        view.read(cx).snapshot().map(herdr_shell::RenderSnapshot::debug_tree).unwrap_or_default()
     });
     assert!(
         tree.contains(
@@ -920,7 +920,7 @@ fn a_mod_reads_a_text_view_selection_once_it_settles(cx: &mut TestAppContext) {
         Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, VisualTestContext, point, px,
     };
 
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     std::fs::write(staged.0.join("main.js"), r#"
 import { View, div } from "gpui-kit";
@@ -947,7 +947,7 @@ export default class Demo extends View {
     });
     let mut context = VisualTestContext::from_window(window.into(), cx);
     context.update(|window, cx| window.draw(cx).clear(cx));
-    let view: gpui::Entity<gpui_shell::ScriptView> = window
+    let view: gpui::Entity<herdr_shell::ScriptView> = window
         .root(&mut context)
         .unwrap()
         .read_with(&context, |root, cx| root.0.read(cx).content().clone().downcast().unwrap());
@@ -966,7 +966,7 @@ export default class Demo extends View {
 
     let snapshot = |context: &VisualTestContext| {
         view.read_with(context, |view, _| {
-            view.snapshot().map(gpui_shell::RenderSnapshot::debug_tree).unwrap_or_default()
+            view.snapshot().map(herdr_shell::RenderSnapshot::debug_tree).unwrap_or_default()
         })
     };
 
@@ -1011,7 +1011,7 @@ fn a_mod_can_show_literal_html_in_a_markdown_text_view(cx: &mut TestAppContext) 
     use gpui::{Modifiers, MouseButton, VisualTestContext, point, px};
     use gpui_base::TextSelection;
 
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     std::fs::write(staged.0.join("main.js"), r#"
 import { View, div } from "gpui-kit";
@@ -1064,7 +1064,7 @@ export default class Demo extends View {
 fn a_mod_highlights_a_markdown_source_range(cx: &mut TestAppContext) {
     use gpui::{Modifiers, MouseButton, VisualTestContext, point, px};
 
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     std::fs::write(staged.0.join("main.js"), r##"
 import { View, div } from "gpui-kit";
@@ -1125,7 +1125,7 @@ export default class Demo extends View {
 
 #[gpui::test]
 fn terminal_text_rows_show_whose_value_is_in_use(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let layout = "This layout sets its own; yours shows in the others.";
     for (person, overridden) in [("{}", 0), ("{font_weight: 300, line_height: 1.4, terminal_cell_width: 1.1}", 3)] {
@@ -1144,7 +1144,7 @@ fn terminal_text_rows_show_whose_value_is_in_use(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn interface_zoom_and_text_size_rows_show_their_percent(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut p = props();
     p["section"] = json!("zoom");
@@ -1171,7 +1171,7 @@ fn interface_zoom_and_text_size_rows_show_their_percent(cx: &mut TestAppContext)
 /// points at whole-point steps, with the "Zoom steps" picker beside it.
 #[gpui::test]
 fn zoom_row_shows_points_at_whole_point_steps(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut p = props();
     p["section"] = json!("zoom");
@@ -1199,7 +1199,7 @@ fn zoom_row_shows_points_at_whole_point_steps(cx: &mut TestAppContext) {
 /// `panes()`) while it has one, and nothing at the default size.
 #[gpui::test]
 fn pane_header_shows_a_panes_own_text_size(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     for (text_size, shown) in [(None, None), (Some(16.0), Some("16pt")), (Some(15.400001), Some("15.4pt"))] {
         let mut values = fixture(true, json!({"pane":"p1","terminal":"t1"}), updates("current", "current"));
@@ -1220,7 +1220,7 @@ fn pane_header_shows_a_panes_own_text_size(cx: &mut TestAppContext) {
 /// settings.json turns it off.
 #[gpui::test]
 fn pane_zoom_keys_toggle_shows_the_setting(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut p = props();
     p["section"] = json!("zoom");
@@ -1241,7 +1241,7 @@ fn pane_zoom_keys_toggle_shows_the_setting(cx: &mut TestAppContext) {
 /// on unless settings.json sets `copy_on_select` to false.
 #[gpui::test]
 fn copy_on_select_toggle_shows_the_setting(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut p = props();
     p["section"] = json!("mouse");
@@ -1281,7 +1281,7 @@ fn copy_on_select_toggle_shows_the_setting(cx: &mut TestAppContext) {
 /// showing the person's pick.
 #[gpui::test]
 fn cell_rounding_row_shows_the_pick(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut p = props();
     p["section"] = json!("grid");
@@ -1299,7 +1299,7 @@ fn cell_rounding_row_shows_the_pick(cx: &mut TestAppContext) {
 /// itself is drawn in window::cursor_preview's tests).
 #[gpui::test]
 fn cursor_page_draws_the_preview_while_an_effect_is_on(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut p = props();
     p["section"] = json!("cursor");
@@ -1317,7 +1317,7 @@ fn cursor_page_draws_the_preview_while_an_effect_is_on(cx: &mut TestAppContext) 
 /// person's pick.
 #[gpui::test]
 fn focus_border_rows_show_the_pick(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut p = props();
     p["section"] = json!("panes");
@@ -1339,7 +1339,7 @@ fn focus_border_rows_show_the_pick(cx: &mut TestAppContext) {
 /// working), and a search with none says so.
 #[gpui::test]
 fn settings_search_filters_every_page(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut search = |q: &str| {
         let values = fixture(true, props(), updates("current", "current"));
@@ -1368,7 +1368,7 @@ fn settings_search_filters_every_page(cx: &mut TestAppContext) {
 /// person's outlined, and an image file shown as its path.
 #[gpui::test]
 fn app_icon_picker_outlines_the_pick(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut p = props();
     p["section"] = json!("window");
@@ -1393,7 +1393,7 @@ fn app_icon_picker_outlines_the_pick(cx: &mut TestAppContext) {
 /// none, however many themes there are.
 #[gpui::test]
 fn theme_cards_are_rows_of_a_virtual_list(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut p = props();
     p["section"] = json!("themes");
@@ -1408,7 +1408,7 @@ fn theme_cards_are_rows_of_a_virtual_list(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn confirm_dialog_background_follows_the_frame_corners(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut p = props();
     p["title"] = json!("Close space?");
@@ -1420,7 +1420,7 @@ fn confirm_dialog_background_follows_the_frame_corners(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn pane_header_divider_faces_the_terminal(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     for (position, reveal) in [("bottom", "always"), ("top", "always"), ("", "always"), ("bottom", "hover"), ("top", "hover")] {
         let mut values = fixture(true, props(), updates("current", "current"));
@@ -1449,7 +1449,7 @@ fn pane_header_divider_faces_the_terminal(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn layout_previews_stay_inside_their_cards(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut p = props();
     p["section"] = json!("layout");
@@ -1467,7 +1467,7 @@ fn layout_previews_stay_inside_their_cards(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn check_materializes_retained_elements_in_a_rendered_view(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     for body in [
         "v_flex().h(400).child(v_virtual_list('rows', 0, 28, (i) => 'a', () => { throw new Error('deferred rows ran'); }))",
@@ -1490,7 +1490,7 @@ fn check_materializes_retained_elements_in_a_rendered_view(cx: &mut TestAppConte
 
 #[gpui::test]
 fn long_space_names_use_the_sidebar_width(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let name = "quarterly infrastructure cost review";
     let mut values = fixture(true, props(), updates("current", "current"));
@@ -1521,7 +1521,7 @@ fn long_space_names_use_the_sidebar_width(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn rebuilt_machine_offers_connect_only_for_identity_mismatch(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     for (state, why, offered) in [
         ("unreachable", "a different core answers there (\"new-id\")", true),
@@ -1543,7 +1543,7 @@ fn rebuilt_machine_offers_connect_only_for_identity_mismatch(cx: &mut TestAppCon
 
 #[gpui::test]
 fn machine_logout_warning_tracks_current_remote_state(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     for state in ["false", "true", "null", "undefined"] {
         let setup = format!("this.hosts = []; this.added = [{{name:'cloud', target:'host', keeps_running_after_logout:{state}, logout_linger_user:'-alice'}}];");
@@ -1559,7 +1559,7 @@ fn machine_logout_warning_tracks_current_remote_state(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn machine_picker_keeps_long_lists_scrollable(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let tree = describe(
         cx, &staged, "mods/machine-add", false, props(), updates("current", "current"),
@@ -1574,7 +1574,7 @@ fn machine_picker_keeps_long_lists_scrollable(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn machine_add_needing_input_keeps_the_picker_and_shows_instructions(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let calls = Rc::new(RefCell::new(Calls::default()));
     let policy = Policy::new().with_host_module(module(fixture(false, props(), updates("current", "current")), calls.clone())).unwrap();
@@ -1598,7 +1598,7 @@ fn machine_add_needing_input_keeps_the_picker_and_shows_instructions(cx: &mut Te
 
 #[gpui::test]
 fn palette_lists_the_entries_mods_declare_in_their_mod_json(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let probe = staged.0.join("mods/probe");
     std::fs::create_dir_all(&probe).unwrap();
@@ -1630,7 +1630,7 @@ fn palette_lists_the_entries_mods_declare_in_their_mod_json(cx: &mut TestAppCont
 
 #[gpui::test]
 fn option_key_settings_are_only_shown_on_macos(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     for platform in ["linux", "windows", "macos"] {
         let mut p = props();
@@ -1647,7 +1647,7 @@ fn option_key_settings_are_only_shown_on_macos(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn settings_sections_and_updates(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let start = Instant::now();
     let staged = Staged::new();
     for section in ["look", "fonts", "alerts", "privacy", "updates"] {
@@ -1699,7 +1699,7 @@ fn animated_images_advance_with_explicit_and_implicit_ids(cx: &mut TestAppContex
     use image::{Delay, Frame, Rgba, RgbaImage, codecs::gif::GifEncoder};
     use std::{sync::Arc, time::Duration};
 
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let mut bytes = Vec::new();
     {
         let mut encoder = GifEncoder::new(&mut bytes);
@@ -1781,7 +1781,7 @@ fn animated_images_advance_with_explicit_and_implicit_ids(cx: &mut TestAppContex
 
 #[gpui::test]
 fn settings_keep_notes_in_the_whats_new_window(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let notes = json!([
         {"version":"1.8.0","date":"2026-10-26","items":[{"headline":"Newest headline","detail":"Newest details","fixed":false,"media":[]},{"headline":"","detail":"Newest fix","fixed":true,"media":[]}],"spotlight":true},
@@ -1804,7 +1804,7 @@ fn settings_keep_notes_in_the_whats_new_window(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let start = Instant::now();
     let staged = Staged::new();
     for page in 1..=4 {
@@ -1902,7 +1902,7 @@ fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn duplicate_element_negative_control(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let dir = staged.0.join("negative");
     std::fs::create_dir(&dir).unwrap();
@@ -1985,7 +1985,7 @@ fn shipped_layouts_and_keys() {
 
 #[gpui::test]
 fn picker_scrolls_the_selection_into_view(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut values = fixture(true, props(), updates("current", "current"));
     let tabs: Vec<Value> = (1..=12)
@@ -2005,7 +2005,7 @@ fn picker_scrolls_the_selection_into_view(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn status_bar_shows_the_real_palette_key(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut bound = fixture(true, props(), updates("current", "current"));
     bound.insert("keys".into(), json!([{"section":"global","keys":"ctrl-p","action":"app.palette"}]));
@@ -2024,7 +2024,7 @@ fn status_bar_shows_the_real_palette_key(cx: &mut TestAppContext) {
 /// program's (which only shows at a bare shell when there's none).
 #[gpui::test]
 fn pane_headers_show_the_automatic_name_after_the_persons(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let shell = json!({"key":"shell", "name":"zsh", "icon":null, "tint":true, "tile":null, "color":null, "shell":true, "agent":false});
     // What each shows without one: the shell's program name (its label, as its title is empty).
@@ -2050,7 +2050,7 @@ fn pane_headers_show_the_automatic_name_after_the_persons(cx: &mut TestAppContex
 /// existed, line for line (the ring), plus its right-click menu.
 #[gpui::test]
 fn pane_header_draws_the_ring_by_default_as_it_always_has(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let tree = describe(cx, &staged, "mods/pane", true, json!({"pane":"p1","terminal":"t1"}), updates("current", "current"), None).unwrap();
     assert_eq!(tree.trim_end(), r##"h_flex :id[Str("pane-head-p1")] .size_full .px[Number(10.0)] .gap[Number(8.0)] .items_center .bg[Str("#17191d")] .border_b[Number(1.0)] .border_color[Str("#34363a")] .text_size[Number(12.0)] :on_hover(fn) :on_click(fn) :on_mouse_down_right(fn)
@@ -2066,7 +2066,7 @@ fn pane_header_draws_the_ring_by_default_as_it_always_has(cx: &mut TestAppContex
 /// in the terminal font and the working colour, in a box that keeps its width.
 #[gpui::test]
 fn agent_spinners_follow_the_working_spinner_setting(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let braille = r#":frames[Number(80.0), Str("⠋"), Str("⠙"), Str("⠹"), Str("⠸"), Str("⠼"), Str("⠴"), Str("⠦"), Str("⠧"), Str("⠇"), Str("⠏")]"#;
     let working = crate::settings::theme()["working"].clone();
@@ -2095,7 +2095,7 @@ fn agent_spinners_follow_the_working_spinner_setting(cx: &mut TestAppContext) {
 /// height makes theirs.
 #[gpui::test]
 fn changes_diff_follows_the_terminal_font(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut values = fixture(false, props(), updates("current", "current"));
     let person = json!({"font": "Fixture Mono", "font_size": 15, "font_weight": 400, "line_height": 1.2, "ui_text_scale": 1.25, "ui_font_weight": 500});
@@ -2385,7 +2385,7 @@ fn changes_diff_draws_as_terminal_text() {
         None,
         text.clone(),
     );
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let original = crate::settings::get();
     let person = json!({
         "font": "Fixture Mono", "font_weight": 400, "font_fallbacks": ["ZedMono Nerd Font Mono", "AdwaitaMono Nerd Font Mono"], "font_ligatures": true,
@@ -2500,7 +2500,7 @@ fn texts(tree: &str) -> Vec<&str> {
 /// title that names nothing gives way to the session's name, else the program's.
 #[gpui::test]
 fn mods_name_panes_by_their_label(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let p2 = json!({"pane":"p2","terminal":"t2"});
     let w1 = json!({"role":"window","pane":"p1"});
@@ -2580,7 +2580,7 @@ fn mods_name_panes_by_their_label(cx: &mut TestAppContext) {
 /// folder, Copy all and Paste always, all above Split.
 #[gpui::test]
 fn pane_menu_copy_items(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let labels = |target: Value, cx: &mut TestAppContext| {
         let mut p = props();
@@ -2624,7 +2624,7 @@ fn with_icons(values: &mut BTreeMap<String, Value>, pane: (Value, Value), tab: (
 /// draws exactly what it drew before the fields existed.
 #[gpui::test]
 fn null_icons_draw_every_shipped_mod_as_before(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut count = 0;
     for entry in staged.entries() {
@@ -2647,7 +2647,7 @@ fn null_icons_draw_every_shipped_mod_as_before(cx: &mut TestAppContext) {
 /// glyph in the Nerd Font, an emoji or a letter, in place of the program's.
 #[gpui::test]
 fn pane_header_and_tabs_draw_an_icon_in_place_of_the_programs(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let font = r#".font_family[Str("Symbols Nerd Font")]"#;
     for (entry, p) in [("mods/pane", json!({"pane":"p1","terminal":"t1"})), ("mods/tabs", props())] {
@@ -2670,7 +2670,7 @@ fn pane_header_and_tabs_draw_an_icon_in_place_of_the_programs(cx: &mut TestAppCo
 /// one is chosen.
 #[gpui::test]
 fn pane_and_tab_menus_offer_change_and_clear_icon(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let items = |p: Value, own: Value, to_program: bool, cx: &mut TestAppContext| {
         let mut values = fixture(true, p, updates("current", "current"));
@@ -2716,7 +2716,7 @@ fn with_more_local_spaces(values: &mut BTreeMap<String, Value>) {
 /// on another machine, and a tab's terminals stay on their own.
 #[gpui::test]
 fn tab_menu_offers_move_to_space_only_with_another_space_on_its_machine(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let items = |id: &str, more: bool, cx: &mut TestAppContext| {
         let mut values = fixture(true, json!({"tab":"tab","target":{"id":id,"space":"s1"}}), updates("current", "current"));
@@ -2743,7 +2743,7 @@ fn tab_menu_offers_move_to_space_only_with_another_space_on_its_machine(cx: &mut
 /// their tab counts; a search keeps the matching ones; none to go to says so.
 #[gpui::test]
 fn tab_move_picker_lists_the_other_spaces_of_the_tabs_machine(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let tree = |more: bool, setup: Option<&str>, cx: &mut TestAppContext| {
         let mut values = fixture(true, json!({"id":"tab1","overlay":"o1"}), updates("current", "current"));
@@ -2768,7 +2768,7 @@ fn tab_move_picker_lists_the_other_spaces_of_the_tabs_machine(cx: &mut TestAppCo
 /// per mod under a divider, each with its `when` and its target.
 #[gpui::test]
 fn pane_menu_lists_mods_items_in_groups(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let tree = |target: Value, cx: &mut TestAppContext| {
         let mut values = fixture(true, json!({"tab":"pane","target":target}), updates("current", "current"));
@@ -2804,7 +2804,7 @@ fn pane_menu_lists_mods_items_in_groups(cx: &mut TestAppContext) {
 /// into view.
 #[gpui::test]
 fn a_long_pane_menu_scrolls_and_keeps_close_pane_in_reach(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let tree = |setup: Option<&str>, cx: &mut TestAppContext| {
         let target = json!({"pane":"p1","terminal":"t1","selected":true,"cwd":"/fixture/project","last_output":true});
@@ -2844,7 +2844,7 @@ fn a_long_pane_menu_scrolls_and_keeps_close_pane_in_reach(cx: &mut TestAppContex
 /// one shown and Clear icon only while one is chosen; a pane's or a tab's.
 #[gpui::test]
 fn icon_picker_shows_the_sets_and_the_choice(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let picker = |p: Value, own: Value, cx: &mut TestAppContext| {
         let mut values = fixture(true, p, updates("current", "current"));
@@ -2886,7 +2886,7 @@ fn with_header_info(values: &mut BTreeMap<String, Value>, info: Value) {
 /// shipped mod draws what it drew without the field, byte for byte.
 #[gpui::test]
 fn null_header_info_draws_every_shipped_mod_as_before(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let handles = regex::Regex::new(r"(:track_(?:focus|scroll)\[Number\(| #)[0-9]+").unwrap();
     let same = |tree: &str| handles.replace_all(tree, "${1}N").into_owned();
@@ -2905,7 +2905,7 @@ fn null_header_info_draws_every_shipped_mod_as_before(cx: &mut TestAppContext) {
 /// whole line is the tooltip, and the hover buttons keep their room.
 #[gpui::test]
 fn pane_header_fits_its_info_beside_the_name_and_buttons(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let info = crate::header_info::Template::parse("{ask} · {branch}{ahead}{behind}{dirty} · {state} {elapsed}").resolve(&crate::header_info::Values::sample()).unwrap();
     let header = |width: f64, hovered: bool, cx: &mut TestAppContext| {
@@ -2962,7 +2962,7 @@ fn pane_header_fits_its_info_beside_the_name_and_buttons(cx: &mut TestAppContext
 /// one, each its own icon and tooltip, beside split and before zoom.
 #[gpui::test]
 fn pane_header_floats_and_docks_its_pane(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let header = |floating: Value, cx: &mut TestAppContext| {
         let mut values = fixture(true, json!({"pane":"p1","terminal":"t1"}), updates("current", "current"));
@@ -3006,7 +3006,7 @@ fn sub_count_line(tree: &str) -> String {
 /// chevron counts instead.
 #[gpui::test]
 fn agents_rows_count_their_live_sub_agents(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let program = json!({"key":"pi", "name":"Pi", "icon":null, "tint":true, "tile":null, "color":null, "shell":false, "agent":true});
     let row = |sidebar: Option<f64>, cx: &mut TestAppContext| {
@@ -3034,7 +3034,7 @@ fn agents_rows_count_their_live_sub_agents(cx: &mut TestAppContext) {
 /// row each named by its title, coloured with the rest.
 #[gpui::test]
 fn agents_sub_agent_count_takes_the_most_urgent_colour_and_counts_child_records(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let program = json!({"key":"pi", "name":"Pi", "icon":null, "tint":true, "tile":null, "color":null, "shell":false, "agent":true});
     let theme = crate::settings::theme();
@@ -3070,7 +3070,7 @@ fn agents_sub_agent_count_takes_the_most_urgent_colour_and_counts_child_records(
 /// at start, over the setting, and fold all / unfold all reach every agent.
 #[gpui::test]
 fn agents_sub_agents_follow_the_setting_remembered_folds_and_fold_all(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let program = json!({"key":"pi", "name":"Pi", "icon":null, "tint":true, "tile":null, "color":null, "shell":false, "agent":true});
     let draw = |mode: Option<&str>, setup: Option<&str>, cx: &mut TestAppContext| {
@@ -3110,7 +3110,7 @@ fn agents_sub_agents_follow_the_setting_remembered_folds_and_fold_all(cx: &mut T
 /// name only on builds without card info.
 #[gpui::test]
 fn agents_rows_draw_card_info_the_default_too(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let draw = |remote: bool, card: Option<Value>, cx: &mut TestAppContext| {
         let mut values = fixture(true, props(), updates("current", "current"));
@@ -3143,7 +3143,7 @@ fn agents_rows_draw_card_info_the_default_too(cx: &mut TestAppContext) {
 /// and terminal, with no selection to copy.
 #[gpui::test]
 fn pane_header_right_click_opens_the_pane_menu_with_rename(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let mut p = props();
     p["target"] = json!({"pane":"p1","terminal":"t1"});
@@ -3226,7 +3226,7 @@ fn describe_settled(cx: &mut TestAppContext, staged: &Staged, entry: &str, value
 /// wait for a core doesn't count as the picker's own.
 #[gpui::test]
 fn icon_picker_reads_every_name_and_searches_them_quickly(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let values = || fixture(true, json!({"pane":"p1","overlay":"o1"}), updates("current", "current"));
     // Before the names are read: Suggested, with nothing else waiting on them.
@@ -3284,7 +3284,7 @@ fn icon_picker_names_match_the_font_and_the_commands() {
 
 #[gpui::test]
 fn status_bar_counts_agents_in_the_singular_and_the_plural(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let staged = Staged::new();
     let agent = |n: u32| json!({"address":format!("t{n}"),"pane":format!("p{n}"),"space":"s1","space_name":"Local","tab":"tab1","tab_index":1,"tab_name":"Build","status":"blocked","app":"pi","program":null,"title":"Build","seq":n,"focused":n==1});
 
