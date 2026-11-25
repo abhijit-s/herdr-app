@@ -1,7 +1,7 @@
 use super::*;
 use gpui::{IntoElement, Render, TestAppContext, VisualTestContext};
 use std::ops::Deref;
-use gpui_shell::{ShellRoot, ShellRuntime, policy::Policy};
+use herdr_shell::{ShellRoot, ShellRuntime, policy::Policy};
 use std::{cell::Cell, rc::Rc, sync::{Arc, atomic::{AtomicU64, Ordering}}, time::Instant};
 
 struct Fixture(PathBuf);
@@ -45,8 +45,8 @@ impl Render for Counted {
 // changes on hover too.
 #[gpui::test]
 fn spinners_turn_without_drawing_the_window(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
-    gpui_shell::policy::set_default(Policy::new());
+    cx.update(herdr_shell::init);
+    herdr_shell::policy::set_default(Policy::new());
     for hover in ["", ".hover(el => el.opacity(0.9))"] {
         let fixture = Fixture::new(&format!(r#"
 import {{ View, div, svg }} from "gpui-kit";
@@ -57,7 +57,7 @@ export default class extends View {{
   }}
 }}"#));
         std::fs::write(fixture.0.join("ring.svg"), r#"<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><path d="M6 1a5 5 0 0 1 5 5"/></svg>"#).unwrap();
-        cx.set_asset_source(gpui_shell::AppAssets::new(fixture.0.clone()));
+        cx.set_asset_source(herdr_shell::AppAssets::new(fixture.0.clone()));
         let runtime = ShellRuntime::new_isolated().unwrap();
         let renders = Rc::new(Cell::new(0));
         let counted = renders.clone();
@@ -124,8 +124,8 @@ export default class extends View {{
 // of a parked frame source. Anything dirty still goes through a frame.
 #[gpui::test]
 fn spinner_steps_present_without_waking_the_frame_source(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
-    gpui_shell::policy::set_default(Policy::new());
+    cx.update(herdr_shell::init);
+    herdr_shell::policy::set_default(Policy::new());
     let fixture = Fixture::new(
         r#"
 import { View, div, svg } from "gpui-kit";
@@ -134,7 +134,7 @@ export default class extends View {
 }"#,
     );
     std::fs::write(fixture.0.join("ring.svg"), r#"<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><path d="M6 1a5 5 0 0 1 5 5"/></svg>"#).unwrap();
-    cx.set_asset_source(gpui_shell::AppAssets::new(fixture.0.clone()));
+    cx.set_asset_source(herdr_shell::AppAssets::new(fixture.0.clone()));
     let runtime = ShellRuntime::new_isolated().unwrap();
     let renders = Rc::new(Cell::new(0));
     let counted = renders.clone();
@@ -226,8 +226,8 @@ export default class extends View {
 #[test]
 fn frames_step_without_drawing_the_window() {
     let cx = &mut TestAppContext::build_with_text_system(gpui::TestDispatcher::new(0), None, std::sync::Arc::new(gpui_macos::MacTextSystem::new()));
-    cx.update(gpui_shell::init);
-    gpui_shell::policy::set_default(Policy::new());
+    cx.update(herdr_shell::init);
+    herdr_shell::policy::set_default(Policy::new());
     let fixture = Fixture::new(r#"
 import { View, div } from "gpui-kit";
 export default class extends View {
@@ -291,8 +291,8 @@ export default class extends View {
 #[test]
 fn a_faster_spinner_drawn_later_steps_at_its_own_pace() {
     let cx = &mut TestAppContext::build_with_text_system(gpui::TestDispatcher::new(0), None, std::sync::Arc::new(gpui_macos::MacTextSystem::new()));
-    cx.update(gpui_shell::init);
-    gpui_shell::policy::set_default(Policy::new());
+    cx.update(herdr_shell::init);
+    herdr_shell::policy::set_default(Policy::new());
     let slow = r#"div().frames(["◐", "◓"], 5000).child("◐")"#;
     let only_slow = Fixture::new(&format!(r#"import {{ View, div }} from "gpui-kit"; export default class extends View {{ render() {{ return div().size_full().child({slow}); }} }}"#));
     let both = Fixture::new(&format!(r#"import {{ View, div }} from "gpui-kit"; export default class extends View {{ render() {{ return div().size_full().child({slow}).child(div().frames(["⠋", "⠙", "⠹", "⠸"], 80).child("⠋")); }} }}"#));
@@ -327,8 +327,8 @@ fn a_faster_spinner_drawn_later_steps_at_its_own_pace() {
 #[test]
 fn emoji_frames_cycle_and_invisible_frames_are_left_out() {
     let cx = &mut TestAppContext::build_with_text_system(gpui::TestDispatcher::new(0), None, std::sync::Arc::new(gpui_macos::MacTextSystem::new()));
-    cx.update(gpui_shell::init);
-    gpui_shell::policy::set_default(Policy::new());
+    cx.update(herdr_shell::init);
+    herdr_shell::policy::set_default(Policy::new());
     let fixture = Fixture::new(r##"
 import { View, div } from "gpui-kit";
 export default class extends View {
@@ -358,8 +358,8 @@ export default class extends View {
 // out of the frame, so it doesn't keep the window presenting ~10 times a second.
 #[gpui::test]
 fn invisible_spinners_do_not_keep_the_window_presenting(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
-    gpui_shell::policy::set_default(Policy::new());
+    cx.update(herdr_shell::init);
+    herdr_shell::policy::set_default(Policy::new());
     let fixture = Fixture::new(r##"
 import { View, div, svg } from "gpui-kit";
 export default class extends View {
@@ -371,7 +371,7 @@ export default class extends View {
   }
 }"##);
     std::fs::write(fixture.0.join("ring.svg"), r#"<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><path d="M6 1a5 5 0 0 1 5 5"/></svg>"#).unwrap();
-    cx.set_asset_source(gpui_shell::AppAssets::new(fixture.0.clone()));
+    cx.set_asset_source(herdr_shell::AppAssets::new(fixture.0.clone()));
     let runtime = ShellRuntime::new_isolated().unwrap();
     let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&fixture.0, window, cx).unwrap()));
     let handle: gpui::AnyWindowHandle = window.into();
@@ -391,8 +391,8 @@ export default class extends View {
 // `__apply` itself, which is the path the clamp guards.
 #[gpui::test]
 fn spin_with_an_absurd_period_draws_without_panicking(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
-    gpui_shell::policy::set_default(Policy::new());
+    cx.update(herdr_shell::init);
+    herdr_shell::policy::set_default(Policy::new());
     let fixture = Fixture::new(r##"
 import { View, div, svg } from "gpui-kit";
 const spun = (ms) => {
@@ -409,7 +409,7 @@ export default class extends View {
   }
 }"##);
     std::fs::write(fixture.0.join("ring.svg"), r#"<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><path d="M6 1a5 5 0 0 1 5 5"/></svg>"#).unwrap();
-    cx.set_asset_source(gpui_shell::AppAssets::new(fixture.0.clone()));
+    cx.set_asset_source(herdr_shell::AppAssets::new(fixture.0.clone()));
     let runtime = ShellRuntime::new_isolated().unwrap();
     let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&fixture.0, window, cx).unwrap()));
     let handle: gpui::AnyWindowHandle = window.into();
@@ -425,7 +425,7 @@ export default class extends View {
 
 #[gpui::test]
 fn size_change_reports_initial_and_resized_layout_without_pointer_input(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let fixture = Fixture::new(r#"
 import { View, div } from "gpui-kit";
 import { note } from "fixture";
@@ -437,7 +437,7 @@ export default class extends View {
 }"#);
     let sizes = Rc::new(RefCell::new(Vec::new()));
     let calls = sizes.clone();
-    gpui_shell::policy::set_default(Policy::new().with_host_module(
+    herdr_shell::policy::set_default(Policy::new().with_host_module(
         HostModule::new("fixture").function("note", move |a| {
             calls.borrow_mut().push((a.number(0)?, a.number(1)?));
             Ok(HostValue::Null)
@@ -465,7 +465,7 @@ export default class extends View {
 /// of it is on screen.
 #[gpui::test]
 fn scroll_handles_report_offset_content_and_viewport(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let fixture = Fixture::new(r#"
 import { View, div } from "gpui-kit";
 import { ScrollHandle, VirtualListScrollHandle, v_virtual_list } from "gpui-base";
@@ -499,7 +499,7 @@ export default class extends View {
 }"#);
     let notes = Rc::new(RefCell::new(Vec::new()));
     let calls = notes.clone();
-    gpui_shell::policy::set_default(Policy::new().with_host_module(
+    herdr_shell::policy::set_default(Policy::new().with_host_module(
         HostModule::new("fixture").function("note", move |a| {
             calls.borrow_mut().push([a.number(0)?, a.number(1)?, a.number(2)?, a.number(3)?, a.number(4)?, a.number(5)?]);
             Ok(HostValue::Null)
@@ -531,7 +531,7 @@ export default class extends View {
 
 #[gpui::test]
 fn plain_mod_scroll_handles_reveal_children_once_without_moving_visible_items(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     for (overflow, horizontal) in [("overflow_x_scroll", true), ("overflow_x_scrollbar", true), ("overflow_y_scroll", false), ("overflow_y_scrollbar", false)] {
         let source = r#"
 import { View, div } from "gpui-kit";
@@ -561,7 +561,7 @@ export default class extends View {
         let fixture = Fixture::new(&source);
         let notes = Rc::new(RefCell::new(Vec::new()));
         let calls = notes.clone();
-        gpui_shell::policy::set_default(Policy::new().with_host_module(
+        herdr_shell::policy::set_default(Policy::new().with_host_module(
             HostModule::new("fixture").function("note", move |a| {
                 calls.borrow_mut().push(a.number(0)? as usize);
                 Ok(HostValue::Null)
@@ -626,7 +626,7 @@ export default class extends View {
 /// the last row.
 #[gpui::test]
 fn a_virtual_list_scrolls_to_the_bottom_of_the_rows_it_draws_next(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let fixture = Fixture::new(r#"
 import { View, div } from "gpui-kit";
 import { VirtualListScrollHandle, v_virtual_list } from "gpui-base";
@@ -656,7 +656,7 @@ export default class extends View {
 }"#);
     let drawn = Rc::new(Cell::new(0));
     let last = drawn.clone();
-    gpui_shell::policy::set_default(Policy::new().with_host_module(
+    herdr_shell::policy::set_default(Policy::new().with_host_module(
         HostModule::new("fixture").function("note", move |a| {
             last.set(a.number(0)? as usize);
             Ok(HostValue::Null)
@@ -685,7 +685,7 @@ export default class extends View {
 #[gpui::test]
 fn external_file_drops_reach_mod_elements(cx: &mut TestAppContext) {
     use gpui::{ExternalPaths, FileDropEvent, InputEvent};
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let fixture = Fixture::new(r#"
 import { View, div } from "gpui-kit";
 import { note } from "fixture";
@@ -696,7 +696,7 @@ export default class extends View {
 }"#);
     let paths = Rc::new(RefCell::new(Vec::new()));
     let calls = paths.clone();
-    gpui_shell::policy::set_default(Policy::new().with_host_module(
+    herdr_shell::policy::set_default(Policy::new().with_host_module(
         HostModule::new("fixture").function("note", move |a| {
             calls.borrow_mut().push(from_host(a.value(0)?));
             Ok(HostValue::Null)
@@ -728,14 +728,14 @@ export default class extends View {
 
 struct PathDropTarget {
     root: gpui::Entity<ShellRoot>,
-    drops: Rc<RefCell<Vec<gpui_shell::DraggedPaths>>>,
+    drops: Rc<RefCell<Vec<herdr_shell::DraggedPaths>>>,
 }
 impl Render for PathDropTarget {
     fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
         use gpui::{InteractiveElement, ParentElement, Styled};
         let drops = self.drops.clone();
         gpui::div().w(gpui::px(400.)).h(gpui::px(300.))
-            .on_drop(move |paths: &gpui_shell::DraggedPaths, _, _| drops.borrow_mut().push(paths.clone()))
+            .on_drop(move |paths: &herdr_shell::DraggedPaths, _, _| drops.borrow_mut().push(paths.clone()))
             .child(self.root.clone())
     }
 }
@@ -760,7 +760,7 @@ fn assert_path_drag_preview_at(visual: &mut VisualTestContext, cursor: gpui::Poi
 #[gpui::test]
 fn file_drag_preview_follows_the_pointer_from_either_end_of_wide_sources(cx: &mut TestAppContext) {
     use gpui::{MouseButton, point, px};
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     for width in [180., 800.] {
         let fixture = Fixture::new(&format!(r#"
 import {{ View, div }} from "gpui-kit";
@@ -798,10 +798,10 @@ export default class extends View {{
 #[gpui::test]
 fn file_tree_native_drags_keep_origin_and_do_not_click_on_drop_or_cancel(cx: &mut TestAppContext) {
     use gpui::{MouseButton, point, px};
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let clicks = Rc::new(Cell::new(0));
     let calls = clicks.clone();
-    gpui_shell::policy::set_default(Policy::new().with_host_module(
+    herdr_shell::policy::set_default(Policy::new().with_host_module(
         HostModule::new("fixture").function("clicked", move |_| {
             calls.set(calls.get() + 1);
             Ok(HostValue::Null)
@@ -845,7 +845,7 @@ export default class extends View {
             visual.update(|_, cx| assert!(!cx.has_active_drag()));
         }
         assert_eq!(clicks.get(), before + 1, "dragging never previews or expands the row");
-        assert_eq!(*drops.borrow(), vec![gpui_shell::DraggedPaths {
+        assert_eq!(*drops.borrow(), vec![herdr_shell::DraggedPaths {
             paths: vec!["/work/中文 O'Brien/file name.txt".into(), "/work/a folder".into()],
             on: source.map(str::to_owned),
         }], "only the completed drop delivers the original snapshot");
@@ -855,7 +855,7 @@ export default class extends View {
 #[gpui::test]
 fn file_drags_from_other_apps_report_the_held_button(cx: &mut TestAppContext) {
     use gpui::{ExternalPaths, FileDropEvent, InputEvent};
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let fixture = Fixture::new(r#"
 import { View, div } from "gpui-kit";
 import { note } from "fixture";
@@ -866,7 +866,7 @@ export default class extends View {
 }"#);
     let log = Rc::new(RefCell::new(Vec::new()));
     let calls = log.clone();
-    gpui_shell::policy::set_default(Policy::new().with_host_module(
+    herdr_shell::policy::set_default(Policy::new().with_host_module(
         HostModule::new("fixture").function("note", move |a| {
             calls.borrow_mut().push(from_host(a.value(0)?));
             Ok(HostValue::Null)
@@ -920,7 +920,7 @@ fn window_mouse_events_follow_a_drag_off_the_element(cx: &mut TestAppContext) {
         }
     }
 
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let fixture = Fixture::new(r#"
 import { View, div } from "gpui-kit";
 import { v_flex } from "gpui-base";
@@ -956,7 +956,7 @@ export default class extends View {
 }"#);
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
     let calls = log.clone();
-    gpui_shell::policy::set_default(Policy::new().with_host_module(
+    herdr_shell::policy::set_default(Policy::new().with_host_module(
         HostModule::new("fixture").function("note", move |a| {
             calls.borrow_mut().push(a.string(0)?.to_owned());
             Ok(HostValue::Null)
@@ -1002,7 +1002,7 @@ export default class extends View {
 
 #[gpui::test]
 fn mod_run_rejects_unknown_arguments_before_queueing_a_command(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let fixture = Fixture::new(r#"
 import { View, div } from "gpui-kit";
 import { run } from "herdr";
@@ -1018,7 +1018,7 @@ export default class extends View {
 }"#);
     let seen = Rc::new(RefCell::new(Vec::new()));
     let calls = seen.clone();
-    gpui_shell::policy::set_default(Policy::new()
+    herdr_shell::policy::set_default(Policy::new()
         .with_host_module(module(Instance { name: "test".into(), props: Value::Null }, 0)).unwrap()
         .with_host_module(HostModule::new("fixture").function("note", move |a| {
             calls.borrow_mut().push(a.string(0)?.to_owned());
@@ -1035,7 +1035,7 @@ export default class extends View {
 
 #[gpui::test]
 fn focus_command_lets_a_mod_take_arrow_keys(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let fixture = Fixture::new(r#"
 import { View, div } from "gpui-kit";
 import { nextCommand } from "herdr";
@@ -1058,7 +1058,7 @@ export default class extends View {
 }"#);
     let notes = Rc::new(RefCell::new(Vec::new()));
     let calls = notes.clone();
-    gpui_shell::policy::set_default(Policy::new()
+    herdr_shell::policy::set_default(Policy::new()
         .with_host_module(module(Instance { name: "focus-test".into(), props: Value::Null }, 42)).unwrap()
         .with_host_module(HostModule::new("fixture").function("note", move |a| {
             calls.borrow_mut().push(a.string(0)?.to_owned());
@@ -1080,7 +1080,7 @@ export default class extends View {
 
 #[gpui::test]
 fn herdr_checking_is_false_in_a_live_load(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let fixture = Fixture::new(r#"
 import { View, div } from "gpui-kit";
 import { checking } from "herdr";
@@ -1091,7 +1091,7 @@ export default class extends View {
 }"#);
     let seen = Rc::new(RefCell::new(Vec::new()));
     let calls = seen.clone();
-    gpui_shell::policy::set_default(Policy::new()
+    herdr_shell::policy::set_default(Policy::new()
         .with_host_module(module(Instance { name: "test".into(), props: Value::Null }, 0)).unwrap()
         .with_host_module(HostModule::new("fixture").function("note", move |a| {
             calls.borrow_mut().push(a.string(0)?.to_owned());
@@ -1105,7 +1105,7 @@ export default class extends View {
 
 #[gpui::test]
 fn herdr_checking_is_true_while_a_check_loads_the_mod(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let fixture = Fixture::new(r#"
 import { View, div } from "gpui-kit";
 import { checking } from "herdr";
@@ -1116,7 +1116,7 @@ export default class extends View {
 }"#);
     let seen = Rc::new(RefCell::new(Vec::new()));
     let calls = seen.clone();
-    gpui_shell::policy::set_default(Policy::new().with_host_module(
+    herdr_shell::policy::set_default(Policy::new().with_host_module(
         HostModule::new("fixture").function("note", move |a| {
             calls.borrow_mut().push(a.string(0)?.to_owned());
             Ok(HostValue::Null)
@@ -1131,7 +1131,7 @@ export default class extends View {
 
 #[gpui::test]
 fn close_is_once_and_awaits_its_promise(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let fixture = Fixture::new(r#"
 import { View, div } from "gpui-kit";
 import { note } from "fixture";
@@ -1144,7 +1144,7 @@ export default class extends View {
 }"#);
     let seen = Rc::new(RefCell::new(Vec::new()));
     let calls = seen.clone();
-    gpui_shell::policy::set_default(Policy::new().with_host_module(
+    herdr_shell::policy::set_default(Policy::new().with_host_module(
         HostModule::new("fixture").function("note", move |a| {
             calls.borrow_mut().push(a.string(0)?.to_owned());
             Ok(HostValue::Null)
@@ -1168,7 +1168,7 @@ fn mod_socket_writes_reads_and_reports_eof(cx: &mut TestAppContext) {
     use std::{io::{Read, Write}, net::{Shutdown, TcpListener}};
 
     cx.executor().allow_parking();
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let source = r#"
@@ -1191,7 +1191,7 @@ export default class extends View {
     let fixture = Fixture::new(&source);
     let seen = Rc::new(RefCell::new(None));
     let calls = seen.clone();
-    gpui_shell::policy::set_default(Policy::new().with_capabilities(capabilities())
+    herdr_shell::policy::set_default(Policy::new().with_capabilities(capabilities())
         .with_host_module(HostModule::new("fixture").function("note", move |a| {
             calls.replace(Some((a.boolean(0)?, a.number(1)?, a.number(2)?, a.boolean(3)?)));
             Ok(HostValue::Null)
@@ -1226,7 +1226,7 @@ fn reload_releases_a_pending_tcp_read_without_a_close_hook(cx: &mut TestAppConte
     use std::io::Read as _;
     use std::net::TcpListener;
 
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let source = r#"
@@ -1248,7 +1248,7 @@ export default class extends View {
     let fixture = Fixture::new(&source);
     let reading = Rc::new(Cell::new(false));
     let started = reading.clone();
-    gpui_shell::policy::set_default(Policy::new().with_capabilities(capabilities())
+    herdr_shell::policy::set_default(Policy::new().with_capabilities(capabilities())
         .with_host_module(module(Instance { name: "read-test".into(), props: Value::Null }, 44)).unwrap()
         .with_host_module(HostModule::new("fixture").function("noteRead", move |_| {
             started.set(true);
@@ -1281,7 +1281,7 @@ export default class extends View { render() { return div(); } }
 
 #[gpui::test]
 fn explicit_host_cancellation_drops_work_and_settles_once(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let fixture = Fixture::new(r#"
 import { View, div } from "gpui-kit";
 import { wait, ready, note } from "fixture";
@@ -1308,13 +1308,13 @@ export default class extends View {
     let work = dropped.clone();
     let seen = Rc::new(RefCell::new(Vec::new()));
     let calls = seen.clone();
-    gpui_shell::policy::set_default(Policy::new().with_host_module(
+    herdr_shell::policy::set_default(Policy::new().with_host_module(
         HostModule::new("fixture")
             .cancellable_async_function("wait", HostValue::Array(vec![]), move |_| {
                 let guard = Dropped(work.clone());
                 Ok(async move {
                     let _guard = guard;
-                    std::future::pending::<gpui_shell::HostResult>().await
+                    std::future::pending::<herdr_shell::HostResult>().await
                 })
             })
             .cancellable_async_function("ready", HostValue::Null, |_| Ok(async { Ok(HostValue::Number(7.0)) }))
@@ -1330,7 +1330,7 @@ export default class extends View {
 
 #[gpui::test]
 fn close_starts_native_work_before_releasing_the_copy(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let fixture = Fixture::new(r#"
 import { View, div } from "gpui-kit";
 import { start } from "fixture";
@@ -1340,11 +1340,11 @@ export default class extends View {
 }"#);
     let started = Rc::new(Cell::new(false));
     let call = started.clone();
-    gpui_shell::policy::set_default(Policy::new().with_host_module(
+    herdr_shell::policy::set_default(Policy::new().with_host_module(
         HostModule::new("fixture").async_function("start", move |_| {
             call.set(true);
             // Starting native work must not depend on its promise settling.
-            Ok(std::future::pending::<gpui_shell::HostResult>())
+            Ok(std::future::pending::<herdr_shell::HostResult>())
         })
     ).unwrap());
     let runtime = ShellRuntime::new_isolated().unwrap();
@@ -1359,7 +1359,7 @@ export default class extends View {
 
 #[gpui::test]
 fn final_close_pumps_native_awaits_before_the_window_goes(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let fixture = Fixture::new(r#"
 import { View, div } from "gpui-kit";
 import { wait, note } from "fixture";
@@ -1369,7 +1369,7 @@ export default class extends View {
 }"#);
     let completed = Rc::new(Cell::new(0));
     let calls = completed.clone();
-    gpui_shell::policy::set_default(Policy::new().with_host_module(
+    herdr_shell::policy::set_default(Policy::new().with_host_module(
         HostModule::new("fixture")
             .async_function("wait", |_| Ok(async {
                 std::thread::sleep(Duration::from_millis(10));
@@ -1391,7 +1391,7 @@ export default class extends View {
 
 #[gpui::test]
 fn final_close_stops_waiting_at_its_deadline(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let fixture = Fixture::new(r#"
 import { View, div } from "gpui-kit";
 import { wait } from "fixture";
@@ -1399,8 +1399,8 @@ export default class extends View {
   async close() { await wait(); }
   render() { return div(); }
 }"#);
-    gpui_shell::policy::set_default(Policy::new().with_host_module(
-        HostModule::new("fixture").async_function("wait", |_| Ok(std::future::pending::<gpui_shell::HostResult>()))
+    herdr_shell::policy::set_default(Policy::new().with_host_module(
+        HostModule::new("fixture").async_function("wait", |_| Ok(std::future::pending::<herdr_shell::HostResult>()))
     ).unwrap());
     let runtime = ShellRuntime::new_isolated().unwrap();
     let window = cx.add_window(|_, _| Empty);
@@ -1415,14 +1415,14 @@ export default class extends View {
 
 #[gpui::test]
 fn close_interrupts_a_synchronous_loop_at_the_shared_deadline(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let fixture = Fixture::new(r#"
 import { View, div } from "gpui-kit";
 export default class extends View {
   close() { while (true) {} }
   render() { return div(); }
 }"#);
-    gpui_shell::policy::set_default(Policy::new());
+    herdr_shell::policy::set_default(Policy::new());
     let runtime = ShellRuntime::new_isolated().unwrap();
     let window = cx.add_window(|_, _| Empty);
     let root = window.update(cx, |_, window, cx| runtime.try_load(&fixture.0, window, cx).unwrap()).unwrap();
@@ -1436,7 +1436,7 @@ export default class extends View {
 #[gpui::test]
 fn virtual_list_rows_carry_their_own_handlers(cx: &mut TestAppContext) {
     use gpui::{Modifiers, point, px};
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     // A card per row, as the agents sidebar draws them: the card notes a
     // focus, its pin stops propagation, and hover swaps what the card shows.
     let fixture = Fixture::new(r#"
@@ -1462,7 +1462,7 @@ export default class extends View {
 }"#);
     let notes = Rc::new(RefCell::new(Vec::new()));
     let calls = notes.clone();
-    gpui_shell::policy::set_default(Policy::new().with_host_module(
+    herdr_shell::policy::set_default(Policy::new().with_host_module(
         HostModule::new("fixture").function("note", move |a| {
             calls.borrow_mut().push(a.string(0)?.to_owned());
             Ok(HostValue::Null)
@@ -1495,7 +1495,7 @@ export default class extends View {
 /// once throughout (its frames build the page's elements, not the script).
 #[gpui::test]
 fn the_cursor_preview_plays_in_a_mod_without_running_its_script_per_frame(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    cx.update(herdr_shell::init);
     let source = r#"
 import { View, div } from "gpui-kit";
 import { CursorPreview, note } from "herdr";
@@ -1508,7 +1508,7 @@ export default class extends View {
     let fixture = Fixture::new(source);
     let renders = Rc::new(Cell::new(0u32));
     let counted = renders.clone();
-    gpui_shell::policy::set_default(Policy::new().with_host_module(
+    herdr_shell::policy::set_default(Policy::new().with_host_module(
         HostModule::new("herdr")
             .component("CursorPreview", |args, window, cx| crate::window::cursor_preview::element(args.id(), window, cx))
             .function("note", move |_| { counted.set(counted.get() + 1); Ok(HostValue::Null) })
