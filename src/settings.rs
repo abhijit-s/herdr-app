@@ -1879,8 +1879,9 @@ impl TextRendering {
     }
 }
 
-/// When a cursor trail is drawn: never, as the focus moves between the shown
-/// tab's panes, or that and as the focused pane's cursor jumps (cursor_jumps.rs).
+/// When a cursor trail is drawn: never, as the focus moves between the
+/// window's carets (the shown tab's panes and text inputs), or that and as the
+/// focused caret jumps (cursor_jumps.rs, window/cursor_trail.rs).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CursorTrail {

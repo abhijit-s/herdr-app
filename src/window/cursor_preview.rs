@@ -12,7 +12,7 @@
 
 use super::cursor_particles::Dust;
 use super::cursor_shapes;
-use super::cursor_trail::{Trail, start_from};
+use super::cursor_trail::{Caret, Trail, start_from};
 use super::trail_paint::paint_layers;
 use super::*;
 
@@ -108,7 +108,7 @@ impl CursorPreview {
         let trail = start_from(live.as_ref(), from)
             .filter(|_| s.cursor_trail != settings::CursorTrail::Off);
         if !reduce_motion && (trail.is_some() || s.pulse() != settings::Arrival::Off) {
-            self.trail = Some(Trail::new(trail, live.as_ref(), "preview", s));
+            self.trail = Some(Trail::new(trail, live.as_ref(), Caret::Pane("preview".into()), s));
         }
         self.trail.is_some()
     }
