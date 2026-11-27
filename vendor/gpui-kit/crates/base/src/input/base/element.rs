@@ -2270,6 +2270,17 @@ impl<M: InputModeKind> TextElement<M> {
     }
 }
 
+// HERDR: the embedding app learns where the focused input's caret is painted
+// (window coordinates, shown or mid-blink), for its cursor trail.
+type CaretPainted = fn(&gpui::FocusHandle, Bounds<Pixels>, &mut Window, &mut App);
+static CARET_PAINTED: std::sync::OnceLock<CaretPainted> = std::sync::OnceLock::new();
+
+/// HERDR: calls `hook` with the focused input's caret each time it paints;
+/// the first hook set stays.
+pub fn on_caret_painted(hook: CaretPainted) {
+    let _ = CARET_PAINTED.set(hook);
+}
+
 /// Layout data for a single caret, produced by [`TextElement::layout_cursors`].
 #[derive(Clone, Debug)]
 struct CursorRenderInfo {
@@ -3030,6 +3041,15 @@ impl<M: InputModeKind> Element for TextElement<M> {
             ElementInputHandler::new(bounds, self.state.clone()),
             cx,
         );
+        // HERDR: the active caret where the blink paints it, below.
+        if focused
+            && let Some(hook) = CARET_PAINTED.get()
+            && let Some(caret) = prepaint.cursor_infos.iter().find(|info| info.is_active)
+        {
+            let mut caret = caret.bounds;
+            caret.origin.y += prepaint.cursor_scroll_offset.y;
+            hook(&focus_handle, caret, window, cx);
+        }
 
         // Paint multi line text
         let line_height = window.line_height();
