@@ -852,16 +852,18 @@ pub struct AppWindow {
     titlebar_applied: Option<(crate::layout::Titlebar, Option<[f32; 2]>)>,
     blur_applied: bool,
     focused_pane: Option<String>,
-    /// The cursor trail being drawn, and the (tab, pane) focused at the last draw (window/cursor_trail.rs).
+    /// The cursor trail being drawn, the caret focused at the last draw, and
+    /// the focused text input's caret as it last painted (window/cursor_trail.rs).
     trail: Option<cursor_trail::Trail>,
     trail_seen: Option<cursor_trail::Seen>,
+    input_caret: Option<cursor_trail::InputCaret>,
     /// Pixie dust from recent trails (`cursor_trail_particles`), and the
     /// colors it is drawn in.
     dust: cursor_particles::Dust,
     dust_tint: trail_paint::Tint,
-    /// The window's drawing below the trail and above it, each drawn again
-    /// only when the window is (a frame the trail alone asked for reuses
-    /// them), and the trail's own layer between them.
+    /// The window's drawings under the trail, the layout and the overlays
+    /// above it, each drawn again only when the window is (a frame the trail
+    /// alone asked for reuses them), and the trail's own layer over both.
     lower: Entity<Body>,
     upper: Entity<Body>,
     trail_layer: Entity<cursor_trail::TrailLayer>,
@@ -931,6 +933,7 @@ impl AppWindow {
             runtime.set_source_revision_provider(events.revision_provider());
         }
         mods::note_fonts(cx);
+        gpui_base::input::on_caret_painted(cursor_trail::input_caret_painted);
         let seen = std::fs::read_to_string(file("seen.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let me = cx.weak_entity();
         let mut w = AppWindow {
@@ -1034,6 +1037,7 @@ impl AppWindow {
             focused_pane: None,
             trail: None,
             trail_seen: None,
+            input_caret: None,
             dust: cursor_particles::Dust::default(),
             dust_tint: trail_paint::Tint::default(),
             lower: cx.new(|_| Body {
@@ -7921,7 +7925,7 @@ impl AppWindow {
         }
         self.publish_focused_selection(window, cx);
         self.tick_floats(window);
-        self.watch_cursor_trail(cx);
+        self.watch_cursor_trail(window, cx);
         self.apply_titlebar(window);
         self.apply_blur(window);
         if mods::publish_window(self.window_json(window)) {
@@ -7943,8 +7947,9 @@ impl AppWindow {
         self.window_frame(tree, window, cx)
     }
 
-    /// What the window draws over the cursor trail: overlays (windows,
-    /// dialogs, popups, toasts) and what follows a drag.
+    /// What the window draws over the layout, under the cursor trail:
+    /// overlays (windows, dialogs, popups, toasts) and what follows a drag.
+    /// The trail draws above them, so one into a dialog's text input shows.
     fn render_upper(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let _timed = crate::bench::timed(&crate::bench::WINDOW_US);
         let mut rendered_dividers = self.main_dividers.clone();
@@ -7970,7 +7975,7 @@ impl AppWindow {
 
 impl Render for AppWindow {
     /// Every draw: the window's settings for the frame and its handlers, over
-    /// the two drawings either side of the cursor trail. A frame the trail
+    /// the two drawings under the cursor trail. A frame the trail
     /// alone asked for (nothing else notified) reuses both; any other draws
     /// both again, as one drawing would be.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -8098,8 +8103,8 @@ impl Render for AppWindow {
                 this.finish_divider_drag(window, cx);
             }))
             .child(tree)
-            .child(trail)
             .child(above)
+            .child(trail)
             .child(crate::bench::frame_end())
     }
 }
@@ -10742,7 +10747,7 @@ export default class Recent extends View {
         // (where the trail starts, toward which pane), and the (tab, pane) seen last.
         type State = (Option<(super::cursor_shapes::Quad, String)>, Option<(String, String)>);
         let state = |cx: &mut gpui::VisualTestContext| -> State {
-            view.update(cx, |this, _| (this.trail.as_ref().and_then(|t| Some((t.from?, t.pane.clone()))), this.trail_seen.as_ref().map(|s| (s.tab.clone(), s.pane.clone()))))
+            view.update(cx, |this, _| (this.trail.as_ref().and_then(|t| Some((t.from?, t.to.pane()))), this.trail_seen.as_ref().map(|s| (s.tab.clone(), s.caret.pane()))))
         };
         let seen = |tab: &str, pane: &str| Some((tab.to_owned(), pane.to_owned()));
         let anchor = |cx: &mut gpui::VisualTestContext, pane: &str| super::cursor_shapes::quad(view.update(cx, |this, cx| this.terms[pane].view.read(cx).trail_end()).expect("drawn, so it has a cursor anchor").cursor);
@@ -10830,6 +10835,137 @@ export default class Recent extends View {
     }
 
     #[test]
+    fn cursor_trails_reach_text_inputs() {
+        in_own_process("trail_inputs");
+    }
+
+    /// Tab t: a | b, `"panes"`. Opening a's find bar starts a trail from a's
+    /// cursor to the find field's caret, as gpui-kit's input paints it; typing
+    /// starts none. With `"all"`, a character more starts none, Home (a jump
+    /// of many characters) starts one, a step right none. Opening b's find bar
+    /// moves the focus input to input; Escape closes it and the trail runs
+    /// from the field back to b's cursor. A trail whose input stopped being
+    /// the focused one ends; off, an input starts nothing and is forgotten.
+    #[gpui::test]
+    fn trail_inputs(cx: &mut gpui::TestAppContext) {
+        use crate::layout::{Axis, Node};
+        use crate::model::{Tab, pane};
+        use crate::settings::CursorTrail;
+        use serde_json::json;
+        if !running_alone("trail_inputs") {
+            return;
+        }
+        cx.update(gpui_base::init);
+        let (view, cx) = open_window(cx, "unused", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        let mode = |trail: CursorTrail| {
+            let before = crate::settings::get();
+            crate::settings::set(crate::settings::Settings { cursor_trail: trail, cursor_trail_duration_ms: 1000, cursor_trail_min_cells: 2.into(), ..(*before).clone() });
+        };
+        view.update_in(cx, |this, window, cx| {
+            this.documents.entry(String::new()).or_default().available = true;
+            for id in this.overlays.iter().map(|o| o.id.clone()).collect::<Vec<_>>() {
+                this.close_overlay(&id, window, cx);
+            }
+            let mut tab = Tab::new("t", "", "a", "ta");
+            tab.root = Node::container("t", Axis::Row, vec![pane("a", "ta"), pane("b", "tb")]);
+            this.model.add_space("s", "", "/tmp", tab);
+            this.model.select_tab("t");
+            this.model.focus_pane("a");
+            this.sync(window, cx);
+        });
+        cx.run_until_parked();
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+        // (where the trail starts, toward which caret, when), and the caret seen last.
+        type State = (Option<(Option<super::cursor_shapes::Quad>, String, std::time::Instant)>, Option<String>);
+        let state = |cx: &mut gpui::VisualTestContext| -> State {
+            view.update(cx, |this, _| (this.trail.as_ref().map(|t| (t.from, t.to.pane(), t.start)), this.trail_seen.as_ref().map(|s| s.caret.pane())))
+        };
+        let caret = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.input_caret.as_ref().map(|c| c.caret));
+        let anchor = |cx: &mut gpui::VisualTestContext, pane: &str| super::cursor_shapes::quad(view.update(cx, |this, cx| this.terms[pane].view.read(cx).trail_end()).expect("drawn").cursor);
+        let expire = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| {
+            if let Some(trail) = this.trail.as_mut() {
+                trail.start = trail.start.checked_sub(std::time::Duration::from_secs(2)).unwrap();
+            }
+        });
+        let layer = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, cx| this.trail_frame(cx).is_some());
+        let find = |cx: &mut gpui::VisualTestContext, pane: &'static str| {
+            view.update_in(cx, |this, window, cx| this.terms[pane].view.update(cx, |t, cx| t.open_search(window, cx)));
+            draw(cx);
+        };
+
+        mode(CursorTrail::Panes);
+        draw(cx);
+        assert_eq!(state(cx), (None, Some("a".into())));
+        let a = anchor(cx, "a");
+
+        find(cx, "a");
+        let into = caret(cx).expect("the focused find field told its caret");
+        let (trail, seen) = state(cx);
+        assert_eq!((trail.as_ref().map(|t| (t.0, t.1.clone())), seen), (Some((Some(a), "input".into())), Some("input".into())), "pane to input: a trail from a's cursor to the field");
+        assert!(layer(cx), "drawn while it runs");
+        let started = trail.unwrap().2;
+
+        cx.simulate_keystrokes("n e e d l e");
+        draw(cx);
+        assert_eq!(state(cx).0.map(|t| t.2), Some(started), "typing in panes mode starts none");
+        assert_ne!(caret(cx), Some(into), "the caret moved as it typed");
+        expire(cx);
+        draw(cx);
+        assert!(!layer(cx) && state(cx).0.is_none(), "over, it ends");
+
+        mode(CursorTrail::All);
+        draw(cx);
+        cx.simulate_keystrokes("s");
+        draw(cx);
+        assert_eq!(state(cx).0, None, "all: one character more is no jump");
+        let end = caret(cx).unwrap();
+        cx.simulate_keystrokes("home");
+        draw(cx);
+        let home = caret(cx).unwrap();
+        assert!(end.origin.x - home.origin.x > gpui::px(20.0), "home moved the caret back along the text: {end:?} to {home:?}");
+        assert_eq!(state(cx).0.map(|t| (t.0, t.1)), Some((Some(super::cursor_shapes::quad(end)), "input".into())), "all: home jumps, from where the caret was");
+        expire(cx);
+        draw(cx);
+        let _ = layer(cx);
+        cx.simulate_keystrokes("right");
+        draw(cx);
+        assert_eq!(state(cx).0, None, "a step of one character is no jump");
+
+        let before = view.update(cx, |this, _| this.input_caret.as_ref().map(|c| c.focus.clone())).unwrap();
+        let from = caret(cx).unwrap();
+        find(cx, "b");
+        let (trail, seen) = state(cx);
+        assert_eq!((trail.map(|t| (t.0, t.1)), seen), (Some((Some(super::cursor_shapes::quad(from)), "input".into())), Some("input".into())), "input to input");
+        assert_ne!(view.update(cx, |this, _| this.input_caret.as_ref().map(|c| c.focus.clone())), Some(before), "toward b's field");
+        expire(cx);
+        draw(cx);
+        let field = caret(cx).unwrap();
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        let (trail, seen) = state(cx);
+        assert_eq!((trail.map(|t| (t.0, t.1)), seen), (Some((Some(super::cursor_shapes::quad(field)), "b".into())), Some("b".into())), "closing the field runs a trail back to b's cursor");
+        assert_eq!(caret(cx), None, "and forgets the field");
+
+        expire(cx);
+        draw(cx);
+        find(cx, "b");
+        assert_eq!(state(cx).0.map(|t| t.1), Some("input".into()));
+        view.update(cx, |this, _| this.input_caret = None);
+        assert!(!layer(cx), "a trail whose input is gone ends");
+        assert_eq!(state(cx).0, None);
+
+        mode(CursorTrail::Off);
+        draw(cx);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        find(cx, "a");
+        assert_eq!((state(cx), caret(cx)), ((None, None), None), "off: an input starts nothing and is forgotten");
+    }
+
+    #[test]
     fn cursor_trails_end_where_the_layout_puts_a_sliding_pane() {
         in_own_process("trail_layout_space");
     }
@@ -10878,7 +11014,7 @@ export default class Recent extends View {
         let sliding = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.slide.is_some());
         let focused = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.model.focused_pane().unwrap());
         let end = |cx: &mut gpui::VisualTestContext, p: &str| view.update(cx, |this, cx| this.terms[p].view.read(cx).trail_end()).expect("drawn");
-        let trail = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail.as_ref().map(|t| (t.pane.clone(), t.from, t.start, t.drawn)));
+        let trail = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail.as_ref().map(|t| (t.to.pane(), t.from, t.start, t.drawn)));
         let land = |cx: &mut gpui::VisualTestContext| {
             view.update(cx, |this, cx| this.land(cx));
             draw(cx);
@@ -11025,7 +11161,7 @@ export default class Recent extends View {
             cx.executor().advance_clock(Duration::from_millis(ms));
             cx.run_until_parked();
         };
-        let effect = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail.as_ref().map(|t| (t.from.is_some(), t.arrival, t.pane.clone(), t.start)));
+        let effect = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail.as_ref().map(|t| (t.from.is_some(), t.arrival, t.to.pane(), t.start)));
         let clear = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail = None);
         assert!(view.update_in(cx, |this, window, cx| this.terms["a"].view.read(cx).owns_keyboard_focus(window, cx)), "a has the keyboard");
         set(cx, CursorTrail::All);
@@ -11576,7 +11712,7 @@ export default class Recent extends View {
             draw(cx);
         };
         // (has a trail's start, its style, the pulse, toward which pane), and whether it has a layer.
-        let state = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail.as_ref().map(|t| (t.from.is_some(), t.style, t.arrival, t.pane.clone())));
+        let state = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.trail.as_ref().map(|t| (t.from.is_some(), t.style, t.arrival, t.to.pane())));
         let layer = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, cx| this.trail_frame(cx).is_some());
 
         set(CursorTrail::Off, TrailStyle::Comet, Arrival::Ripple);

@@ -363,8 +363,8 @@ const CURSOR_STYLES = [
 // When a cursor trail is drawn (cursor_trail); Off is the default, left out of settings.json.
 const CURSOR_TRAILS = [
   ["off", "Off"],
-  ["panes", "Between panes"],
-  ["all", "Panes and jumps"],
+  ["panes", "When focus moves"],
+  ["all", "Every jump"],
 ];
 // How the trail looks (cursor_trail_style); Comet is the default, left out of settings.json.
 const TRAIL_STYLES = [
@@ -375,7 +375,7 @@ const TRAIL_STYLES = [
   ["blaze", "Blaze"],
   ["blaze_tapered", "Blaze tapered"],
 ];
-// What a program's startup output draws with Panes and jumps (cursor_trail_startup);
+// What a program's startup output draws with Every jump (cursor_trail_startup);
 // At the prompt is the default, left out of settings.json.
 const TRAIL_STARTUPS = [
   ["prompt", "At the prompt"],
@@ -1940,8 +1940,8 @@ export default class Settings extends View {
       );
   }
 
-  // Cursor effects: the trail (Off, Between panes, or that and the focused pane's cursor
-  // jumps), its style while it's on, the arrival pulse with its size and intensity while it's
+  // Cursor effects: the trail (Off, When focus moves between carets, or that and the focused
+  // caret's jumps), its style while it's on, the arrival pulse with its size and intensity while it's
   // on (0.25 steps, 1 left out), how long they take (20 ms steps)
   // while either is on, and, for jumps, how still the cursor must be (10 ms steps) and
   // how small a move it ignores. Off, Comet, Off, 120 ms, 10 ms and 2 cells are the defaults,
@@ -1996,7 +1996,7 @@ export default class Settings extends View {
       .child(this.heading(t, "Cursor effects"))
       .when((on || pulse || shaped) && !this.filtering(), (el) => el.child(this.cursorPreview(t)))
       .child(this.row(t, "Cursor style", "The cursor's shape in your terminals until a program sets its own, and again when it resets it. A pane without the focus shows a hollow box.", this.choicePicker(t, "st-cst", "cursor_style", CURSOR_STYLES), "cursor_style"))
-      .child(this.row(t, "Cursor trail", "A trail from one pane's cursor to the next as the focus moves between panes, and with Panes and jumps, as the cursor jumps in the pane you're typing in.", this.choicePicker(t, "st-ct", "cursor_trail", CURSOR_TRAILS), "cursor_trail"))
+      .child(this.row(t, "Cursor trail", "A trail from one cursor to the next as the focus moves: between panes, and into and out of text fields such as the command palette or find. With Every jump, also as the cursor jumps in the pane or field you're typing in.", this.choicePicker(t, "st-ct", "cursor_trail", CURSOR_TRAILS), "cursor_trail"))
       .when(on, (el) => el.child(this.row(t, "Trail style", "Comet: a glowing streak. Tail: the cursor stretched, as kitty does. Sweep: a block shrinking into the cursor. Warp: the cursor stretching and springing into place, after Neovide. Blaze: a flame-colored beam pulled into the cursor, after kitty; tapered, it narrows to a line.", this.choicePicker(t, "st-cs", "cursor_trail_style", TRAIL_STYLES), "cursor_trail_style")))
       .when(on, (el) => el.child(this.row(t, "Particles", "Pixie dust: glittering particles shed along the trail's path, flying off, falling and fading, with any trail style.", this.choicePicker(t, "st-cp", "cursor_trail_particles", PARTICLES), "cursor_trail_particles")))
       .when(on && (this.person.cursor_trail_style ?? "comet") === "tail", (el) =>
@@ -2022,7 +2022,7 @@ export default class Settings extends View {
           .child(this.row(t, "Ignore moves down up to", "The same for rows: a move of more rows than this draws, however few columns it crosses.", this.stepper(t, "st-cursor_trail_min_cells_y", cellsLabel(cells[1]), cellStep(1, -1), cellStep(1, 1)), cellsKey))
           .child(this.row(t, "While a program starts", "What a shell's or a command's output draws before its prompt. At the prompt: one trail from where it started to the prompt. Quiet: none. Every jump: a trail each time the output pauses.", this.choicePicker(t, "st-ctsu", "cursor_trail_startup", TRAIL_STARTUPS), "cursor_trail_startup")),
       )
-      .child(this.row(t, "Arrival effect", "A pulse at the cursor as the focus lands in another pane, with the trail or without it; with Panes and jumps, also after a jump or a cursor shape change.", this.choicePicker(t, "st-ca", "cursor_arrival", ARRIVALS), "cursor_arrival"))
+      .child(this.row(t, "Arrival effect", "A pulse at the cursor as the focus lands in another pane or text field, with the trail or without it; with Every jump, also after a jump or a cursor shape change.", this.choicePicker(t, "st-ca", "cursor_arrival", ARRIVALS), "cursor_arrival"))
       .when(pulse, (el) =>
         el
           .child(this.row(t, "Arrival size", "How far the pulse spreads, up to twice its usual reach. Off draws no pulse.", this.stepper(t, "st-cursor_arrival_size", times(arrivalSize), smaller, larger), "cursor_arrival_size"))

@@ -429,8 +429,8 @@ test("slide time and most panes show only with pane motion on, step within their
 
 test("cursor effects sit on their own Cursor page, each writing its choice and leaving the default out", () => {
   const pick = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "cursor");
-  expect(pick({}, "st-ct-Between panes")).toEqual({ cursor_trail: "panes" });
-  expect(pick({}, "st-ct-Panes and jumps")).toEqual({ cursor_trail: "all" });
+  expect(pick({}, "st-ct-When focus moves")).toEqual({ cursor_trail: "panes" });
+  expect(pick({}, "st-ct-Every jump")).toEqual({ cursor_trail: "all" });
   expect(pick({ cursor_trail: "panes", zoom: 1.1 }, "st-ct-Off")).toEqual({ zoom: 1.1 });
   expect(pick({ cursor_trail: "panes" }, "st-cs-Warp")).toEqual({ cursor_trail: "panes", cursor_trail_style: "warp" });
   expect(pick({ cursor_trail: "panes" }, "st-cs-Blaze")).toEqual({ cursor_trail: "panes", cursor_trail_style: "blaze" });
@@ -439,7 +439,7 @@ test("cursor effects sit on their own Cursor page, each writing its choice and l
   expect(pick({}, "st-ca-Ripple box")).toEqual({ cursor_arrival: "ripple_rect" });
   expect(pick({ cursor_arrival: "boom" }, "st-ca-Off")).toEqual({});
   // Nothing about the cursor is left on the Panes page.
-  expect(() => click({}, {}, "st-ct-Between panes", ["choicePicker"], "panes")).toThrow();
+  expect(() => click({}, {}, "st-ct-When focus moves", ["choicePicker"], "panes")).toThrow();
   const shown = texts(search("cursor_arrival").root).join("|");
   expect(shown).toContain("Appearance › Cursor|CURSOR EFFECTS|Arrival");
 });
@@ -578,7 +578,7 @@ test("an arrival size or intensity of 0 shows Off, the minus button stops there,
   expect(one).not.toContain("0×");
 });
 
-test("settle time and ignored moves show only for Panes and jumps, within their ranges, defaults left out", () => {
+test("settle time and ignored moves show only for Every jump, within their ranges, defaults left out", () => {
   const step = (person: Record<string, any>, id: string) => click(person, {}, id, [], "cursor");
   expect(() => step({ cursor_trail: "panes" }, "st-cursor_trail_settle_ms-plus")).toThrow();
   const all = { cursor_trail: "all" };
@@ -600,7 +600,7 @@ test("settle time and ignored moves show only for Panes and jumps, within their 
   expect(step({ ...all, cursor_trail_min_cells: "abc" }, "st-cursor_trail_min_cells_x-plus")).toEqual({ ...all, cursor_trail_min_cells: [3, 2] });
 });
 
-test("the startup choice shows only for Panes and jumps and leaves At the prompt out", () => {
+test("the startup choice shows only for Every jump and leaves At the prompt out", () => {
   const step = (person: Record<string, any>, id: string) => click(person, {}, id, ["choicePicker"], "cursor");
   expect(() => step({ cursor_trail: "panes" }, "st-ctsu-Quiet")).toThrow();
   const all = { cursor_trail: "all" };
