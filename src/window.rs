@@ -2172,6 +2172,7 @@ impl AppWindow {
         let gone: Vec<String> = self.terms.keys().filter(|id| !want_terms.contains(*id)).cloned().collect();
         for id in gone {
             if let Some(t) = self.terms.remove(&id) {
+                mods::untrack_pane_view(&id);
                 t.view.read(cx).detach();
                 self.publish_selection(&t.address, window, cx);
             }
@@ -2675,6 +2676,7 @@ impl AppWindow {
                         "status": status, "app": a.and_then(|a| a.app.clone()), "program": self.program(addr), "title": title.unwrap_or_default(),
                         "label": label, "session": session, "icon": icon,
                         "seq": a.map(|a| a.seq).unwrap_or(0),
+                        "since": self.live.get(addr).and_then(crate::hc::agent_since),
                         "pinned": pinned,
                         "focused": m.active.as_deref() == Some(pr.id.as_str()) && focused_pane.as_deref() == Some(p.id.as_str()),
                         "card_info": card_info,
@@ -3175,7 +3177,7 @@ impl AppWindow {
         for t in list.as_array_mut().into_iter().flatten() {
             let Some(obj) = t.as_object_mut() else { continue };
             let report = obj.remove("status").unwrap_or(Value::Null);
-            let word = report.get("state").cloned().unwrap_or_else(|| if report.is_string() { report.clone() } else { Value::Null });
+            let word = crate::hc::status_word(&report).clone();
             obj.insert("status".into(), word);
             obj.insert("program".into(), program_of(&report, running_argv(obj)));
             obj.insert("report".into(), report);
@@ -3186,6 +3188,7 @@ impl AppWindow {
             if let Some(a) = obj.get("address").and_then(Value::as_str) {
                 live.insert(a.to_owned(), Value::Object(obj.clone()));
             }
+            obj.remove(crate::hc::AGENT_SINCE);
         }
         self.live = live;
         self.forget_gone_popped();
@@ -4892,6 +4895,17 @@ impl AppWindow {
                     }
                     self.focused_pane = None;
                 }
+            }
+            "terminal.send_key" => {
+                let Some(keys) = Self::arg(a, "keys") else { return self.fail("terminal.send_key keys must be a string") };
+                let view = match Self::arg(a, "terminal") {
+                    Some(address) => self.shown_terminal_view(address, window, cx),
+                    None => self.focused_terminal(window, cx).map(|t| t.view.clone()).ok_or_else(|| "no focused terminal to send a key to".into()),
+                };
+                if let Err(error) = view.and_then(|view| view.update(cx, |view, cx| view.send_key(keys, cx))) {
+                    self.fail(error);
+                }
+                return;
             }
             "terminal.search" => {
                 let Some(t) = self.focused_terminal(window, cx) else { return self.fail("no focused terminal to search") };
@@ -15909,6 +15923,137 @@ export default class Probe extends View {
             let focused = crate::mods::shared("probe.focused").unwrap();
             assert_eq!(focused["selection"]["end"], json!({"row": 0, "col": col}), "{slot}: {focused}");
         }
+    }
+
+    #[test]
+    fn terminal_rows_reads_the_current_view_without_reacting_to_output() {
+        in_own_process("terminal_rows_host_bridge");
+    }
+
+    #[gpui::test]
+    fn terminal_rows_host_bridge(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("terminal_rows_host_bridge") {
+            return;
+        }
+        let probe = r#"import { View, div } from "gpui-kit";
+import { nextCommand, setShared, terminalRows } from "herdr";
+
+export default class Probe extends View {
+  init(_, cx) {
+    cx.spawn(async () => {
+      for (;;) {
+        const command = await nextCommand();
+        if (command === "read") {
+          setShared("probe.rows", terminalRows("t1", 0, 1));
+        } else if (command === "validate") {
+          const rejected = [[-1, 1], [0.5, 1], [0, -1], [0, 0.5]].map(([from, count]) => {
+            try { terminalRows("t1", from, count); } catch (_) { return true; }
+            return false;
+          });
+          setShared("probe.rejected", rejected);
+        } else if (command === "remember") {
+          this.before = this.renders;
+        } else if (command === "compare") {
+          setShared("probe.stable", this.before > 0 && this.renders === this.before);
+        }
+      }
+    });
+  }
+  render() {
+    this.renders = (this.renders ?? 0) + 1;
+    terminalRows("t1", 0, 1);
+    return div();
+  }
+}
+"#;
+        let (view, cx) = open_window(cx, "row-probe", probe, json!({
+            "id": "root", "type": "row", "children": [
+                {"id": "main", "type": "block", "content": {"tab": "active"}},
+                {"id": "probe", "type": "block", "content": {"mod": "row-probe"}}
+            ],
+            "floating": [{"id": "float", "content": {"terminal": "t1"}}]
+        }));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model.add_space("s1", "one", "", crate::model::Tab::new("a", "a", "pa", "t1"));
+            this.model.add_tab("s1", crate::model::Tab::new("b", "b", "pb", "t2"));
+            this.model.select_tab("a");
+            for address in ["t1", "t2"] {
+                this.live.insert(address.into(), json!({"address": address}));
+            }
+            this.sync(window, cx);
+        }));
+        cx.run_until_parked();
+        let (pane, float) = view.update(cx, |this, _| {
+            (this.terms["pa"].view.clone(), this.terms["float:float"].view.clone())
+        });
+        cx.update(|window, cx| {
+            pane.update(cx, |term, cx| {
+                term.ingest_test_output(format!("界{}", "\r\nhistory".repeat(60)).as_bytes(), cx);
+                term.focus_handle().focus(window, cx);
+            });
+            float.update(cx, |term, cx| term.ingest_test_output(b"float", cx));
+            view.update(cx, |this, cx| this.scroll_terminal(&json!({"terminal": "t1", "to": "top"}), window, cx).unwrap());
+        });
+        cx.run_until_parked();
+
+        let command = |cx: &mut gpui::VisualTestContext, command| {
+            assert!(crate::mods::send_command("row-probe", command));
+            cx.run_until_parked();
+        };
+        let read = |cx: &mut gpui::VisualTestContext| {
+            command(cx, "read");
+            crate::mods::shared("probe.rows").unwrap()
+        };
+        let rows = read(cx);
+        assert_eq!(rows["rows"][0]["cells"][0], json!({"text": "界", "wide": true}));
+        assert_eq!(rows["rows"][0]["wrapped"], false);
+        assert!(rows["total"].as_u64().unwrap() >= 61);
+        command(cx, "validate");
+        assert_eq!(crate::mods::shared("probe.rejected"), Some(json!([true, true, true, true])));
+
+        let from_bottom = pane.update(cx, |term, _| term.scroll_metrics().unwrap().from_bottom);
+        command(cx, "remember");
+        pane.update(cx, |term, cx| term.ingest_test_output(b"\r\nmore", cx));
+        cx.executor().advance_clock(std::time::Duration::from_millis(40));
+        cx.run_until_parked();
+        assert!(pane.update(cx, |term, _| term.scroll_metrics().unwrap().from_bottom) > from_bottom);
+        command(cx, "compare");
+        assert_eq!(crate::mods::shared("probe.stable"), Some(json!(true)), "output repainted the terminal without refreshing a row reader");
+
+        cx.update(|window, cx| float.update(cx, |term, cx| term.focus_handle().focus(window, cx)));
+        cx.run_until_parked();
+        assert_eq!(read(cx)["rows"][0]["cells"][0]["text"], "f", "prefer the view with keyboard focus");
+        cx.update(|window, cx| view.update(cx, |this, cx| this.focus.focus(window, cx)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            for term in [&pane, &float] {
+                assert!(term.read(cx).on_screen_this_frame());
+                assert!(!term.read(cx).owns_keyboard_focus(window, cx));
+            }
+        });
+        assert_eq!(read(cx)["rows"][0]["cells"][0]["text"], "界", "prefer the owning pane when both views are equally visible");
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model.select_tab("b");
+            this.sync(window, cx);
+            this.terms["pb"].focus.focus(window, cx);
+        }));
+        cx.run_until_parked();
+        assert_eq!(read(cx)["rows"][0]["cells"][0]["text"], "f", "prefer the visible view to the hidden owning pane");
+
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.chrome.floating.clear();
+            this.sync(window, cx);
+        }));
+        cx.run_until_parked();
+        assert_eq!(read(cx)["rows"][0]["cells"][0]["text"], "界");
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model.remove_tab("a");
+            this.sync(window, cx);
+        }));
+        cx.run_until_parked();
+        assert_eq!(read(cx), serde_json::Value::Null);
+        drop((pane, float)); // Detached views still exist when the mod receives null.
     }
 
     #[test]

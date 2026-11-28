@@ -924,10 +924,11 @@ pub fn track_pane_view(pane: String, view: &gpui::Entity<crate::terminal::Termin
     PANE_VIEWS.with_borrow_mut(|views| { views.insert(pane, view.downgrade()); });
 }
 
+pub fn untrack_pane_view(pane: &str) {
+    PANE_VIEWS.with_borrow_mut(|views| { views.remove(pane); });
+}
+
 pub fn publish_panes(v: Value) -> bool {
-    PANE_VIEWS.with_borrow_mut(|views| views.retain(|pane, _| {
-        v.as_array().into_iter().flatten().any(|p| p["pane"].as_str() == Some(pane.strip_suffix("#swap").unwrap_or(pane)))
-    }));
     publish("panes", |s| (std::mem::replace(&mut s.panes, v.clone()), v))
 }
 pub fn publish_terminals(mut v: Value) -> bool {
@@ -1021,6 +1022,40 @@ fn read(reads: &RefCell<LiveReads>, key: &'static str, f: impl FnOnce(&Snapshot)
 
 fn record(reads: &RefCell<LiveReads>, key: &str) {
     REVISIONS.with_borrow(|r| reads.borrow_mut().record(key, r));
+}
+
+fn terminal_rows(args: &herdr_shell::HostArguments) -> herdr_shell::HostResult {
+    let terminal = args.string(0)?;
+    let from = u64::try_from(args.integer(1)?).map_err(|_| HostError::new("from must be nonnegative"))?;
+    let count = u64::try_from(args.integer(2)?).map_err(|_| HostError::new("count must be nonnegative"))?;
+    let rows = herdr_shell::with_current(|window, cx| {
+        SNAPSHOT.with_borrow(|snapshot| {
+            let own_pane = snapshot.panes.as_array().into_iter().flatten()
+                .find(|p| p["terminal"].as_str() == Some(terminal)).and_then(|p| p["pane"].as_str());
+            PANE_VIEWS.with_borrow(|views| {
+                views.iter().filter_map(|(pane, view)| {
+                    let view = view.upgrade()?;
+                    let view = view.read(cx);
+                    (view.address == terminal).then_some((pane, view))
+                }).max_by_key(|(pane, view)| {
+                    (view.owns_keyboard_focus(window, cx), view.on_screen_this_frame(), own_pane == Some(pane.as_str()))
+                }).map(|(_, view)| view.text_rows(from, count))
+            })
+        })
+    }).flatten();
+
+    let Some(rows) = rows else { return Ok(HostValue::Null) };
+    let rows_value = rows.rows.into_iter().map(|row| HostValue::Object(vec![
+        ("cells".into(), HostValue::Array(row.cells.into_iter().map(|cell| HostValue::Object(vec![
+            ("text".into(), HostValue::Str(cell.text)),
+            ("wide".into(), HostValue::Bool(cell.wide)),
+        ])).collect())),
+        ("wrapped".into(), HostValue::Bool(row.wrapped)),
+    ])).collect();
+    Ok(HostValue::Object(vec![
+        ("total".into(), HostValue::Number(rows.total as f64)),
+        ("rows".into(), HostValue::Array(rows_value)),
+    ]))
 }
 
 fn reader(reads: Rc<RefCell<LiveReads>>, key: &'static str, f: fn(&Snapshot) -> &Value) -> impl Fn(&herdr_shell::HostArguments) -> herdr_shell::HostResult {
@@ -1723,6 +1758,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
             Ok(HostValue::Null)
         })
         .function("terminals", reader(reads.clone(), "terminals", |s| &s.terminals))
+        .function("terminalRows", terminal_rows)
         .function("focused", reader(reads.clone(), "focused", |s| &s.focused))
         .function("recentPlaces", reader(reads.clone(), "places", |s| &s.places))
         .function("layout", reader(reads.clone(), "layout", |s| &s.layout))
@@ -2523,8 +2559,8 @@ mod tests {
         drop(swapped);
         cx.run_until_parked();
         assert_eq!(read(cx).0, json!(0), "its own again once the swapped-in one is gone");
-        publish_panes(json!([]));
-        assert_eq!(read(cx).0, Value::Null, "a pane no longer listed is forgotten");
+        untrack_pane_view("p1");
+        assert_eq!(read(cx).0, Value::Null, "a pane whose view left the window is forgotten");
     }
 
     #[test]
