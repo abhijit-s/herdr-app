@@ -36,6 +36,29 @@ Where a change belongs (app Rust core, mods or herdr-core) and the order changes
 
 Each merge of `upstream/master` into `master`, with the conflict choices worth remembering.
 
+- 2026-11-28, `1180a5c..4c14b47` (8 commits on `sync/upstream-2026-11-28`: kitty image placement offsets `8080824`, kitty image stacking around cell backgrounds `b75f103`, one kitty reply per command in the tests `91a5a55`, `terminal.send_key` from mods and bindings `583985d`, agent state timestamps (`since`) for mods `991ecef`, exact `to` endpoints for `terminal.select` `455710f`, `terminalRows()` for mods `f3f49ee`, find results kept on one line `4c14b47`). Seven files conflicted, nine hunks. The rule for each: upstream's design is the base, the fork's work layers on top, and only what's needed changes. Choices:
+  - `src/terminal.rs` `paint_grid` (`b75f103`): upstream's three image layers (`ImageLayer`) and its split of selected backgrounds, painted after the below-text images, taken as written. The fork's signature (the `view` for startup timing) stays, and the background loop reads the fork's `PaintedRow` (`row.ops`) where upstream destructures a tuple. `RowOp::Bg` gains upstream's `selected`; the fork's `drawing()` test dump ignores it (`..`), so its strings are unchanged. `selected` is part of `vt::Cell`'s equality, so the changed-rows-only cache rebuilds a row whose selection changes. Upstream's Linux-only pixel test `kitty_images_stack_with_cell_backgrounds_and_glyphs_by_z` is adapted to the fork's `paint_grid` (`WeakEntity::new_invalid()`) and `Grid::fit` (font size `14.`) signatures; it doesn't build or run on macOS.
+  - `src/terminal.rs` test helpers: the fork's `fit_for_test`/`write_for_test` and upstream's `text_rows` kept side by side.
+  - `src/vt.rs` tests: the fork's kitty file-medium and FIFO tests and upstream's `kitty_direct_placement_offsets_apply_in_device_pixels` kept side by side.
+  - `src/commands.rs`: upstream's `terminal.send_key` added before the fork's `terminal.paste`, which keeps its `terminal` argument.
+  - `src/window.rs` agent list: upstream's `since` beside the fork's precomputed `pinned`.
+  - `src/mods/render_tests.rs`: upstream's `terminalRows` and the fork's `recentPlaces` both in the test snapshot.
+  - `defaults/herdr.d.ts`, `defaults/AGENTS.md`: kept both: the fork's `copy_all`/`copy_path`/`popup` lines with upstream's `send_key` and `select … to`; `agents()` lists the fork's `label`, `session`, `card_info` and upstream's `since`.
+  - `src/mods.rs` (auto-merged, `f3f49ee`): upstream drops the `PANE_VIEWS` retain from `publish_panes` and forgets a view through `untrack_pane_view` when its terminal leaves the window. The fork's `a_pane_reads_the_scroll_of_the_terminal_it_shows` asserted the old retain; its last step now untracks the view instead of publishing an empty list.
+  - Submodules: upstream moved none; `vendor/ghostty` stays at the fork's `f39ed1b`.
+  - Gates (this branch):
+
+    | Check | branch |
+    | --- | --- |
+    | `cargo test --locked -p herdr-app` (bin) | 1260 passed, 0 failed, 6 ignored; other test targets all pass |
+    | `cargo test --locked -p herdr-shell --no-fail-fast` (lib) | 742 passed, 1 failed, 1 ignored; integration targets 4 and 4 passed (2 ignored) |
+    | `bun test scripts` | 396 passed, 0 failed (20 files); the `just test` list 386 passed (18 files) |
+    | `scripts/docs.test.ts`, `docs.ts check` | pass |
+    | clippy `--all-targets -p herdr-app` warnings | 38, none on a line this merge resolved |
+
+  - The one herdr-shell failure is `a_readonly_script_editor_remains_selectable` again, upstream's own test (see the 2026-11-26 entry).
+  - Not done: the open upstream PR branch check (pushing a merge onto one updates its upstream PR), pixel identity, and a look at the installed app.
+
 - 2026-11-27, `3e6d564..1180a5c` (1 commit on `sync/upstream-2026-11-27`: `1180a5c`, a README line saying kept panes resume programs that report OSC 7577, herdr-core's resume protocol). Merged clean; no code changed, so no build or reinstall. Open upstream PR branches are unaffected: the commit touches only `README.md`.
 - 2026-11-26, `a2e8e3f..3e6d564` (4 commits on `sync/upstream-2026-11-26`: the mod runtime as Herdr's own crate `e770ba7`, herdr-shell tests in CI `513e566`, the unused `gpui-fast` feature and standalone bin dropped `895a0b2`, websocket test races `3e6d564`). Upstream moved `vendor/gpui-kit/crates/shell` to `crates/herdr-shell` and renamed the crate from `gpui-shell`/`gpui_shell` to `herdr-shell`/`herdr_shell`. Six files conflicted. The rule for each: upstream's move and rename are taken as written, and the fork's changes are carried onto the new path and name. Choices:
   - The crate's own files: git followed the rename for every file, so the fork's `HERDR:` changes to 19 crate files (host modules, QuickJS, materialize, virtual list, root, style, snapshot, spec, typings, value, view, render tests) landed in `crates/herdr-shell` with no conflict. Checked line by line: the fork's 1119 changed lines against `a2e8e3f` match its changed lines against `upstream/master` exactly. Nothing is left at the old path (`git ls-files vendor/gpui-kit/crates/shell` is empty).

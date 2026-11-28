@@ -800,6 +800,9 @@ The main ones:
   Windows, clipboard text is pasted; otherwise Ctrl+V goes to the program, which
   reads the clipboard itself). TIFF and BMP clipboard
   images are converted to PNG before sending,
+  `terminal.send_key {keys, terminal?}` (one key in keys.json syntax, defaulting to
+  the focused terminal; requires an attached view and uses the terminal's current
+  keyboard mode and typing connection),
   `terminal.right_click {to: "program" | "menu", terminal?}` (where right-clicks go
   when the program takes the mouse; kept as its label `herdr.right-click=program`;
   Shift+right-click is always Herdr's menu),
@@ -807,8 +810,11 @@ The main ones:
   history, not the program: negative lines or pages go up, toward history; pages may be
   fractional, one page is the terminal's rows; on the alternate screen, such as vim or less,
   there is no history, so nothing moves),
-  `terminal.select {terminal?, at?: {row, col} | "cursor", mode?: "cell" | "word" | "line"}`
-  (replaces the selection, at the program's cursor by default; word/line act like double/triple click),
+  `terminal.select {terminal?, at?: {row, col} | "cursor", to?: {row, col}, mode?: "cell" | "word" | "line"}`
+  replaces the selection, starting at the program's cursor by default.
+  With `to`, the view follows the exact moving end. Line mode with `to` covers whole screen
+  rows, including blank and soft-wrapped rows. Without `to`, word and line still act like
+  double and triple click.
   `terminal.adjust_selection {terminal?, direction}` (left, right, up, down, page_up, page_down,
   home, end, line_start, line_end; moves the selection's end and follows it in the view;
   fails with no selection), `terminal.clear_selection {terminal?}`.
@@ -1574,9 +1580,11 @@ All of it is in `herdr.d.ts`. In short:
   machine, branch), `machines()` (name, null for this computer; layout:
   `loading`, `ready`, or `unavailable` on this connection; loading ends on
   the first read even if it fails, and offline machines are unavailable),
-  `agents()` (status, app, space, tab, label, session, pinned, focused, card_info; "done" turns "idle"
-  once someone looks at it on any Herdr client), `terminals()`
-  (every core terminal), `focused()`, `layout()`, `theme()` (every color by
+  `agents()` (status, app, space, tab, label, session, pinned, focused,
+  card_info and `since`, which is null when the initial time is unknown and
+  stays the same when looking at a "done" agent on any Herdr client turns it
+  "idle"), `terminals()` (every core terminal), `focused()`, `layout()`,
+  `theme()` (every color by
   name: background (the terminals', cards), canvas (behind cards), chrome
   (sidebars, bars), surface, popover, raised, hover, selected, border,
   input (a stronger border), foreground, muted, dim, accent,
@@ -1601,6 +1609,9 @@ All of it is in `herdr.d.ts`. In short:
   the keyboard is reported the same way; pane commands without a `pane` still act on
   the focused pane under the window. Check `focused()?.pane` before offering pane controls.
   `panes()` still lists only model panes; none is focused while a terminal block is.
+  `terminalRows(terminal, from, count)` reads up to 128 terminal rows with their cell
+  text, widths and wraps for copy-mode motions and searches, or returns null without
+  an attached view. Reading rows does not subscribe to terminal output.
   For composition navigation: `run("pane.focus", {terminal: nextAddress})`.
   `recentPlaces()`: where the person has been, newest first (pane, terminal, tab,
   space, machine, at), one place per pane, at most 20. A place counts once they
